@@ -1,4 +1,7 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { realpathSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import { resolveAllowedDirs, expandHome, isPathAllowed, isPathAllowedSync } from "./path-utils";
 
 describe("expandHome", () => {
@@ -49,9 +52,12 @@ describe("resolveAllowedDirs", () => {
     expect(result[0]).toBe(`${home}/test`);
   });
 
-  it("should keep absolute paths as-is", () => {
-    const result = resolveAllowedDirs(["/tmp/test"]);
-    expect(result[0]).toBe("/tmp/test");
+  it("should resolve existing paths through symlinks", () => {
+    // Use an existing dir so realpathSync works inside resolveAllowedDirs
+    const tmp = mkdtempSync(join(tmpdir(), "pathtest-"));
+    const result = resolveAllowedDirs([tmp]);
+    expect(result[0]).toBe(realpathSync(tmp));
+    rmSync(tmp, { recursive: true, force: true });
   });
 
   it("should handle empty array", () => {
@@ -59,66 +65,90 @@ describe("resolveAllowedDirs", () => {
     expect(result).toEqual([]);
   });
 
-  it("should handle multiple paths", () => {
-    const result = resolveAllowedDirs(["/tmp", "/var"]);
-    expect(result).toEqual(["/tmp", "/var"]);
+  it("should handle multiple existing paths", () => {
+    const tmp1 = mkdtempSync(join(tmpdir(), "pathtest1-"));
+    const tmp2 = mkdtempSync(join(tmpdir(), "pathtest2-"));
+    const result = resolveAllowedDirs([tmp1, tmp2]);
+    expect(result).toEqual([realpathSync(tmp1), realpathSync(tmp2)]);
+    rmSync(tmp1, { recursive: true, force: true });
+    rmSync(tmp2, { recursive: true, force: true });
   });
 });
 
 describe("isPathAllowed", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "pathallow-"));
+    mkdirSync(join(tempDir, "subdir"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
   it("should allow paths within allowed directories", async () => {
-    const allowedDirs = ["/tmp/test", "/var"];
-    expect(await isPathAllowed("/tmp/test/file.txt", allowedDirs)).toBe(true);
-    expect(await isPathAllowed("/tmp/test/subdir/file.txt", allowedDirs)).toBe(true);
+    const allowedDirs = resolveAllowedDirs([tempDir]);
+    expect(await isPathAllowed(join(tempDir, "file.txt"), allowedDirs)).toBe(true);
+    expect(await isPathAllowed(join(tempDir, "subdir", "file.txt"), allowedDirs)).toBe(true);
   });
 
   it("should reject paths outside allowed directories", async () => {
-    const allowedDirs = ["/tmp/test"];
+    const allowedDirs = resolveAllowedDirs([tempDir]);
     expect(await isPathAllowed("/etc/passwd", allowedDirs)).toBe(false);
-    expect(await isPathAllowed("/var/file.txt", allowedDirs)).toBe(false);
   });
 
   it("should allow file within allowed directory", async () => {
-    const allowedDirs = ["/tmp/test"];
-    expect(await isPathAllowed("/tmp/test/file.txt", allowedDirs)).toBe(true);
+    const allowedDirs = resolveAllowedDirs([tempDir]);
+    expect(await isPathAllowed(join(tempDir, "file.txt"), allowedDirs)).toBe(true);
   });
 
   it("should handle trailing slashes", async () => {
-    const allowedDirs = ["/tmp"];
-    expect(await isPathAllowed("/tmp/file.txt", allowedDirs)).toBe(true);
+    const allowedDirs = resolveAllowedDirs([tempDir]);
+    expect(await isPathAllowed(join(tempDir, "file.txt"), allowedDirs)).toBe(true);
   });
 
   it("should reject path traversal attempts", async () => {
-    const allowedDirs = ["/tmp/test"];
-    expect(await isPathAllowed("/tmp/test/../etc/passwd", allowedDirs)).toBe(false);
+    const allowedDirs = resolveAllowedDirs([join(tempDir, "subdir")]);
+    expect(await isPathAllowed(join(tempDir, "subdir", "..", "etc", "passwd"), allowedDirs)).toBe(false);
   });
 });
 
 describe("isPathAllowedSync", () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = realpathSync(mkdtempSync(join(tmpdir(), "pathsync-")));
+    mkdirSync(join(tempDir, "subdir"), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
   it("should allow paths within allowed directories", () => {
-    const allowedDirs = ["/tmp/test", "/var"];
-    expect(isPathAllowedSync("/tmp/test/file.txt", allowedDirs)).toBe(true);
-    expect(isPathAllowedSync("/tmp/test/subdir/file.txt", allowedDirs)).toBe(true);
+    const allowedDirs = [tempDir];
+    expect(isPathAllowedSync(join(tempDir, "file.txt"), allowedDirs)).toBe(true);
+    expect(isPathAllowedSync(join(tempDir, "subdir", "file.txt"), allowedDirs)).toBe(true);
   });
 
   it("should reject paths outside allowed directories", () => {
-    const allowedDirs = ["/tmp/test"];
+    const allowedDirs = [tempDir];
     expect(isPathAllowedSync("/etc/passwd", allowedDirs)).toBe(false);
-    expect(isPathAllowedSync("/var/file.txt", allowedDirs)).toBe(false);
   });
 
   it("should allow file within allowed directory", () => {
-    const allowedDirs = ["/tmp/test"];
-    expect(isPathAllowedSync("/tmp/test/file.txt", allowedDirs)).toBe(true);
+    const allowedDirs = [tempDir];
+    expect(isPathAllowedSync(join(tempDir, "file.txt"), allowedDirs)).toBe(true);
   });
 
   it("should handle trailing slashes", () => {
-    const allowedDirs = ["/tmp"];
-    expect(isPathAllowedSync("/tmp/file.txt", allowedDirs)).toBe(true);
+    const allowedDirs = [tempDir];
+    expect(isPathAllowedSync(join(tempDir, "file.txt"), allowedDirs)).toBe(true);
   });
 
   it("should reject path traversal attempts", () => {
-    const allowedDirs = ["/tmp/test"];
-    expect(isPathAllowedSync("/tmp/test/../etc/passwd", allowedDirs)).toBe(false);
+    const allowedDirs = [join(tempDir, "subdir")];
+    expect(isPathAllowedSync(join(tempDir, "subdir", "..", "etc", "passwd"), allowedDirs)).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { resolve, dirname } from 'path'
 import { realpath } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 
 export function getHome(): string {
   const home = process.env.HOME
@@ -11,7 +12,14 @@ export function getHome(): string {
 
 export function resolveAllowedDirs(dirs: readonly string[]): readonly string[] {
   const home = getHome()
-  return dirs.map((d) => resolve(d.replace('$HOME', home)))
+  return dirs.map((d) => {
+    const resolved = resolve(d.replace('$HOME', home))
+    try {
+      return realpathSync(resolved)
+    } catch {
+      return resolved
+    }
+  })
 }
 
 export function expandHome(rawPath: string): string {
@@ -36,23 +44,23 @@ export async function isPathAllowed(
   allowedDirs: readonly string[]
 ): Promise<boolean> {
   const resolved = resolve(target)
-  if (!checkPrefix(resolved, allowedDirs)) {
-    return false
-  }
 
   try {
     const real = await realpath(resolved)
     return checkPrefix(real, allowedDirs)
   } catch {
-    // File doesn't exist yet (e.g. write_file) — check parent
-    const parent = dirname(resolved)
-    try {
-      const realParent = await realpath(parent)
-      return checkPrefix(realParent, allowedDirs)
-    } catch {
-      // Parent doesn't exist either — rely on resolved path check
-      return checkPrefix(resolved, allowedDirs)
+    // File doesn't exist yet (e.g. write_file) — walk up to find existing ancestor
+    let current = dirname(resolved)
+    while (current !== dirname(current)) {
+      try {
+        const realAncestor = await realpath(current)
+        return checkPrefix(realAncestor, allowedDirs)
+      } catch {
+        current = dirname(current)
+      }
     }
+    // No existing ancestor found — rely on resolved path check
+    return checkPrefix(resolved, allowedDirs)
   }
 }
 

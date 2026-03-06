@@ -115,11 +115,13 @@ describe("save_idea tool definition", () => {
     expect(required).not.toContain("sources_used");
   });
 
-  it("should have category enum with mobile_app, crypto_project, general", () => {
+  it("should have category enum with mobile_app, crypto_project, ai_app, open_source, general", () => {
     const props = tool.inputSchema.properties as Record<string, any>;
     expect(props.category.enum).toEqual([
       "mobile_app",
       "crypto_project",
+      "ai_app",
+      "open_source",
       "general",
     ]);
   });
@@ -288,6 +290,8 @@ describe("query_ideas tool definition", () => {
     expect(props.category.enum).toEqual([
       "mobile_app",
       "crypto_project",
+      "ai_app",
+      "open_source",
       "general",
     ]);
   });
