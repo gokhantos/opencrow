@@ -4,7 +4,6 @@ import { requireString, getString, getNumber, getEnum, isToolError } from "./inp
 import {
   insertIdea,
   getRecentIdeaTitles,
-  getRejectedIdeasWithFeedback,
   getIdeaStats,
   getStageCounts,
   updateIdeaStage,
@@ -114,7 +113,7 @@ function createGetPreviousIdeasTool(agentId: string): ToolDefinition {
   return {
     name: "get_previous_ideas",
     description:
-      "Get a compact list of your previously generated idea titles, categories, and user ratings. Call this FIRST before generating new ideas to avoid duplicates. Use this list ONLY to avoid repeating past ideas — do not anchor on good-rated ideas or try to generate similar ones. Prioritize novelty and unexplored directions over mimicking past successes.",
+      "Get a compact list of your previously generated idea titles, categories, and star ratings (0-5). Call this FIRST before generating new ideas to avoid duplicates. Use this list ONLY to avoid repeating past ideas — do not anchor on highly-rated ideas or try to generate similar ones. Prioritize novelty and unexplored directions over mimicking past successes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -139,7 +138,7 @@ function createGetPreviousIdeasTool(agentId: string): ToolDefinition {
         }
 
         const lines = ideas.map((idea) => {
-          const ratingTag = idea.rating ? ` [${idea.rating}]` : "";
+          const ratingTag = idea.rating != null ? ` [${idea.rating}/5]` : "";
           return `- ${idea.title} (${idea.category})${ratingTag}`;
         });
 
@@ -153,51 +152,6 @@ function createGetPreviousIdeasTool(agentId: string): ToolDefinition {
           output: `Error fetching previous ideas: ${msg}`,
           isError: true,
         };
-      }
-    },
-  };
-}
-
-function createGetIdeaFeedbackTool(agentId: string): ToolDefinition {
-  return {
-    name: "get_idea_feedback",
-    description:
-      "Get user feedback on ideas that were rated 'bad'. Skim this briefly to avoid clearly unwanted patterns, but do not over-rotate — a rejected idea in one category does not disqualify an entire theme. Spend minimal time on this; focus your effort on fresh research instead.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: {
-          type: "number",
-          description: "Max feedback entries to return (default 20).",
-        },
-      },
-      required: [],
-    },
-    categories: ["ideas"] as readonly ToolCategory[],
-    async execute(input): Promise<{ output: string; isError: boolean }> {
-      try {
-        const limit = getNumber(input, "limit", { defaultVal: 20, min: 1, max: 50 });
-        const rejected = await getRejectedIdeasWithFeedback(agentId, limit);
-
-        if (rejected.length === 0) {
-          return {
-            output:
-              "No rejected ideas with feedback found. No negative signals to learn from yet.",
-            isError: false,
-          };
-        }
-
-        const lines = rejected.map(
-          (r) => `- "${r.title}" (${r.category}) — Feedback: ${r.feedback}`,
-        );
-
-        return {
-          output: `${rejected.length} rejected ideas with feedback:\n${lines.join("\n")}`,
-          isError: false,
-        };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Error fetching feedback: ${msg}`, isError: true };
       }
     },
   };
@@ -342,7 +296,7 @@ function createQueryIdeasTool(): ToolDefinition {
         }
 
         const lines = ideas.map((idea, i) => {
-          const rating = idea.rating ? ` [${idea.rating}]` : "";
+          const rating = idea.rating != null ? ` [${idea.rating}/5]` : "";
           const stage = idea.pipeline_stage || "idea";
           return [
             `${i + 1}. ${idea.title} (${idea.category})${rating} [${stage}]`,
@@ -462,7 +416,7 @@ function createGetIdeasByRatingTool(): ToolDefinition {
 
         const lines = ideas.map((idea, i) => {
           const score = idea.quality_score?.toFixed(1) || "N/A";
-          const rating = idea.rating ? ` [${idea.rating}]` : "";
+          const rating = idea.rating != null ? ` [${idea.rating}/5]` : "";
           return `${i + 1}. ${idea.title} (${idea.category})\n   Score: ${score} | Stage: ${idea.pipeline_stage}${rating}`;
         });
 
@@ -543,7 +497,6 @@ export function createIdeaTools(agentId: string, memoryManager?: MemoryManager |
   const tools: ToolDefinition[] = [
     createSaveIdeaTool(agentId, memoryManager),
     createGetPreviousIdeasTool(agentId),
-    createGetIdeaFeedbackTool(agentId),
     createGetIdeaStatsTool(),
     createUpdateIdeaStageTool(),
     createQueryIdeasTool(),

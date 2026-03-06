@@ -61,7 +61,6 @@ const ALL_TOOLS: readonly ToolMeta[] = [
   // Ideas
   { name: "save_idea", category: "ideas", description: "Save a generated idea to the database", params: ["title", "summary", "reasoning", "category", "sources_used", "quality_score"] },
   { name: "get_previous_ideas", category: "ideas", description: "Get list of previously generated idea titles", params: ["limit"] },
-  { name: "get_idea_feedback", category: "ideas", description: "Get user feedback on ideas rated as bad", params: ["limit"] },
   { name: "get_idea_stats", category: "ideas", description: "Get aggregate statistics about generated ideas", params: [] },
   { name: "update_idea_stage", category: "ideas", description: "Move an idea through the pipeline stages", params: ["id", "stage"] },
   { name: "query_ideas", category: "ideas", description: "Query ideas with filters by stage or category", params: ["stage", "category", "limit"] },

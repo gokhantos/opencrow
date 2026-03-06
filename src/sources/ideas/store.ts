@@ -8,8 +8,7 @@ export interface GeneratedIdea {
   readonly reasoning: string;
   readonly sources_used: string;
   readonly category: string;
-  readonly rating: string | null;
-  readonly feedback: string;
+  readonly rating: number | null;
   readonly pipeline_stage: string;
   readonly quality_score: number | null;
   readonly model_references: string;
@@ -142,8 +141,7 @@ export async function getIdeaStats(): Promise<readonly IdeaStat[]> {
 }
 
 export interface UpdateIdeaRatingInput {
-  readonly rating: "good" | "bad";
-  readonly feedback?: string;
+  readonly rating: number | null;
 }
 
 export async function updateIdeaRating(
@@ -151,10 +149,9 @@ export async function updateIdeaRating(
   input: UpdateIdeaRatingInput,
 ): Promise<GeneratedIdea | null> {
   const db = getDb();
-  const feedback = input.feedback ?? "";
   const rows = await db`
     UPDATE generated_ideas
-    SET rating = ${input.rating}, feedback = ${feedback}
+    SET rating = ${input.rating}
     WHERE id = ${id}
     RETURNING *
   `;
@@ -164,7 +161,7 @@ export async function updateIdeaRating(
 export interface RecentIdeaTitle {
   readonly title: string;
   readonly category: string;
-  readonly rating: string | null;
+  readonly rating: number | null;
 }
 
 export async function getIdeasSince(
@@ -191,26 +188,6 @@ export async function getRecentIdeaTitles(
     ORDER BY created_at DESC
     LIMIT ${limit}
   ` as Promise<RecentIdeaTitle[]>;
-}
-
-export interface RejectedIdeaFeedback {
-  readonly title: string;
-  readonly category: string;
-  readonly feedback: string;
-}
-
-export async function getRejectedIdeasWithFeedback(
-  agentId: string,
-  limit = 20,
-): Promise<readonly RejectedIdeaFeedback[]> {
-  const db = getDb();
-  return db`
-    SELECT title, category, feedback
-    FROM generated_ideas
-    WHERE agent_id = ${agentId} AND rating = 'bad' AND feedback != ''
-    ORDER BY created_at DESC
-    LIMIT ${limit}
-  ` as Promise<RejectedIdeaFeedback[]>;
 }
 
 export async function getIdeasByStage(
@@ -264,7 +241,7 @@ export interface IdeaByRating {
   readonly id: string;
   readonly title: string;
   readonly category: string;
-  readonly rating: string | null;
+  readonly rating: number | null;
   readonly quality_score: number | null;
   readonly pipeline_stage: string;
   readonly created_at: number;

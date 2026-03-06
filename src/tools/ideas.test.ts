@@ -37,14 +37,14 @@ function getToolByName(
 // ---------------------------------------------------------------------------
 
 describe("createIdeaTools", () => {
-  it("should return 8 tools without memoryManager", () => {
+  it("should return 7 tools without memoryManager", () => {
     const tools = createIdeaTools("test-agent");
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(7);
   });
 
-  it("should return 9 tools with memoryManager (adds search_similar_ideas)", () => {
+  it("should return 8 tools with memoryManager (adds search_similar_ideas)", () => {
     const tools = createIdeaTools("test-agent", mockMemoryManager());
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(8);
   });
 
   it("should include search_similar_ideas only when memoryManager provided", () => {
@@ -63,7 +63,6 @@ describe("createIdeaTools", () => {
     const names = tools.map((t) => t.name);
     expect(names).toContain("save_idea");
     expect(names).toContain("get_previous_ideas");
-    expect(names).toContain("get_idea_feedback");
     expect(names).toContain("get_idea_stats");
     expect(names).toContain("update_idea_stage");
     expect(names).toContain("query_ideas");
@@ -196,27 +195,6 @@ describe("get_previous_ideas tool definition", () => {
 
   it("should mention duplicates or previous in description", () => {
     expect(tool.description.toLowerCase()).toContain("previous");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: get_idea_feedback tool
-// ---------------------------------------------------------------------------
-
-describe("get_idea_feedback tool definition", () => {
-  const tools = createIdeaTools("test-agent");
-  const tool = getToolByName(tools, "get_idea_feedback")!;
-
-  it("should have the correct name", () => {
-    expect(tool.name).toBe("get_idea_feedback");
-  });
-
-  it("should have no required fields", () => {
-    expect(tool.inputSchema.required).toEqual([]);
-  });
-
-  it("should mention feedback or bad in description", () => {
-    expect(tool.description.toLowerCase()).toContain("feedback");
   });
 });
 

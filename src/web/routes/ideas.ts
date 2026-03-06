@@ -51,24 +51,23 @@ export function createIdeasRoutes(): Hono {
   app.patch("/ideas/:id", async (c) => {
     const id = c.req.param("id");
 
-    let body: { rating?: string; feedback?: string };
+    let body: { rating?: number | null };
     try {
       body = await c.req.json();
     } catch {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
 
-    const { rating, feedback } = body;
-    if (rating !== "good" && rating !== "bad") {
+    const { rating } = body;
+    if (rating !== null && rating !== undefined && (typeof rating !== "number" || !Number.isInteger(rating) || rating < 0 || rating > 5)) {
       return c.json(
-        { success: false, error: 'rating must be "good" or "bad"' },
+        { success: false, error: "rating must be an integer 0-5 or null" },
         400,
       );
     }
 
     const updated = await updateIdeaRating(id, {
-      rating,
-      feedback: feedback ?? "",
+      rating: rating ?? null,
     });
 
     if (!updated) {
