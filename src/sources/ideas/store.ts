@@ -59,41 +59,68 @@ export async function getIdeas(
   opts?: GetIdeasOptions,
 ): Promise<readonly GeneratedIdea[]> {
   const db = getDb();
-  const limit = Math.min(opts?.limit ?? 50, 200);
+  const limit = opts?.limit;
   const offset = opts?.offset ?? 0;
 
   if (opts?.agentId && opts?.category) {
-    return db`
-      SELECT * FROM generated_ideas
-      WHERE agent_id = ${opts.agentId} AND category = ${opts.category}
-      ORDER BY created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
-    ` as Promise<GeneratedIdea[]>;
+    return (limit
+      ? db`
+        SELECT * FROM generated_ideas
+        WHERE agent_id = ${opts.agentId} AND category = ${opts.category}
+        ORDER BY created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `
+      : db`
+        SELECT * FROM generated_ideas
+        WHERE agent_id = ${opts.agentId} AND category = ${opts.category}
+        ORDER BY created_at DESC
+        OFFSET ${offset}
+      `) as Promise<GeneratedIdea[]>;
   }
 
   if (opts?.agentId) {
-    return db`
-      SELECT * FROM generated_ideas
-      WHERE agent_id = ${opts.agentId}
-      ORDER BY created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
-    ` as Promise<GeneratedIdea[]>;
+    return (limit
+      ? db`
+        SELECT * FROM generated_ideas
+        WHERE agent_id = ${opts.agentId}
+        ORDER BY created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `
+      : db`
+        SELECT * FROM generated_ideas
+        WHERE agent_id = ${opts.agentId}
+        ORDER BY created_at DESC
+        OFFSET ${offset}
+      `) as Promise<GeneratedIdea[]>;
   }
 
   if (opts?.category) {
-    return db`
-      SELECT * FROM generated_ideas
-      WHERE category = ${opts.category}
-      ORDER BY created_at DESC
-      LIMIT ${limit} OFFSET ${offset}
-    ` as Promise<GeneratedIdea[]>;
+    return (limit
+      ? db`
+        SELECT * FROM generated_ideas
+        WHERE category = ${opts.category}
+        ORDER BY created_at DESC
+        LIMIT ${limit} OFFSET ${offset}
+      `
+      : db`
+        SELECT * FROM generated_ideas
+        WHERE category = ${opts.category}
+        ORDER BY created_at DESC
+        OFFSET ${offset}
+      `) as Promise<GeneratedIdea[]>;
   }
 
-  return db`
-    SELECT * FROM generated_ideas
-    ORDER BY created_at DESC
-    LIMIT ${limit} OFFSET ${offset}
-  ` as Promise<GeneratedIdea[]>;
+  return (limit
+    ? db`
+      SELECT * FROM generated_ideas
+      ORDER BY created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `
+    : db`
+      SELECT * FROM generated_ideas
+      ORDER BY created_at DESC
+      OFFSET ${offset}
+    `) as Promise<GeneratedIdea[]>;
 }
 
 export async function getIdeaById(id: string): Promise<GeneratedIdea | null> {
