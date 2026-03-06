@@ -46,7 +46,7 @@ export function createSaveIdeaTool(agentId: string, memoryManager?: MemoryManage
         },
         category: {
           type: "string",
-          enum: ["mobile_app", "crypto_project", "general"],
+          enum: ["mobile_app", "crypto_project", "ai_app", "open_source", "general"],
           description: "Category for the idea.",
         },
         quality_score: {
@@ -316,7 +316,7 @@ function createQueryIdeasTool(): ToolDefinition {
         },
         category: {
           type: "string",
-          enum: ["mobile_app", "crypto_project", "general"],
+          enum: ["mobile_app", "crypto_project", "ai_app", "open_source", "general"],
           description: "Filter by category.",
         },
         limit: {
@@ -329,7 +329,7 @@ function createQueryIdeasTool(): ToolDefinition {
     categories: ["ideas"] as readonly ToolCategory[],
     async execute(input): Promise<{ output: string; isError: boolean }> {
       const stage = getEnum(input, "stage", PIPELINE_STAGES);
-      const category = getEnum(input, "category", ["mobile_app", "crypto_project", "general"] as const);
+      const category = getEnum(input, "category", ["mobile_app", "crypto_project", "ai_app", "open_source", "general"] as const);
       const limit = getNumber(input, "limit", { defaultVal: 20, min: 1, max: 50 });
 
       try {

@@ -63,6 +63,7 @@ const AGENT_COLORS: Record<string, string> = {
 const CATEGORY_STYLES: Record<string, string> = {
   mobile_app: "bg-accent-subtle text-accent border border-accent/20",
   crypto_project: "bg-warning-subtle text-warning border border-warning/20",
+  ai_app: "bg-[#7928ca18] text-[#7928ca] border border-[#7928ca33]",
   open_source: "bg-success-subtle text-success border border-success/20",
   general: "bg-bg-3 text-muted border border-border",
 };
