@@ -208,7 +208,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         const rank = p.rank ? `#${p.rank}` : "unranked";
         const topics = p.topics.length > 0 ? p.topics.join(", ") : "none";
         const stats = `${p.votesCount} votes, ${p.commentsCount} comments`;
-        const text = `${p.name} (${rank}, ${stats}): ${p.tagline}\n${p.description}\nTopics: ${topics}\nPH: ${p.url} | Website: ${p.websiteUrl}`;
+        const makersLine =
+          p.makers.length > 0 ? `\nMakers: ${p.makers.join(", ")}` : "";
+        const reviewsLine =
+          p.reviewsCount > 0
+            ? `\nReviews: ${p.reviewsCount} (${p.reviewsRating.toFixed(1)} stars)`
+            : "";
+        const text = `${p.name} (${rank}, ${stats}): ${p.tagline}\n${p.description}\nTopics: ${topics}${makersLine}${reviewsLine}\nPH: ${p.url} | Website: ${p.websiteUrl}`;
         const itemChunks = chunkText(text, profile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });

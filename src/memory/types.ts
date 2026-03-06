@@ -96,6 +96,9 @@ export interface ProductForIndex {
   readonly commentsCount: number;
   readonly rank: number | null;
   readonly featuredAt: number | null;
+  readonly reviewsCount: number;
+  readonly reviewsRating: number;
+  readonly makers: readonly string[];
 }
 
 export interface StoryForIndex {

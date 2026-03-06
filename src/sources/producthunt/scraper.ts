@@ -76,6 +76,11 @@ function rowsToProductsForIndex(
     commentsCount: p.comments_count,
     rank: p.rank,
     featuredAt: p.featured_at,
+    reviewsCount: p.reviews_count,
+    reviewsRating: p.reviews_rating,
+    makers: (JSON.parse(p.makers_json || "[]") as Array<{ name: string; username: string }>).map(
+      (m) => `${m.name} (@${m.username})`,
+    ),
   }));
 }
 
