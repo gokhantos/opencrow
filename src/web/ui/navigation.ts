@@ -38,7 +38,7 @@ export type Tab =
   | "sessions"
   | "channels"
   | "x-accounts"
-  | "ph-accounts"
+  | "producthunt"
   | "hackernews"
   | "reddit"
   | "huggingface"
@@ -99,7 +99,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     collapsible: true,
     items: [
       { id: "x-accounts", label: "X / Twitter", Icon: AtSign },
-      { id: "ph-accounts", label: "ProductHunt", Icon: Rocket },
+      { id: "producthunt", label: "Product Hunt", Icon: Rocket },
       { id: "hackernews", label: "Hacker News", Icon: Flame },
       { id: "reddit", label: "Reddit", Icon: MessageCircle },
       { id: "huggingface", label: "HuggingFace", Icon: Cpu },

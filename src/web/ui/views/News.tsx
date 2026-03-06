@@ -31,20 +31,6 @@ interface HNStory {
   readonly updated_at: number;
 }
 
-interface PHProduct {
-  readonly id: string;
-  readonly slug: string;
-  readonly name: string;
-  readonly tagline: string;
-  readonly url: string;
-  readonly thumbnail_url: string;
-  readonly votes_count: number;
-  readonly comments_count: number;
-  readonly rank: number | null;
-  readonly topics_json: string;
-  readonly updated_at: number;
-}
-
 interface CalendarEvent {
   readonly id: string;
   readonly event_name: string;
@@ -75,7 +61,6 @@ interface StatRow {
 
 type SourceFilter =
   | "all"
-  | "producthunt"
   | "hackernews"
   | "cryptopanic"
   | "cointelegraph"
@@ -85,7 +70,6 @@ type SourceFilter =
 
 const SOURCE_TABS: { id: SourceFilter; label: string }[] = [
   { id: "all", label: "All" },
-  { id: "producthunt", label: "Product Hunt" },
   { id: "hackernews", label: "Hacker News" },
   { id: "cryptopanic", label: "CryptoPanic" },
   { id: "cointelegraph", label: "CoinTelegraph" },
@@ -95,7 +79,6 @@ const SOURCE_TABS: { id: SourceFilter; label: string }[] = [
 ];
 
 const SOURCE_COLORS: Record<string, string> = {
-  producthunt: "#da552f",
   hackernews: "#ff6600",
   cryptopanic: "#f59e0b",
   cointelegraph: "#0070f3",
@@ -134,7 +117,6 @@ function parseCurrencies(json: string): readonly string[] {
 export default function News() {
   const [articles, setArticles] = useState<readonly NewsArticle[]>([]);
   const [hnStories, setHnStories] = useState<readonly HNStory[]>([]);
-  const [phProducts, setPhProducts] = useState<readonly PHProduct[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<
     readonly CalendarEvent[]
   >([]);
@@ -147,15 +129,13 @@ export default function News() {
 
   const isCalendar = sourceFilter === "investing_calendar";
   const isHN = sourceFilter === "hackernews";
-  const isPH = sourceFilter === "producthunt";
 
   const fetchData = useCallback(async () => {
     try {
       const sourceParam =
         sourceFilter !== "all" &&
         sourceFilter !== "investing_calendar" &&
-        sourceFilter !== "hackernews" &&
-        sourceFilter !== "producthunt"
+        sourceFilter !== "hackernews"
           ? `?source=${sourceFilter}&limit=100`
           : "?limit=100";
 
@@ -175,19 +155,15 @@ export default function News() {
         apiFetch<{ success: boolean; data: readonly HNStory[] }>(
           "/api/hn/stories?limit=100",
         ),
-        apiFetch<{ success: boolean; data: readonly PHProduct[] }>(
-          "/api/ph/products?limit=100",
-        ),
       ];
 
-      const [articlesRes, calendarRes, statsRes, runsRes, hnRes, phRes] =
+      const [articlesRes, calendarRes, statsRes, runsRes, hnRes] =
         (await Promise.all(requests)) as [
           { success: boolean; data: readonly NewsArticle[] },
           { success: boolean; data: readonly CalendarEvent[] },
           { success: boolean; data: readonly StatRow[] },
           { success: boolean; data: readonly ScraperRun[] },
           { success: boolean; data: readonly HNStory[] },
-          { success: boolean; data: readonly PHProduct[] },
         ];
 
       if (articlesRes.success) setArticles(articlesRes.data);
@@ -195,7 +171,6 @@ export default function News() {
       if (statsRes.success) setStats(statsRes.data);
       if (runsRes.success) setRuns(runsRes.data);
       if (hnRes.success) setHnStories(hnRes.data);
-      if (phRes.success) setPhProducts(phRes.data);
     } catch {
       // ignore fetch errors
     } finally {
@@ -215,8 +190,6 @@ export default function News() {
     try {
       if (source === "hackernews") {
         await apiFetch("/api/hn/scrape-now", { method: "POST" });
-      } else if (source === "producthunt") {
-        await apiFetch("/api/ph/scrape-now", { method: "POST" });
       } else {
         await apiFetch("/api/news/scrape-now", {
           method: "POST",
@@ -232,11 +205,7 @@ export default function News() {
   }
 
   function totalArticles(): number {
-    return (
-      stats.reduce((sum, s) => sum + s.count, 0) +
-      hnStories.length +
-      phProducts.length
-    );
+    return stats.reduce((sum, s) => sum + s.count, 0) + hnStories.length;
   }
 
   if (loading) {
@@ -396,89 +365,6 @@ export default function News() {
                   </div>
                   <span className="text-xs text-faint whitespace-nowrap shrink-0 self-center">
                     {s.age || relativeTime(s.updated_at)}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )
-      ) : /* PH Products View */
-      isPH ? (
-        phProducts.length === 0 ? (
-          <div className="text-center text-faint p-12 text-base">
-            No products yet. Click "Scrape Product Hunt" to fetch.
-          </div>
-        ) : (
-          <div className="flex flex-col gap-0.5">
-            {phProducts.map((p) => {
-              const color = SOURCE_COLORS.producthunt;
-              const topics = parseCurrencies(p.topics_json);
-              return (
-                <div
-                  key={p.id}
-                  className="grid grid-cols-[1fr_auto] items-start gap-4 px-4 py-3 bg-bg-1 rounded-lg text-sm transition-colors hover:bg-bg-2"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-baseline gap-2 flex-wrap">
-                      {p.rank != null && (
-                        <span
-                          className="font-mono font-semibold text-base"
-                          style={{ color, minWidth: "1.5rem" }}
-                        >
-                          {p.rank}.
-                        </span>
-                      )}
-                      {p.thumbnail_url && (
-                        <img
-                          src={p.thumbnail_url}
-                          alt=""
-                          className="w-6 h-6 rounded-sm object-cover"
-                        />
-                      )}
-                      <a
-                        href={p.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-strong no-underline font-medium leading-snug hover:underline"
-                      >
-                        {p.name}
-                      </a>
-                    </div>
-                    {p.tagline && (
-                      <div className="text-sm text-muted mt-1 leading-relaxed line-clamp-2 overflow-hidden">
-                        {p.tagline}
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      <span
-                        className="inline-flex items-center px-2 py-0.5 rounded-full font-mono text-xs font-semibold uppercase tracking-wide shrink-0"
-                        style={{
-                          background: `${color}18`,
-                          color,
-                          border: `1px solid ${color}40`,
-                        }}
-                      >
-                        {p.votes_count} upvotes
-                      </span>
-                      <span className="text-xs text-faint">
-                        {p.comments_count} comments
-                      </span>
-                      {topics.length > 0 && (
-                        <span className="inline-flex gap-1 flex-wrap">
-                          {topics.slice(0, 4).map((t) => (
-                            <span
-                              key={t}
-                              className="inline-flex px-1.5 py-0.5 rounded-md bg-accent-subtle text-accent font-mono text-xs font-semibold"
-                            >
-                              {t}
-                            </span>
-                          ))}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <span className="text-xs text-faint whitespace-nowrap shrink-0 self-center">
-                    {relativeTime(p.updated_at)}
                   </span>
                 </div>
               );

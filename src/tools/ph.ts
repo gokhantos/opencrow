@@ -10,11 +10,11 @@ function formatProduct(p: PHProductRow, i: number): string {
   const topicStr = topics.length > 0 ? topics.join(", ") : "none";
   const makers = JSON.parse(p.makers_json || "[]") as Array<{
     username: string;
-    display_name: string;
+    name: string;
   }>;
   const makerStr =
     makers.length > 0
-      ? makers.map((m) => `${m.display_name} (@${m.username})`).join(", ")
+      ? makers.map((m) => `${m.name} (@${m.username})`).join(", ")
       : "unknown";
   const featured = p.featured_at
     ? new Date(p.featured_at * 1000).toISOString().slice(0, 10)
@@ -27,6 +27,7 @@ function formatProduct(p: PHProductRow, i: number): string {
     `  Topics: ${topicStr}`,
     `  Makers: ${makerStr}`,
     `  Featured: ${featured}`,
+    `  Reviews: ${p.reviews_count} (${p.reviews_rating?.toFixed(1) ?? "N/A"} stars)`,
     `  PH: ${p.url}`,
     `  Website: ${p.website_url}`,
   ].join("\n");

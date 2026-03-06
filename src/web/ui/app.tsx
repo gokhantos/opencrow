@@ -21,7 +21,7 @@ import Cron from "./views/Cron";
 import Markets from "./views/Markets";
 import SystemMetrics from "./views/SystemMetrics";
 import XAccounts from "./views/x-accounts/XAccounts";
-import PHAccounts from "./views/ph-accounts/PHAccounts";
+import ProductHunt from "./views/ProductHunt";
 import HackerNews from "./views/HackerNews";
 import Reddit from "./views/Reddit";
 import HuggingFace from "./views/HuggingFace";
@@ -228,7 +228,7 @@ function App() {
           {tab === "cron" && <Cron />}
           {tab === "markets" && <Markets />}
           {tab === "x-accounts" && <XAccounts />}
-          {tab === "ph-accounts" && <PHAccounts />}
+          {tab === "producthunt" && <ProductHunt />}
           {tab === "hackernews" && <HackerNews />}
           {tab === "reddit" && <Reddit />}
           {tab === "huggingface" && <HuggingFace />}
