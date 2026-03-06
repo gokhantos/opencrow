@@ -32,6 +32,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .idea
 .claude
 .serena
+CLAUDE.md
 
 # Finder (MacOS) folder config
 .DS_Store
@@ -48,3 +49,4 @@ src/news/scraper/.venv/
 
 # Playwright MCP
 .playwright-mcp/
+.mcp.json

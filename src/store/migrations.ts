@@ -1499,4 +1499,8 @@ export const MIGRATIONS = [
     PRIMARY KEY (chain_id, metric_date)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_defi_chain_metrics_date ON defi_chain_metrics(chain_id, metric_date DESC)`,
+
+  // --- ProductHunt: add review metrics ---
+  `ALTER TABLE ph_products ADD COLUMN IF NOT EXISTS reviews_count INT NOT NULL DEFAULT 0`,
+  `ALTER TABLE ph_products ADD COLUMN IF NOT EXISTS reviews_rating REAL NOT NULL DEFAULT 0`,
 ];

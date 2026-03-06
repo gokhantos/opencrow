@@ -1,9 +1,6 @@
 import { Hono } from "hono";
 import { createLogger } from "../../logger";
-import {
-  getProducts,
-  getActiveAccounts,
-} from "../../sources/producthunt/store";
+import { getProducts } from "../../sources/producthunt/store";
 import { getDb } from "../../store/db";
 import type { PHScraper } from "../../sources/producthunt/scraper";
 import type { CoreClient } from "../core-client";
@@ -37,35 +34,38 @@ export function createPHProductRoutes(opts: {
   });
 
   app.post("/ph/scrape-now", async (c) => {
-    const accounts = await getActiveAccounts();
-    if (accounts.length === 0) {
-      return c.json({ success: false, error: "No active PH accounts" }, 400);
+    if (!process.env.PH_API_TOKEN || !process.env.PH_API_SECRET) {
+      return c.json({ success: false, error: "PH_API_TOKEN and PH_API_SECRET must both be configured" }, 400);
     }
-    const account = accounts[0]!;
-    log.info("Manual PH scrape triggered", { accountId: account.id });
+
+    log.info("Manual PH scrape triggered");
+
     if (opts.scraper) {
-      const result = await opts.scraper.scrapeNow(account.id);
+      const result = await opts.scraper.scrapeNow();
       return c.json({ success: true, data: result });
     }
+
     if (opts.coreClient) {
-      const result = await opts.coreClient.scraperAction("ph", "scrape-now", {
-        accountId: account.id,
-      });
+      const result = await opts.coreClient.scraperAction("ph", "scrape-now", {});
       return c.json({ success: true, data: result.data });
     }
+
     return c.json({ success: false, error: "PH scraper not available" }, 503);
   });
 
   app.post("/ph/backfill-rag", async (c) => {
     log.info("PH RAG backfill triggered");
+
     if (opts.scraper) {
       const result = await opts.scraper.backfillRag();
       return c.json({ success: true, data: result });
     }
+
     if (opts.coreClient) {
       const result = await opts.coreClient.scraperAction("ph", "backfill-rag");
       return c.json({ success: true, data: result.data });
     }
+
     return c.json({ success: false, error: "PH scraper not available" }, 503);
   });
 

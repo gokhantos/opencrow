@@ -481,8 +481,7 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
           if (!deps.phScraper)
             return c.json({ error: "PH scraper not running" }, 503);
           if (action === "scrape-now") {
-            const accountId = (body as Record<string, string>).accountId ?? "";
-            return c.json({ data: await deps.phScraper.scrapeNow(accountId) });
+            return c.json({ data: await deps.phScraper.scrapeNow() });
           }
           if (action === "backfill-rag")
             return c.json({ data: await deps.phScraper.backfillRag() });

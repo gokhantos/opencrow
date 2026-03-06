@@ -25,6 +25,8 @@ export interface PHProductRow {
   topics_json: string;
   featured_at: number | null;
   product_created_at: number | null;
+  reviews_count: number;
+  reviews_rating: number;
   account_id: string | null;
   first_seen_at: number;
   updated_at: number;
@@ -54,14 +56,15 @@ export async function upsertProducts(
         id, slug, name, tagline, description, url, website_url,
         thumbnail_url, votes_count, comments_count, is_featured, rank,
         makers_json, topics_json, featured_at, product_created_at,
+        reviews_count, reviews_rating,
         account_id, first_seen_at, updated_at
       ) VALUES (
         ${p.id}, ${p.slug}, ${p.name}, ${p.tagline}, ${p.description},
         ${p.url}, ${p.website_url}, ${p.thumbnail_url}, ${p.votes_count},
         ${p.comments_count}, ${p.is_featured}, ${p.rank},
         ${p.makers_json}, ${p.topics_json}, ${p.featured_at},
-        ${p.product_created_at}, ${p.account_id},
-        ${p.first_seen_at}, ${p.updated_at}
+        ${p.product_created_at}, ${p.reviews_count}, ${p.reviews_rating},
+        ${p.account_id}, ${p.first_seen_at}, ${p.updated_at}
       )
       ON CONFLICT (id) DO UPDATE SET
         name = EXCLUDED.name,
@@ -78,6 +81,8 @@ export async function upsertProducts(
         topics_json = EXCLUDED.topics_json,
         featured_at = EXCLUDED.featured_at,
         product_created_at = EXCLUDED.product_created_at,
+        reviews_count = EXCLUDED.reviews_count,
+        reviews_rating = EXCLUDED.reviews_rating,
         updated_at = EXCLUDED.updated_at
     `;
     upserted++;

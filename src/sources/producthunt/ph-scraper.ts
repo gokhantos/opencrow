@@ -1,246 +1,311 @@
-/** ProductHunt daily feed scraper — Chromium, Cloudflare bypass, DOM parsing. */
+/** ProductHunt daily feed scraper — GraphQL API with OAuth2 client credentials. */
 
-import { chromium } from "playwright";
+import { z } from "zod";
 import { createLogger } from "../../logger";
 
 const log = createLogger("ph-daily");
 
-const DAILY_URL = "https://www.producthunt.com";
-const MAX_SCROLL_PAGES = 3;
+const TOKEN_URL = "https://api.producthunt.com/v2/oauth/token";
+const GRAPHQL_URL = "https://api.producthunt.com/v2/api/graphql";
+const MAX_PAGES = 3;
+const MAX_RETRY_ATTEMPTS = 3;
+
+// ── Zod schemas ──────────────────────────────────────────────────────────────
+
+const TokenResponseSchema = z.object({
+  access_token: z.string(),
+  token_type: z.string(),
+  scope: z.string().optional(),
+});
+
+const MakerSchema = z.object({
+  id: z.string(),
+  username: z.string(),
+  name: z.string(),
+  headline: z.string().nullable().optional(),
+  profileImage: z.string().nullable().optional(),
+});
+
+const TopicEdgeSchema = z.object({
+  node: z.object({ name: z.string() }),
+});
+
+const PostNodeSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  tagline: z.string(),
+  description: z.string().nullable().optional(),
+  url: z.string(),
+  website: z.string().nullable().optional(),
+  votesCount: z.number(),
+  commentsCount: z.number(),
+  reviewsCount: z.number().optional(),
+  reviewsRating: z.number().optional(),
+  createdAt: z.string().nullable().optional(),
+  featuredAt: z.string().nullable().optional(),
+  thumbnail: z.object({ url: z.string() }).nullable().optional(),
+  makers: z.array(MakerSchema).optional(),
+  topics: z
+    .object({ edges: z.array(TopicEdgeSchema) })
+    .nullable()
+    .optional(),
+});
+
+const PageInfoSchema = z.object({
+  hasNextPage: z.boolean(),
+  endCursor: z.string().nullable().optional(),
+});
+
+const GraphQLResponseSchema = z.object({
+  data: z
+    .object({
+      posts: z.object({
+        edges: z.array(z.object({ node: PostNodeSchema })),
+        pageInfo: PageInfoSchema,
+      }),
+    })
+    .optional(),
+  errors: z
+    .array(z.object({ message: z.string() }))
+    .optional(),
+});
+
+// ── Public types ─────────────────────────────────────────────────────────────
+
+export interface RawPHMaker {
+  readonly id: string;
+  readonly username: string;
+  readonly name: string;
+  readonly headline: string | null;
+  readonly avatar_url: string | null;
+}
 
 export interface RawPHProduct {
-  id: string;
-  slug: string;
-  name: string;
-  tagline: string;
-  url: string;
-  thumbnail_url: string;
-  metrics: { votes_count: number; comments_count: number };
-  topics: string[];
-  rank: number | null;
+  readonly id: string;
+  readonly slug: string;
+  readonly name: string;
+  readonly tagline: string;
+  readonly description: string;
+  readonly url: string;
+  readonly website_url: string;
+  readonly thumbnail_url: string;
+  readonly metrics: {
+    readonly votes_count: number;
+    readonly comments_count: number;
+  };
+  readonly makers: readonly RawPHMaker[];
+  readonly topics: readonly string[];
+  readonly featured_at: string | null;
+  readonly created_at: string | null;
+  readonly is_featured: boolean;
+  readonly reviews_count: number;
+  readonly reviews_rating: number;
+  readonly rank: number | null;
 }
 
-interface CookieEntry {
-  name: string;
-  value: string;
-  domain?: string;
-  path?: string;
-  httpOnly?: boolean;
-  secure?: boolean;
-  sameSite?: string;
-  [key: string]: unknown;
-}
+// ── Token exchange ───────────────────────────────────────────────────────────
 
-const SAME_SITE_MAP: Record<string, "Strict" | "Lax" | "None"> = {
-  lax: "Lax",
-  strict: "Strict",
-  none: "None",
-  no_restriction: "None",
-};
+async function fetchAccessToken(
+  clientId: string,
+  clientSecret: string,
+): Promise<string> {
+  const res = await fetch(TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      client_id: clientId,
+      client_secret: clientSecret,
+      grant_type: "client_credentials",
+    }),
+  });
 
-function toPlaywrightCookies(cookiesJson: string) {
-  try {
-    const raw = JSON.parse(cookiesJson) as CookieEntry[];
-    if (!Array.isArray(raw)) return [];
-    return raw
-      .filter((c) => c.name && c.value && c.domain)
-      .map((c) => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain!,
-        path: c.path ?? "/",
-        ...(c.httpOnly != null ? { httpOnly: Boolean(c.httpOnly) } : {}),
-        ...(c.secure != null ? { secure: Boolean(c.secure) } : {}),
-        ...(typeof c.sameSite === "string"
-          ? {
-              sameSite:
-                SAME_SITE_MAP[c.sameSite.toLowerCase()] ?? ("Lax" as const),
-            }
-          : {}),
-      }));
-  } catch {
-    return [];
+  if (!res.ok) {
+    throw new Error(`Token request failed: ${res.status} ${res.statusText}`);
   }
+
+  const json = await res.json();
+  const parsed = TokenResponseSchema.parse(json);
+  return parsed.access_token;
 }
 
-export async function scrapePHDaily(
-  cookiesJson: string,
-): Promise<readonly RawPHProduct[]> {
-  const cookies = toPlaywrightCookies(cookiesJson);
-  const browser = await chromium.launch({ headless: true });
+// ── GraphQL fetcher ──────────────────────────────────────────────────────────
 
-  try {
-    const context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      locale: "en-US",
-      timezoneId: "America/New_York",
-    });
-    await context.addInitScript(`
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      window.chrome = { runtime: {} };
-      const originalQuery = window.navigator.permissions.query;
-      window.navigator.permissions.query = (params) =>
-        params.name === 'notifications'
-          ? Promise.resolve({ state: Notification.permission })
-          : originalQuery(params);
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    `);
-    if (cookies.length > 0) {
-      await context.addCookies(cookies);
-    }
-
-    const page = await context.newPage();
-    page.setDefaultTimeout(30_000);
-
-    log.info("Navigating", { url: DAILY_URL });
-    await page.goto(DAILY_URL, { waitUntil: "domcontentloaded" });
-
-    // Wait for Cloudflare challenge
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const title = (await page.title()).toLowerCase();
-      if (!title.includes("moment")) {
-        log.info("Page loaded", { title, attempts: attempt });
-        break;
-      }
-      if (attempt === 19) {
-        log.warn("Blocked by Cloudflare");
-        return [];
-      }
-      await delay(800, 1500);
-    }
-
-    await delay(2000, 4000);
-
-    // Scroll for more products
-    for (let i = 1; i < MAX_SCROLL_PAGES; i++) {
-      await page.mouse.move(
-        400 + Math.random() * 400,
-        300 + Math.random() * 300,
-      );
-      await page.evaluate(
-        "window.scrollBy(0, window.innerHeight * (0.6 + Math.random() * 0.3))",
-      );
-      await delay(1500, 3000);
-    }
-
-    // Extract products from DOM
-    const rawProducts = await page.evaluate(`(() => {
-      const cards = document.querySelectorAll('section[data-test^="post-item-"]');
-      const products = [];
-
-      for (const card of cards) {
-        try {
-          const testId = card.getAttribute('data-test') || '';
-          const idMatch = testId.match(/post-item-(\\d+)/);
-          if (!idMatch) continue;
-          const id = idMatch[1];
-
-          const nameEl = card.querySelector('[data-test^="post-name-"] a[href^="/products/"]');
-          if (!nameEl) continue;
-          const rawName = (nameEl.textContent || '').trim();
-          const href = nameEl.getAttribute('href') || '';
-          const slugMatch = href.match(/\\/products\\/([^?#/]+)/);
-          const slug = slugMatch ? slugMatch[1] : '';
-
-          const rankMatch = rawName.match(/^(\\d+)\\.\\s*(.+)/);
-          const rank = rankMatch ? parseInt(rankMatch[1], 10) : null;
-          const name = rankMatch ? rankMatch[2].trim() : rawName;
-
-          const taglineEl = card.querySelector('span.text-secondary');
-          const tagline = taglineEl ? taglineEl.textContent.trim() : '';
-
-          const voteBtn = card.querySelector('[data-test="vote-button"]');
-          let votesCount = 0;
-          if (voteBtn) {
-            const num = parseInt(voteBtn.textContent.replace(/[^\\d]/g, ''), 10);
-            if (!isNaN(num)) votesCount = num;
-          }
-
-          let thumbnailUrl = '';
-          const video = card.querySelector('video[poster]');
-          if (video) {
-            thumbnailUrl = video.getAttribute('poster') || '';
-          } else {
-            const img = card.querySelector('img');
-            if (img) thumbnailUrl = img.getAttribute('src') || '';
-          }
-
-          const topicLinks = card.querySelectorAll('a[href^="/topics/"]');
-          const topics = [];
-          topicLinks.forEach(a => {
-            const t = (a.textContent || '').trim();
-            if (t) topics.push(t);
-          });
-
-          let commentsCount = 0;
-          const commentLink = card.querySelector('a[href*="#comments"], a[href*="comment"]');
-          if (commentLink) {
-            const cNum = parseInt((commentLink.textContent || '').replace(/[^\\d]/g, ''), 10);
-            if (!isNaN(cNum)) commentsCount = cNum;
-          }
-
-          const url = href ? 'https://www.producthunt.com' + href : '';
-
-          products.push({
-            id, slug, name, tagline, url, thumbnailUrl,
-            votesCount, commentsCount, topics, rank,
-          });
-        } catch (e) {
-          // skip malformed card
+const POSTS_QUERY = `
+  query FetchPosts($after: String) {
+    posts(first: 50, order: RANKING, after: $after) {
+      edges {
+        node {
+          id name slug tagline description url website
+          votesCount commentsCount reviewsCount reviewsRating
+          createdAt featuredAt
+          thumbnail { url }
+          makers { id username name headline profileImage }
+          topics(first: 10) { edges { node { name } } }
         }
       }
-      return products;
-    })()`);
-
-    const items = rawProducts as Array<{
-      id: string;
-      slug: string;
-      name: string;
-      tagline: string;
-      url: string;
-      thumbnailUrl: string;
-      votesCount: number;
-      commentsCount: number;
-      topics: string[];
-      rank: number | null;
-    }>;
-
-    // Deduplicate
-    const seen = new Set<string>();
-    const products: RawPHProduct[] = [];
-    for (const item of items) {
-      if (!item.id || seen.has(item.id)) continue;
-      seen.add(item.id);
-      products.push({
-        id: item.id,
-        slug: item.slug ?? "",
-        name: item.name ?? "",
-        tagline: item.tagline ?? "",
-        url: item.url ?? "",
-        thumbnail_url: item.thumbnailUrl ?? "",
-        metrics: {
-          votes_count: item.votesCount ?? 0,
-          comments_count: item.commentsCount ?? 0,
-        },
-        topics: item.topics ?? [],
-        rank: item.rank,
-      });
+      pageInfo { hasNextPage endCursor }
     }
-
-    await page.close();
-    await context.close();
-
-    log.info("Scrape complete", { source: "producthunt", count: products.length });
-    return products;
-  } finally {
-    await browser.close();
   }
+`;
+
+async function fetchPostsPage(
+  token: string,
+  cursor: string | null,
+): Promise<{ nodes: z.infer<typeof PostNodeSchema>[]; pageInfo: z.infer<typeof PageInfoSchema> }> {
+  const body = JSON.stringify({
+    query: POSTS_QUERY,
+    variables: cursor ? { after: cursor } : {},
+  });
+
+  const res = await fetch(GRAPHQL_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body,
+  });
+
+  if (!res.ok) {
+    throw Object.assign(
+      new Error(`GraphQL request failed: ${res.status} ${res.statusText}`),
+      { statusCode: res.status },
+    );
+  }
+
+  const json = await res.json();
+  const parsed = GraphQLResponseSchema.parse(json);
+
+  if (parsed.errors && parsed.errors.length > 0) {
+    throw new Error(`GraphQL errors: ${parsed.errors.map((e) => e.message).join(", ")}`);
+  }
+
+  const posts = parsed.data?.posts;
+  if (!posts) {
+    throw new Error("GraphQL response missing data.posts");
+  }
+
+  return {
+    nodes: posts.edges.map((e) => e.node),
+    pageInfo: posts.pageInfo,
+  };
 }
 
-function delay(minMs: number, maxMs: number): Promise<void> {
-  const ms = minMs + Math.random() * (maxMs - minMs);
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// ── Retry with exponential backoff ───────────────────────────────────────────
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  attempts: number = MAX_RETRY_ATTEMPTS,
+): Promise<T> {
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+
+      const statusCode =
+        err instanceof Object && "statusCode" in err
+          ? (err as { statusCode: number }).statusCode
+          : null;
+
+      if (statusCode === 401 || statusCode === 403) {
+        throw err;
+      }
+
+      if (attempt < attempts - 1) {
+        const delayMs = 1000 * 2 ** attempt;
+        log.warn("GraphQL request failed, retrying", {
+          attempt: attempt + 1,
+          delayMs,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+
+  throw lastErr;
+}
+
+// ── Node → RawPHProduct mapping ───────────────────────────────────────────────
+
+function nodeToRaw(
+  node: z.infer<typeof PostNodeSchema>,
+  rank: number,
+): RawPHProduct {
+  const makers: RawPHMaker[] = (node.makers ?? []).map((m) => ({
+    id: m.id,
+    username: m.username,
+    name: m.name,
+    headline: m.headline ?? null,
+    avatar_url: m.profileImage ?? null,
+  }));
+
+  const topics =
+    node.topics?.edges.map((e) => e.node.name) ?? [];
+
+  return {
+    id: node.id,
+    slug: node.slug,
+    name: node.name,
+    tagline: node.tagline,
+    description: node.description ?? "",
+    url: node.url,
+    website_url: node.website ?? "",
+    thumbnail_url: node.thumbnail?.url ?? "",
+    metrics: {
+      votes_count: node.votesCount,
+      comments_count: node.commentsCount,
+    },
+    makers,
+    topics,
+    featured_at: node.featuredAt ?? null,
+    created_at: node.createdAt ?? null,
+    is_featured: node.featuredAt != null,
+    reviews_count: node.reviewsCount ?? 0,
+    reviews_rating: node.reviewsRating ?? 0,
+    rank,
+  };
+}
+
+// ── Public entry point ────────────────────────────────────────────────────────
+
+export async function scrapePHDaily(
+  apiKey: string,
+  apiSecret: string,
+): Promise<readonly RawPHProduct[]> {
+  log.info("Fetching PH OAuth token");
+  const token = await fetchAccessToken(apiKey, apiSecret);
+
+  const seen = new Set<string>();
+  const products: RawPHProduct[] = [];
+  let cursor: string | null = null;
+  let globalRank = 1;
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    log.info("Fetching PH posts page", { page: page + 1, cursor });
+
+    const { nodes, pageInfo } = await withRetry(() =>
+      fetchPostsPage(token, cursor),
+    );
+
+    for (const node of nodes) {
+      if (!node.id || seen.has(node.id)) continue;
+      seen.add(node.id);
+      products.push(nodeToRaw(node, globalRank));
+      globalRank++;
+    }
+
+    log.info("PH page fetched", { page: page + 1, count: nodes.length });
+
+    if (!pageInfo.hasNextPage || !pageInfo.endCursor) break;
+    cursor = pageInfo.endCursor;
+  }
+
+  log.info("PH scrape complete", { source: "producthunt", count: products.length });
+  return products;
 }

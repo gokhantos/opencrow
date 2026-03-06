@@ -1,9 +1,7 @@
 import { createLogger } from "../../logger";
 import type { MemoryManager, ProductForIndex } from "../../memory/types";
 import {
-  getActiveAccounts,
   upsertProducts,
-  updateLastScrape,
   getProducts,
   getUnindexedProducts,
   markProductsIndexed,
@@ -18,7 +16,7 @@ const TICK_INTERVAL_MS = 600_000; // 10 minutes
 export interface PHScraper {
   start(): void;
   stop(): void;
-  scrapeNow(accountId: string): Promise<ScrapeResult>;
+  scrapeNow(): Promise<ScrapeResult>;
   backfillRag(): Promise<{ indexed: number; error?: string }>;
 }
 
@@ -28,59 +26,34 @@ interface ScrapeResult {
   error?: string;
 }
 
-interface RawProduct {
-  id: string;
-  slug: string;
-  name: string;
-  tagline: string;
-  description?: string;
-  url?: string;
-  website_url?: string;
-  thumbnail_url?: string;
-  metrics?: {
-    votes_count?: number;
-    comments_count?: number;
-  };
-  makers?: Array<{
-    id: string;
-    username: string;
-    display_name: string;
-    headline?: string;
-    avatar_url?: string;
-  }>;
-  topics?: string[];
-  featured_at?: string | null;
-  created_at?: string | null;
-  is_featured?: boolean;
-  rank?: number | null;
-}
-
 function toEpoch(isoStr: string | null | undefined): number | null {
   if (!isoStr) return null;
   const ms = Date.parse(isoStr);
   return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
 }
 
-function rawToRow(raw: RawProduct, accountId: string): PHProductRow {
+function rawToRow(raw: RawPHProduct): PHProductRow {
   const now = Math.floor(Date.now() / 1000);
   return {
     id: String(raw.id),
-    slug: raw.slug ?? "",
-    name: raw.name ?? "",
-    tagline: raw.tagline ?? "",
-    description: raw.description ?? "",
-    url: raw.url ?? "",
-    website_url: raw.website_url ?? "",
-    thumbnail_url: raw.thumbnail_url ?? "",
-    votes_count: raw.metrics?.votes_count ?? 0,
-    comments_count: raw.metrics?.comments_count ?? 0,
-    is_featured: raw.is_featured ?? false,
-    rank: raw.rank ?? null,
-    makers_json: JSON.stringify(raw.makers ?? []),
-    topics_json: JSON.stringify(raw.topics ?? []),
+    slug: raw.slug,
+    name: raw.name,
+    tagline: raw.tagline,
+    description: raw.description,
+    url: raw.url,
+    website_url: raw.website_url,
+    thumbnail_url: raw.thumbnail_url,
+    votes_count: raw.metrics.votes_count,
+    comments_count: raw.metrics.comments_count,
+    is_featured: raw.is_featured,
+    rank: raw.rank,
+    makers_json: JSON.stringify(raw.makers),
+    topics_json: JSON.stringify(raw.topics),
     featured_at: toEpoch(raw.featured_at),
     product_created_at: toEpoch(raw.created_at),
-    account_id: accountId,
+    reviews_count: raw.reviews_count,
+    reviews_rating: raw.reviews_rating,
+    account_id: null,
     first_seen_at: now,
     updated_at: now,
   };
@@ -110,36 +83,37 @@ export function createPHScraper(config?: {
   memoryManager?: MemoryManager;
 }): PHScraper {
   let timer: ReturnType<typeof setInterval> | null = null;
-  const running = new Set<string>();
+  let isRunning = false;
 
-  async function runScraper(
-    cookiesJson: string,
-  ): Promise<
-    { ok: true; products: RawProduct[] } | { ok: false; error: string }
+  async function runScraper(): Promise<
+    { ok: true; products: readonly RawPHProduct[] } | { ok: false; error: string }
   > {
+    const apiKey = process.env.PH_API_TOKEN;
+    const apiSecret = process.env.PH_API_SECRET;
+
+    if (!apiKey || !apiSecret) {
+      return { ok: false, error: "PH_API_TOKEN or PH_API_SECRET not configured" };
+    }
+
     try {
-      const products = await scrapePHDaily(cookiesJson);
-      return { ok: true, products: products as RawProduct[] };
+      const products = await scrapePHDaily(apiKey, apiSecret);
+      return { ok: true, products };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, error: msg };
     }
   }
 
-  async function scrapeAccount(
-    accountId: string,
-    cookiesJson: string,
-  ): Promise<ScrapeResult> {
-    const result = await runScraper(cookiesJson);
+  async function doScrape(): Promise<ScrapeResult> {
+    const result = await runScraper();
 
     if (!result.ok) {
-      log.warn("PH scrape failed", { accountId, error: result.error });
+      log.warn("PH scrape failed", { error: result.error });
       return { ok: false, error: result.error };
     }
 
-    const rows = result.products.map((p) => rawToRow(p, accountId));
+    const rows = result.products.map((p) => rawToRow(p));
     const count = await upsertProducts(rows);
-    await updateLastScrape(accountId, count);
 
     if (config?.memoryManager) {
       const unindexed = await getUnindexedProducts(200);
@@ -158,56 +132,38 @@ export function createPHScraper(config?: {
       }
     }
 
-    log.info("PH scrape complete", { accountId, products: count });
+    log.info("PH scrape complete", { products: count });
     return { ok: true, count };
   }
 
   async function tick(): Promise<void> {
-    try {
-      const accounts = await getActiveAccounts();
-      if (accounts.length === 0) return;
-
-      log.info("PH scraper tick", { accounts: accounts.length });
-
-      for (const account of accounts) {
-        if (running.has(account.id)) {
-          log.info("PH scrape already running, skipping", {
-            accountId: account.id,
-          });
-          continue;
-        }
-
-        running.add(account.id);
-        scrapeAccount(account.id, account.cookies_json)
-          .catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            log.error("PH scrape error", { accountId: account.id, error: msg });
-          })
-          .finally(() => {
-            running.delete(account.id);
-          });
-      }
-    } catch (err) {
-      log.error("PH scraper tick error", { error: err });
+    if (isRunning) {
+      log.info("PH scrape already running, skipping tick");
+      return;
     }
+
+    log.info("PH scraper tick");
+    isRunning = true;
+    doScrape()
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error("PH scrape error", { error: msg });
+      })
+      .finally(() => {
+        isRunning = false;
+      });
   }
 
-  async function scrapeNow(accountId: string): Promise<ScrapeResult> {
-    if (running.has(accountId)) {
-      return { ok: false, error: "Already running for this account" };
+  async function scrapeNow(): Promise<ScrapeResult> {
+    if (isRunning) {
+      return { ok: false, error: "Scrape already in progress" };
     }
 
-    const accounts = await getActiveAccounts();
-    const account = accounts.find((a) => a.id === accountId);
-    if (!account) {
-      return { ok: false, error: "Account not found or inactive" };
-    }
-
-    running.add(accountId);
+    isRunning = true;
     try {
-      return await scrapeAccount(accountId, account.cookies_json);
+      return await doScrape();
     } finally {
-      running.delete(accountId);
+      isRunning = false;
     }
   }
 
