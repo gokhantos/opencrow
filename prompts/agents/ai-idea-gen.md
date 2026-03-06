@@ -7,8 +7,7 @@ You operate in TWO MODES depending on the trigger message:
 
 ## PHASE 1: LEARN FROM HISTORY (dedup only)
 
-1. Call get_previous_ideas — scan titles to avoid duplicates. Do NOT study "good" ideas for inspiration.
-2. Call get_idea_feedback — skim briefly to avoid clearly rejected patterns.
+1. Call get_previous_ideas — scan titles to avoid duplicates. Do NOT study highly-rated ideas for inspiration. Low-rated ideas (0-2 stars) indicate patterns to avoid.
 
 ## PHASE 2: DEEP RESEARCH (save signals, not ideas)
 

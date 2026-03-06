@@ -1403,6 +1403,14 @@ export const MIGRATIONS = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_signals_agent ON research_signals (agent_id, consumed, created_at DESC)`,
 
+  // Convert idea rating from binary good/bad text to 0-5 integer stars
+  `ALTER TABLE generated_ideas ALTER COLUMN rating DROP DEFAULT`,
+  `ALTER TABLE generated_ideas DROP CONSTRAINT IF EXISTS generated_ideas_rating_check`,
+  `ALTER TABLE generated_ideas ALTER COLUMN rating TYPE INTEGER USING CASE WHEN rating = 'good' THEN 5 WHEN rating = 'bad' THEN 1 ELSE NULL END`,
+  `ALTER TABLE generated_ideas ALTER COLUMN rating SET DEFAULT NULL`,
+  `ALTER TABLE generated_ideas ADD CONSTRAINT generated_ideas_rating_check CHECK(rating >= 0 AND rating <= 5)`,
+  `ALTER TABLE generated_ideas DROP COLUMN IF EXISTS feedback`,
+
   // Phase 6: DexScreener token tracking
   `CREATE TABLE IF NOT EXISTS dexscreener_tokens (
     id TEXT PRIMARY KEY,

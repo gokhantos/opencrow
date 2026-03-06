@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
-import { Button, Input, PageHeader, LoadingState, EmptyState } from "../components";
+import { Button, PageHeader, LoadingState, EmptyState } from "../components";
 
 interface GeneratedIdea {
   readonly id: string;
@@ -12,8 +12,7 @@ interface GeneratedIdea {
   readonly reasoning: string;
   readonly sources_used: string;
   readonly category: string;
-  readonly rating: string | null;
-  readonly feedback: string;
+  readonly rating: number | null;
   readonly pipeline_stage: string;
   readonly model_references: string;
   readonly created_at: number;
@@ -38,7 +37,7 @@ type CategoryFilter =
   | "open_source"
   | "general";
 type SortMode = "newest" | "top_rated" | "lowest_rated";
-type RatingFilter = "all" | "good" | "bad" | "unrated";
+type RatingFilter = "all" | "high" | "mid" | "low" | "unrated";
 type ViewMode = "list" | "grid";
 
 const CATEGORY_TABS: readonly {
@@ -68,19 +67,27 @@ const CATEGORY_STYLES: Record<string, string> = {
   general: "bg-bg-3 text-muted border border-border",
 };
 
-function computeRatingCounts(ideas: readonly GeneratedIdea[]) {
-  let good = 0;
-  let bad = 0;
+export function computeRatingCounts(ideas: readonly GeneratedIdea[]) {
+  let rated = 0;
   let unrated = 0;
+  let sum = 0;
   for (const idea of ideas) {
-    if (idea.rating === "good") good++;
-    else if (idea.rating === "bad") bad++;
-    else unrated++;
+    if (idea.rating != null) {
+      rated++;
+      sum += idea.rating;
+    } else {
+      unrated++;
+    }
   }
-  return { total: ideas.length, good, bad, unrated };
+  return {
+    total: ideas.length,
+    rated,
+    unrated,
+    average: rated > 0 ? sum / rated : null,
+  };
 }
 
-function sortIdeas(
+export function sortIdeas(
   ideas: readonly GeneratedIdea[],
   mode: SortMode,
 ): readonly GeneratedIdea[] {
@@ -90,14 +97,14 @@ function sortIdeas(
       return sorted.sort((a, b) => b.created_at - a.created_at);
     case "top_rated":
       return sorted.sort((a, b) => {
-        const scoreA = a.rating === "good" ? 2 : a.rating === "bad" ? 0 : 1;
-        const scoreB = b.rating === "good" ? 2 : b.rating === "bad" ? 0 : 1;
+        const scoreA = a.rating ?? -1;
+        const scoreB = b.rating ?? -1;
         return scoreB - scoreA || b.created_at - a.created_at;
       });
     case "lowest_rated":
       return sorted.sort((a, b) => {
-        const scoreA = a.rating === "good" ? 2 : a.rating === "bad" ? 0 : 1;
-        const scoreB = b.rating === "good" ? 2 : b.rating === "bad" ? 0 : 1;
+        const scoreA = a.rating ?? 6;
+        const scoreB = b.rating ?? 6;
         return scoreA - scoreB || b.created_at - a.created_at;
       });
     default:
@@ -105,68 +112,73 @@ function sortIdeas(
   }
 }
 
+function StarRating({
+  value,
+  onChange,
+}: {
+  readonly value: number | null;
+  readonly onChange: (rating: number | null) => void;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const display = hover ?? value ?? 0;
+
+  return (
+    <div
+      className="flex gap-0.5"
+      onMouseLeave={() => setHover(null)}
+    >
+      {[1, 2, 3, 4, 5].map((star) => (
+        <button
+          key={star}
+          className={cn(
+            "w-7 h-7 rounded-md border-none bg-transparent text-[1.1rem] cursor-pointer flex items-center justify-center transition-colors p-0 leading-none",
+            star <= display ? "text-warning" : "text-faint opacity-40",
+            hover != null && star <= hover && "text-warning opacity-100",
+          )}
+          onClick={() => onChange(value === star ? null : star)}
+          onMouseEnter={() => setHover(star)}
+          title={value === star ? "Clear rating" : `Rate ${star}/5`}
+        >
+          &#9733;
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ratingBorderClass(rating: number | null): string {
+  if (rating == null) return "border-border hover:border-border-2";
+  if (rating >= 4) return "border-success hover:border-success";
+  if (rating >= 2) return "border-warning hover:border-warning";
+  return "border-danger hover:border-danger";
+}
+
+function ratingBarColor(rating: number | null): string {
+  if (rating == null) return "";
+  if (rating >= 4) return "bg-success";
+  if (rating >= 2) return "bg-warning";
+  return "bg-danger";
+}
+
 function IdeaCard({
   idea,
   onRate,
 }: {
   readonly idea: GeneratedIdea;
-  readonly onRate: (
-    id: string,
-    rating: "good" | "bad",
-    feedback?: string,
-  ) => void;
+  readonly onRate: (id: string, rating: number | null) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [showFeedback, setShowFeedback] = useState(false);
-  const [feedbackText, setFeedbackText] = useState(idea.feedback ?? "");
   const agentColor = AGENT_COLORS[idea.agent_id] ?? "var(--text-3)";
-
-  const handleThumbsUp = () => {
-    if (idea.rating === "good") return;
-    onRate(idea.id, "good");
-  };
-
-  const handleThumbsDown = () => {
-    setFeedbackText(idea.feedback ?? "");
-    setShowFeedback(true);
-  };
-
-  const submitFeedback = () => {
-    onRate(idea.id, "bad", feedbackText.trim());
-    setShowFeedback(false);
-    setFeedbackText("");
-  };
-
-  const cancelFeedback = () => {
-    setShowFeedback(false);
-    setFeedbackText("");
-  };
-
-  const handleFeedbackKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submitFeedback();
-    } else if (e.key === "Escape") {
-      cancelFeedback();
-    }
-  };
 
   return (
     <div
       className={cn(
         "relative p-[1.25rem_1.5rem] bg-bg-1 rounded-lg border transition-colors hover:bg-bg-2",
-        idea.rating === "good" && "border-success hover:border-success",
-        idea.rating === "bad" && "border-danger hover:border-danger",
-        idea.rating !== "good" &&
-          idea.rating !== "bad" &&
-          "border-border hover:border-border-2",
+        ratingBorderClass(idea.rating),
       )}
     >
-      {idea.rating === "good" && (
-        <div className="absolute top-0 left-3 right-3 h-0.5 rounded-b-sm bg-success" />
-      )}
-      {idea.rating === "bad" && (
-        <div className="absolute top-0 left-3 right-3 h-0.5 rounded-b-sm bg-danger" />
+      {idea.rating != null && (
+        <div className={cn("absolute top-0 left-3 right-3 h-0.5 rounded-b-sm", ratingBarColor(idea.rating))} />
       )}
 
       <div className="flex items-start justify-between gap-3 max-md:flex-col max-md:gap-1">
@@ -174,30 +186,10 @@ function IdeaCard({
           {idea.title}
         </h3>
         <div className="flex items-center gap-2 shrink-0 max-md:order-[-1] max-md:self-end">
-          <div className="flex gap-1">
-            <button
-              className={cn(
-                "w-8 h-8 rounded-md border bg-bg border-border text-faint text-[0.85rem] cursor-pointer flex items-center justify-center transition-colors p-0 leading-none hover:bg-bg-2",
-                idea.rating === "good" &&
-                  "bg-success-subtle border-success text-success",
-              )}
-              onClick={handleThumbsUp}
-              title="Good idea"
-            >
-              &#x1F44D;
-            </button>
-            <button
-              className={cn(
-                "w-8 h-8 rounded-md border bg-bg border-border text-faint text-[0.85rem] cursor-pointer flex items-center justify-center transition-colors p-0 leading-none hover:bg-bg-2",
-                idea.rating === "bad" &&
-                  "bg-danger-subtle border-danger text-danger",
-              )}
-              onClick={handleThumbsDown}
-              title="Bad idea"
-            >
-              &#x1F44E;
-            </button>
-          </div>
+          <StarRating
+            value={idea.rating}
+            onChange={(r) => onRate(idea.id, r)}
+          />
           <span className="text-sm text-faint whitespace-nowrap shrink-0 font-mono">
             {relativeTime(idea.created_at)}
           </span>
@@ -207,33 +199,6 @@ function IdeaCard({
       <div className="text-base text-muted leading-[1.7] mt-2.5 whitespace-pre-wrap">
         {idea.summary}
       </div>
-
-      {showFeedback && (
-        <div className="mt-3 flex flex-col gap-3 p-4 bg-danger-subtle rounded-md border border-danger">
-          <Input
-            type="text"
-            placeholder="Why is this idea bad? (optional)"
-            value={feedbackText}
-            onChange={(e) => setFeedbackText(e.target.value)}
-            onKeyDown={handleFeedbackKeyDown}
-            autoFocus
-          />
-          <div className="flex gap-2">
-            <Button variant="danger" size="sm" onClick={submitFeedback}>
-              Submit
-            </Button>
-            <Button variant="secondary" size="sm" onClick={cancelFeedback}>
-              Cancel
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {idea.rating === "bad" && idea.feedback && (
-        <div className="mt-3 px-4 py-2.5 border-l-2 border-l-danger bg-danger-subtle rounded-r-md text-sm text-muted italic leading-[1.5]">
-          {idea.feedback}
-        </div>
-      )}
 
       <div className="flex items-center gap-3 mt-4 flex-wrap">
         <span
@@ -344,14 +309,14 @@ export default function Ideas() {
   }, [fetchData]);
 
   const handleRate = useCallback(
-    async (id: string, rating: "good" | "bad", feedback?: string) => {
+    async (id: string, rating: number | null) => {
       try {
         const res = await apiFetch<{ success: boolean; data: GeneratedIdea }>(
           `/api/ideas/${id}`,
           {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rating, feedback: feedback ?? "" }),
+            body: JSON.stringify({ rating }),
           },
         );
         if (res.success) {
@@ -379,9 +344,10 @@ export default function Ideas() {
 
     if (ratingFilter !== "all") {
       result = result.filter((idea) => {
-        if (ratingFilter === "good") return idea.rating === "good";
-        if (ratingFilter === "bad") return idea.rating === "bad";
-        return idea.rating !== "good" && idea.rating !== "bad";
+        if (ratingFilter === "high") return idea.rating != null && idea.rating >= 4;
+        if (ratingFilter === "mid") return idea.rating != null && idea.rating >= 2 && idea.rating <= 3;
+        if (ratingFilter === "low") return idea.rating != null && idea.rating <= 1;
+        return idea.rating == null;
       });
     }
 
@@ -468,28 +434,28 @@ export default function Ideas() {
               label: "Total",
               icon: "\u2731",
               color: "accent",
-              value: ratingCounts.total,
+              value: String(ratingCounts.total),
             },
             {
-              key: "good" as const,
-              label: "Good",
+              key: "avg" as const,
+              label: "Average",
+              icon: "\u2605",
+              color: "yellow",
+              value: ratingCounts.average != null ? ratingCounts.average.toFixed(1) : "\u2014",
+            },
+            {
+              key: "rated" as const,
+              label: "Rated",
               icon: "\u2714",
               color: "green",
-              value: ratingCounts.good,
-            },
-            {
-              key: "bad" as const,
-              label: "Bad",
-              icon: "\u2718",
-              color: "red",
-              value: ratingCounts.bad,
+              value: String(ratingCounts.rated),
             },
             {
               key: "unrated" as const,
               label: "Unrated",
               icon: "?",
               color: "gray",
-              value: ratingCounts.unrated,
+              value: String(ratingCounts.unrated),
             },
           ] as const
         ).map((stat) => (
@@ -497,35 +463,24 @@ export default function Ideas() {
             key={stat.key}
             className={cn(
               "relative bg-bg-1 border border-border rounded-lg p-5 cursor-pointer text-left font-inherit transition-colors overflow-hidden hover:bg-bg-2 hover:border-border-2",
-              ratingFilter === stat.key && "bg-bg-2",
-              ratingFilter === stat.key &&
-                stat.color === "accent" &&
-                "border-accent",
-              ratingFilter === stat.key &&
-                stat.color === "green" &&
-                "border-success",
-              ratingFilter === stat.key &&
-                stat.color === "red" &&
-                "border-danger",
+              stat.key === "unrated" && ratingFilter === "unrated" && "bg-bg-2 border-faint",
+              stat.key === "all" && ratingFilter === "all" && "bg-bg-2 border-accent",
               "max-sm:p-4",
             )}
-            onClick={() =>
-              setRatingFilter(
-                ratingFilter === stat.key
-                  ? "all"
-                  : stat.key === "all"
-                    ? "all"
-                    : stat.key,
-              )
-            }
+            onClick={() => {
+              if (stat.key === "all") setRatingFilter("all");
+              else if (stat.key === "unrated") setRatingFilter(ratingFilter === "unrated" ? "all" : "unrated");
+            }}
           >
             <div
               className={cn(
                 "absolute top-0 left-0 right-0 h-0.5 rounded-t-lg transition-opacity",
-                ratingFilter === stat.key ? "opacity-100" : "opacity-0",
+                (stat.key === "all" && ratingFilter === "all") || (stat.key === "unrated" && ratingFilter === "unrated")
+                  ? "opacity-100"
+                  : "opacity-0",
                 stat.color === "accent" && "bg-accent",
                 stat.color === "green" && "bg-success",
-                stat.color === "red" && "bg-danger",
+                stat.color === "yellow" && "bg-warning",
                 stat.color === "gray" && "bg-faint",
               )}
             />
@@ -538,7 +493,7 @@ export default function Ideas() {
                   "w-8 h-8 rounded-md flex items-center justify-center text-sm shrink-0",
                   stat.color === "accent" && "bg-accent-subtle",
                   stat.color === "green" && "bg-success-subtle",
-                  stat.color === "red" && "bg-danger-subtle",
+                  stat.color === "yellow" && "bg-warning-subtle",
                   stat.color === "gray" && "bg-bg-3",
                 )}
               >
@@ -550,12 +505,37 @@ export default function Ideas() {
                 "font-heading text-[1.75rem] font-bold leading-none tracking-tight mt-2 max-sm:text-[1.35rem]",
                 stat.color === "accent" && "text-accent",
                 stat.color === "green" && "text-success",
-                stat.color === "red" && "text-danger",
+                stat.color === "yellow" && "text-warning",
                 stat.color === "gray" && "text-faint",
               )}
             >
               {stat.value}
             </div>
+          </button>
+        ))}
+      </div>
+
+      {/* Rating Filter Pills */}
+      <div className="flex gap-1.5 flex-wrap mb-3">
+        {(
+          [
+            { key: "all" as const, label: "All Ratings" },
+            { key: "high" as const, label: "4-5 Stars" },
+            { key: "mid" as const, label: "2-3 Stars" },
+            { key: "low" as const, label: "0-1 Stars" },
+            { key: "unrated" as const, label: "Unrated" },
+          ] as const
+        ).map((f) => (
+          <button
+            key={f.key}
+            className={cn(
+              "px-3 py-1.5 rounded-full bg-bg-1 border border-border text-faint font-sans text-xs font-medium cursor-pointer transition-colors hover:bg-bg-2 hover:text-strong",
+              ratingFilter === f.key &&
+                "bg-accent-subtle border-accent text-accent font-semibold",
+            )}
+            onClick={() => setRatingFilter(f.key)}
+          >
+            {f.label}
           </button>
         ))}
       </div>

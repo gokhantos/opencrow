@@ -10,23 +10,30 @@ interface GeneratedIdea {
   readonly reasoning: string;
   readonly sources_used: string;
   readonly category: string;
-  readonly rating: string | null;
-  readonly feedback: string;
+  readonly rating: number | null;
   readonly pipeline_stage: string;
   readonly model_references: string;
   readonly created_at: number;
 }
 
 function computeRatingCounts(ideas: readonly GeneratedIdea[]) {
-  let good = 0;
-  let bad = 0;
+  let rated = 0;
   let unrated = 0;
+  let sum = 0;
   for (const idea of ideas) {
-    if (idea.rating === "good") good++;
-    else if (idea.rating === "bad") bad++;
-    else unrated++;
+    if (idea.rating != null) {
+      rated++;
+      sum += idea.rating;
+    } else {
+      unrated++;
+    }
   }
-  return { total: ideas.length, good, bad, unrated };
+  return {
+    total: ideas.length,
+    rated,
+    unrated,
+    average: rated > 0 ? sum / rated : null,
+  };
 }
 
 type SortMode = "newest" | "top_rated" | "lowest_rated";
@@ -41,14 +48,14 @@ function sortIdeas(
       return sorted.sort((a, b) => b.created_at - a.created_at);
     case "top_rated":
       return sorted.sort((a, b) => {
-        const scoreA = a.rating === "good" ? 2 : a.rating === "bad" ? 0 : 1;
-        const scoreB = b.rating === "good" ? 2 : b.rating === "bad" ? 0 : 1;
+        const scoreA = a.rating ?? -1;
+        const scoreB = b.rating ?? -1;
         return scoreB - scoreA || b.created_at - a.created_at;
       });
     case "lowest_rated":
       return sorted.sort((a, b) => {
-        const scoreA = a.rating === "good" ? 2 : a.rating === "bad" ? 0 : 1;
-        const scoreB = b.rating === "good" ? 2 : b.rating === "bad" ? 0 : 1;
+        const scoreA = a.rating ?? 6;
+        const scoreB = b.rating ?? 6;
         return scoreA - scoreB || b.created_at - a.created_at;
       });
     default:
@@ -67,7 +74,6 @@ const mkIdea = (
   sources_used: "",
   category: "ai_app",
   rating: null,
-  feedback: "",
   pipeline_stage: "idea",
   model_references: "",
   created_at: 1000,
@@ -76,31 +82,48 @@ const mkIdea = (
 
 /* ---------- computeRatingCounts ---------- */
 
-test("computeRatingCounts counts all ratings correctly", () => {
+test("computeRatingCounts counts rated and unrated correctly", () => {
   const ideas = [
-    mkIdea({ rating: "good" }),
-    mkIdea({ rating: "good" }),
-    mkIdea({ rating: "bad" }),
+    mkIdea({ rating: 5 }),
+    mkIdea({ rating: 4 }),
+    mkIdea({ rating: 1 }),
     mkIdea({ rating: null }),
     mkIdea({ rating: null }),
     mkIdea({ rating: null }),
   ];
   const counts = computeRatingCounts(ideas);
   expect(counts.total).toBe(6);
-  expect(counts.good).toBe(2);
-  expect(counts.bad).toBe(1);
+  expect(counts.rated).toBe(3);
   expect(counts.unrated).toBe(3);
+});
+
+test("computeRatingCounts computes average correctly", () => {
+  const ideas = [
+    mkIdea({ rating: 5 }),
+    mkIdea({ rating: 3 }),
+    mkIdea({ rating: 2 }),
+    mkIdea({ rating: null }),
+  ];
+  const counts = computeRatingCounts(ideas);
+  expect(counts.average).toBeCloseTo(10 / 3);
 });
 
 test("computeRatingCounts handles empty array", () => {
   const counts = computeRatingCounts([]);
-  expect(counts).toEqual({ total: 0, good: 0, bad: 0, unrated: 0 });
+  expect(counts).toEqual({ total: 0, rated: 0, unrated: 0, average: null });
 });
 
-test("computeRatingCounts treats unknown rating as unrated", () => {
-  const ideas = [mkIdea({ rating: "something_else" })];
+test("computeRatingCounts average is null when all unrated", () => {
+  const ideas = [mkIdea({ rating: null }), mkIdea({ rating: null })];
   const counts = computeRatingCounts(ideas);
-  expect(counts.unrated).toBe(1);
+  expect(counts.average).toBeNull();
+});
+
+test("computeRatingCounts handles zero rating", () => {
+  const ideas = [mkIdea({ rating: 0 }), mkIdea({ rating: 4 })];
+  const counts = computeRatingCounts(ideas);
+  expect(counts.rated).toBe(2);
+  expect(counts.average).toBe(2);
 });
 
 /* ---------- sortIdeas ---------- */
@@ -117,38 +140,38 @@ test("sortIdeas newest puts most recent first", () => {
   expect(sorted[2]!.id).toBe("old");
 });
 
-test("sortIdeas top_rated puts good first, then unrated, then bad", () => {
+test("sortIdeas top_rated puts highest rating first, null last", () => {
   const ideas = [
-    mkIdea({ id: "bad", rating: "bad", created_at: 300 }),
+    mkIdea({ id: "low", rating: 1, created_at: 300 }),
     mkIdea({ id: "unrated", rating: null, created_at: 200 }),
-    mkIdea({ id: "good", rating: "good", created_at: 100 }),
+    mkIdea({ id: "high", rating: 5, created_at: 100 }),
   ];
   const sorted = sortIdeas(ideas, "top_rated");
-  expect(sorted[0]!.id).toBe("good");
-  expect(sorted[1]!.id).toBe("unrated");
-  expect(sorted[2]!.id).toBe("bad");
+  expect(sorted[0]!.id).toBe("high");
+  expect(sorted[1]!.id).toBe("low");
+  expect(sorted[2]!.id).toBe("unrated");
 });
 
-test("sortIdeas lowest_rated puts bad first, then unrated, then good", () => {
+test("sortIdeas lowest_rated puts lowest rating first, null last", () => {
   const ideas = [
-    mkIdea({ id: "good", rating: "good", created_at: 300 }),
+    mkIdea({ id: "high", rating: 5, created_at: 300 }),
     mkIdea({ id: "unrated", rating: null, created_at: 200 }),
-    mkIdea({ id: "bad", rating: "bad", created_at: 100 }),
+    mkIdea({ id: "low", rating: 1, created_at: 100 }),
   ];
   const sorted = sortIdeas(ideas, "lowest_rated");
-  expect(sorted[0]!.id).toBe("bad");
-  expect(sorted[1]!.id).toBe("unrated");
-  expect(sorted[2]!.id).toBe("good");
+  expect(sorted[0]!.id).toBe("low");
+  expect(sorted[1]!.id).toBe("high");
+  expect(sorted[2]!.id).toBe("unrated");
 });
 
 test("sortIdeas uses created_at as tiebreaker", () => {
   const ideas = [
-    mkIdea({ id: "older-good", rating: "good", created_at: 100 }),
-    mkIdea({ id: "newer-good", rating: "good", created_at: 300 }),
+    mkIdea({ id: "older", rating: 4, created_at: 100 }),
+    mkIdea({ id: "newer", rating: 4, created_at: 300 }),
   ];
   const sorted = sortIdeas(ideas, "top_rated");
-  expect(sorted[0]!.id).toBe("newer-good");
-  expect(sorted[1]!.id).toBe("older-good");
+  expect(sorted[0]!.id).toBe("newer");
+  expect(sorted[1]!.id).toBe("older");
 });
 
 test("sortIdeas handles empty array", () => {

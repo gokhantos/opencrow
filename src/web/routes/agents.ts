@@ -173,7 +173,6 @@ const ALL_TOOLS: readonly {
   // Ideas
   { name: "save_idea", category: "ideas" },
   { name: "get_previous_ideas", category: "ideas" },
-  { name: "get_idea_feedback", category: "ideas" },
   { name: "get_idea_stats", category: "ideas" },
   { name: "update_idea_stage", category: "ideas" },
   { name: "query_ideas", category: "ideas" },

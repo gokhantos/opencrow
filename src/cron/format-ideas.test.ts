@@ -12,7 +12,6 @@ function makeIdea(overrides: Partial<GeneratedIdea> = {}): GeneratedIdea {
     sources_used: "[]",
     category: "mobile_app",
     rating: null,
-    feedback: "",
     pipeline_stage: "generated",
     quality_score: null,
     model_references: "",
