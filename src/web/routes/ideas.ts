@@ -16,13 +16,13 @@ export function createIdeasRoutes(): Hono {
     const category = c.req.query("category");
     const limitParam = c.req.query("limit");
     const offsetParam = c.req.query("offset");
-    const limit = Math.max(1, Math.min(Number(limitParam ?? "50") || 50, 200));
+    const limit = limitParam ? Math.max(1, Number(limitParam) || 50) : undefined;
     const offset = Math.max(0, Number(offsetParam ?? "0") || 0);
 
     const ideas = await getIdeas({
       agentId: agentId || undefined,
       category: category || undefined,
-      limit,
+      limit: limit ?? undefined,
       offset,
     });
 
