@@ -6,6 +6,8 @@ import {
   getRecentSignals,
   markSignalsConsumed,
   getSignalThemes,
+  getCrossDomainSignals,
+  getCrossDomainThemes,
 } from "../sources/ideas/signals-store";
 
 const SIGNAL_TYPES = ["trend", "pain_point", "capability", "gap", "catalyst", "competition"] as const;
@@ -104,6 +106,10 @@ function createGetSignalsTool(agentId: string): ToolDefinition {
           type: "number",
           description: "Max signals to return (default 30).",
         },
+        max_age_days: {
+          type: "number",
+          description: "Only return signals from the last N days (default 14). Older signals are likely stale. Set to 0 for no age limit.",
+        },
       },
       required: [],
     },
@@ -111,11 +117,12 @@ function createGetSignalsTool(agentId: string): ToolDefinition {
     async execute(input): Promise<{ output: string; isError: boolean }> {
       const mode = getString(input, "mode") ?? "unconsumed";
       const limit = getNumber(input, "limit", { defaultVal: 30, min: 1, max: 50 });
+      const maxAgeDays = getNumber(input, "max_age_days", { defaultVal: 14, min: 0, max: 90 });
 
       try {
         const signals = mode === "recent"
           ? await getRecentSignals(agentId, limit)
-          : await getUnconsumedSignals(agentId, limit);
+          : await getUnconsumedSignals(agentId, limit, maxAgeDays);
 
         if (signals.length === 0) {
           return {
@@ -128,8 +135,10 @@ function createGetSignalsTool(agentId: string): ToolDefinition {
 
         const lines = signals.map((s, i) => {
           const consumed = s.consumed ? " [consumed]" : "";
+          const ageDays = Math.floor((Date.now() / 1000 - s.created_at) / 86400);
+          const ageTag = ageDays > 7 ? ` [${ageDays}d old]` : "";
           return [
-            `${i + 1}. [${s.signal_type}] ${s.title} (strength: ${s.strength}/5)${consumed}`,
+            `${i + 1}. [${s.signal_type}] ${s.title} (strength: ${s.strength}/5)${consumed}${ageTag}`,
             `   Source: ${s.source}${s.source_url ? ` — ${s.source_url}` : ""}`,
             `   ${s.detail.slice(0, 300)}${s.detail.length > 300 ? "..." : ""}`,
             s.themes ? `   Themes: ${s.themes}` : "",
@@ -138,7 +147,7 @@ function createGetSignalsTool(agentId: string): ToolDefinition {
         });
 
         return {
-          output: `${signals.length} signals (${mode}):\n\n${lines.join("\n\n")}`,
+          output: `${signals.length} signals (${mode}, max ${maxAgeDays}d):\n\n${lines.join("\n\n")}`,
           isError: false,
         };
       } catch (error) {
@@ -225,11 +234,80 @@ function createGetSignalThemesTool(agentId: string): ToolDefinition {
   };
 }
 
+function createGetCrossDomainSignalsTool(agentId: string): ToolDefinition {
+  return {
+    name: "get_cross_domain_signals",
+    description:
+      "Get research signals from OTHER agents (not your own). Use this to discover cross-domain opportunities — a crypto signal might inspire an AI idea, or a mobile pain point might suggest an OSS tool. Only returns high-strength (3+) unconsumed signals from the last 14 days. Look for convergences across domains.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "number",
+          description: "Max signals to return (default 15).",
+        },
+        max_age_days: {
+          type: "number",
+          description: "Only signals from the last N days (default 14).",
+        },
+        include_themes: {
+          type: "boolean",
+          description: "Also return cross-domain theme summary (default true).",
+        },
+      },
+      required: [],
+    },
+    categories: ["ideas"] as readonly ToolCategory[],
+    async execute(input): Promise<{ output: string; isError: boolean }> {
+      const limit = getNumber(input, "limit", { defaultVal: 15, min: 1, max: 30 });
+      const maxAgeDays = getNumber(input, "max_age_days", { defaultVal: 14, min: 1, max: 30 });
+      const includeThemes = input.include_themes !== false;
+
+      try {
+        const signals = await getCrossDomainSignals(agentId, limit, maxAgeDays);
+
+        const parts: string[] = [];
+
+        if (includeThemes) {
+          const themes = await getCrossDomainThemes(agentId, maxAgeDays);
+          if (themes.length > 0) {
+            const themeLines = themes.map((t) => `  ${t.theme}: ${t.count} signal(s) from ${t.agents}`);
+            parts.push(`Cross-domain themes:\n${themeLines.join("\n")}`);
+          }
+        }
+
+        if (signals.length === 0) {
+          parts.push("No cross-domain signals found. Other agents haven't saved strong signals recently.");
+          return { output: parts.join("\n\n"), isError: false };
+        }
+
+        const lines = signals.map((s, i) => {
+          return [
+            `${i + 1}. [${s.agent_id}] [${s.signal_type}] ${s.title} (strength: ${s.strength}/5)`,
+            `   Source: ${s.source}${s.source_url ? ` — ${s.source_url}` : ""}`,
+            `   ${s.detail.slice(0, 300)}${s.detail.length > 300 ? "..." : ""}`,
+            s.themes ? `   Themes: ${s.themes}` : "",
+            `   ID: ${s.id}`,
+          ].filter(Boolean).join("\n");
+        });
+
+        parts.push(`${signals.length} cross-domain signals:\n\n${lines.join("\n\n")}`);
+
+        return { output: parts.join("\n\n"), isError: false };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return { output: `Error fetching cross-domain signals: ${msg}`, isError: true };
+      }
+    },
+  };
+}
+
 export function createSignalTools(agentId: string): readonly ToolDefinition[] {
   return [
     createSaveSignalTool(agentId),
     createGetSignalsTool(agentId),
     createConsumeSignalsTool(),
     createGetSignalThemesTool(agentId),
+    createGetCrossDomainSignalsTool(agentId),
   ];
 }

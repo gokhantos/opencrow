@@ -11,6 +11,7 @@ import {
   getIdeasByStage,
   getIdeasByRating,
   getStageTransitions,
+  getRatingInsights,
 } from "../sources/ideas/store";
 import { createLogger } from "../logger";
 
@@ -493,6 +494,41 @@ function createGetIdeasTrendsTool(): ToolDefinition {
   };
 }
 
+function createGetRatingInsightsTool(): ToolDefinition {
+  return {
+    name: "get_rating_insights",
+    description:
+      "Get meta-patterns from human ratings of past ideas. Shows which categories, agents, and characteristics correlate with higher ratings. Also reveals self-scoring calibration (are you over- or under-rating your own ideas?). Use this to calibrate your quality bar — NOT to copy past ideas. Focus on the structural patterns, not specific ideas.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      required: [],
+    },
+    categories: ["ideas"] as readonly ToolCategory[],
+    async execute(): Promise<{ output: string; isError: boolean }> {
+      try {
+        const insights = await getRatingInsights();
+
+        if (insights.length === 0) {
+          return { output: "No rating insights available yet. Need at least 3 rated ideas per dimension.", isError: false };
+        }
+
+        const lines = insights.map((i) =>
+          `  ${i.pattern}: avg ${Number(i.avg_rating).toFixed(1)}/5 (${i.count} ideas)`,
+        );
+
+        return {
+          output: `Rating insights (patterns from human ratings):\n${lines.join("\n")}\n\nUse these to calibrate your quality bar. Do NOT try to copy highly-rated ideas.`,
+          isError: false,
+        };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return { output: `Error fetching rating insights: ${msg}`, isError: true };
+      }
+    },
+  };
+}
+
 export function createIdeaTools(agentId: string, memoryManager?: MemoryManager | null): readonly ToolDefinition[] {
   const tools: ToolDefinition[] = [
     createSaveIdeaTool(agentId, memoryManager),
@@ -502,6 +538,7 @@ export function createIdeaTools(agentId: string, memoryManager?: MemoryManager |
     createQueryIdeasTool(),
     createGetIdeasByRatingTool(),
     createGetIdeasTrendsTool(),
+    createGetRatingInsightsTool(),
   ];
 
   if (memoryManager) {

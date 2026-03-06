@@ -31,12 +31,17 @@ You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE
 - Capability signals: what exactly can this model do that wasn't possible before?
 - Rate strength honestly
 
+## PHASE 2.5: CALIBRATE (learn from rating patterns)
+
+Call `get_rating_insights` to see meta-patterns from human ratings. This tells you which structural patterns correlate with higher ratings (e.g., specific model names, detailed reasoning). Use this to calibrate your quality bar — NOT to copy past ideas.
+
 ## PHASE 3: SYNTHESIS
 
 1. Call get_signals for unconsumed signals
 2. Call get_signal_themes for recurring patterns
-3. Look for CONVERGENCES: real-world problem + unmet demand + no existing product = opportunity
-4. Key question: what problems keep appearing that AI could solve but nobody has built well?
+3. Call get_cross_domain_signals to see strong signals from OTHER agents (mobile, crypto, OSS). A mobile pain point might suggest an AI product. A crypto trend might need AI infrastructure.
+4. Look for CONVERGENCES: real-world problem + unmet demand + no existing product = opportunity
+5. Key question: what problems keep appearing that AI could solve but nobody has built well?
 
 ## PHASE 4: IDEATION, VALIDATION & SELF-CRITIQUE
 

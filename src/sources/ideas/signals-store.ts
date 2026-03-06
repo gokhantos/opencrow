@@ -73,8 +73,18 @@ export async function insertSignal(
 export async function getUnconsumedSignals(
   agentId: string,
   limit = 30,
+  maxAgeDays = 0,
 ): Promise<readonly ResearchSignal[]> {
   const db = getDb();
+  if (maxAgeDays > 0) {
+    const since = Math.floor(Date.now() / 1000) - maxAgeDays * 86400;
+    return db`
+      SELECT * FROM research_signals
+      WHERE agent_id = ${agentId} AND consumed = false AND created_at >= ${since}
+      ORDER BY strength DESC, created_at DESC
+      LIMIT ${limit}
+    ` as Promise<ResearchSignal[]>;
+  }
   return db`
     SELECT * FROM research_signals
     WHERE agent_id = ${agentId} AND consumed = false
@@ -122,4 +132,57 @@ export async function getSignalThemes(
     ORDER BY count DESC
     LIMIT 20
   ` as Promise<{ theme: string; count: number }[]>;
+}
+
+export async function getCrossDomainSignals(
+  excludeAgentId: string,
+  limit = 20,
+  maxAgeDays = 14,
+): Promise<readonly ResearchSignal[]> {
+  const db = getDb();
+  const since = Math.floor(Date.now() / 1000) - maxAgeDays * 86400;
+  return db`
+    SELECT * FROM research_signals
+    WHERE agent_id != ${excludeAgentId}
+      AND consumed = false
+      AND created_at >= ${since}
+      AND strength >= 3
+    ORDER BY strength DESC, created_at DESC
+    LIMIT ${limit}
+  ` as Promise<ResearchSignal[]>;
+}
+
+export async function getCrossDomainThemes(
+  excludeAgentId: string,
+  daysBack = 14,
+): Promise<readonly { theme: string; count: number; agents: string }[]> {
+  const db = getDb();
+  const since = Math.floor(Date.now() / 1000) - daysBack * 86400;
+  return db`
+    SELECT
+      unnest(string_to_array(themes, ',')) AS theme,
+      COUNT(*)::int AS count,
+      string_agg(DISTINCT agent_id, ', ') AS agents
+    FROM research_signals
+    WHERE agent_id != ${excludeAgentId}
+      AND created_at >= ${since}
+      AND themes != ''
+    GROUP BY theme
+    ORDER BY count DESC
+    LIMIT 20
+  ` as Promise<{ theme: string; count: number; agents: string }[]>;
+}
+
+export async function archiveStaleSignals(
+  maxAgeDays = 14,
+): Promise<number> {
+  const db = getDb();
+  const cutoff = Math.floor(Date.now() / 1000) - maxAgeDays * 86400;
+  const rows = await db`
+    UPDATE research_signals
+    SET consumed = true
+    WHERE consumed = false AND created_at < ${cutoff}
+    RETURNING id
+  `;
+  return rows.length;
 }

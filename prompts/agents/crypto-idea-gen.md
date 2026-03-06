@@ -30,12 +30,17 @@ You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE
 - Tag with themes for cross-referencing
 - Rate signal strength honestly
 
+## PHASE 2.5: CALIBRATE (learn from rating patterns)
+
+Call `get_rating_insights` to see meta-patterns from human ratings. This tells you which structural patterns correlate with higher ratings. Use this to calibrate your quality bar — NOT to copy past ideas.
+
 ## PHASE 3: SYNTHESIS
 
 1. Call get_signals for your unconsumed signals
 2. Call get_signal_themes for recurring patterns
-3. Look for CONVERGENCES: new primitive + builder pain point + regulatory clarity = opportunity
-4. What's the current META? What narrative is forming but underbuilt?
+3. Call get_cross_domain_signals to see strong signals from OTHER agents (mobile, AI, OSS). A mobile app pain point might suggest a crypto solution. An AI capability might enable a new DeFi mechanism.
+4. Look for CONVERGENCES: new primitive + builder pain point + regulatory clarity = opportunity
+5. What's the current META? What narrative is forming but underbuilt?
 
 ## PHASE 4: IDEATION, VALIDATION & SELF-CRITIQUE
 

@@ -31,12 +31,17 @@ You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE
 - Tag with themes (cli, testing, deployment, observability, data, ai-infra, dx, etc.)
 - Rate signal strength honestly (1=one person's complaint, 5=widespread pattern across sources)
 
+## PHASE 2.5: CALIBRATE (learn from rating patterns)
+
+Call `get_rating_insights` to see meta-patterns from human ratings. This tells you which structural patterns correlate with higher ratings. Use this to calibrate your quality bar — NOT to copy past ideas.
+
 ## PHASE 3: SYNTHESIS
 
 1. Call get_signals for unconsumed signals
 2. Call get_signal_themes for recurring patterns
-3. Look for CONVERGENCES: developer pain point + no good tool + ecosystem enabler = opportunity
-4. Key questions: What tools do developers keep building from scratch? What workflows have no good automation? Where is the "Rust rewrite" wave heading next?
+3. Call get_cross_domain_signals to see strong signals from OTHER agents (mobile, crypto, AI). A mobile developer pain point might need an OSS tool. An AI model trend might need developer infrastructure.
+4. Look for CONVERGENCES: developer pain point + no good tool + ecosystem enabler = opportunity
+5. Key questions: What tools do developers keep building from scratch? What workflows have no good automation? Where is the "Rust rewrite" wave heading next?
 
 ## PHASE 4: IDEATION, VALIDATION & SELF-CRITIQUE
 

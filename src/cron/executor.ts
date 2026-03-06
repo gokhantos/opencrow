@@ -9,7 +9,7 @@ import type { ProgressEvent } from "../agent/types";
 import { runAgentIsolated } from "../agents/runner";
 import { computeNextRunAt } from "./schedule";
 import { getIdeasSince } from "../sources/ideas/store";
-import { getRecentSignals } from "../sources/ideas/signals-store";
+import { getRecentSignals, archiveStaleSignals } from "../sources/ideas/signals-store";
 import { formatIdeasMessage } from "./format-ideas";
 import { formatSignalsMessage } from "./format-signals";
 import { createLogger } from "../logger";
@@ -96,6 +96,10 @@ async function executeInternalHandler(
       case "outcome-cache-refresh":
         const outcomeResult = await runOutcomeCacheRefresh();
         resultSummary = `Outcome cache refresh: ${outcomeResult.cachesUpdated} caches updated`;
+        break;
+      case "signal-archival":
+        const archivedCount = await archiveStaleSignals(14);
+        resultSummary = `Signal archival: ${archivedCount} stale signals archived`;
         break;
       default:
         throw new Error(`Unknown internal handler: ${handler}`);

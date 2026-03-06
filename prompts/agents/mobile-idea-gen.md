@@ -33,13 +33,18 @@ You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE
 - Rate signal strength honestly (1=anecdotal, 5=strong quantified evidence)
 - Save liberally — better to have too many signals than too few
 
+## PHASE 2.5: CALIBRATE (learn from rating patterns)
+
+Call `get_rating_insights` to see meta-patterns from human ratings. This tells you which structural patterns correlate with higher ratings (e.g., detailed reasoning, specific categories). Use this to calibrate your quality bar — NOT to copy past ideas.
+
 ## PHASE 3: SYNTHESIS (read signals, find convergences)
 
 Check your accumulated signals:
 1. Call get_signals to see your unconsumed signals
 2. Call get_signal_themes to see recurring themes across signals
-3. Look for CONVERGENCES — where 2+ signals from different sources point to the same opportunity
-4. A convergence of pain_point + capability + gap = high-conviction idea territory
+3. Call get_cross_domain_signals to see strong signals from OTHER agents (crypto, AI, OSS). Look for cross-domain opportunities — a crypto trend might inspire a mobile app.
+4. Look for CONVERGENCES — where 2+ signals from different sources point to the same opportunity
+5. A convergence of pain_point + capability + gap = high-conviction idea territory
 
 ## PHASE 4: IDEATION, DEVIL'S ADVOCATE & SELF-CRITIQUE
 

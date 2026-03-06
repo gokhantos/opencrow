@@ -39,12 +39,12 @@ function getToolByName(
 describe("createIdeaTools", () => {
   it("should return 7 tools without memoryManager", () => {
     const tools = createIdeaTools("test-agent");
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(8);
   });
 
   it("should return 8 tools with memoryManager (adds search_similar_ideas)", () => {
     const tools = createIdeaTools("test-agent", mockMemoryManager());
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
   });
 
   it("should include search_similar_ideas only when memoryManager provided", () => {

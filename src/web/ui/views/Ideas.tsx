@@ -57,6 +57,7 @@ const AGENT_COLORS: Record<string, string> = {
   "crypto-idea-gen": "#f5a623",
   "ai-idea-gen": "#7928ca",
   "oss-idea-gen": "#22c55e",
+  "idea-validator": "#ef4444",
 };
 
 const CATEGORY_STYLES: Record<string, string> = {

@@ -409,6 +409,52 @@ export function createGateway(config: OpenCrowConfig): Gateway {
             }
           }
         }
+
+        // Register idea-validator cron job — runs daily at 10:00 UTC
+        {
+          const existing = existingJobs.find((j) => j.name === "idea-validator");
+          if (!existing) {
+            const primaryTelegramUser =
+              config.channels.telegram.allowedUserIds[0];
+            const delivery = primaryTelegramUser
+              ? {
+                  mode: "announce" as const,
+                  channel: "telegram",
+                  chatId: String(primaryTelegramUser),
+                }
+              : { mode: "none" as const };
+
+            await cronStore.addJob({
+              name: "idea-validator",
+              enabled: true,
+              schedule: { kind: "cron", expr: "0 10 * * *" },
+              payload: {
+                kind: "agentTurn",
+                agentId: "idea-validator",
+              },
+              delivery,
+            });
+            log.info("Registered idea-validator cron job (10:00 UTC daily)");
+          }
+        }
+
+        // Register signal-archival internal handler — runs daily at 03:00 UTC
+        {
+          const existing = existingJobs.find((j) => j.name === "signal-archival");
+          if (!existing) {
+            await cronStore.addJob({
+              name: "signal-archival",
+              enabled: true,
+              schedule: { kind: "cron", expr: "0 3 * * *" },
+              payload: {
+                kind: "internal",
+                handler: "signal-archival",
+              },
+              delivery: { mode: "none" },
+            });
+            log.info("Registered signal-archival cron job (03:00 UTC daily)");
+          }
+        }
       }
 
       // --- Start subsystems with isolation ---
