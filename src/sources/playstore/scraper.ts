@@ -157,12 +157,12 @@ export function createPlayStoreScraper(config?: {
   ): Promise<readonly PlayRankingRow[]> {
     try {
       // Dynamic import to handle CJS module
-      const gplay = (await import("google-play-scraper")) as unknown as {
+      const gplay = ((await import("google-play-scraper")) as unknown as { default: {
         list: (opts: Record<string, unknown>) => Promise<readonly GPlayApp[]>;
         collection: Record<string, string>;
         category: Record<string, string>;
         sort: Record<string, number>;
-      };
+      } }).default;
 
       const opts: Record<string, unknown> = {
         collection,
@@ -188,10 +188,10 @@ export function createPlayStoreScraper(config?: {
     appName: string,
   ): Promise<readonly PlayReviewRow[]> {
     try {
-      const gplay = (await import("google-play-scraper")) as unknown as {
+      const gplay = ((await import("google-play-scraper")) as unknown as { default: {
         reviews: (opts: Record<string, unknown>) => Promise<GPlayReviewsResult>;
         sort: Record<string, number>;
-      };
+      } }).default;
 
       const result = await gplay.reviews({
         appId,
@@ -262,9 +262,9 @@ export function createPlayStoreScraper(config?: {
 
   async function scrape(): Promise<ScrapeResult> {
     try {
-      const gplay = (await import("google-play-scraper")) as unknown as {
+      const gplay = ((await import("google-play-scraper")) as unknown as { default: {
         collection: Record<string, string>;
-      };
+      } }).default;
 
       const topFreeCollection = gplay.collection.TOP_FREE ?? "topselling_free";
       const topPaidCollection = gplay.collection.TOP_PAID ?? "topselling_paid";
