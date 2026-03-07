@@ -4,7 +4,7 @@ import { createRouter } from "./router/router";
 import { createInternalApi } from "./internal/server";
 import { closeDb } from "./store/db";
 import type { AgentRegistry } from "./agents/registry";
-import { createCronStore, type CronStore } from "./cron/store";
+import { createCronStore } from "./cron/store";
 import { createCronScheduler, type CronScheduler } from "./cron/scheduler";
 import { registerScoringCronJob } from "./cron/scoring-engine";
 import { createLogger } from "./logger";
