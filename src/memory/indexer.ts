@@ -166,26 +166,26 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           }
         }
 
-        // Check each candidate against existing vectors for near-duplicates
-        const points: QdrantPoint[] = [];
-        let dedupSkipped = 0;
-        for (const candidate of candidates) {
-          try {
-            const similar = await config.qdrantClient.searchPoints(
-              config.qdrantCollection,
-              candidate.vector,
-              1,
-              { scoreThreshold: SEMANTIC_DEDUP_THRESHOLD },
-            );
-            if (similar.length > 0) {
-              dedupSkipped++;
-              continue;
+        // Check all candidates against existing vectors for near-duplicates (parallel)
+        const dedupResults = await Promise.all(
+          candidates.map(async (candidate) => {
+            try {
+              const similar = await config.qdrantClient!.searchPoints(
+                config.qdrantCollection,
+                candidate.vector,
+                1,
+                { scoreThreshold: SEMANTIC_DEDUP_THRESHOLD },
+              );
+              return { candidate, isDuplicate: similar.length > 0 };
+            } catch {
+              return { candidate, isDuplicate: false };
             }
-          } catch {
-            // If similarity check fails, insert anyway
-          }
-          points.push(candidate);
-        }
+          }),
+        );
+        const points = dedupResults
+          .filter((r) => !r.isDuplicate)
+          .map((r) => r.candidate);
+        const dedupSkipped = dedupResults.filter((r) => r.isDuplicate).length;
 
         if (dedupSkipped > 0) {
           log.info("Semantic dedup skipped near-duplicate vectors", {
