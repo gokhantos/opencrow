@@ -195,14 +195,20 @@ export function createInteractionRoutes(opts: {
       return c.json({ success: true, data: result });
     }
     if (opts.coreClient) {
-      const result = await opts.coreClient.scraperAction(
-        "x-interactions",
-        "run-now",
-        {
-          accountId: parsed.data.account_id,
-        },
-      );
-      return c.json({ success: true, data: result.data });
+      try {
+        const result = await opts.coreClient.scraperAction(
+          "x-interactions",
+          "run-now",
+          {
+            accountId: parsed.data.account_id,
+          },
+        );
+        return c.json({ success: true, data: result.data });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Autolike request failed";
+        log.error("Autolike run-now failed", { error: msg });
+        return c.json({ success: false, error: msg }, 502);
+      }
     }
     return c.json(
       { success: false, error: "Autolike processor not available" },

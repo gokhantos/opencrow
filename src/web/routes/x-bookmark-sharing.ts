@@ -146,14 +146,20 @@ export function createBookmarkSharingRoutes(opts: {
       return c.json({ success: true, data: result });
     }
     if (opts.coreClient) {
-      const result = await opts.coreClient.scraperAction(
-        "x-bookmarks",
-        "share-now",
-        {
-          accountId: parsed.data.account_id,
-        },
-      );
-      return c.json({ success: true, data: result.data });
+      try {
+        const result = await opts.coreClient.scraperAction(
+          "x-bookmarks",
+          "share-now",
+          {
+            accountId: parsed.data.account_id,
+          },
+        );
+        return c.json({ success: true, data: result.data });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Bookmark share request failed";
+        log.error("Bookmark share-now failed", { error: msg });
+        return c.json({ success: false, error: msg }, 502);
+      }
     }
     return c.json(
       { success: false, error: "Bookmark processor not available" },
