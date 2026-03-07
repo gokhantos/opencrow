@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { apiFetch, getToken, setToken, clearToken } from "../api";
 import { formatUptime } from "../lib/format";
 import { cn } from "../lib/cn";
 import { PageHeader, Button, Input, StatusBadge } from "../components";
 import { Clock, Users, Zap, Shield, Wifi, WifiOff, Key, MessageCircle, Send } from "lucide-react";
+import { useSystemEvents } from "../hooks/useSystemEvents";
 
 interface ChannelInfo {
   status: string;
@@ -24,11 +25,26 @@ export default function Overview() {
   const [tokenInput, setTokenInput] = useState("");
   const [tokenMsg, setTokenMsg] = useState("");
 
+  const handleSystemEvent = useCallback(
+    (event: { type: string; data: Record<string, unknown> }) => {
+      if (event.type === "status") {
+        setStatus(event.data as unknown as StatusData);
+        setError("");
+      }
+    },
+    [],
+  );
+
+  const { connected: wsConnected } = useSystemEvents(handleSystemEvent);
+
+  // Initial fetch + fallback polling when WS is disconnected
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 10000);
-    return () => clearInterval(interval);
-  }, []);
+    if (!wsConnected) {
+      const interval = setInterval(fetchStatus, 10000);
+      return () => clearInterval(interval);
+    }
+  }, [wsConnected]);
 
   async function fetchStatus() {
     try {
