@@ -7,8 +7,8 @@ const log = createLogger("reddit-feed");
 const BASE_URL = "https://www.reddit.com";
 const POSTS_PER_PAGE = 25;
 const MAX_PAGES = 2;
-const MIN_DELAY_MS = 4000;
-const MAX_DELAY_MS = 7000;
+const MIN_DELAY_MS = 8000;
+const MAX_DELAY_MS = 14000;
 const FALLBACK_SUBREDDITS = [
   "programming",
   "technology",
