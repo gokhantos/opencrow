@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { ChevronRight, Archive, RotateCcw } from "lucide-react";
 import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
@@ -68,6 +69,23 @@ const CATEGORY_STYLES: Record<string, string> = {
   open_source: "bg-success-subtle text-success border border-success/20",
   general: "bg-bg-3 text-muted border border-border",
 };
+
+const STAGE_ORDER = ["signal", "synthesis", "idea", "validated", "archived"] as const;
+type PipelineStage = (typeof STAGE_ORDER)[number];
+
+const STAGE_STYLES: Record<PipelineStage, string> = {
+  signal: "bg-warning-subtle text-warning border border-warning/20",
+  synthesis: "bg-accent-subtle text-accent border border-accent/20",
+  idea: "bg-bg-3 text-muted border border-border",
+  validated: "bg-success-subtle text-success border border-success/20",
+  archived: "bg-danger-subtle text-danger border border-danger/20",
+};
+
+function nextStage(current: string): PipelineStage | null {
+  const idx = STAGE_ORDER.indexOf(current as PipelineStage);
+  if (idx < 0 || idx >= STAGE_ORDER.indexOf("archived")) return null;
+  return STAGE_ORDER[idx + 1];
+}
 
 export function computeRatingCounts(ideas: readonly GeneratedIdea[]) {
   let rated = 0;
@@ -165,12 +183,40 @@ function ratingBarColor(rating: number | null): string {
 function IdeaCard({
   idea,
   onRate,
+  onStageChange,
 }: {
   readonly idea: GeneratedIdea;
   readonly onRate: (id: string, rating: number | null) => void;
+  readonly onStageChange: (id: string, stage: string) => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [stagePending, setStagePending] = useState(false);
   const agentColor = AGENT_COLORS[idea.agent_id] ?? "var(--text-3)";
+
+  const currentStage = (idea.pipeline_stage || "idea") as PipelineStage;
+  const next = nextStage(currentStage);
+  const isArchived = currentStage === "archived";
+
+  async function handleAdvance() {
+    if (!next || stagePending) return;
+    setStagePending(true);
+    await onStageChange(idea.id, next);
+    setStagePending(false);
+  }
+
+  async function handleArchive() {
+    if (stagePending) return;
+    setStagePending(true);
+    await onStageChange(idea.id, "archived");
+    setStagePending(false);
+  }
+
+  async function handleRestore() {
+    if (stagePending) return;
+    setStagePending(true);
+    await onStageChange(idea.id, "idea");
+    setStagePending(false);
+  }
 
   return (
     <div
@@ -248,6 +294,51 @@ function IdeaCard({
           </span>
           {expanded ? "Hide reasoning" : "Reasoning"}
         </button>
+
+        {/* Stage badge */}
+        <span
+          className={cn(
+            "inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold capitalize ml-auto shrink-0",
+            STAGE_STYLES[currentStage] ?? "bg-bg-3 text-muted border border-border",
+          )}
+        >
+          {currentStage}
+        </span>
+
+        {/* Stage action buttons */}
+        {isArchived ? (
+          <button
+            disabled={stagePending}
+            onClick={handleRestore}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border bg-transparent text-faint text-xs font-medium cursor-pointer font-sans transition-colors hover:bg-bg-2 hover:text-strong disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Restore to idea stage"
+          >
+            <RotateCcw size={11} />
+            Restore
+          </button>
+        ) : (
+          <>
+            {next && next !== "archived" && (
+              <button
+                disabled={stagePending}
+                onClick={handleAdvance}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border bg-transparent text-faint text-xs font-medium cursor-pointer font-sans transition-colors hover:bg-bg-2 hover:text-strong disabled:opacity-40 disabled:cursor-not-allowed"
+                title={`Move to ${next}`}
+              >
+                <ChevronRight size={12} />
+                {next}
+              </button>
+            )}
+            <button
+              disabled={stagePending}
+              onClick={handleArchive}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border bg-transparent text-faint text-xs font-medium cursor-pointer font-sans transition-colors hover:bg-danger-subtle hover:text-danger hover:border-danger/30 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Archive this idea"
+            >
+              <Archive size={11} />
+            </button>
+          </>
+        )}
       </div>
 
       <div
@@ -332,6 +423,37 @@ export default function Ideas() {
       }
     },
     [],
+  );
+
+  const handleStageChange = useCallback(
+    async (id: string, stage: string) => {
+      try {
+        const res = await apiFetch<{ success: boolean; data: GeneratedIdea }>(
+          `/api/ideas/${id}/stage`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ stage }),
+          },
+        );
+        if (res.success) {
+          setIdeas((prev) =>
+            prev.map((idea) => (idea.id === id ? res.data : idea)),
+          );
+          setStageCounts((prev) => {
+            const oldStage = ideas.find((i) => i.id === id)?.pipeline_stage ?? "idea";
+            return prev.map((s) => {
+              if (s.stage === oldStage) return { ...s, count: Math.max(0, s.count - 1) };
+              if (s.stage === stage) return { ...s, count: s.count + 1 };
+              return s;
+            });
+          });
+        }
+      } catch {
+        toast.error("Failed to update stage");
+      }
+    },
+    [ideas],
   );
 
   const ratingCounts = useMemo(() => computeRatingCounts(ideas), [ideas]);
@@ -693,7 +815,7 @@ export default function Ideas() {
           )}
         >
           {sortedIdeas.map((idea) => (
-            <IdeaCard key={idea.id} idea={idea} onRate={handleRate} />
+            <IdeaCard key={idea.id} idea={idea} onRate={handleRate} onStageChange={handleStageChange} />
           ))}
         </div>
       )}
