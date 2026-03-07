@@ -26,6 +26,10 @@ export function createEmbeddingCache(
     }
   }
 
+  // Proactively evict expired entries every 60s
+  const cleanupTimer = setInterval(evictExpired, 60_000);
+  if (cleanupTimer.unref) cleanupTimer.unref();
+
   return {
     get(query: string): Float32Array | null {
       const entry = cache.get(query);
