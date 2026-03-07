@@ -12,7 +12,6 @@ describe("createGrepTool", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "grep-test-"));
     config = {
-      enabled: true,
       allowedDirectories: [tempDir],
       blockedCommands: [],
       maxBashTimeout: 30000,

@@ -15,7 +15,6 @@ import type { ToolDefinition } from './types'
 
 // Test configuration with permissive settings for testing
 const testConfig: ToolsConfig = {
-  enabled: true,
   allowedDirectories: ['$HOME'],
   blockedCommands: ['rm -rf', 'sudo', 'su', 'curl', 'wget'],
   maxBashTimeout: 10_000,

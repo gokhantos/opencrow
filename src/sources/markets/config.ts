@@ -49,7 +49,6 @@ export function getListingDate(symbol: string, marketType: string): Date {
 }
 
 export const marketPipelineConfigSchema = z.object({
-  enabled: z.boolean().default(false),
   questdbIlpUrl: z.string().default("tcp::addr=127.0.0.1:9009"),
   questdbHttpUrl: z.string().default("http://127.0.0.1:9000"),
   exchange: z.string().default("binance"),
@@ -59,28 +58,26 @@ export const marketPipelineConfigSchema = z.object({
     .default(["BTC/USDT", "ETH/USDT", "SOL/USDT"]),
   backfill: z
     .object({
-      enabled: z.boolean().default(true),
       timeframes: z.array(timeframeSchema).default(["1m"]),
       fullHistory: z.boolean().default(true),
     })
     .default({
-      enabled: true,
       timeframes: ["1m"],
       fullHistory: true,
-    }),
+    })
+    .optional(),
   stream: z
     .object({
-      enabled: z.boolean().default(true),
       timeframes: z.array(timeframeSchema).default(["1m"]),
       reconnectDelayMs: z.number().int().min(1000).max(60000).default(5000),
       maxReconnectAttempts: z.number().int().min(1).max(50).default(20),
     })
     .default({
-      enabled: true,
       timeframes: ["1m"],
       reconnectDelayMs: 5000,
       maxReconnectAttempts: 20,
-    }),
+    })
+    .optional(),
 });
 
 export type MarketPipelineConfig = z.infer<typeof marketPipelineConfigSchema>;

@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   }
 
   // Init QuestDB for market data queries (read-only from web process)
-  if (config.market.enabled) {
+  if (config.market !== undefined) {
     try {
       await initQuestDBReadOnly();
       log.info("QuestDB initialized for market queries (read-only)");
@@ -81,18 +81,19 @@ async function main(): Promise<void> {
 
   // Memory manager for search routes
   let memoryManager: MemoryManager | undefined;
-  if (config.memorySearch.enabled) {
+  if (config.memorySearch !== undefined) {
     const embeddingKey =
       process.env.OPENROUTER_API_KEY ?? process.env.VOYAGE_API_KEY;
     const embeddingProvider = embeddingKey
       ? createEmbeddingProvider(embeddingKey)
       : null;
 
-    const qdrantUrl = process.env.QDRANT_URL ?? config.memorySearch.qdrant.url;
-    const qdrantCollection = config.memorySearch.qdrant.collection;
+    const memSearch = config.memorySearch!;
+    const qdrantUrl = process.env.QDRANT_URL ?? memSearch.qdrant.url;
+    const qdrantCollection = memSearch.qdrant.collection;
     const qdrantClient = await createQdrantClient({
       url: qdrantUrl,
-      apiKey: config.memorySearch.qdrant.apiKey,
+      apiKey: memSearch.qdrant.apiKey,
     });
 
     if (qdrantClient.available) {
@@ -103,12 +104,12 @@ async function main(): Promise<void> {
       embeddingProvider,
       qdrantClient,
       qdrantCollection,
-      shared: config.memorySearch.shared,
-      defaultLimit: config.memorySearch.defaultLimit,
-      minScore: config.memorySearch.minScore,
-      vectorWeight: config.memorySearch.vectorWeight,
-      textWeight: config.memorySearch.textWeight,
-      mmrLambda: config.memorySearch.mmrLambda,
+      shared: memSearch.shared,
+      defaultLimit: memSearch.defaultLimit,
+      minScore: memSearch.minScore,
+      vectorWeight: memSearch.vectorWeight,
+      textWeight: memSearch.textWeight,
+      mmrLambda: memSearch.mmrLambda,
     });
     log.info("Memory search initialized");
   }
@@ -144,8 +145,8 @@ async function main(): Promise<void> {
     bookmarkProcessor,
     autolikeProcessor,
     autofollowProcessor,
-    marketSymbols: config.market.symbols,
-    marketTypes: config.market.marketTypes,
+    marketSymbols: config.market?.symbols ?? [],
+    marketTypes: config.market?.marketTypes ?? [],
   });
 
   // Periodic agent reload

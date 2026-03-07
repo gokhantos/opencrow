@@ -51,7 +51,6 @@ function createMockAlertStore(): AlertStore & {
 }
 
 const defaultConfig: MonitorConfig = {
-  enabled: true,
   checkIntervalMs: 60_000,
   alertCooldownMs: 1_800_000,
   thresholds: {

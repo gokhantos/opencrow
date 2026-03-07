@@ -51,7 +51,7 @@ async function main(): Promise<void> {
   log.info("Cron scheduler started");
 
   // --- Proactive Monitor ---
-  if (config.monitor.enabled) {
+  if (config.monitor !== undefined) {
     const primaryUserId = config.channels.telegram.allowedUserIds[0];
     if (primaryUserId) {
       const { createAlertStore } = await import("../monitor/alert-store");
@@ -63,7 +63,7 @@ async function main(): Promise<void> {
 
       const telegramChatId = String(primaryUserId);
       const monitorRunner = createMonitorRunner({
-        config: config.monitor,
+        config: config.monitor!,
         deliveryStore,
         alertStore: createAlertStore(),
         telegramChatId,

@@ -1,4 +1,4 @@
-import type { OpenCrowConfig, ProcessSpec } from "../config/schema";
+import type { OpenCrowConfig } from "../config/schema";
 import type { ResolvedAgent } from "../agents/types";
 
 /**
@@ -11,25 +11,22 @@ import type { ResolvedAgent } from "../agents/types";
 export function resolveManifest(
   config: OpenCrowConfig,
   agents: readonly ResolvedAgent[],
-): readonly ProcessSpec[] {
+): readonly ResolvedProcessSpec[] {
   const processesConfig = config.processes;
   if (!processesConfig) return [];
 
-  const specs: ProcessSpec[] = [];
+  const specs: ResolvedProcessSpec[] = [];
 
   // Static processes from config (user-defined extras)
   for (const s of processesConfig.static) {
-    if (s.enabled) {
-      specs.push(s);
-    }
+    specs.push(s);
   }
 
-  // Built-in infrastructure processes (always spawned when processes enabled)
-  const builtins: ProcessSpec[] = [
+  // Built-in infrastructure processes (always spawned)
+  const builtins: ResolvedProcessSpec[] = [
     {
       name: "cron",
       entry: "src/entries/cron.ts",
-      enabled: true,
       restartPolicy: "always",
       maxRestarts: 10,
       restartWindowSec: 300,
@@ -37,37 +34,39 @@ export function resolveManifest(
     {
       name: "web",
       entry: "src/web-index.ts",
-      enabled: config.web.enabled,
-      restartPolicy: "always",
-      maxRestarts: 10,
-      restartWindowSec: 300,
-    },
-    {
-      name: "market",
-      entry: "src/entries/market.ts",
-      enabled: config.market.enabled,
       restartPolicy: "always",
       maxRestarts: 10,
       restartWindowSec: 300,
     },
   ];
+
+  // Market process only if market section is present
+  if (config.market !== undefined) {
+    builtins.push({
+      name: "market",
+      entry: "src/entries/market.ts",
+      restartPolicy: "always",
+      maxRestarts: 10,
+      restartWindowSec: 300,
+    });
+  }
+
   for (const b of builtins) {
     // Skip if already defined in static (user override)
-    if (b.enabled && !specs.some((s) => s.name === b.name)) {
+    if (!specs.some((s) => s.name === b.name)) {
       specs.push(b);
     }
   }
 
-  // Agent processes
-  if (processesConfig.agentProcesses.enabled) {
+  // Agent processes (present when agentProcesses section exists)
+  if (processesConfig.agentProcesses !== undefined) {
     const agentEntry = processesConfig.agentProcesses.entry;
     const agentRestartPolicy = processesConfig.agentProcesses.restartPolicy;
 
     // Spawn a process for each agent that has a telegramBotToken or owns WhatsApp.
-    // No special-casing — every agent is treated the same.
     for (const agent of agents) {
       const ownsWhatsApp =
-        config.channels.whatsapp.enabled &&
+        config.channels.whatsapp !== undefined &&
         config.channels.whatsapp.defaultAgent === agent.id;
 
       if (!agent.telegramBotToken && !ownsWhatsApp) continue;
@@ -75,7 +74,6 @@ export function resolveManifest(
       specs.push({
         name: `agent:${agent.id}`,
         entry: agentEntry,
-        enabled: true,
         env: { OPENCROW_AGENT_ID: agent.id },
         restartPolicy: agentRestartPolicy,
         maxRestarts: 10,
@@ -84,8 +82,8 @@ export function resolveManifest(
     }
   }
 
-  // Scraper processes — one per scraper ID
-  if (processesConfig.scraperProcesses.enabled) {
+  // Scraper processes (present when scraperProcesses section exists)
+  if (processesConfig.scraperProcesses !== undefined) {
     const scraperEntry = processesConfig.scraperProcesses.entry;
     const scraperRestartPolicy = processesConfig.scraperProcesses.restartPolicy;
 
@@ -93,7 +91,6 @@ export function resolveManifest(
       specs.push({
         name: `scraper:${scraperId}`,
         entry: scraperEntry,
-        enabled: true,
         env: { OPENCROW_SCRAPER_ID: scraperId },
         restartPolicy: scraperRestartPolicy,
         maxRestarts: 10,
@@ -103,4 +100,13 @@ export function resolveManifest(
   }
 
   return specs;
+}
+
+export interface ResolvedProcessSpec {
+  readonly name: string;
+  readonly entry: string;
+  readonly env?: Record<string, string>;
+  readonly restartPolicy: "always" | "on-failure" | "never";
+  readonly maxRestarts: number;
+  readonly restartWindowSec: number;
 }

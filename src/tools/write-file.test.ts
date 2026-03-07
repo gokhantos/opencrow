@@ -12,7 +12,6 @@ describe("createWriteFileTool", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "writefile-test-"));
     config = {
-      enabled: true,
       allowedDirectories: [tempDir],
       blockedCommands: [],
       maxBashTimeout: 30000,

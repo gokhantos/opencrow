@@ -95,13 +95,13 @@ async function main(): Promise<void> {
         observationHook: ctx.observationHook ?? undefined,
       });
 
-      if (config.channels.telegram.enabled) {
+      if (Boolean(config.channels.telegram.botToken)) {
         await channelManager.startAll(
           {
             ...config,
             channels: {
               ...config.channels,
-              whatsapp: { ...config.channels.whatsapp, enabled: false },
+              whatsapp: undefined,
             },
           },
           router.handleMessage,
@@ -143,9 +143,10 @@ async function main(): Promise<void> {
   }
 
   // --- WhatsApp channel ---
-  const waDefaultAgentId = config.channels.whatsapp.defaultAgent;
+  const waConfig = config.channels.whatsapp;
+  const waDefaultAgentId = waConfig?.defaultAgent;
   const ownsWhatsApp =
-    config.channels.whatsapp.enabled &&
+    waConfig !== undefined &&
     ((isDefault && waDefaultAgentId === resolvedAgent.id) ||
       waDefaultAgentId === agentId);
 
@@ -157,8 +158,8 @@ async function main(): Promise<void> {
         channel: waChannel,
         agent: resolvedAgent,
         agentId: resolvedAgent.id,
-        allowedNumbers: config.channels.whatsapp.allowedNumbers,
-        allowedGroups: config.channels.whatsapp.allowedGroups,
+        allowedNumbers: waConfig!.allowedNumbers,
+        allowedGroups: waConfig!.allowedGroups,
         buildOptions: (agent, onProgress) =>
           ctx.buildOptionsForAgent(
             agent,

@@ -25,7 +25,6 @@ describe("createToolRegistry", () => {
 
   beforeEach(() => {
     config = {
-      enabled: true,
       allowedDirectories: ["/tmp"],
       blockedCommands: ["sudo"],
       maxBashTimeout: 30000,

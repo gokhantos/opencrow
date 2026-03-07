@@ -101,7 +101,7 @@ export function createSubsystemRegistry(opts: {
   return {
     async startAll(): Promise<SubsystemInstances> {
       try {
-        if (config.market.enabled) {
+        if (config.market !== undefined) {
           liveHub = createLiveKlineHub();
           marketPipeline = createMarketPipeline(config.market, liveHub);
           await marketPipeline.start();

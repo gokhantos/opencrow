@@ -2,13 +2,11 @@ import { z } from "zod";
 import { marketPipelineConfigSchema } from "../sources/markets/config";
 
 export const telegramConfigSchema = z.object({
-  enabled: z.boolean().default(true),
   botToken: z.string().optional(),
   allowedUserIds: z.array(z.number()).default([]),
 });
 
 export const whatsappConfigSchema = z.object({
-  enabled: z.boolean().default(true),
   phoneNumber: z.string().optional(),
   allowedNumbers: z.array(z.string()).default([]),
   allowedGroups: z.array(z.string()).default([]),
@@ -26,14 +24,12 @@ export const retryConfigSchema = z
 
 export const compactionConfigSchema = z
   .object({
-    enabled: z.boolean().default(true),
     maxContextTokens: z.number().int().default(180_000),
     targetHistoryTokens: z.number().int().default(80_000),
     summaryMaxTokens: z.number().int().default(2048),
     stripToolResultsAfterTurns: z.number().int().default(3),
   })
   .default({
-    enabled: true,
     maxContextTokens: 180_000,
     targetHistoryTokens: 60_000,
     summaryMaxTokens: 2048,
@@ -42,11 +38,11 @@ export const compactionConfigSchema = z
 
 export const failoverConfigSchema = z
   .object({
-    enabled: z.boolean().default(false),
     fallbackModels: z.array(z.string()).default([]),
     tokenCooldownMs: z.number().int().default(60_000),
   })
-  .default({ enabled: false, fallbackModels: [], tokenCooldownMs: 60_000 });
+  .default({ fallbackModels: [], tokenCooldownMs: 60_000 })
+  .optional();
 
 export const agentConfigSchema = z.object({
   model: z.string().default("claude-opus-4-6"),
@@ -133,7 +129,6 @@ export const agentDefinitionSchema = z.object({
 });
 
 export const toolsConfigSchema = z.object({
-  enabled: z.boolean().default(true),
   allowedDirectories: z.array(z.string()).default(["$HOME"]),
   blockedCommands: z.array(z.string()).default([]),
   maxBashTimeout: z.number().int().default(600_000),
@@ -142,7 +137,6 @@ export const toolsConfigSchema = z.object({
 });
 
 export const webConfigSchema = z.object({
-  enabled: z.boolean().default(true),
   port: z.number().int().min(1).max(65535).default(48080),
   host: z.string().default("127.0.0.1"),
 });
@@ -179,13 +173,11 @@ export const monitorThresholdsSchema = z
 
 export const monitorConfigSchema = z
   .object({
-    enabled: z.boolean().default(true),
     checkIntervalMs: z.number().int().min(30_000).default(120_000),
     alertCooldownMs: z.number().int().min(60_000).default(1_800_000),
     thresholds: monitorThresholdsSchema,
   })
   .default({
-    enabled: true,
     checkIntervalMs: 120_000,
     alertCooldownMs: 1_800_000,
     thresholds: {
@@ -197,7 +189,8 @@ export const monitorConfigSchema = z
       memoryUsagePercent: 90,
       cronConsecutiveFailures: 3,
     },
-  });
+  })
+  .optional();
 
 export const postgresConfigSchema = z.object({
   url: z
@@ -213,7 +206,6 @@ export const qdrantConfigSchema = z.object({
 });
 
 export const memorySearchConfigSchema = z.object({
-  enabled: z.boolean().default(true),
   autoIndex: z.boolean().default(true),
   shared: z.boolean().default(true),
   vectorWeight: z.number().min(0).max(1).default(0.7),
@@ -232,7 +224,6 @@ export const memorySearchConfigSchema = z.object({
 
 export const observationsConfigSchema = z
   .object({
-    enabled: z.boolean().default(true),
     model: z.string().default("claude-haiku-4-5-20251001"),
     minMessages: z.number().int().min(2).default(4),
     maxPerConversation: z.number().int().min(1).default(3),
@@ -240,18 +231,17 @@ export const observationsConfigSchema = z
     debounceSec: z.number().int().min(0).default(300),
   })
   .default({
-    enabled: true,
     model: "claude-haiku-4-5-20251001",
     minMessages: 4,
     maxPerConversation: 3,
     maxRecentInPrompt: 10,
     debounceSec: 300,
-  });
+  })
+  .optional();
 
 export const processSpecSchema = z.object({
   name: z.string().min(1),
   entry: z.string().min(1),
-  enabled: z.boolean().default(true),
   env: z.record(z.string(), z.string()).optional(),
   restartPolicy: z.enum(["always", "on-failure", "never"]).default("always"),
   maxRestarts: z.number().int().min(0).default(10),
@@ -260,19 +250,17 @@ export const processSpecSchema = z.object({
 
 export const agentProcessesConfigSchema = z
   .object({
-    enabled: z.boolean().default(true),
     entry: z.string().default("src/entries/agent.ts"),
     restartPolicy: z.enum(["always", "on-failure", "never"]).default("always"),
   })
   .default({
-    enabled: true,
     entry: "src/entries/agent.ts",
     restartPolicy: "always",
-  });
+  })
+  .optional();
 
 export const scraperProcessesConfigSchema = z
   .object({
-    enabled: z.boolean().default(true),
     entry: z.string().default("src/entries/scraper.ts"),
     restartPolicy: z.enum(["always", "on-failure", "never"]).default("always"),
     scraperIds: z
@@ -298,7 +286,6 @@ export const scraperProcessesConfigSchema = z
       ]),
   })
   .default({
-    enabled: true,
     entry: "src/entries/scraper.ts",
     restartPolicy: "always",
     scraperIds: [
@@ -320,7 +307,8 @@ export const scraperProcessesConfigSchema = z
       "defillama",
       "dexscreener",
     ],
-  });
+  })
+  .optional();
 
 export const processesConfigSchema = z
   .object({
@@ -330,35 +318,6 @@ export const processesConfigSchema = z
   })
   .default({
     static: [],
-    agentProcesses: {
-      enabled: true,
-      entry: "src/entries/agent.ts",
-      restartPolicy: "always",
-    },
-    scraperProcesses: {
-      enabled: true,
-      entry: "src/entries/scraper.ts",
-      restartPolicy: "always",
-      scraperIds: [
-        "hackernews",
-        "huggingface",
-        "reddit",
-        "github",
-        "producthunt",
-        "arxiv",
-        "scholar",
-        "news",
-        "x-bookmarks",
-        "x-autolike",
-        "x-autofollow",
-        "x-timeline",
-        "google-trends",
-        "appstore",
-        "playstore",
-        "defillama",
-        "dexscreener",
-      ],
-    },
   });
 
 export const opencrowConfigSchema = z.object({
@@ -368,39 +327,24 @@ export const opencrowConfigSchema = z.object({
       "You are OpenCrow, a helpful personal AI assistant. Be concise and direct.",
     retry: { attempts: 3, minDelayMs: 500, maxDelayMs: 30000, jitter: 0.15 },
     compaction: {
-      enabled: true,
       maxContextTokens: 180_000,
       targetHistoryTokens: 60_000,
       summaryMaxTokens: 2048,
       stripToolResultsAfterTurns: 3,
     },
-    failover: { enabled: false, fallbackModels: [], tokenCooldownMs: 60_000 },
   }),
   agents: z.array(agentDefinitionSchema).default([]),
   channels: z
     .object({
       telegram: telegramConfigSchema.default({
-        enabled: true,
         allowedUserIds: [],
       }),
-      whatsapp: whatsappConfigSchema.default({
-        enabled: true,
-        allowedNumbers: [],
-        allowedGroups: [],
-        defaultAgent: "opencrow",
-      }),
+      whatsapp: whatsappConfigSchema.optional(),
     })
     .default({
-      telegram: { enabled: true, allowedUserIds: [] },
-      whatsapp: {
-        enabled: true,
-        allowedNumbers: [],
-        allowedGroups: [],
-        defaultAgent: "opencrow",
-      },
+      telegram: { allowedUserIds: [] },
     }),
   web: webConfigSchema.default({
-    enabled: true,
     port: 48080,
     host: "0.0.0.0",
   }),
@@ -409,7 +353,6 @@ export const opencrowConfigSchema = z.object({
     host: "127.0.0.1",
   }),
   tools: toolsConfigSchema.default({
-    enabled: true,
     allowedDirectories: ["$HOME"],
     blockedCommands: [],
     maxBashTimeout: 600_000,
@@ -425,7 +368,6 @@ export const opencrowConfigSchema = z.object({
     max: 20,
   }),
   memorySearch: memorySearchConfigSchema.default({
-    enabled: true,
     autoIndex: true,
     shared: true,
     vectorWeight: 0.7,
@@ -440,27 +382,9 @@ export const opencrowConfigSchema = z.object({
       url: "http://127.0.0.1:6333",
       collection: "opencrow_memory",
     },
-  }),
+  }).optional(),
   observations: observationsConfigSchema,
-  market: marketPipelineConfigSchema.default({
-    enabled: true,
-    questdbIlpUrl: "tcp::addr=127.0.0.1:9009",
-    questdbHttpUrl: "http://127.0.0.1:9000",
-    exchange: "binance",
-    marketTypes: ["spot", "futures"],
-    symbols: ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
-    backfill: {
-      enabled: true,
-      timeframes: ["1m", "1h", "1d"],
-      fullHistory: true,
-    },
-    stream: {
-      enabled: true,
-      timeframes: ["1m"],
-      reconnectDelayMs: 5000,
-      maxReconnectAttempts: 20,
-    },
-  }),
+  market: marketPipelineConfigSchema.optional(),
   monitor: monitorConfigSchema,
   processes: processesConfigSchema,
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),

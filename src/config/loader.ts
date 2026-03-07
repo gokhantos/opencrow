@@ -26,7 +26,6 @@ function applyEnvOverrides(
     telegram = {
       ...telegram,
       botToken: process.env.TELEGRAM_BOT_TOKEN,
-      enabled: telegram.enabled ?? true,
     };
   }
 

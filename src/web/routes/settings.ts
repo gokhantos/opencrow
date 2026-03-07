@@ -14,7 +14,7 @@ export function createSettingsRoutes(deps: WebAppDeps): Hono {
         },
         channels: {
           telegram: {
-            enabled: deps.config.channels.telegram.enabled,
+            configured: Boolean(deps.config.channels.telegram.botToken),
             connected: deps.channels.get("telegram")?.isConnected() ?? false,
           },
         },

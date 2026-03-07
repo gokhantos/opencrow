@@ -563,7 +563,7 @@ export async function backfillAll(
 
   for (const marketType of config.marketTypes) {
     for (const symbol of config.symbols) {
-      for (const timeframe of config.backfill.timeframes) {
+      for (const timeframe of config.backfill!.timeframes) {
         // Capture loop variables
         const mt = marketType;
         const sym = symbol;

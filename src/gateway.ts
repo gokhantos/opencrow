@@ -128,8 +128,8 @@ export function createGateway(config: OpenCrowConfig): Gateway {
       await channelManager.startAll(mergedConfig, router.handleMessage);
 
       // Wire WhatsApp to dedicated agent if configured
-      const waDefaultAgentId = mergedConfig.channels.whatsapp.defaultAgent;
-      if (waDefaultAgentId && mergedConfig.channels.whatsapp.enabled) {
+      const waDefaultAgentId = mergedConfig.channels.whatsapp?.defaultAgent;
+      if (waDefaultAgentId && mergedConfig.channels.whatsapp !== undefined) {
         const waChannel = channelManager.getChannels().get("whatsapp");
         const waAgent = agentRegistry.getById(waDefaultAgentId);
         if (waChannel && waAgent) {
@@ -138,8 +138,8 @@ export function createGateway(config: OpenCrowConfig): Gateway {
             channel: waChannel,
             agent: waAgent,
             agentId: waDefaultAgentId,
-            allowedNumbers: mergedConfig.channels.whatsapp.allowedNumbers,
-            allowedGroups: mergedConfig.channels.whatsapp.allowedGroups,
+            allowedNumbers: mergedConfig.channels.whatsapp!.allowedNumbers,
+            allowedGroups: mergedConfig.channels.whatsapp!.allowedGroups,
             buildOptions: ctx.buildOptionsForAgent,
             agentRegistry,
             observationHook: observationHook ?? undefined,
@@ -215,8 +215,8 @@ export function createGateway(config: OpenCrowConfig): Gateway {
         messageHandler: router.handleMessage,
         memoryManager: memoryManager ?? undefined,
         marketPipeline: instances.marketPipeline,
-        marketSymbols: config.market.symbols,
-        marketTypes: config.market.marketTypes,
+        marketSymbols: config.market?.symbols ?? [],
+        marketTypes: config.market?.marketTypes ?? [],
         bookmarkProcessor: instances.bookmarkProcessor,
         autolikeProcessor: instances.autolikeProcessor,
         autofollowProcessor: instances.autofollowProcessor,

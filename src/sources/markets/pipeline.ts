@@ -72,8 +72,8 @@ export function createMarketPipeline(
       log.info("Starting market pipeline", {
         marketTypes: config.marketTypes,
         symbols: config.symbols,
-        backfillEnabled: config.backfill.enabled,
-        streamEnabled: config.stream.enabled,
+        backfillEnabled: config.backfill !== undefined,
+        streamEnabled: config.stream !== undefined,
       });
 
       const ilpUrl = process.env.QUESTDB_ILP_URL ?? config.questdbIlpUrl;
@@ -91,7 +91,7 @@ export function createMarketPipeline(
       }
 
       // Start all backfills in background (non-blocking)
-      if (config.backfill.enabled && questdbReady) {
+      if (config.backfill !== undefined && questdbReady) {
         // Kline backfill (parallel)
         backfillAll({
           config,
@@ -133,7 +133,7 @@ export function createMarketPipeline(
       }
 
       // Start WebSocket streams immediately (don't wait for backfill)
-      if (config.stream.enabled && questdbReady) {
+      if (config.stream !== undefined && questdbReady) {
         klineStream = createKlineStream({
           config,
           // Forward every kline event (including unclosed) to the live hub

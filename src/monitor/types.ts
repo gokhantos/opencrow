@@ -27,7 +27,6 @@ export interface MonitorThresholds {
 }
 
 export interface MonitorConfig {
-  readonly enabled: boolean;
   readonly checkIntervalMs: number;
   readonly alertCooldownMs: number;
   readonly thresholds: MonitorThresholds;
