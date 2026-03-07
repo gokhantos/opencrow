@@ -22,6 +22,7 @@ import {
   clearAllSdkSessions,
 } from "../store/sdk-sessions";
 import { resolveAgentForMessage } from "../store/routing-rules";
+import { generateHandoff } from "../agent/handoff";
 import { createLogger } from "../logger";
 
 const log = createLogger("router");
@@ -372,12 +373,25 @@ export function createRouter(routerConfig: RouterConfig) {
       return;
     }
 
-    activeAgents.set(chatKey(channelName, chatId), agentId);
+    const key2 = chatKey(channelName, chatId);
+    const prevAgentId =
+      activeAgents.get(key2) ?? routerConfig.agentRegistry.getDefault().id;
+    activeAgents.set(key2, agentId);
     await sendReply(
       channelName,
       chatId,
       `Switched to agent: ${agent.name} (${agent.id})`,
     );
+
+    // Generate handoff summary in the background — non-blocking
+    if (prevAgentId !== agentId) {
+      generateHandoff(channelName, chatId, prevAgentId, agentId).catch(
+        (err) =>
+          log.error("Handoff generation failed", {
+            error: err instanceof Error ? err.message : String(err),
+          }),
+      );
+    }
   }
 
   function startTyping(channelName: string, chatId: string): () => void {
