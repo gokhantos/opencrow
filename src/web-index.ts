@@ -55,15 +55,13 @@ async function main(): Promise<void> {
   }
 
   // Init QuestDB for market data queries (read-only from web process)
-  if (config.market !== undefined) {
-    try {
-      await initQuestDBReadOnly();
-      log.info("QuestDB initialized for market queries (read-only)");
-    } catch (err) {
-      log.warn("QuestDB unavailable — market charts will be empty", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+  try {
+    await initQuestDBReadOnly();
+    log.info("QuestDB initialized for market queries (read-only)");
+  } catch (err) {
+    log.warn("QuestDB unavailable — market charts will be empty", {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   // Build agent registry (reads from DB for listing in UI)

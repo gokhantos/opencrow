@@ -244,8 +244,10 @@ export async function bootstrap(
   }
 
   // Initialize QuestDB read-only client for market query tools
-  if (config.market !== undefined) {
+  try {
     await initQuestDBReadOnly();
+  } catch {
+    // QuestDB unavailable — market tools will fail gracefully at runtime
   }
 
   // Mutable ref for cronToolConfig — set by caller after cron is initialized
