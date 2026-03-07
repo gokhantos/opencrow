@@ -444,6 +444,7 @@ export default function Cron() {
   const [activeRuns, setActiveRuns] = useState<Record<string, CronRun>>({});
   const prevActiveJobIds = useRef<Set<string>>(new Set());
 
+  const [formSaving, setFormSaving] = useState(false);
   const [formName, setFormName] = useState("");
   const [formScheduleKind, setFormScheduleKind] = useState<
     "every" | "cron" | "at"
@@ -557,6 +558,7 @@ export default function Cron() {
   async function handleCreateJob(e: React.FormEvent) {
     e.preventDefault();
     setFormError("");
+    setFormSaving(true);
 
     const schedule =
       formScheduleKind === "at"
@@ -600,6 +602,8 @@ export default function Cron() {
       }
     } catch {
       setFormError("Failed to create job");
+    } finally {
+      setFormSaving(false);
     }
   }
 
@@ -801,7 +805,7 @@ export default function Cron() {
             </div>
 
             <div className="cr-form-actions">
-              <Button type="submit" size="sm">
+              <Button type="submit" size="sm" loading={formSaving} disabled={formSaving}>
                 Create
               </Button>
               <Button
