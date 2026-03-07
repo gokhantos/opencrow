@@ -1,7 +1,8 @@
+import { Bot } from "grammy";
 import { createLogger } from "../logger";
 import { getDb } from "../store/db";
 
-const log = createLogger("phase4-orchestrator");
+const log = createLogger("outcome-orchestrator");
 
 /**
  * Handle failure (trigger clustering, reflection, learning)
@@ -25,7 +26,7 @@ export async function handleFailure(
 
     // Send failure survey
     const { sendFailureSurvey } = await import("./survey/delivery");
-    const bot = getBotInstance();
+    const bot = await getBotForAgent(agentId);
 
     if (bot && chatId) {
       await sendFailureSurvey(
@@ -121,11 +122,25 @@ async function getChatIdForSession(sessionId: string): Promise<string | null> {
 }
 
 /**
- * Get bot instance (placeholder - will be injected from handler)
+ * Look up the telegram bot token for the given agent from the database
+ * and return a Bot instance, or null if no token is configured.
  */
-function getBotInstance(): any {
-  // This will be implemented by setting a bot instance via setBotInstance()
-  return (global as any).telegramBot || null;
+async function getBotForAgent(agentId: string): Promise<InstanceType<typeof Bot> | null> {
+  try {
+    const db = getDb();
+    const rows = await db`
+      SELECT value_json FROM config_overrides
+      WHERE namespace = 'agents' AND key = ${agentId}
+    `;
+    if (rows.length === 0) return null;
+    const config = JSON.parse(rows[0].value_json);
+    const token = config?.telegramBotToken;
+    if (!token) return null;
+    return new Bot(token);
+  } catch (err) {
+    log.warn("Failed to get bot for agent", { error: String(err), agentId });
+    return null;
+  }
 }
 
 /**

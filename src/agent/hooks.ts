@@ -500,7 +500,7 @@ function createSubagentStopHook(agentId: string): HookCallback {
           );
 
           // Phase 4: Handle failure (clustering, reflection, learning)
-          const { handleFailure } = await import("./phase4-orchestrator");
+          const { handleFailure } = await import("./outcome-orchestrator");
           handleFailure(
             sessionId,
             subagentId,
@@ -509,6 +509,60 @@ function createSubagentStopHook(agentId: string): HookCallback {
           ).catch((err: unknown) =>
             log.warn("Phase 4 failure handling failed", { error: String(err) }),
           );
+        }
+
+        // Phase 5: Self-reflection checks (fire-and-forget observability)
+        if (status === "timeout") {
+          import("./self-reflection")
+            .then(async ({ checkTimeout }) => {
+              const db = getDb();
+              const startRow = await db`
+                SELECT created_at FROM subagent_audit_log
+                WHERE parent_agent_id = ${agentId}
+                  AND session_id = ${sessionId}
+                  AND subagent_id = ${subagentId}
+                ORDER BY created_at DESC
+                LIMIT 1
+              `;
+              const startTime: Date =
+                (startRow?.[0]?.created_at as Date | undefined) ??
+                new Date(Date.now() - 60_000);
+              await checkTimeout(sessionId, startTime, subagentId);
+            })
+            .catch((err: unknown) =>
+              log.warn("Self-reflection timeout check failed", {
+                error: String(err),
+              }),
+            );
+        }
+
+        if (status === "error" || status === "timeout") {
+          import("./self-reflection")
+            .then(async ({ checkRepeatedFailures }) => {
+              const db = getDb();
+              const failureRows = await db<{ result: string }[]>`
+                SELECT result FROM subagent_audit_log
+                WHERE parent_agent_id = ${agentId}
+                  AND session_id = ${sessionId}
+                  AND status IN ('error', 'timeout')
+                ORDER BY created_at DESC
+                LIMIT 5
+              `;
+              const recentErrors = (failureRows ?? []).map((r) =>
+                String(r.result ?? "").slice(0, 200),
+              );
+              await checkRepeatedFailures(
+                sessionId,
+                recentErrors.length,
+                recentErrors,
+                [],
+              );
+            })
+            .catch((err: unknown) =>
+              log.warn("Self-reflection failure check failed", {
+                error: String(err),
+              }),
+            );
         }
 
         // Phase 3: Update agent load (decrement on completion)

@@ -616,6 +616,21 @@ export async function bootstrap(
     return { ...agentOpts, sdkHooks, ...(onProgress ? { onProgress } : {}) };
   }
 
+  // Load prediction engine domain stats (non-fatal, refreshed every 5 min)
+  try {
+    const { loadDomainStats } = await import("../agent/prediction-engine");
+    await loadDomainStats();
+    log.info("Prediction engine domain stats loaded");
+    setInterval(async () => {
+      try {
+        const { loadDomainStats: refresh } = await import("../agent/prediction-engine");
+        await refresh();
+      } catch { /* non-fatal */ }
+    }, 5 * 60 * 1000);
+  } catch (err) {
+    log.warn("Failed to load prediction domain stats (non-fatal)", { error: String(err) });
+  }
+
   return {
     config: mergedConfig,
     agentRegistry,

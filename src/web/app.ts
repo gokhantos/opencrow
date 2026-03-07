@@ -33,6 +33,8 @@ import { createRoutingRulesRoutes } from "./routes/routing-rules";
 import { createSurveyRoutes } from "./routes/surveys";
 import { createOutcomesRoutes } from "./routes/outcomes";
 import { createReflectionsRoutes } from "./routes/reflections";
+import { createPredictionsRoutes } from "./routes/predictions";
+import { createQueueRoutes } from "./routes/queue";
 import { createFailureRoutes } from "./routes/failures";
 import { createGoogleTrendsRoutes } from "./routes/google-trends";
 import { createAppStoreRoutes } from "./routes/appstore";
@@ -388,6 +390,12 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
   const reflections = createReflectionsRoutes();
   app.route("/api", reflections);
+
+  const predictions = createPredictionsRoutes();
+  app.route("/api", predictions);
+
+  const queue = createQueueRoutes();
+  app.route("/api", queue);
 
   {
     const market = createMarketRoutes(

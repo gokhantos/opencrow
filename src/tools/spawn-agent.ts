@@ -19,11 +19,15 @@ import {
   recordPredictionOutcome,
 } from "../agent/prediction-engine";
 import type { AgentRunResult } from "../agents/runner";
+import {
+  enqueueTask,
+  completeTask,
+  failTask,
+} from "../agent/queue-manager";
 
 const log = createLogger("tool:spawn-agent");
 
 /** Max retries before escalation */
-const MAX_RETRIES = 1;
 
 export interface SpawnAgentToolConfig {
   readonly agentRegistry: AgentRegistry;
@@ -277,6 +281,18 @@ async function executeSingleAgent(
   });
 
   // --- Attempt execution with retry and escalation (Improvement #5) ---
+
+  // Enqueue for observability (non-fatal)
+  let queueId: string | undefined;
+  try {
+    const taskHash = `${config.sessionId}-${targetAgentId}-${Date.now()}`;
+    queueId = await enqueueTask(taskHash, config.sessionId, routedDomain, task, {
+      preferredAgent: targetAgentId,
+    });
+  } catch {
+    // queue tracking is non-fatal
+  }
+
   try {
     const result = await runWithRetryAndEscalation(
       config,
@@ -304,6 +320,8 @@ async function executeSingleAgent(
       );
     }
 
+    if (queueId) completeTask(queueId, result.text.slice(0, 2000)).catch(() => {});
+
     const meta = [
       "\n---",
       `[Worker: ${result.toolUseCount ?? 0} tool calls, ${result.usage?.inputTokens ?? 0} input / ${result.usage?.outputTokens ?? 0} output tokens]`,
@@ -328,6 +346,8 @@ async function executeSingleAgent(
           }),
       );
     }
+
+    if (queueId) failTask(queueId, message).catch(() => {});
 
     log.error("Sub-agent failed after retries", { runId, error: message });
     return { output: `Sub-agent error: ${message}`, isError: true };

@@ -308,7 +308,7 @@ const AGENT_DOMAIN_MAP: Record<string, string> = {
   monitor: "monitoring",
 };
 
-export function extractFeatures(task: string): PredictionFeatures {
+function extractFeatures(task: string): PredictionFeatures {
   const taskLower = task.toLowerCase();
   const keywordMatches: string[] = [];
   const domainKeywords: Record<string, number> = {};

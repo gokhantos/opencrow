@@ -244,7 +244,7 @@ export function createOutcomesRoutes(): Hono {
   app.post("/outcomes/cache/refresh", async (c) => {
     try {
       const { refreshOutcomeCaches } =
-        await import("../../agent/phase4-orchestrator");
+        await import("../../agent/outcome-orchestrator");
       const updatedCount = await refreshOutcomeCaches();
 
       return c.json({

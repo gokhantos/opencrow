@@ -2,6 +2,10 @@ import { Hono } from "hono";
 import { getDb } from "../../store/db";
 import { createLogger } from "../../logger";
 import {
+  getReflectionStats,
+  getUnresolvedReflections,
+} from "../../agent/self-reflection";
+import {
   getAgentReflections,
   findSimilarPastFailures,
 } from "../../agent/reflection/postmortem";
@@ -381,6 +385,42 @@ export function createReflectionsRoutes(): Hono {
           success: false,
           error: "Failed to get agent lessons",
         },
+        500,
+      );
+    }
+  });
+
+  /**
+   * GET /api/self-reflections/stats - Get self-reflection aggregate statistics
+   */
+  app.get("/self-reflections/stats", async (c) => {
+    try {
+      const stats = await getReflectionStats();
+      return c.json({ success: true, data: stats });
+    } catch (err) {
+      log.warn("Failed to get self-reflection stats", { error: String(err) });
+      return c.json(
+        { success: false, error: "Failed to get self-reflection stats" },
+        500,
+      );
+    }
+  });
+
+  /**
+   * GET /api/self-reflections/unresolved - Get unresolved self-reflections
+   * Query params: sessionId (optional)
+   */
+  app.get("/self-reflections/unresolved", async (c) => {
+    try {
+      const sessionId = c.req.query("sessionId");
+      const reflections = await getUnresolvedReflections(sessionId);
+      return c.json({ success: true, data: reflections });
+    } catch (err) {
+      log.warn("Failed to get unresolved self-reflections", {
+        error: String(err),
+      });
+      return c.json(
+        { success: false, error: "Failed to get unresolved self-reflections" },
         500,
       );
     }

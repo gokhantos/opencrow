@@ -1,5 +1,5 @@
 import { createLogger } from "../logger";
-import { refreshOutcomeCaches } from "../agent/phase4-orchestrator";
+import { refreshOutcomeCaches } from "../agent/outcome-orchestrator";
 
 const log = createLogger("cron-outcome-cache");
 
