@@ -292,8 +292,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
 
       const profile = getChunkProfile("reddit_post");
       const chunks = posts.flatMap((p) => {
+        const flairLabel = p.flair ? ` [${p.flair}]` : "";
         const selftext = p.selftext ? `\n${p.selftext.slice(0, 2000)}` : "";
-        const text = `Reddit r/${p.subreddit}: ${p.title}${selftext}\nScore: ${p.score} | Comments: ${p.numComments} | By: u/${p.author}\nURL: ${p.url}`;
+        const commentsLine =
+          p.topComments && p.topComments.length > 0
+            ? `\nTop comments:\n${p.topComments.map((c) => `- ${c.slice(0, 300)}`).join("\n")}`
+            : "";
+        const text = `Reddit r/${p.subreddit}${flairLabel}: ${p.title}${selftext}${commentsLine}\nScore: ${p.score} | Comments: ${p.numComments} | By: u/${p.author}\nURL: ${p.url}`;
         const itemChunks = chunkText(text, profile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });

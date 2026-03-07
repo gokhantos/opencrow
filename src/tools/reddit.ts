@@ -6,13 +6,25 @@ import { createDigestTool } from "./digest-factory";
 import { getString } from "./input-helpers";
 
 function formatPost(p: RedditPostRow, i: number): string {
+  const flairLabel = p.flair ? ` [${p.flair}]` : "";
   const selftext = p.selftext ? `\n  ${p.selftext.slice(0, 200)}...` : "";
+  const firstComment = (() => {
+    if (!p.top_comments_json) return "";
+    try {
+      const comments = JSON.parse(p.top_comments_json) as string[];
+      const first = comments[0];
+      return first ? `\n  Top comment: ${first.slice(0, 200)}` : "";
+    } catch {
+      return "";
+    }
+  })();
   return [
-    `${i + 1}. r/${p.subreddit}: ${p.title}`,
+    `${i + 1}. r/${p.subreddit}${flairLabel}: ${p.title}`,
     `  ${p.score} pts | ${p.num_comments} comments | by u/${p.author} | ${p.domain}`,
     `  URL: ${p.url}`,
     `  Reddit: ${p.permalink}`,
     selftext,
+    firstComment,
   ]
     .filter(Boolean)
     .join("\n");

@@ -125,6 +125,8 @@ export interface RedditPostForIndex {
   readonly score: number;
   readonly numComments: number;
   readonly permalink: string;
+  readonly topComments?: readonly string[];
+  readonly flair?: string;
 }
 
 export interface HFModelForIndex {

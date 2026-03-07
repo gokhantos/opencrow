@@ -1507,4 +1507,9 @@ export const MIGRATIONS = [
   // --- HackerNews: add description and top comments ---
   `ALTER TABLE hn_stories ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE hn_stories ADD COLUMN IF NOT EXISTS top_comments_json TEXT NOT NULL DEFAULT '[]'`,
+
+  // --- Reddit: enrich posts with flair, thumbnail, and top comments ---
+  `ALTER TABLE reddit_posts ADD COLUMN IF NOT EXISTS top_comments_json TEXT DEFAULT NULL`,
+  `ALTER TABLE reddit_posts ADD COLUMN IF NOT EXISTS flair TEXT DEFAULT NULL`,
+  `ALTER TABLE reddit_posts ADD COLUMN IF NOT EXISTS thumbnail_url TEXT DEFAULT NULL`,
 ];

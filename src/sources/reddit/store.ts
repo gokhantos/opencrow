@@ -17,6 +17,9 @@ export interface RedditPostRow {
   created_utc: number;
   first_seen_at: number;
   updated_at: number;
+  top_comments_json: string | null;
+  flair: string | null;
+  thumbnail_url: string | null;
 }
 
 export interface RedditAccountRow {
@@ -46,19 +49,24 @@ export async function upsertPosts(posts: RedditPostRow[]): Promise<number> {
       INSERT INTO reddit_posts (
         id, subreddit, title, url, selftext, author, score, num_comments,
         permalink, post_type, feed_source, domain, upvote_ratio,
-        created_utc, first_seen_at, updated_at
+        created_utc, first_seen_at, updated_at,
+        top_comments_json, flair, thumbnail_url
       ) VALUES (
         ${p.id}, ${p.subreddit}, ${p.title}, ${p.url}, ${p.selftext},
         ${p.author}, ${p.score}, ${p.num_comments}, ${p.permalink},
         ${p.post_type}, ${p.feed_source}, ${p.domain}, ${p.upvote_ratio},
-        ${p.created_utc}, ${p.first_seen_at}, ${p.updated_at}
+        ${p.created_utc}, ${p.first_seen_at}, ${p.updated_at},
+        ${p.top_comments_json ?? null}, ${p.flair ?? null}, ${p.thumbnail_url ?? null}
       )
       ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
         score = EXCLUDED.score,
         num_comments = EXCLUDED.num_comments,
         upvote_ratio = EXCLUDED.upvote_ratio,
-        updated_at = EXCLUDED.updated_at
+        updated_at = EXCLUDED.updated_at,
+        top_comments_json = COALESCE(EXCLUDED.top_comments_json, reddit_posts.top_comments_json),
+        flair = COALESCE(EXCLUDED.flair, reddit_posts.flair),
+        thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, reddit_posts.thumbnail_url)
     `;
     upserted++;
   }

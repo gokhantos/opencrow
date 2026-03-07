@@ -37,6 +37,9 @@ export interface RawRedditPost {
   domain: string;
   upvote_ratio: number;
   created_utc: number;
+  top_comments: readonly string[];
+  flair: string | null;
+  thumbnail_url: string | null;
 }
 
 interface CookieEntry {
@@ -103,8 +106,28 @@ export async function scrapeRedditFeed(
     log.info("Scraped subreddit", { subreddit, count: posts.length });
   }
 
-  log.info("Scrape complete", { source: "reddit", count: allPosts.length });
-  return allPosts;
+  log.info("Scrape complete (pre-comments)", {
+    source: "reddit",
+    count: allPosts.length,
+  });
+
+  // Fetch top comments for posts that have comments, batched with concurrency 5
+  const postsWithComments = allPosts.filter((p) => p.num_comments > 0);
+  log.info("Fetching top comments", { count: postsWithComments.length });
+
+  const enriched = await inBatches(
+    allPosts,
+    5,
+    1500,
+    async (post): Promise<RawRedditPost> => {
+      if (post.num_comments === 0) return post;
+      const top_comments = await fetchTopComments(post.permalink, headers);
+      return { ...post, top_comments };
+    },
+  );
+
+  log.info("Scrape complete", { source: "reddit", count: enriched.length });
+  return enriched;
 }
 
 async function scrapeFeed(
@@ -183,6 +206,8 @@ interface ParsedPost {
   upvote_ratio: number;
   created_utc: number;
   stickied: boolean;
+  flair: string | null;
+  thumbnail_url: string | null;
 }
 
 function parsePost(
@@ -201,6 +226,20 @@ function parsePost(
 
   const selftext = String(data.selftext ?? "").slice(0, 5000);
 
+  const rawFlair = data.link_flair_text;
+  const flair =
+    rawFlair && typeof rawFlair === "string" && rawFlair.trim()
+      ? rawFlair.trim()
+      : null;
+
+  const rawThumb = data.thumbnail;
+  const thumbnail_url =
+    rawThumb &&
+    typeof rawThumb === "string" &&
+    rawThumb.startsWith("http")
+      ? rawThumb
+      : null;
+
   return {
     id: postId,
     subreddit: String(data.subreddit ?? ""),
@@ -217,12 +256,80 @@ function parsePost(
     upvote_ratio: Number(data.upvote_ratio ?? 0),
     created_utc: Number(data.created_utc ?? 0),
     stickied: Boolean(data.stickied),
+    flair,
+    thumbnail_url,
   };
 }
 
 function toRawPost(p: ParsedPost): RawRedditPost {
   const { stickied: _, ...rest } = p;
-  return rest;
+  return { ...rest, top_comments: [] };
+}
+
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/^>.*$/gm, "") // blockquotes
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // [text](url) -> text
+    .replace(/\*\*([^*]+)\*\*/g, "$1") // **bold**
+    .replace(/\*([^*]+)\*/g, "$1") // *italic*
+    .replace(/~~([^~]+)~~/g, "$1") // ~~strikethrough~~
+    .replace(/`[^`]+`/g, "") // inline code
+    .replace(/#{1,6}\s/g, "") // headings
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function fetchTopComments(
+  permalink: string,
+  headers: Record<string, string>,
+  limit = 3,
+): Promise<readonly string[]> {
+  try {
+    const url = `https://www.reddit.com${permalink.replace(/^https?:\/\/www\.reddit\.com/, "")}.json?limit=${limit}&depth=1&sort=top&raw_json=1`;
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) return [];
+
+    const data = (await resp.json()) as unknown[];
+    const listing = data[1] as {
+      data?: { children?: Array<{ kind: string; data: Record<string, unknown> }> };
+    } | undefined;
+
+    const children = listing?.data?.children ?? [];
+    const comments: string[] = [];
+
+    for (const child of children) {
+      if (child.kind !== "t1") continue;
+      const body = String(child.data.body ?? "").trim();
+      if (!body || body === "[deleted]" || body === "[removed]") continue;
+      const cleaned = stripMarkdown(body).slice(0, 500);
+      if (cleaned.length > 20) {
+        comments.push(cleaned);
+      }
+      if (comments.length >= limit) break;
+    }
+
+    return comments;
+  } catch {
+    return [];
+  }
+}
+
+async function inBatches<T, R>(
+  items: readonly T[],
+  batchSize: number,
+  delayBetweenMs: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(fn));
+    results.push(...batchResults);
+    if (i + batchSize < items.length) {
+      await delay(delayBetweenMs, delayBetweenMs + 500);
+    }
+  }
+  return results;
 }
 
 function delay(minMs: number, maxMs: number): Promise<void> {

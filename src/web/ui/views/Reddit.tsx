@@ -21,6 +21,9 @@ interface RedditPost {
   created_utc: number;
   first_seen_at: number;
   updated_at: number;
+  top_comments_json: string | null;
+  flair: string | null;
+  thumbnail_url: string | null;
 }
 
 interface RedditAccount {
@@ -437,40 +440,56 @@ export default function Reddit() {
               </span>
 
               <div className="min-w-0">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-accent font-semibold shrink-0">
-                    r/{post.subreddit}
-                  </span>
-                  <a
-                    href={post.url || post.permalink}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-strong no-underline font-medium overflow-hidden text-ellipsis whitespace-nowrap"
-                  >
-                    {post.title}
-                  </a>
-                  {post.domain && post.post_type !== "self" && (
-                    <span className="text-xs text-faint shrink-0">
-                      ({post.domain})
-                    </span>
+                <div className="flex items-center gap-2">
+                  {post.thumbnail_url && (
+                    <img
+                      src={post.thumbnail_url}
+                      alt=""
+                      className="w-10 h-10 rounded object-cover shrink-0"
+                    />
                   )}
-                </div>
-                <div className="text-sm text-faint mt-0.5">
-                  <span>u/{post.author}</span>
-                  <span> | {formatAge(post.created_utc)}</span>
-                  {post.permalink && (
-                    <>
-                      {" | "}
+                  <div className="min-w-0">
+                    <div className="flex items-baseline gap-2 flex-wrap">
+                      <span className="text-xs text-accent font-semibold shrink-0">
+                        r/{post.subreddit}
+                      </span>
+                      {post.flair && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-bg-2 text-muted border border-border shrink-0">
+                          {post.flair}
+                        </span>
+                      )}
                       <a
-                        href={post.permalink}
+                        href={post.url || post.permalink}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-faint no-underline hover:underline"
+                        className="text-strong no-underline font-medium overflow-hidden text-ellipsis whitespace-nowrap"
                       >
-                        {post.num_comments} comments
+                        {post.title}
                       </a>
-                    </>
-                  )}
+                      {post.domain && post.post_type !== "self" && (
+                        <span className="text-xs text-faint shrink-0">
+                          ({post.domain})
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-sm text-faint mt-0.5">
+                      <span>u/{post.author}</span>
+                      <span> | {formatAge(post.created_utc)}</span>
+                      {post.permalink && (
+                        <>
+                          {" | "}
+                          <a
+                            href={post.permalink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-faint no-underline hover:underline"
+                          >
+                            {post.num_comments} comments
+                          </a>
+                        </>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
 

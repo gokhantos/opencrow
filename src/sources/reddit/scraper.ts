@@ -49,6 +49,12 @@ function rawToRow(raw: RawPost): RedditPostRow {
     created_utc: raw.created_utc ?? 0,
     first_seen_at: now,
     updated_at: now,
+    top_comments_json:
+      raw.top_comments && raw.top_comments.length > 0
+        ? JSON.stringify(raw.top_comments)
+        : null,
+    flair: raw.flair ?? null,
+    thumbnail_url: raw.thumbnail_url ?? null,
   };
 }
 
@@ -67,6 +73,10 @@ function rowsToPostsForIndex(
     score: p.score,
     numComments: p.num_comments,
     permalink: p.permalink,
+    flair: p.flair ?? undefined,
+    topComments: p.top_comments_json
+      ? (JSON.parse(p.top_comments_json) as string[])
+      : undefined,
   }));
 }
 
