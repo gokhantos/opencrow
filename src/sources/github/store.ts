@@ -16,6 +16,9 @@ export interface GithubRepoRow {
   readonly first_seen_at: number;
   readonly updated_at: number;
   readonly indexed_at?: number;
+  readonly prev_stars?: number | null;
+  readonly prev_forks?: number | null;
+  readonly stars_velocity?: number | null;
 }
 
 export async function upsertRepos(
@@ -45,6 +48,14 @@ export async function upsertRepos(
         stars_today = EXCLUDED.stars_today,
         built_by_json = EXCLUDED.built_by_json,
         updated_at = EXCLUDED.updated_at,
+        prev_stars = github_repos.stars,
+        prev_forks = github_repos.forks,
+        stars_velocity = CASE
+          WHEN github_repos.updated_at IS NOT NULL
+            AND EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(github_repos.updated_at))) > 60
+          THEN (GREATEST(github_repos.stars, EXCLUDED.stars) - github_repos.stars)::REAL
+            / (EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(github_repos.updated_at))) / 3600.0)
+          ELSE github_repos.stars_velocity END,
         indexed_at = CASE
           WHEN github_repos.description IS DISTINCT FROM EXCLUDED.description
           THEN NULL ELSE github_repos.indexed_at END

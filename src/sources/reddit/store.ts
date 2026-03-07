@@ -20,6 +20,10 @@ export interface RedditPostRow {
   top_comments_json: string | null;
   flair: string | null;
   thumbnail_url: string | null;
+  prev_score?: number | null;
+  prev_num_comments?: number | null;
+  score_velocity?: number | null;
+  comments_velocity?: number | null;
 }
 
 export interface RedditAccountRow {
@@ -67,6 +71,20 @@ export async function upsertPosts(posts: RedditPostRow[]): Promise<number> {
         top_comments_json = COALESCE(EXCLUDED.top_comments_json, reddit_posts.top_comments_json),
         flair = COALESCE(EXCLUDED.flair, reddit_posts.flair),
         thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, reddit_posts.thumbnail_url),
+        prev_score = reddit_posts.score,
+        prev_num_comments = reddit_posts.num_comments,
+        score_velocity = CASE
+          WHEN reddit_posts.updated_at IS NOT NULL
+            AND EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(reddit_posts.updated_at))) > 60
+          THEN (EXCLUDED.score - reddit_posts.score)::REAL
+            / (EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(reddit_posts.updated_at))) / 3600.0)
+          ELSE reddit_posts.score_velocity END,
+        comments_velocity = CASE
+          WHEN reddit_posts.updated_at IS NOT NULL
+            AND EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(reddit_posts.updated_at))) > 60
+          THEN (EXCLUDED.num_comments - reddit_posts.num_comments)::REAL
+            / (EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(reddit_posts.updated_at))) / 3600.0)
+          ELSE reddit_posts.comments_velocity END,
         indexed_at = CASE
           WHEN reddit_posts.top_comments_json IS DISTINCT FROM
             COALESCE(EXCLUDED.top_comments_json, reddit_posts.top_comments_json)

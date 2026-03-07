@@ -16,6 +16,10 @@ export interface HNStoryRow {
   updated_at: number;
   description: string;
   top_comments_json: string;
+  prev_points?: number | null;
+  prev_comment_count?: number | null;
+  points_velocity?: number | null;
+  comments_velocity?: number | null;
 }
 
 export async function upsertStories(stories: HNStoryRow[]): Promise<number> {
@@ -49,6 +53,20 @@ export async function upsertStories(stories: HNStoryRow[]): Promise<number> {
         updated_at = EXCLUDED.updated_at,
         description = EXCLUDED.description,
         top_comments_json = EXCLUDED.top_comments_json,
+        prev_points = hn_stories.points,
+        prev_comment_count = hn_stories.comment_count,
+        points_velocity = CASE
+          WHEN hn_stories.updated_at IS NOT NULL
+            AND EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(hn_stories.updated_at))) > 60
+          THEN (EXCLUDED.points - hn_stories.points)::REAL
+            / (EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(hn_stories.updated_at))) / 3600.0)
+          ELSE hn_stories.points_velocity END,
+        comments_velocity = CASE
+          WHEN hn_stories.updated_at IS NOT NULL
+            AND EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(hn_stories.updated_at))) > 60
+          THEN (EXCLUDED.comment_count - hn_stories.comment_count)::REAL
+            / (EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(hn_stories.updated_at))) / 3600.0)
+          ELSE hn_stories.comments_velocity END,
         indexed_at = CASE
           WHEN hn_stories.description IS DISTINCT FROM EXCLUDED.description
             OR hn_stories.top_comments_json IS DISTINCT FROM EXCLUDED.top_comments_json

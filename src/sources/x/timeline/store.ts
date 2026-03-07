@@ -132,6 +132,21 @@ export async function insertTimelineTweets(
         quotes = ${t.quotes},
         source = ${t.source},
         scraped_at = ${now},
+        prev_likes = x_scraped_tweets.likes,
+        prev_retweets = x_scraped_tweets.retweets,
+        prev_views = x_scraped_tweets.views,
+        likes_velocity = CASE
+          WHEN x_scraped_tweets.scraped_at IS NOT NULL
+            AND EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(x_scraped_tweets.scraped_at))) > 60
+          THEN (${t.likes} - x_scraped_tweets.likes)::REAL
+            / (EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(x_scraped_tweets.scraped_at))) / 3600.0)
+          ELSE x_scraped_tweets.likes_velocity END,
+        views_velocity = CASE
+          WHEN x_scraped_tweets.scraped_at IS NOT NULL
+            AND EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(x_scraped_tweets.scraped_at))) > 60
+          THEN (${t.views} - x_scraped_tweets.views)::REAL
+            / (EXTRACT(EPOCH FROM (NOW() - TO_TIMESTAMP(x_scraped_tweets.scraped_at))) / 3600.0)
+          ELSE x_scraped_tweets.views_velocity END,
         indexed_at = CASE
           WHEN x_scraped_tweets.text IS DISTINCT FROM ${t.text}
           THEN NULL ELSE x_scraped_tweets.indexed_at END
