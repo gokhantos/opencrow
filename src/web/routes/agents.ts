@@ -125,77 +125,7 @@ async function reloadRegistry(deps: WebAppDeps): Promise<void> {
   deps.agentRegistry.reload(config.agents, config.agent);
 }
 
-/* Canonical list of all tool names available in the project.
-   Grouped by category for the UI picker. */
-const ALL_TOOLS: readonly {
-  readonly name: string;
-  readonly category: string;
-}[] = [
-  // Core file/shell
-  { name: "bash", category: "core" },
-  { name: "read_file", category: "core" },
-  { name: "write_file", category: "core" },
-  { name: "edit_file", category: "core" },
-  { name: "list_files", category: "core" },
-  { name: "grep", category: "core" },
-  { name: "glob", category: "core" },
-
-  // Skills
-  { name: "list_skills", category: "skills" },
-  { name: "use_skill", category: "skills" },
-  // Sub-agents
-  { name: "list_agents", category: "agents" },
-  { name: "spawn_agent", category: "agents" },
-  // Scheduling
-  { name: "cron", category: "scheduling" },
-  // Memory
-  { name: "remember", category: "memory" },
-  { name: "recall", category: "memory" },
-  { name: "search_memory", category: "memory" },
-  // News & content
-  { name: "search_news", category: "news" },
-  { name: "get_calendar", category: "news" },
-  { name: "get_news_digest", category: "news" },
-  // Product Hunt
-  { name: "search_products", category: "product_hunt" },
-  { name: "get_product_digest", category: "product_hunt" },
-  // Hacker News
-  { name: "search_hn", category: "hacker_news" },
-  { name: "get_hn_digest", category: "hacker_news" },
-  // Reddit
-  { name: "search_reddit", category: "reddit" },
-  { name: "get_reddit_digest", category: "reddit" },
-  // X / Timeline
-  { name: "search_x_timeline", category: "x_timeline" },
-  { name: "get_timeline_digest", category: "x_timeline" },
-  // Cross-source
-  { name: "cross_source_search", category: "search" },
-  // Ideas
-  { name: "save_idea", category: "ideas" },
-  { name: "get_previous_ideas", category: "ideas" },
-  { name: "get_idea_stats", category: "ideas" },
-  { name: "update_idea_stage", category: "ideas" },
-  { name: "query_ideas", category: "ideas" },
-  { name: "search_similar_ideas", category: "ideas" },
-  // Observability
-  { name: "get_scraper_status", category: "observability" },
-  { name: "get_observations", category: "observability" },
-  { name: "get_subagent_runs", category: "observability" },
-  // Analytics (Conversation Intelligence + Self-Improvement)
-  { name: "search_observations", category: "analytics" },
-  { name: "get_conversation_summaries", category: "analytics" },
-  { name: "get_tool_usage", category: "analytics" },
-  { name: "get_agent_performance", category: "analytics" },
-  { name: "get_session_stats", category: "analytics" },
-  // Market
-  { name: "get_market_data", category: "market" },
-  { name: "get_market_summary", category: "market" },
-  // Development
-  { name: "project_context", category: "development" },
-  { name: "validate_code", category: "development" },
-  { name: "run_tests", category: "development" },
-  { name: "deploy", category: "development" },
-];
+/* Tool list is now served dynamically from /api/tools via buildToolCatalog() */
 
 export function createAgentRoutes(deps: WebAppDeps): Hono {
   const app = new Hono();

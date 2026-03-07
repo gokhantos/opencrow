@@ -58,6 +58,8 @@ import { createXTimelineTools } from "../tools/x-timeline";
 import { createAppStoreTools } from "../tools/appstore";
 import { createPlayStoreTools } from "../tools/playstore";
 import { createCrossSourceSearchTool } from "../tools/cross-search";
+import { createDefiLlamaTools } from "../tools/defillama";
+import { createGoogleTrendsTools } from "../tools/google-trends";
 import { createGetScraperStatusTool } from "../tools/scraper-status";
 import { createGetSubagentRunsTool } from "../tools/subagent-runs";
 import { createGetObservationsTool } from "../tools/memory";
@@ -434,6 +436,16 @@ export async function bootstrap(
     {
       const playStoreTools = createPlayStoreTools(memoryManager).filter((t) => allowsTool(t.name));
       if (playStoreTools.length > 0) registry = registry.withTools(playStoreTools);
+    }
+
+    {
+      const defiTools = createDefiLlamaTools(memoryManager).filter((t) => allowsTool(t.name));
+      if (defiTools.length > 0) registry = registry.withTools(defiTools);
+    }
+
+    {
+      const trendsTools = createGoogleTrendsTools(memoryManager).filter((t) => allowsTool(t.name));
+      if (trendsTools.length > 0) registry = registry.withTools(trendsTools);
     }
 
     if (memoryManager && allowsTool("cross_source_search")) {
