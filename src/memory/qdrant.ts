@@ -171,14 +171,27 @@ export async function createQdrantClient(
         const collectionExists = resp.ok;
 
         if (!collectionExists) {
-          // Create collection
+          // Create collection with HNSW indexing always on
           await request("PUT", `/collections/${name}`, {
             vectors: {
               size: vectorSize,
               distance: "Cosine",
             },
+            optimizers_config: {
+              indexing_threshold: 0,
+            },
           });
           log.info("Qdrant collection created", { name, vectorSize });
+        } else {
+          // Ensure HNSW indexing threshold is set (segments < 20k default
+          // would otherwise do flat O(n) scans instead of HNSW)
+          await request("PATCH", `/collections/${name}`, {
+            optimizers_config: {
+              indexing_threshold: 0,
+            },
+          }).catch((err) =>
+            log.warn("Failed to update optimizers_config", { name, error: err }),
+          );
         }
 
         // Ensure payload indices exist (idempotent — Qdrant ignores if already present)
