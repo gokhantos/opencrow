@@ -395,7 +395,7 @@ export async function agenticChat(
 
     // Auto-continue: if agent exited with tool work but no text response,
     // resume the session asking for a summary.
-    // No cap — use /stop in Telegram to abort.
+    const MAX_CONTINUATIONS = 5;
     const abortSignal = options.abortSignal;
     let continues = 0;
     while (
@@ -403,7 +403,8 @@ export async function agenticChat(
       !state.lastAssistantText.trim() &&
       state.toolUseCount > 0 &&
       state.sessionId &&
-      !abortSignal?.aborted
+      !abortSignal?.aborted &&
+      continues < MAX_CONTINUATIONS
     ) {
       continues++;
       log.info("Auto-continuing (empty result after tool use)", {
