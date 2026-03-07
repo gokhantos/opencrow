@@ -29,13 +29,13 @@ export async function upsertArticles(articles: readonly RawArticle[]): Promise<{
     const result = await db`
       INSERT INTO news_articles (
         id, source_name, title, url, url_hash,
-        published_at, category, summary, sentiment, image_url,
+        published_at, category, summary, body, sentiment, image_url,
         currencies_json, source_id, source_domain, section, extra_json,
         scraped_at
       ) VALUES (
         ${id}, ${article.source_name}, ${article.title}, ${article.url}, ${hash},
         ${article.published_at ?? ""}, ${article.category ?? ""}, ${article.summary ?? ""},
-        ${article.sentiment ?? ""}, ${article.image_url ?? ""},
+        ${article.body ?? null}, ${article.sentiment ?? ""}, ${article.image_url ?? ""},
         ${JSON.stringify(article.currencies ?? [])}, ${article.source_id ?? ""},
         ${article.source_domain ?? ""}, ${article.section ?? ""},
         ${JSON.stringify(article.extra ?? {})},

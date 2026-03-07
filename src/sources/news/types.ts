@@ -7,6 +7,7 @@ export interface NewsArticle {
   readonly published_at: string;
   readonly category: string;
   readonly summary: string;
+  readonly body: string | null;
   readonly sentiment: string;
   readonly image_url: string;
   readonly currencies_json: string;
@@ -64,6 +65,7 @@ export interface RawArticle {
   readonly published_at?: string;
   readonly category?: string;
   readonly summary?: string;
+  readonly body?: string;
   readonly sentiment?: string;
   readonly image_url?: string;
   readonly currencies?: readonly string[];

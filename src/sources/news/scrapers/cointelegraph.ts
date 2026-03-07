@@ -13,7 +13,14 @@ const MAX_ARTICLES = 50;
 export async function scrapeCointelegraph(): Promise<readonly RawArticle[]> {
   const session = await launchChromium();
   try {
-    return await scrapeCards(session.context);
+    const articles = await scrapeCards(session.context);
+    const { extractBodies } = await import("./extract-body");
+    const urls = articles.map((a) => a.url);
+    const bodies = await extractBodies(session.context, urls);
+    return articles.map((a) => ({
+      ...a,
+      body: bodies.get(a.url),
+    }));
   } finally {
     await session.cleanup();
   }

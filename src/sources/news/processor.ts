@@ -49,7 +49,7 @@ function toArticlesForIndex(
     url: a.url,
     sourceName: a.source_name,
     category: a.category ?? "",
-    content: a.summary ?? null,
+    content: a.body ?? a.summary ?? null,
     publishedAt: parsePublishedAt(a.published_at, now),
   }));
 }
