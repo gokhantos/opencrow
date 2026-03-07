@@ -164,9 +164,12 @@ async function main(): Promise<void> {
 
   const MARKET_WS_URL = "ws://127.0.0.1:48084/ws/market";
 
-  interface WsData {
-    upstream: WebSocket | null;
-  }
+  type WsData =
+    | { kind: "market"; upstream: WebSocket | null }
+    | { kind: "system"; id: number };
+
+  let systemWsNextId = 0;
+  const systemWsClients = new Set<import("bun").ServerWebSocket<WsData>>();
 
   const server = Bun.serve<WsData>({
     port: config.web.port,
@@ -205,7 +208,28 @@ async function main(): Promise<void> {
           }
         }
         const upgraded = bunServer.upgrade(req, {
-          data: { upstream: null } satisfies WsData,
+          data: { kind: "market" as const, upstream: null },
+        });
+        if (upgraded) return undefined as unknown as Response;
+        return new Response("WebSocket upgrade failed", { status: 400 });
+      }
+
+      // WebSocket system events feed — real-time dashboard updates
+      if (url.pathname === "/ws/system") {
+        const expectedToken = process.env.OPENCROW_WEB_TOKEN;
+        if (expectedToken) {
+          const protocol = req.headers.get("sec-websocket-protocol");
+          const authHeader = req.headers.get("authorization");
+          const bearerToken = authHeader?.startsWith("Bearer ")
+            ? authHeader.slice(7)
+            : null;
+          const providedToken = protocol ?? bearerToken;
+          if (providedToken !== expectedToken) {
+            return new Response("Unauthorized", { status: 401 });
+          }
+        }
+        const upgraded = bunServer.upgrade(req, {
+          data: { kind: "system" as const, id: systemWsNextId++ },
         });
         if (upgraded) return undefined as unknown as Response;
         return new Response("WebSocket upgrade failed", { status: 400 });
@@ -224,6 +248,11 @@ async function main(): Promise<void> {
     },
     websocket: {
       open(ws) {
+        if (ws.data.kind === "system") {
+          systemWsClients.add(ws);
+          log.debug("System WS client connected", { clients: systemWsClients.size });
+          return;
+        }
         log.debug("Market WS client connected — opening upstream");
         const upstream = new WebSocket(MARKET_WS_URL);
 
@@ -247,7 +276,7 @@ async function main(): Promise<void> {
 
         upstream.addEventListener("close", () => {
           log.debug("Upstream market WS closed");
-          ws.data.upstream = null;
+          if (ws.data.kind === "market") ws.data.upstream = null;
           try {
             ws.close(1001, "upstream closed");
           } catch {
@@ -257,7 +286,7 @@ async function main(): Promise<void> {
 
         upstream.addEventListener("error", (event) => {
           log.warn("Upstream market WS error", { error: String(event) });
-          ws.data.upstream = null;
+          if (ws.data.kind === "market") ws.data.upstream = null;
           try {
             ws.close(1011, "upstream error");
           } catch {
@@ -265,16 +294,23 @@ async function main(): Promise<void> {
           }
         });
 
-        ws.data.upstream = upstream;
+        if (ws.data.kind === "market") ws.data.upstream = upstream;
       },
       message(ws, msg) {
+        if (ws.data.kind !== "market") return;
         const upstream = ws.data.upstream;
         if (upstream && upstream.readyState === WebSocket.OPEN) {
           upstream.send(typeof msg === "string" ? msg : new Uint8Array(msg));
         }
       },
       close(ws) {
+        if (ws.data.kind === "system") {
+          systemWsClients.delete(ws);
+          log.debug("System WS client disconnected", { clients: systemWsClients.size });
+          return;
+        }
         log.debug("Market WS client disconnected — closing upstream");
+        if (ws.data.kind !== "market") return;
         const upstream = ws.data.upstream;
         if (upstream) {
           ws.data.upstream = null;
@@ -289,6 +325,31 @@ async function main(): Promise<void> {
   });
 
   log.info(`OpenCrow web: http://${config.web.host}:${config.web.port}`);
+
+  // Broadcast system status to WS clients (replaces per-client HTTP polling)
+  let lastStatusJson = "";
+  setInterval(async () => {
+    if (systemWsClients.size === 0) return;
+    try {
+      const res = await webApp.fetch(
+        new Request(`http://localhost:${config.web.port}/api/status`, {
+          headers: process.env.OPENCROW_WEB_TOKEN
+            ? { Authorization: `Bearer ${process.env.OPENCROW_WEB_TOKEN}` }
+            : {},
+        }),
+      );
+      const body = await res.json() as Record<string, unknown>;
+      const json = JSON.stringify(body);
+      if (json === lastStatusJson) return;
+      lastStatusJson = json;
+      const event = JSON.stringify({ type: "status", data: body, ts: Date.now() });
+      for (const ws of systemWsClients) {
+        try { ws.send(event); } catch { systemWsClients.delete(ws); }
+      }
+    } catch {
+      // Status fetch failed — skip this tick
+    }
+  }, 5_000);
 
   const supervisor = createProcessSupervisor("web", {
     type: "web",
