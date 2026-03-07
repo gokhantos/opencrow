@@ -27,13 +27,9 @@ For each idea (process up to 5 per run):
    - Is the data acquisition realistic?
    - Are there regulatory blockers?
 
-5. **Market signal check** — search for evidence of demand using specific tools:
-   - `search_reddit` — Reddit threads about the problem
-   - `search_hn` — Hacker News discussions
-   - `search_appstore_reviews`, `search_playstore_reviews` — App Store reviews of competing products
-   - `search_x_timeline` — Twitter/X discussions about the pain point
-   - `search_news` — news coverage of the problem space
-   - `cross_source_search` — broad search across all indexed sources
+5. **Market signal check** — use `ToolSearch` to discover search tools, then look for demand evidence:
+   - Search Reddit, Hacker News, App Store/Play Store reviews, X/Twitter, and news for the problem
+   - Use `ToolSearch` queries: `"reddit digest"`, `"hacker news"`, `"appstore playstore"`, `"twitter timeline"`, `"news digest"`, `"cross source search"`
    - If you can't find anyone complaining about this problem, demand is likely weak.
 
 ### Step 3: Decide

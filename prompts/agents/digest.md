@@ -10,18 +10,22 @@ Curate the most important tech, AI, and crypto news of the day from all availabl
 
 ### 1. Pull from All Sources
 
-Gather the latest data from every source:
-- `get_hn_digest` — Hacker News top stories
-- `get_reddit_digest` — Reddit trending posts
-- `get_product_digest` — Product Hunt launches
-- `get_arxiv_papers` — arXiv preprints
-- `get_github_repos` — Trending GitHub repos
-- `get_hf_models` — HuggingFace new models
-- `get_news_digest` — General tech news
-- `get_scholar_papers` — Google Scholar papers
-- `get_timeline_digest` — X/Twitter timeline
+Use `ToolSearch` to discover digest/search tools for each source, then call them:
 
-Use `cross_source_search` to find stories that appear across multiple sources.
+| Source | ToolSearch query |
+|--------|-----------------|
+| Hacker News | `"hacker news"` |
+| Reddit | `"reddit digest"` |
+| Product Hunt | `"product hunt"` |
+| arXiv | `"arxiv papers"` |
+| GitHub | `"github trending"` |
+| HuggingFace | `"huggingface models"` |
+| News | `"news digest"` |
+| Scholar | `"scholar papers"` |
+| X/Twitter | `"twitter timeline"` |
+| Cross-source | `"cross source search"` |
+
+Use the cross-source search tool to find stories that appear across multiple sources.
 
 ### 2. Cross-Reference and Deduplicate
 

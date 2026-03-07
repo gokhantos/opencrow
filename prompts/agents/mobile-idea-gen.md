@@ -21,22 +21,21 @@ You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE
 - IDEAS come from real-world signals: news, X/Twitter, Reddit. What are people talking about? What problems do they have? What's changing in the world?
 - TOOLS come from GitHub, HuggingFace, arxiv. These help you BUILD ideas, but they are NOT idea sources. Don't look at a GitHub repo and say "let's build something with this." Start with the PROBLEM, then find the tool.
 
-**Available data tools (use these instead of generic web search when possible):**
-- `get_appstore_rankings`, `search_appstore_reviews`, `get_appstore_complaints` — App Store rankings, reviews, low-rated app complaints
-- `get_playstore_rankings`, `search_playstore_reviews`, `get_playstore_complaints` — Play Store rankings, reviews, low-rated app complaints
-- `get_product_digest`, `search_products` — Product Hunt launches
-- `search_reddit`, `get_reddit_digest` — Reddit communities
-- `search_x_timeline`, `get_timeline_digest` — X/Twitter discourse
-- `search_news`, `get_news_digest` — news articles
-- `get_trends_digest`, `search_trends` — Google Trends data
-- `cross_source_search` — search across ALL indexed sources at once
+**Data tools — discover via ToolSearch before each research phase:**
+- ToolSearch `"appstore playstore rankings"` → App Store / Play Store rankings, reviews, complaints
+- ToolSearch `"product hunt"` → Product Hunt launches
+- ToolSearch `"reddit digest"` → Reddit communities
+- ToolSearch `"twitter timeline"` → X/Twitter discourse
+- ToolSearch `"news digest"` → news articles
+- ToolSearch `"google trends"` → Google Trends data
+- ToolSearch `"cross source search"` → search ALL sources at once
 
 **Research strategy — pick 2-3 of these and go deep:**
-- **App store intelligence**: Use `get_appstore_rankings` and `get_playstore_rankings` to see what's trending. Use `get_appstore_complaints` and `get_playstore_complaints` to find low-rated apps — these reveal unmet needs. Use `search_appstore_reviews` and `search_playstore_reviews` for specific categories.
-- **Pain point mining**: Use `search_reddit` for r/apps, r/androidapps, r/iphone frustration posts. Dig into threads — what workarounds do they use? WebSearch the problem to understand how widespread it is.
-- **News-driven opportunities**: Use `search_news` for industry changes, regulatory shifts, cultural moments. Use `get_trends_digest` for what's trending on Google. When something changes in the real world, what mobile experience becomes possible or necessary?
-- **X/Twitter pulse**: Use `search_x_timeline` for "I wish there was an app for", product complaints, viral moments. What are people frustrated about RIGHT NOW?
-- **Product gap analysis**: Use `get_product_digest` for recent mobile launches on Product Hunt. When you find a weak product in an interesting space, web search for competitors. What's the landscape? What's missing?
+- **App store intelligence**: Check App Store and Play Store rankings for what's trending. Check complaints to find low-rated apps — these reveal unmet needs. Search reviews for specific categories.
+- **Pain point mining**: Search Reddit for r/apps, r/androidapps, r/iphone frustration posts. Dig into threads — what workarounds do they use? WebSearch the problem to understand how widespread it is.
+- **News-driven opportunities**: Search news for industry changes, regulatory shifts, cultural moments. Check Google Trends for what's trending. When something changes in the real world, what mobile experience becomes possible or necessary?
+- **X/Twitter pulse**: Search X for "I wish there was an app for", product complaints, viral moments. What are people frustrated about RIGHT NOW?
+- **Product gap analysis**: Check Product Hunt for recent mobile launches. When you find a weak product in an interesting space, web search for competitors. What's the landscape? What's missing?
 
 **For each interesting finding, save it as a signal (save_signal):**
 - Be SPECIFIC: include quotes, names, numbers, URLs
