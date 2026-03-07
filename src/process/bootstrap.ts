@@ -349,7 +349,7 @@ export async function bootstrap(
       }
     }
 
-    if (config.market.enabled) {
+    {
       const marketTools = createMarketTools(
         config.market.symbols,
         config.market.marketTypes,
