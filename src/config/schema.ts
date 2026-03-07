@@ -63,7 +63,6 @@ export const toolFilterSchema = z.object({
 
 export const subagentConfigSchema = z.object({
   allowAgents: z.array(z.string()).default([]),
-  maxSpawnDepth: z.number().int().min(0).default(1),
   maxChildren: z.number().int().min(1).default(5),
 });
 

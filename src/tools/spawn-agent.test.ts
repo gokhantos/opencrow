@@ -31,7 +31,7 @@ function makeAgent(overrides: Partial<ResolvedAgent> = {}): ResolvedAgent {
     model: "claude-sonnet-4-20250514",
     systemPrompt: "You are a test agent.",
     toolFilter: { mode: "all", tools: [] },
-    subagents: { allowAgents: ["worker"], maxSpawnDepth: 1, maxChildren: 5 },
+    subagents: { allowAgents: ["worker"], maxChildren: 5 },
     mcpServers: {},
     skills: [],
     ...overrides,
@@ -43,7 +43,7 @@ function makeConfig(
 ): SpawnAgentToolConfig {
   const parentAgent = makeAgent({
     id: "parent",
-    subagents: { allowAgents: ["worker"], maxSpawnDepth: 1, maxChildren: 5 },
+    subagents: { allowAgents: ["worker"], maxChildren: 5 },
   });
   const workerAgent = makeAgent({ id: "worker", name: "Worker Agent" });
 
@@ -171,7 +171,7 @@ describe("spawn-agent tool", () => {
     it("should error if no sub-agents are allowed", async () => {
       const parentAgent = makeAgent({
         id: "parent",
-        subagents: { allowAgents: [], maxSpawnDepth: 1, maxChildren: 5 },
+        subagents: { allowAgents: [], maxChildren: 5 },
       });
 
       const agentMap = new Map<string, ResolvedAgent>();
@@ -207,7 +207,7 @@ describe("spawn-agent tool", () => {
     it("should allow wildcard (*) to permit any agent", async () => {
       const parentAgent = makeAgent({
         id: "parent",
-        subagents: { allowAgents: ["*"], maxSpawnDepth: 1, maxChildren: 5 },
+        subagents: { allowAgents: ["*"], maxChildren: 5 },
       });
       const anyAgent = makeAgent({ id: "any-agent" });
 
@@ -248,7 +248,6 @@ describe("spawn-agent tool", () => {
         id: "parent",
         subagents: {
           allowAgents: ["ghost-agent"],
-          maxSpawnDepth: 1,
           maxChildren: 5,
         },
       });
@@ -294,7 +293,7 @@ describe("spawn-agent tool", () => {
     it("should use intelligent routing when only wildcard in allowAgents and no agent_id provided", async () => {
       const parentAgent = makeAgent({
         id: "parent",
-        subagents: { allowAgents: ["*"], maxSpawnDepth: 1, maxChildren: 5 },
+        subagents: { allowAgents: ["*"], maxChildren: 5 },
       });
       const workerAgent = makeAgent({ id: "worker" });
 

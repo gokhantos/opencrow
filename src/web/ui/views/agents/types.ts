@@ -6,7 +6,6 @@ export interface ToolFilter {
 
 export interface SubagentConfig {
   allowAgents: string[];
-  maxSpawnDepth: number;
   maxChildren: number;
 }
 

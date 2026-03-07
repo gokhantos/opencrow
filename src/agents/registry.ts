@@ -13,7 +13,6 @@ const log = createLogger("agents:registry");
 const DEFAULT_TOOL_FILTER: ToolFilter = { mode: "all", tools: [] };
 const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
   allowAgents: [],
-  maxSpawnDepth: 1,
   maxChildren: 5,
 };
 const DEFAULT_MCP_SERVERS: McpServersConfig = {};

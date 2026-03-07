@@ -77,7 +77,6 @@ const agentCreateSchema = z.object({
   subagents: z
     .object({
       allowAgents: z.array(z.string()),
-      maxSpawnDepth: z.number().int().min(0).max(5),
       maxChildren: z.number().int().min(1).max(20),
     })
     .optional(),

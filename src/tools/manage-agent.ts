@@ -82,7 +82,7 @@ export function createManageAgentTool(
         subagents: {
           type: "object",
           description:
-            "Sub-agent config: { allowAgents: string[], maxSpawnDepth: number, maxChildren: number }.",
+            "Sub-agent config: { allowAgents: string[], maxChildren: number }.",
         },
         reasoning: {
           type: "boolean",
