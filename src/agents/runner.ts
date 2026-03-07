@@ -38,6 +38,8 @@ export interface AgentRunInput {
     readonly agentId: string;
     readonly result: string;
   }>;
+  /** Optional abort signal to cancel the agent run mid-flight */
+  readonly abortSignal?: AbortSignal;
 }
 
 export interface AgentRunResult {
@@ -130,6 +132,7 @@ export async function runAgentIsolated(
     agentId: agent.id,
     onProgress: input.onProgress,
     usageContext: input.usageContext,
+    abortSignal: input.abortSignal,
   };
 
   log.info("Running isolated agent", {

@@ -25,10 +25,15 @@ export interface SubAgentTracker {
     childAgentId: string;
     childSessionKey: string;
     task: string;
+    abortController?: AbortController;
   }): Promise<void>;
   complete(id: string, resultText: string): Promise<void>;
   fail(id: string, errorMessage: string): Promise<void>;
+  /** Cancel a running sub-agent by runId. Returns true if found and cancelled. */
+  cancel(id: string): boolean;
   getActiveForSession(sessionKey: string): readonly SubAgentRun[];
+  /** Get all currently active sub-agent runs. */
+  getActive(): readonly SubAgentRun[];
   countActiveForSession(sessionKey: string): number;
   /** Get completed sub-agent results for context propagation */
   getCompletedForSession(
@@ -38,6 +43,7 @@ export interface SubAgentTracker {
 
 export function createSubAgentTracker(): SubAgentTracker {
   const activeRuns = new Map<string, SubAgentRun>();
+  const abortControllers = new Map<string, AbortController>();
 
   async function restoreActiveRuns(): Promise<void> {
     try {
@@ -84,6 +90,9 @@ export function createSubAgentTracker(): SubAgentTracker {
       };
 
       activeRuns.set(run.id, run);
+      if (input.abortController) {
+        abortControllers.set(run.id, input.abortController);
+      }
 
       try {
         const db = getDb();
@@ -100,6 +109,7 @@ export function createSubAgentTracker(): SubAgentTracker {
     async complete(id: string, resultText: string): Promise<void> {
       const now = Math.floor(Date.now() / 1000);
       activeRuns.delete(id);
+      abortControllers.delete(id);
 
       try {
         const db = getDb();
@@ -114,6 +124,7 @@ export function createSubAgentTracker(): SubAgentTracker {
     async fail(id: string, errorMessage: string): Promise<void> {
       const now = Math.floor(Date.now() / 1000);
       activeRuns.delete(id);
+      abortControllers.delete(id);
 
       try {
         const db = getDb();
@@ -125,10 +136,44 @@ export function createSubAgentTracker(): SubAgentTracker {
       }
     },
 
+    cancel(id: string): boolean {
+      const controller = abortControllers.get(id);
+      if (!controller) return false;
+
+      controller.abort();
+      abortControllers.delete(id);
+
+      const run = activeRuns.get(id);
+      if (run) {
+        activeRuns.set(id, { ...run, status: "error", errorMessage: "Cancelled by user", endedAt: Math.floor(Date.now() / 1000) });
+      }
+
+      // Persist cancellation asynchronously (best-effort)
+      const now = Math.floor(Date.now() / 1000);
+      try {
+        const db = getDb();
+        db`UPDATE subagent_runs SET status = 'error', error_message = 'Cancelled by user', ended_at = ${now} WHERE id = ${id}`.catch(
+          (err) => log.error("Failed to persist cancellation", err),
+        );
+      } catch (err) {
+        log.error("Failed to persist cancellation", err);
+      }
+
+      // Remove from active runs after persisting
+      activeRuns.delete(id);
+
+      log.info("Sub-agent cancelled", { runId: id });
+      return true;
+    },
+
     getActiveForSession(sessionKey: string): readonly SubAgentRun[] {
       return [...activeRuns.values()].filter(
         (r) => r.parentSessionKey === sessionKey,
       );
+    },
+
+    getActive(): readonly SubAgentRun[] {
+      return [...activeRuns.values()];
     },
 
     countActiveForSession(sessionKey: string): number {

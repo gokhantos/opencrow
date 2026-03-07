@@ -64,7 +64,9 @@ function makeConfig(
     register: mock(() => Promise.resolve()),
     complete: mock(() => Promise.resolve()),
     fail: mock(() => Promise.resolve()),
+    cancel: () => false,
     getActiveForSession: () => [],
+    getActive: () => [],
     countActiveForSession: () => 0,
     getCompletedForSession: mock(() => Promise.resolve([])),
   };

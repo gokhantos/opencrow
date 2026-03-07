@@ -257,6 +257,7 @@ async function executeSingleAgent(
   const previousResults = await config.tracker.getCompletedForSession(sessionKey);
 
   const runId = crypto.randomUUID();
+  const abortController = new AbortController();
   await config.tracker.register({
     id: runId,
     parentAgentId: config.currentAgentId,
@@ -264,6 +265,7 @@ async function executeSingleAgent(
     childAgentId: targetAgentId,
     childSessionKey: `subagent:${runId}`,
     task,
+    abortController,
   });
 
   log.info("Spawning sub-agent", {
@@ -300,6 +302,7 @@ async function executeSingleAgent(
       task,
       agentMaxIterations,
       previousResults,
+      abortController.signal,
     );
 
     config.onProgress?.({
@@ -361,6 +364,7 @@ async function runWithRetryAndEscalation(
   task: string,
   maxIterations: number,
   previousResults: ReadonlyArray<{ agentId: string; result: string }>,
+  abortSignal?: AbortSignal,
 ): Promise<AgentRunResult> {
   // First attempt
   try {
@@ -374,6 +378,7 @@ async function runWithRetryAndEscalation(
       buildSystemPrompt: config.buildSystemPrompt,
       onProgress: config.onProgress,
       previousResults,
+      abortSignal,
     });
   } catch (firstError) {
     const firstMessage =
@@ -385,6 +390,7 @@ async function runWithRetryAndEscalation(
 
     // Retry with error context appended
     try {
+      if (abortSignal?.aborted) throw new Error("Cancelled by user");
       const enrichedTask = `${task}\n\n---\n## Previous Attempt Failed\nError: ${firstMessage}\nPlease try a different approach to avoid the same error.`;
       return await runAgentIsolated({
         agentRegistry: config.agentRegistry,
@@ -396,6 +402,7 @@ async function runWithRetryAndEscalation(
         buildSystemPrompt: config.buildSystemPrompt,
         onProgress: config.onProgress,
         previousResults,
+        abortSignal,
       });
     } catch (retryError) {
       const retryMessage =
@@ -441,6 +448,7 @@ async function runWithRetryAndEscalation(
             buildSystemPrompt: config.buildSystemPrompt,
             onProgress: config.onProgress,
             previousResults,
+            abortSignal,
           });
         }
       } catch (escalationError) {

@@ -189,6 +189,26 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
     return c.json({ success: true, data: TEMPLATES });
   });
 
+  app.get("/agents/subagents", (c) => {
+    if (!deps.subAgentTracker) {
+      return c.json({ success: true, data: [] });
+    }
+    const runs = deps.subAgentTracker.getActive();
+    return c.json({ success: true, data: runs });
+  });
+
+  app.delete("/agents/subagents/:runId", (c) => {
+    const runId = c.req.param("runId");
+    if (!deps.subAgentTracker) {
+      return c.json({ success: false, error: "Sub-agent tracker not available" }, 503);
+    }
+    const cancelled = deps.subAgentTracker.cancel(runId);
+    if (!cancelled) {
+      return c.json({ success: false, error: "Sub-agent run not found or already completed" }, 404);
+    }
+    return c.json({ success: true, message: `Sub-agent run ${runId} cancelled` });
+  });
+
   app.get("/agents/:id", async (c) => {
     const agentId = c.req.param("id");
     if (!SAFE_AGENT_ID.test(agentId)) {
