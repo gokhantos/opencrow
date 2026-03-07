@@ -138,14 +138,21 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       return;
     }
 
-    // Upsert vectors to Qdrant — only for actually inserted chunks
+    // Upsert vectors to Qdrant — only for actually inserted chunks,
+    // with semantic dedup to skip near-duplicates (same story, different source).
     if (embeddings && config.qdrantClient?.available) {
       try {
-        const points: QdrantPoint[] = [];
+        const SEMANTIC_DEDUP_THRESHOLD = 0.95;
+        const candidates: Array<{
+          id: string;
+          vector: number[];
+          payload: Record<string, string | number>;
+        }> = [];
+
         for (const { id: chunkId, textIndex } of insertedChunks) {
           const vec = embeddings[textIndex];
           if (vec) {
-            points.push({
+            candidates.push({
               id: chunkId,
               vector: Array.from(vec),
               payload: {
@@ -158,6 +165,36 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
             });
           }
         }
+
+        // Check each candidate against existing vectors for near-duplicates
+        const points: QdrantPoint[] = [];
+        let dedupSkipped = 0;
+        for (const candidate of candidates) {
+          try {
+            const similar = await config.qdrantClient.searchPoints(
+              config.qdrantCollection,
+              candidate.vector,
+              1,
+              { scoreThreshold: SEMANTIC_DEDUP_THRESHOLD },
+            );
+            if (similar.length > 0) {
+              dedupSkipped++;
+              continue;
+            }
+          } catch {
+            // If similarity check fails, insert anyway
+          }
+          points.push(candidate);
+        }
+
+        if (dedupSkipped > 0) {
+          log.info("Semantic dedup skipped near-duplicate vectors", {
+            sourceId,
+            skipped: dedupSkipped,
+            kept: points.length,
+          });
+        }
+
         if (points.length > 0) {
           await config.qdrantClient.upsertPoints(
             config.qdrantCollection,
