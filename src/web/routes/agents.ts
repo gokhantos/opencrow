@@ -419,5 +419,44 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
     }
   });
 
+  // --- Inter-agent messages ---
+  app.get("/agents/messages", async (c) => {
+    try {
+      const { getRecentMessages } = await import("../../agent/message-bus");
+      const agentId = c.req.query("agent_id") || undefined;
+      const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? "50")));
+      const messages = await getRecentMessages(agentId, limit);
+      return c.json({ success: true, data: messages });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to get messages";
+      return c.json({ success: false, error: msg }, 500);
+    }
+  });
+
+  // --- Send inter-agent message via API ---
+  app.post("/agents/messages", async (c) => {
+    try {
+      const body = await c.req.json();
+      const fromAgentId = String(body.from_agent_id ?? "");
+      const toAgentId = String(body.to_agent_id ?? "");
+      const topic = String(body.topic ?? "general");
+      const payload = String(body.payload ?? "");
+
+      if (!fromAgentId || !toAgentId || !payload) {
+        return c.json(
+          { success: false, error: "from_agent_id, to_agent_id, and payload are required" },
+          400,
+        );
+      }
+
+      const { sendAgentMessage } = await import("../../agent/message-bus");
+      const id = await sendAgentMessage(fromAgentId, toAgentId, topic, payload);
+      return c.json({ success: true, data: { id } });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to send message";
+      return c.json({ success: false, error: msg }, 500);
+    }
+  });
+
   return app;
 }

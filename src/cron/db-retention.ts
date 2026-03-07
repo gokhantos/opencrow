@@ -26,6 +26,7 @@ const RETENTION_RULES: ReadonlyArray<{
   { table: "workload_history", column: "sampled_at", format: "timestamptz", days: 30 },
   { table: "monitor_alerts", column: "created_at", format: "epoch", days: 90 },
   { table: "tool_stats", column: "updated_at", format: "epoch", days: 90 },
+  { table: "agent_messages", column: "created_at", format: "timestamptz", days: 30 },
 ];
 
 export interface RetentionResult {

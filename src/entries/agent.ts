@@ -194,6 +194,52 @@ async function main(): Promise<void> {
   const { startToolStatsFlush } = await import("../agent/tool-stats");
   startToolStatsFlush();
 
+  // --- Inter-agent message bus ---
+  const { subscribeAgent, startMessageBusPolling } = await import(
+    "../agent/message-bus"
+  );
+  const { runAgentIsolated } = await import("../agents/runner");
+
+  subscribeAgent(agentId!, async (msg) => {
+    log.info("Processing inter-agent message", {
+      from: msg.fromAgentId,
+      topic: msg.topic,
+      messageId: msg.id,
+    });
+
+    const targetAgent = ctx.agentRegistry.getById(agentId!);
+    if (!targetAgent) return;
+
+    const task = [
+      `[Inter-agent message from ${msg.fromAgentId}]`,
+      `Topic: ${msg.topic}`,
+      "",
+      msg.payload,
+    ].join("\n");
+
+    try {
+      await runAgentIsolated({
+        agentId: agentId!,
+        agentRegistry: ctx.agentRegistry,
+        task,
+        baseToolRegistry: ctx.baseToolRegistry ?? null,
+        buildRegistryForAgent: ctx.buildRegistryForAgent,
+        buildSystemPrompt: ctx.enrichSystemPrompt,
+        usageContext: {
+          channel: "internal",
+          chatId: `msg:${msg.id}`,
+          source: "subagent" as const,
+        },
+      });
+    } catch (err) {
+      log.error("Failed to process inter-agent message", {
+        messageId: msg.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
+  startMessageBusPolling();
+
   // --- Supervisor ---
   const supervisor = createProcessSupervisor(processName, {
     agentId,

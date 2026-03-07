@@ -78,6 +78,7 @@ import { createMemoryStatsTools } from "../tools/memory-stats";
 import { createEconomicCalendarTool } from "../tools/economic-calendar";
 import { createMcpWrapperTools } from "../tools/mcp-wrappers";
 import { createDbTools } from "../tools/db-query";
+import { createSendMessageTool } from "../tools/send-message";
 
 const log = createLogger("bootstrap");
 
@@ -571,6 +572,11 @@ export async function bootstrap(
         allowsTool(t.name),
       );
       if (mcpTools.length > 0) registry = registry.withTools(mcpTools);
+    }
+
+    // Inter-agent messaging
+    if (allowsTool("send_agent_message")) {
+      registry = registry.withTools([createSendMessageTool(agent.id)]);
     }
 
     // Development tools
