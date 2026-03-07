@@ -79,13 +79,18 @@ async function main(): Promise<void> {
 
   // Periodic config + agent registry reload — picks up DB changes (new agents,
   // channel config, bot tokens) so the orchestrator can spawn/remove processes.
+  let lastConfigHash = "";
   setInterval(async () => {
     try {
       const fresh = await loadConfigWithOverrides();
+      const hash = Bun.hash(JSON.stringify(fresh)).toString(36);
+      if (hash === lastConfigHash) return;
+      lastConfigHash = hash;
       agentRegistry.reload(fresh.agents, fresh.agent);
       if (orchestrator) {
         orchestrator.updateConfig(fresh);
       }
+      log.info("Config reloaded (changed)", { hash });
     } catch (err) {
       log.error("Core config reload failed (non-fatal)", { error: err });
     }

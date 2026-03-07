@@ -147,11 +147,16 @@ async function main(): Promise<void> {
     marketTypes: config.market?.marketTypes ?? [],
   });
 
-  // Periodic agent reload
+  // Periodic agent reload — skip if config unchanged
+  let lastConfigHash = "";
   setInterval(async () => {
     try {
       const fresh = await loadConfigWithOverrides();
+      const hash = Bun.hash(JSON.stringify(fresh)).toString(36);
+      if (hash === lastConfigHash) return;
+      lastConfigHash = hash;
       agentRegistry.reload(fresh.agents, fresh.agent);
+      log.info("Config reloaded (changed)", { hash });
     } catch (err) {
       log.error("Web agent reload failed (non-fatal)", { error: err });
     }
