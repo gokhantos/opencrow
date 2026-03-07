@@ -16,6 +16,7 @@ interface HNStory {
   feed_type: string;
   first_seen_at: number;
   updated_at: number;
+  description: string;
 }
 
 interface StatsData {
@@ -104,6 +105,7 @@ export default function HackerNews() {
               title={story.title}
               url={story.url || story.hn_url}
               domain={story.site_label || undefined}
+              description={story.description || undefined}
               meta={
                 <>
                   {story.author && <span>by {story.author}</span>}

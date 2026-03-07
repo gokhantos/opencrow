@@ -111,6 +111,8 @@ export interface StoryForIndex {
   readonly commentCount: number;
   readonly hnUrl: string;
   readonly rank: number;
+  readonly description?: string;
+  readonly topComments?: readonly string[];
 }
 
 export interface RedditPostForIndex {

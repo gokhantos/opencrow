@@ -1503,4 +1503,8 @@ export const MIGRATIONS = [
   // --- ProductHunt: add review metrics ---
   `ALTER TABLE ph_products ADD COLUMN IF NOT EXISTS reviews_count INT NOT NULL DEFAULT 0`,
   `ALTER TABLE ph_products ADD COLUMN IF NOT EXISTS reviews_rating REAL NOT NULL DEFAULT 0`,
+
+  // --- HackerNews: add description and top comments ---
+  `ALTER TABLE hn_stories ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`,
+  `ALTER TABLE hn_stories ADD COLUMN IF NOT EXISTS top_comments_json TEXT NOT NULL DEFAULT '[]'`,
 ];

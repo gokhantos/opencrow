@@ -26,6 +26,30 @@ interface ScrapeResult {
   error?: string;
 }
 
+function extractSiteLabel(url: string): string {
+  if (!url) return "";
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function formatAge(unixTimestamp: number): string {
+  if (!unixTimestamp) return "";
+  const diffSeconds = Math.floor(Date.now() / 1000) - unixTimestamp;
+  if (diffSeconds < 3600) {
+    const mins = Math.floor(diffSeconds / 60);
+    return `${mins} minute${mins !== 1 ? "s" : ""} ago`;
+  }
+  if (diffSeconds < 86400) {
+    const hours = Math.floor(diffSeconds / 3600);
+    return `${hours} hour${hours !== 1 ? "s" : ""} ago`;
+  }
+  const days = Math.floor(diffSeconds / 86400);
+  return `${days} day${days !== 1 ? "s" : ""} ago`;
+}
+
 function rawToRow(raw: RawStory): HNStoryRow {
   const now = Math.floor(Date.now() / 1000);
   return {
@@ -33,15 +57,17 @@ function rawToRow(raw: RawStory): HNStoryRow {
     rank: raw.rank ?? 0,
     title: raw.title ?? "",
     url: raw.url ?? "",
-    site_label: raw.site_label ?? "",
+    site_label: extractSiteLabel(raw.url),
     points: raw.points ?? 0,
     author: raw.author ?? "",
-    age: raw.age ?? "",
+    age: formatAge(raw.time),
     comment_count: raw.comment_count ?? 0,
     hn_url: raw.hn_url ?? "",
     feed_type: "front",
     first_seen_at: now,
     updated_at: now,
+    description: raw.description ?? "",
+    top_comments_json: JSON.stringify(raw.top_comments ?? []),
   };
 }
 
@@ -60,6 +86,16 @@ function rowsToStoriesForIndex(
     commentCount: s.comment_count,
     hnUrl: s.hn_url,
     rank: s.rank,
+    description: s.description || undefined,
+    topComments: (() => {
+      try {
+        return s.top_comments_json
+          ? (JSON.parse(s.top_comments_json) as string[])
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    })(),
   }));
 }
 

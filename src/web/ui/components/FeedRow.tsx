@@ -5,11 +5,12 @@ interface FeedRowProps {
   readonly title: string;
   readonly url?: string;
   readonly domain?: string;
+  readonly description?: string;
   readonly meta?: React.ReactNode;
   readonly stats?: React.ReactNode;
 }
 
-export function FeedRow({ rank, title, url, domain, meta, stats }: FeedRowProps) {
+export function FeedRow({ rank, title, url, domain, description, meta, stats }: FeedRowProps) {
   return (
     <div className="grid grid-cols-[3rem_1fr_auto] max-sm:grid-cols-[1fr_auto] items-start gap-4 px-4 py-3.5 rounded-lg text-base transition-colors hover:bg-bg-1">
       {rank !== undefined && (
@@ -36,6 +37,11 @@ export function FeedRow({ rank, title, url, domain, meta, stats }: FeedRowProps)
             <span className="text-faint text-sm ml-2">({domain})</span>
           )}
         </div>
+        {description && (
+          <p className="mt-0.5 text-sm text-faint line-clamp-2 leading-snug">
+            {description}
+          </p>
+        )}
         {meta && (
           <div className="flex items-center gap-2 mt-1.5 flex-wrap text-sm text-muted">
             {meta}
@@ -51,3 +57,4 @@ export function FeedRow({ rank, title, url, domain, meta, stats }: FeedRowProps)
     </div>
   );
 }
+

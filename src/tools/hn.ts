@@ -6,11 +6,12 @@ import { createDigestTool } from "./digest-factory";
 
 function formatStory(s: HNStoryRow, i: number): string {
   const site = s.site_label ? ` (${s.site_label})` : "";
+  const descLine = s.description ? `\n  ${s.description}` : "";
   return [
     `${i + 1}. #${s.rank} ${s.title}${site}`,
     `  ${s.points} pts | ${s.comment_count} comments | by ${s.author} | ${s.age}`,
     `  URL: ${s.url}`,
-    `  HN: ${s.hn_url}`,
+    `  HN: ${s.hn_url}${descLine}`,
   ].join("\n");
 }
 

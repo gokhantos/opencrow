@@ -249,7 +249,12 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       const profile = getChunkProfile("story");
       const chunks = stories.flatMap((s) => {
         const site = s.siteLabel ? ` (${s.siteLabel})` : "";
-        const text = `#${s.rank} ${s.title}${site} — ${s.points} pts, ${s.commentCount} comments, by ${s.author}\n${s.url}\nHN: ${s.hnUrl}`;
+        const descLine = s.description ? `\nDescription: ${s.description}` : "";
+        const commentsLine =
+          s.topComments && s.topComments.length > 0
+            ? `\nTop comments:\n${s.topComments.map((c, i) => `  ${i + 1}. ${c.slice(0, 300)}`).join("\n")}`
+            : "";
+        const text = `#${s.rank} ${s.title}${site} — ${s.points} pts, ${s.commentCount} comments, by ${s.author}\n${s.url}\nHN: ${s.hnUrl}${descLine}${commentsLine}`;
         const itemChunks = chunkText(text, profile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });

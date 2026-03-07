@@ -14,6 +14,8 @@ export interface HNStoryRow {
   feed_type: string;
   first_seen_at: number;
   updated_at: number;
+  description: string;
+  top_comments_json: string;
 }
 
 export async function upsertStories(stories: HNStoryRow[]): Promise<number> {
@@ -26,11 +28,13 @@ export async function upsertStories(stories: HNStoryRow[]): Promise<number> {
     await db`
       INSERT INTO hn_stories (
         id, rank, title, url, site_label, points, author, age,
-        comment_count, hn_url, feed_type, first_seen_at, updated_at
+        comment_count, hn_url, feed_type, first_seen_at, updated_at,
+        description, top_comments_json
       ) VALUES (
         ${s.id}, ${s.rank}, ${s.title}, ${s.url}, ${s.site_label},
         ${s.points}, ${s.author}, ${s.age}, ${s.comment_count},
-        ${s.hn_url}, ${s.feed_type}, ${s.first_seen_at}, ${s.updated_at}
+        ${s.hn_url}, ${s.feed_type}, ${s.first_seen_at}, ${s.updated_at},
+        ${s.description}, ${s.top_comments_json}
       )
       ON CONFLICT (id) DO UPDATE SET
         rank = EXCLUDED.rank,
@@ -42,7 +46,9 @@ export async function upsertStories(stories: HNStoryRow[]): Promise<number> {
         age = EXCLUDED.age,
         comment_count = EXCLUDED.comment_count,
         hn_url = EXCLUDED.hn_url,
-        updated_at = EXCLUDED.updated_at
+        updated_at = EXCLUDED.updated_at,
+        description = EXCLUDED.description,
+        top_comments_json = EXCLUDED.top_comments_json
     `;
     upserted++;
   }
