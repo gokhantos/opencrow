@@ -76,6 +76,15 @@ export interface NavSection {
   readonly items: readonly NavItem[];
 }
 
+export const VALID_TABS = new Set<Tab>([
+  "overview", "agents", "skills", "sessions", "channels",
+  "x-accounts", "producthunt", "hackernews", "reddit", "huggingface",
+  "github", "arxiv", "scholar", "google-trends", "appstore", "playstore",
+  "defillama", "dexscreener", "news", "markets", "ideas", "cron",
+  "processes", "system", "tools", "usage", "agent-metrics", "routing",
+  "memory", "failures", "logs",
+]);
+
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     title: "Dashboard",

@@ -13,6 +13,7 @@ import {
   initTokenFromUrl,
 } from "./api";
 import type { Tab } from "./navigation";
+import { VALID_TABS } from "./navigation";
 import Sidebar from "./components/Sidebar";
 import Overview from "./views/Overview";
 import Channels from "./views/Channels";
@@ -132,8 +133,13 @@ function TokenModal({ onSuccess }: { onSuccess: () => void }) {
   );
 }
 
+function tabFromHash(): Tab {
+  const hash = location.hash.slice(1);
+  return VALID_TABS.has(hash as Tab) ? (hash as Tab) : "overview";
+}
+
 function App() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>(tabFromHash);
   const [authState, setAuthState] = useState<"loading" | "ok" | "needed">(
     "loading",
   );
@@ -151,6 +157,19 @@ function App() {
     initTokenFromUrl();
     checkAuth();
   }, []);
+
+  useEffect(() => {
+    function onHashChange() {
+      setTab(tabFromHash());
+    }
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  function navigateTo(newTab: Tab) {
+    location.hash = newTab;
+    setTab(newTab);
+  }
 
   function toggleTheme() {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
@@ -208,7 +227,7 @@ function App() {
 
       <Sidebar
         activeTab={tab}
-        onSelect={setTab}
+        onSelect={navigateTo}
         showSignOut={hasToken}
         onSignOut={handleLogout}
         mobileOpen={mobileNavOpen}
@@ -218,7 +237,7 @@ function App() {
       />
 
       <main className="overflow-y-auto max-md:pt-[52px]">
-        <ErrorBoundary key={tab} onReset={() => setTab(tab)}>
+        <ErrorBoundary key={tab} onReset={() => navigateTo(tab)}>
           <div
             className="px-8 py-7 max-lg:px-6 max-lg:py-6 max-md:px-4 max-md:py-5"
           >
