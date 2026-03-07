@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { createRoot } from "react-dom/client";
 import { Menu } from "lucide-react";
 
@@ -216,42 +217,43 @@ function App() {
       />
 
       <main className="overflow-y-auto max-md:pt-[52px]">
-        <div
-          className="px-8 py-7 max-lg:px-6 max-lg:py-6 max-md:px-4 max-md:py-5"
-          key={tab}
-        >
-          {tab === "overview" && <Overview />}
-          {tab === "channels" && <Channels />}
-          {tab === "sessions" && <Sessions />}
-          {tab === "agents" && <Agents />}
-          {tab === "skills" && <Skills />}
-          {tab === "tools" && <Tools />}
-          {tab === "cron" && <Cron />}
-          {tab === "markets" && <Markets />}
-          {tab === "x-accounts" && <XAccounts />}
-          {tab === "producthunt" && <ProductHunt />}
-          {tab === "hackernews" && <HackerNews />}
-          {tab === "reddit" && <Reddit />}
-          {tab === "huggingface" && <HuggingFace />}
-          {tab === "github" && <GitHub />}
-          {tab === "arxiv" && <Arxiv />}
-          {tab === "scholar" && <Scholar />}
-          {tab === "google-trends" && <GoogleTrends />}
-          {tab === "appstore" && <AppStore />}
-          {tab === "playstore" && <PlayStore />}
-          {tab === "defillama" && <DefiLlama />}
-          {tab === "dexscreener" && <DexScreener />}
-          {tab === "news" && <News />}
-          {tab === "ideas" && <Ideas />}
-          {tab === "memory" && <Memory />}
-          {tab === "processes" && <Processes />}
-          {tab === "routing" && <RoutingRules />}
-          {tab === "usage" && <Usage />}
-          {tab === "failures" && <Failures />}
-          {tab === "agent-metrics" && <AgentMetrics />}
-          {tab === "system" && <SystemMetrics />}
-          {tab === "logs" && <Logs />}
-        </div>
+        <ErrorBoundary key={tab} onReset={() => setTab(tab)}>
+          <div
+            className="px-8 py-7 max-lg:px-6 max-lg:py-6 max-md:px-4 max-md:py-5"
+          >
+            {tab === "overview" && <Overview />}
+            {tab === "channels" && <Channels />}
+            {tab === "sessions" && <Sessions />}
+            {tab === "agents" && <Agents />}
+            {tab === "skills" && <Skills />}
+            {tab === "tools" && <Tools />}
+            {tab === "cron" && <Cron />}
+            {tab === "markets" && <Markets />}
+            {tab === "x-accounts" && <XAccounts />}
+            {tab === "producthunt" && <ProductHunt />}
+            {tab === "hackernews" && <HackerNews />}
+            {tab === "reddit" && <Reddit />}
+            {tab === "huggingface" && <HuggingFace />}
+            {tab === "github" && <GitHub />}
+            {tab === "arxiv" && <Arxiv />}
+            {tab === "scholar" && <Scholar />}
+            {tab === "google-trends" && <GoogleTrends />}
+            {tab === "appstore" && <AppStore />}
+            {tab === "playstore" && <PlayStore />}
+            {tab === "defillama" && <DefiLlama />}
+            {tab === "dexscreener" && <DexScreener />}
+            {tab === "news" && <News />}
+            {tab === "ideas" && <Ideas />}
+            {tab === "memory" && <Memory />}
+            {tab === "processes" && <Processes />}
+            {tab === "routing" && <RoutingRules />}
+            {tab === "usage" && <Usage />}
+            {tab === "failures" && <Failures />}
+            {tab === "agent-metrics" && <AgentMetrics />}
+            {tab === "system" && <SystemMetrics />}
+            {tab === "logs" && <Logs />}
+          </div>
+        </ErrorBoundary>
       </main>
     </div>
   );
