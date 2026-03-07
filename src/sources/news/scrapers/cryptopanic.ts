@@ -13,7 +13,14 @@ const MAX_ARTICLES = 50;
 export async function scrapeCryptopanic(): Promise<readonly RawArticle[]> {
   const session = await launchChromium();
   try {
-    return await scrapeRows(session.context);
+    const articles = await scrapeRows(session.context);
+    const { extractBodies } = await import("./extract-body");
+    const urls = articles.map((a) => a.url);
+    const bodies = await extractBodies(session.context, urls);
+    return articles.map((a) => ({
+      ...a,
+      body: bodies.get(a.url),
+    }));
   } finally {
     await session.cleanup();
   }
