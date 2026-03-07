@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-A self-hosted multi-agent AI platform that orchestrates specialized agents across Telegram, WhatsApp, and a web dashboard — with 90+ tools, 15 autonomous data scrapers, vector memory, cron scheduling, and real-time market streaming.
+A self-hosted multi-agent AI platform that orchestrates specialized agents across Telegram, WhatsApp, and a web dashboard — with 100+ tools, 16 autonomous data scrapers, vector memory, cron scheduling, and real-time market streaming.
 </p>
 
 ---
@@ -20,7 +20,7 @@ A self-hosted multi-agent AI platform that orchestrates specialized agents acros
 ## What Can OpenCrow Do?
 
 - **Run AI agents** on Telegram, WhatsApp, and web — each with its own persona, model, tools, and memory
-- **Scrape 15 data sources** autonomously — HackerNews, Reddit, GitHub, arXiv, X/Twitter, App Store, DeFi protocols, crypto tokens, news, and more
+- **Scrape 16 data sources** autonomously — HackerNews, Reddit, GitHub, arXiv, X/Twitter, App Store, Play Store, DeFi protocols, crypto tokens, Google Trends, news, and more
 - **Remember everything** — conversations, facts, and observations are indexed into vector memory and recalled across sessions
 - **Generate ideas** — research agents collect signals, ideation agents synthesize them into product/crypto/AI startup ideas on a schedule
 - **Monitor markets** — real-time crypto derivatives via Binance WebSocket (prices, liquidations, open interest, technical indicators)
@@ -137,7 +137,7 @@ COMPLEX task   → Agent spawns sub-agents:
                  planner → user approval → backend/frontend → reviewer → security-reviewer
 ```
 
-## Tools (90+)
+## Tools (100+)
 
 Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. Tools are registered per-agent based on capabilities and exposed via MCP.
 
@@ -166,25 +166,46 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 |------|-------------|
 | `get_hn_digest` / `search_hn` | HackerNews front page stories + semantic search |
 | `get_reddit_digest` / `search_reddit` | Reddit posts with subreddit filtering |
-| `get_github_repos` / `search_github` | Trending GitHub repos with language filters |
-| `get_arxiv_papers` / `search_arxiv` | arXiv preprints by category (cs.AI, cs.LG, etc.) |
+| `get_github_repos` / `search_github_repos` | Trending GitHub repos with language filters |
+| `get_arxiv_papers` / `search_arxiv_papers` | arXiv preprints by category (cs.AI, cs.LG, etc.) |
+| `get_scholar_papers` / `search_scholar_papers` / `lookup_scholar_paper` | Semantic Scholar papers with citations and TLDR |
 | `get_product_digest` / `search_products` | Product Hunt products and launches |
-| `get_timeline_digest` / `search_tweets` | X/Twitter timeline and semantic search |
+| `get_timeline_digest` / `search_x_timeline` | X/Twitter timeline and semantic search |
+| `get_liked_tweets` / `get_x_analytics` | X/Twitter liked tweets and engagement analytics |
 | `get_hf_models` / `search_hf_models` | Trending HuggingFace ML models |
 | `get_trends_digest` / `search_trends` | Google Trends with category filtering |
-| `get_appstore_rankings` / `search_appstore_reviews` | App Store rankings and reviews |
+| `get_appstore_rankings` / `get_appstore_complaints` / `search_appstore_reviews` | App Store rankings, low-rated reviews, and semantic search |
+| `get_playstore_rankings` / `get_playstore_complaints` / `search_playstore_reviews` | Play Store rankings, low-rated reviews, and semantic search |
 | `get_news_digest` / `search_news` | Multi-source news articles |
 | `get_calendar` | Economic calendar events with filtering |
-| `cross_source_search` | Search across ALL indexed sources in one call |
+| `cross_source_search` | Search across ALL 19 indexed source types in one call |
 
-### Crypto & Markets
+### Crypto & DeFi
 | Tool | Description |
 |------|-------------|
-| `get_trending_tokens` / `search_tokens` | DexScreener trending tokens with scam filtering |
+| `get_trending_tokens` / `get_new_tokens` / `search_tokens` | DexScreener trending and new tokens with scam filtering |
+| `token_stats` | Aggregate token statistics by chain, trending vs new |
 | `get_defi_protocols` / `search_defi` | DeFi protocols by TVL from DeFi Llama |
-| `get_top_movers` | Top moving DeFi protocols by TVL change |
-| `get_new_protocols` | Newly listed DeFi protocols |
-| `get_chain_tvl` | Chain-level TVL and metrics history |
+| `get_defi_movers` | Top moving DeFi protocols by TVL change (24h) |
+| `get_chain_tvls` / `get_chain_metrics` / `get_chain_tvl_history` | Chain-level TVL, fees, DEX volume, stablecoin data, time series |
+| `get_yield_pools` | Top yield pools by APY and TVL |
+| `get_bridges` | Bridge volumes ranked by 24h volume |
+| `get_defi_hacks` | Historical DeFi exploits and hack database |
+| `get_emissions` | Token unlock schedules |
+| `get_stablecoins` / `get_treasury` | Stablecoin data and protocol treasury breakdowns |
+| `get_protocol_detail` | Deep protocol info (symbol, MCap, fees, revenue, raises, Twitter) |
+| `get_defi_categories` / `get_global_defi_metrics` | Category breakdowns and aggregated DeFi overview |
+
+### Markets & Trading
+| Tool | Description |
+|------|-------------|
+| `get_price` / `market_summary` | Real-time crypto prices and 24h summaries |
+| `get_candles` | OHLCV candlestick data with technical indicators |
+| `technical_analysis` | Pre-computed trend, oscillator, and volume indicators |
+| `market_snapshot` | Comprehensive market overview in one call |
+| `futures_overview` | Open interest, long/short ratios, funding rates |
+| `funding_rate` / `funding_summary` | Funding rate history with aggregation and stats |
+| `liquidations` | Recent liquidation events and cascade summary |
 
 ### Memory & Knowledge
 | Tool | Description |
@@ -234,7 +255,7 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 
 ## Data Scrapers
 
-15 autonomous scrapers run as isolated processes, each with its own tick interval and error handling. Scraped data is stored in PostgreSQL and indexed into Qdrant for semantic search.
+16 autonomous scrapers run as isolated processes, each with its own tick interval and error handling. Scraped data is stored in PostgreSQL and indexed into Qdrant for semantic search.
 
 | Scraper | Interval | What it collects |
 |---------|----------|-----------------|
@@ -249,8 +270,9 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 | **X/Twitter** | varies | Timeline, bookmarks, auto-like, auto-follow via Playwright + GraphQL interception |
 | **Google Trends** | 30 min | Trending topics (US) with traffic volume and related queries |
 | **App Store** | 60 min | Top Free/Paid rankings + reviews for top 10 apps |
+| **Play Store** | 60 min | Top Free rankings + reviews with full descriptions via gplay |
 | **DexScreener** | varies | Trending + new tokens with scam/pump filtering (>$50K volume, >$10K liquidity) |
-| **DeFi Llama** | 30 min | Protocols by TVL, chain data, DEX volumes (filters >$100K TVL) |
+| **DeFi Llama** | 30 min | 18 endpoints — protocols, chains, DEX volumes, yields, bridges, hacks, stablecoins, treasuries (filters >$100K TVL) |
 | **Markets** | real-time | Crypto derivatives via Binance WebSocket (prices, liquidations, open interest, technical indicators) |
 
 ### Scraper features
@@ -286,7 +308,7 @@ Hybrid search engine combining vector similarity and full-text search for long-t
 
 ### Memory types
 
-Conversations, notes, documents, tweets, articles, products, stories, Reddit posts, HuggingFace models, GitHub repos, arXiv papers, Scholar papers, observations, ideas — each with its own source kind and decay profile.
+19 source kinds, each with its own chunk profile and temporal decay: conversations, notes, documents, tweets, articles, products, stories, Reddit posts, HuggingFace models, GitHub repos, arXiv papers, Scholar papers, observations, ideas, app reviews, app rankings, trends, DeFi protocols, and DEX tokens.
 
 ### Observation extraction
 
@@ -497,9 +519,9 @@ src/
 ├── process/         # Orchestrator, manifest, bootstrap, supervisor
 ├── prompts/         # Prompt loader
 ├── router/          # Message routing, activity logging
-├── sources/         # 15 data scrapers (each in own directory)
+├── sources/         # 16 data scrapers (each in own directory)
 ├── store/           # Database init + migrations
-├── tools/           # 90+ tool definitions (registry, types, factories)
+├── tools/           # 100+ tool definitions (registry, types, factories)
 ├── web/             # Hono routes + React SPA
 │   ├── routes/      # API endpoints (/api/*)
 │   └── ui/          # React components, views, styles
