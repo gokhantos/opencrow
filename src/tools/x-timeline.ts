@@ -16,16 +16,22 @@ function formatTweet(
     source: string;
     tweet_created_at: number | null;
     scraped_at: number;
+    likes_velocity?: number | null;
+    views_velocity?: number | null;
   },
   i: number,
 ): string {
   const date = t.tweet_created_at
     ? new Date(t.tweet_created_at * 1000).toISOString()
     : new Date(t.scraped_at * 1000).toISOString();
+  const likesVelocity =
+    t.likes_velocity != null && Math.abs(t.likes_velocity) > 0.1
+      ? ` ⚡ ${t.likes_velocity > 0 ? "+" : ""}${t.likes_velocity.toFixed(1)} likes/hr`
+      : "";
   return [
     `${i + 1}. @${t.author_username} [${t.source}]`,
     `  ${t.text.slice(0, 300)}`,
-    `  ${t.likes} likes | ${t.retweets} RTs | ${t.replies} replies | ${t.views} views`,
+    `  ${t.likes} likes${likesVelocity} | ${t.retweets} RTs | ${t.replies} replies | ${t.views} views`,
     `  Date: ${date}`,
   ].join("\n");
 }

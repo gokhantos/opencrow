@@ -8,9 +8,13 @@ import { getString, getEnum } from "./input-helpers";
 function formatRepo(r: GithubRepoRow, i: number): string {
   const lang = r.language ? ` (${r.language})` : "";
   const desc = r.description ? `\n  ${r.description.slice(0, 200)}` : "";
+  const velocity =
+    r.stars_velocity != null && Math.abs(r.stars_velocity) > 0.1
+      ? ` ⚡ ${r.stars_velocity > 0 ? "+" : ""}${r.stars_velocity.toFixed(1)} stars/hr`
+      : "";
   return [
     `${i + 1}. ${r.full_name}${lang}`,
-    `  Stars: ${r.stars.toLocaleString()} | Forks: ${r.forks.toLocaleString()} | +${r.stars_today} stars ${r.period === "weekly" ? "this week" : "today"}`,
+    `  Stars: ${r.stars.toLocaleString()}${velocity} | Forks: ${r.forks.toLocaleString()} | +${r.stars_today} stars ${r.period === "weekly" ? "this week" : "today"}`,
     `  ${desc}`,
     `  URL: ${r.url}`,
   ].join("\n");

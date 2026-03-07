@@ -7,9 +7,13 @@ import { createDigestTool } from "./digest-factory";
 function formatStory(s: HNStoryRow, i: number): string {
   const site = s.site_label ? ` (${s.site_label})` : "";
   const descLine = s.description ? `\n  ${s.description}` : "";
+  const velocity =
+    s.points_velocity != null && Math.abs(s.points_velocity) > 0.1
+      ? ` ⚡ ${s.points_velocity > 0 ? "+" : ""}${s.points_velocity.toFixed(1)} pts/hr`
+      : "";
   return [
     `${i + 1}. #${s.rank} ${s.title}${site}`,
-    `  ${s.points} pts | ${s.comment_count} comments | by ${s.author} | ${s.age}`,
+    `  ${s.points} pts${velocity} | ${s.comment_count} comments | by ${s.author} | ${s.age}`,
     `  URL: ${s.url}`,
     `  HN: ${s.hn_url}${descLine}`,
   ].join("\n");

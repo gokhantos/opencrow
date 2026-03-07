@@ -18,9 +18,13 @@ function formatPost(p: RedditPostRow, i: number): string {
       return "";
     }
   })();
+  const velocity =
+    p.score_velocity != null && Math.abs(p.score_velocity) > 0.1
+      ? ` ⚡ ${p.score_velocity > 0 ? "+" : ""}${p.score_velocity.toFixed(1)} pts/hr`
+      : "";
   return [
     `${i + 1}. r/${p.subreddit}${flairLabel}: ${p.title}`,
-    `  ${p.score} pts | ${p.num_comments} comments | by u/${p.author} | ${p.domain}`,
+    `  ${p.score} pts${velocity} | ${p.num_comments} comments | by u/${p.author} | ${p.domain}`,
     `  URL: ${p.url}`,
     `  Reddit: ${p.permalink}`,
     selftext,
