@@ -1,66 +1,26 @@
 import { getDb } from "../../store/db";
+export type {
+  ProtocolRow,
+  ChainTvlRow,
+  ChainTvlHistoryRow,
+  ChainMetricsRow,
+} from "./types";
+import type { ProtocolRow, ChainTvlRow, ChainTvlHistoryRow, ChainMetricsRow } from "./types";
 
 // --- Target chains ---
-export const TARGET_CHAINS = ["Ethereum", "Solana", "Base"] as const;
-export type TargetChain = (typeof TARGET_CHAINS)[number];
+export const MAJOR_CHAINS = [
+  "Ethereum", "Solana", "Base", "Arbitrum", "BSC", "Polygon",
+  "Optimism", "Avalanche", "Sui", "Aptos", "Tron", "TON",
+  "Fantom", "Near", "Cosmos",
+] as const;
+export type MajorChain = (typeof MAJOR_CHAINS)[number];
+
+// Backward compat aliases
+export const TARGET_CHAINS = MAJOR_CHAINS;
+export type TargetChain = MajorChain;
 
 export function chainToId(name: string): string {
   return name.toLowerCase().replace(/\s+/g, "-");
-}
-
-// --- Protocol types ---
-export interface ProtocolRow {
-  readonly id: string;
-  readonly name: string;
-  readonly category: string;
-  readonly chain: string;
-  readonly chains_json: string;
-  readonly tvl: number;
-  readonly tvl_prev: number | null;
-  readonly change_1d: number | null;
-  readonly change_7d: number | null;
-  readonly url: string;
-  readonly description: string;
-  readonly first_seen_at: number;
-  readonly updated_at: number;
-  readonly indexed_at: number | null;
-}
-
-// --- Chain TVL snapshot ---
-export interface ChainTvlRow {
-  readonly id: string;
-  readonly name: string;
-  readonly tvl: number;
-  readonly tvl_prev: number | null;
-  readonly protocols_count: number;
-  readonly updated_at: number;
-}
-
-// --- Historical TVL point ---
-export interface ChainTvlHistoryRow {
-  readonly chain_id: string;
-  readonly date: number;
-  readonly tvl: number;
-}
-
-// --- Chain metrics ---
-export interface ChainMetricsRow {
-  readonly chain_id: string;
-  readonly metric_date: number;
-  readonly fees_24h: number | null;
-  readonly fees_7d: number | null;
-  readonly fees_30d: number | null;
-  readonly fees_change_1d: number | null;
-  readonly revenue_24h: number | null;
-  readonly revenue_7d: number | null;
-  readonly revenue_30d: number | null;
-  readonly revenue_change_1d: number | null;
-  readonly dex_volume_24h: number | null;
-  readonly dex_volume_7d: number | null;
-  readonly dex_volume_30d: number | null;
-  readonly dex_volume_change_1d: number | null;
-  readonly stablecoin_mcap: number | null;
-  readonly updated_at: number;
 }
 
 // =============================================================================
@@ -277,7 +237,7 @@ export async function getChainMetricsHistory(
 
 export async function getAllTargetChainMetrics(): Promise<ChainMetricsRow[]> {
   const db = getDb();
-  const ids = TARGET_CHAINS.map(chainToId);
+  const ids = MAJOR_CHAINS.map(chainToId);
   const rows = await db`
     SELECT DISTINCT ON (chain_id) *
     FROM defi_chain_metrics
@@ -305,7 +265,7 @@ export async function getProtocols(opts?: {
     const rows = await db`
       SELECT * FROM defi_protocols
       WHERE category = ${opts.category}
-        AND (chain = ${opts.chain} OR chains_json LIKE ${"%" + opts.chain + "%"})
+        AND (chain = ${opts.chain} OR chains_json::jsonb ? ${opts.chain})
         AND tvl >= ${minTvl}
       ORDER BY tvl DESC
       LIMIT ${limit}
@@ -327,7 +287,7 @@ export async function getProtocols(opts?: {
   if (opts?.chain) {
     const rows = await db`
       SELECT * FROM defi_protocols
-      WHERE (chain = ${opts.chain} OR chains_json LIKE ${"%" + opts.chain + "%"})
+      WHERE (chain = ${opts.chain} OR chains_json::jsonb ? ${opts.chain})
         AND tvl >= ${minTvl}
       ORDER BY tvl DESC
       LIMIT ${limit}

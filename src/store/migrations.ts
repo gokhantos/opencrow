@@ -1500,6 +1500,146 @@ export const MIGRATIONS = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_defi_chain_metrics_date ON defi_chain_metrics(chain_id, metric_date DESC)`,
 
+  // --- DeFi Llama: protocol detail enrichment ---
+  `CREATE TABLE IF NOT EXISTS defi_protocol_detail (
+    id TEXT PRIMARY KEY,
+    symbol TEXT DEFAULT '',
+    logo TEXT DEFAULT '',
+    twitter TEXT DEFAULT '',
+    description_full TEXT DEFAULT '',
+    mcap NUMERIC,
+    chains_json TEXT DEFAULT '[]',
+    current_chain_tvls_json TEXT DEFAULT '{}',
+    raises_json TEXT DEFAULT '[]',
+    fees_24h NUMERIC,
+    fees_7d NUMERIC,
+    revenue_24h NUMERIC,
+    revenue_7d NUMERIC,
+    updated_at INTEGER NOT NULL
+  )`,
+
+  // --- DeFi Llama: categories ---
+  `CREATE TABLE IF NOT EXISTS defi_categories (
+    name TEXT PRIMARY KEY,
+    tvl NUMERIC DEFAULT 0,
+    percentage REAL DEFAULT 0,
+    protocol_count INTEGER DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  )`,
+
+  // --- DeFi Llama: global metrics (fees, dex volumes, options, derivatives) ---
+  `CREATE TABLE IF NOT EXISTS defi_global_metrics (
+    metric_type TEXT NOT NULL,
+    metric_date INTEGER NOT NULL,
+    total_24h NUMERIC,
+    total_7d NUMERIC,
+    change_1d REAL,
+    extra_json TEXT DEFAULT '{}',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (metric_type, metric_date)
+  )`,
+
+  // --- DeFi Llama: per-protocol metrics ---
+  `CREATE TABLE IF NOT EXISTS defi_protocol_metrics (
+    protocol_id TEXT NOT NULL,
+    metric_type TEXT NOT NULL,
+    value_24h NUMERIC,
+    value_7d NUMERIC,
+    change_1d REAL,
+    chains_json TEXT DEFAULT '[]',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (protocol_id, metric_type)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_defi_protocol_metrics_type ON defi_protocol_metrics (metric_type, value_24h DESC)`,
+
+  // --- DeFiLlama Phase 3: yields, bridges, hacks, stablecoins, emissions, treasury ---
+  `CREATE TABLE IF NOT EXISTS defi_yield_pools (
+    pool_id TEXT PRIMARY KEY,
+    chain TEXT NOT NULL DEFAULT '',
+    project TEXT NOT NULL DEFAULT '',
+    symbol TEXT NOT NULL DEFAULT '',
+    tvl_usd NUMERIC DEFAULT 0,
+    apy REAL,
+    apy_base REAL,
+    apy_reward REAL,
+    apy_base_7d REAL,
+    volume_usd_1d NUMERIC,
+    volume_usd_7d NUMERIC,
+    pool_meta TEXT DEFAULT '',
+    exposure TEXT DEFAULT '',
+    reward_tokens_json TEXT DEFAULT '[]',
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_defi_yield_pools_chain ON defi_yield_pools (chain, tvl_usd DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_defi_yield_pools_apy ON defi_yield_pools (apy DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_defi_yield_pools_project ON defi_yield_pools (project)`,
+
+  `CREATE TABLE IF NOT EXISTS defi_bridges (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    display_name TEXT DEFAULT '',
+    volume_prev_day NUMERIC,
+    volume_prev_2day NUMERIC,
+    last_24h_volume NUMERIC,
+    chain_breakdown_json TEXT DEFAULT '{}',
+    updated_at INTEGER NOT NULL
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS defi_hacks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    protocol TEXT DEFAULT '',
+    amount NUMERIC DEFAULT 0,
+    chain TEXT DEFAULT '',
+    classification TEXT DEFAULT '',
+    technique TEXT DEFAULT '',
+    date INTEGER NOT NULL,
+    description TEXT DEFAULT '',
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_defi_hacks_date ON defi_hacks (date DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_defi_hacks_amount ON defi_hacks (amount DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS defi_emissions (
+    protocol_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    token TEXT DEFAULT '',
+    circ_supply NUMERIC,
+    total_locked NUMERIC,
+    max_supply NUMERIC,
+    unlocks_per_day NUMERIC,
+    mcap NUMERIC,
+    next_event_date INTEGER,
+    next_event_unlock NUMERIC,
+    events_json TEXT DEFAULT '[]',
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_defi_emissions_next ON defi_emissions (next_event_date ASC)`,
+
+  `CREATE TABLE IF NOT EXISTS defi_stablecoins (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    symbol TEXT DEFAULT '',
+    peg_type TEXT DEFAULT '',
+    circulating NUMERIC DEFAULT 0,
+    chains_json TEXT DEFAULT '[]',
+    price REAL,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_defi_stablecoins_circ ON defi_stablecoins (circulating DESC)`,
+
+  `CREATE TABLE IF NOT EXISTS defi_treasury (
+    protocol_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    total_usd NUMERIC DEFAULT 0,
+    own_tokens_usd NUMERIC DEFAULT 0,
+    stablecoins_usd NUMERIC DEFAULT 0,
+    majors_usd NUMERIC DEFAULT 0,
+    others_usd NUMERIC DEFAULT 0,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_defi_treasury_total ON defi_treasury (total_usd DESC)`,
+
   // --- ProductHunt: add review metrics ---
   `ALTER TABLE ph_products ADD COLUMN IF NOT EXISTS reviews_count INT NOT NULL DEFAULT 0`,
   `ALTER TABLE ph_products ADD COLUMN IF NOT EXISTS reviews_rating REAL NOT NULL DEFAULT 0`,

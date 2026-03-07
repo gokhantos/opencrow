@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "./types";
 import type { MemoryManager } from "../memory/types";
+import { createDefiLlamaExtendedTools } from "./defillama-extended";
 import {
   getProtocols,
   getTopMovers,
@@ -184,7 +185,7 @@ export function createDefiLlamaTools(
     createDigestTool<ChainMetricsRow>({
       name: "get_chain_metrics",
       description:
-        "Get detailed metrics for Ethereum, Solana, and Base chains: fees, DEX volume, and stablecoin supply. Shows 24h/7d/30d breakdowns with daily changes.",
+        "Get detailed metrics for all tracked major chains: fees, DEX volume, and stablecoin supply. Shows 24h/7d/30d breakdowns with daily changes.",
       inputSchema: {
         type: "object",
         properties: {
@@ -216,7 +217,7 @@ export function createDefiLlamaTools(
       name: "get_chain_tvl_history",
       categories: ["research"],
       description:
-        "Get historical daily TVL for Ethereum, Solana, or Base. Returns time series data useful for trend analysis. Specify daysBack for recent history or get up to a year.",
+        "Get historical daily TVL for any tracked major chain. Returns time series data useful for trend analysis. Specify daysBack for recent history or get up to a year.",
       inputSchema: {
         type: "object",
         properties: {
@@ -278,6 +279,9 @@ export function createDefiLlamaTools(
       }),
     );
   }
+
+  // Merge extended tools
+  tools.push(...createDefiLlamaExtendedTools());
 
   return tools;
 }
