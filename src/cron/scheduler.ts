@@ -50,13 +50,64 @@ export function createCronScheduler(deps: CronSchedulerDeps): CronScheduler {
   let timer: ReturnType<typeof setInterval> | null = null;
   let running = false;
   let ticking = false;
+  let nextDueAtMs: number | null = null; // cached earliest due time
+
+  async function processCommands(): Promise<void> {
+    const commands = await consumePendingCommands("cron");
+    for (const cmd of commands) {
+      if (cmd.action !== "cron:run_job") continue;
+      await acknowledgeCommand(cmd.id);
+      const jobId = cmd.payload.jobId as string;
+      if (!jobId) continue;
+      const job = await deps.cronStore.getJob(jobId);
+      if (!job) {
+        log.warn("cron:run_job command for unknown job", { jobId });
+        continue;
+      }
+      log.info("Running job via command", { jobId, jobName: job.name });
+      // Invalidate cache so we recheck after manual run
+      nextDueAtMs = null;
+      executeCronJob(job, {
+        cronStore: deps.cronStore,
+        agentRegistry: deps.agentRegistry,
+        baseToolRegistry: deps.baseToolRegistry,
+        channels: deps.channels,
+        defaultTimeoutSeconds: deps.config.defaultTimeoutSeconds,
+        buildRegistryForAgent: deps.buildRegistryForAgent,
+        buildSystemPrompt: deps.buildSystemPrompt,
+        deliveryStore: deps.deliveryStore,
+      }).catch((error) => {
+        log.error("Manual cron job execution failed", { jobId, error });
+      });
+    }
+  }
 
   async function tick(): Promise<void> {
     if (ticking) return;
     ticking = true;
 
     try {
-      const dueJobs = await deps.cronStore.getDueJobs(Date.now());
+      // Skip DB query if we know no jobs are due yet
+      const now = Date.now();
+      if (nextDueAtMs !== null && now < nextDueAtMs) {
+        // Still process commands even when no jobs are due
+        await processCommands();
+        return;
+      }
+
+      const dueJobs = await deps.cronStore.getDueJobs(now);
+
+      // Update cache: find the earliest next_run_at among non-due jobs
+      if (dueJobs.length === 0) {
+        const allJobs = await deps.cronStore.listJobs();
+        const futureRuns = allJobs
+          .filter((j) => j.enabled && j.nextRunAt !== null)
+          .map((j) => j.nextRunAt! * 1000);
+        nextDueAtMs = futureRuns.length > 0 ? Math.min(...futureRuns) : null;
+      } else {
+        // Jobs were due — recheck next tick
+        nextDueAtMs = null;
+      }
       const maxConcurrency = deps.config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 
       // Run jobs concurrently (ordered by priority from getDueJobs)
@@ -82,32 +133,7 @@ export function createCronScheduler(deps: CronSchedulerDeps): CronScheduler {
       }
       await Promise.all(executing);
 
-      // Process "run now" commands from other processes (web UI)
-      const commands = await consumePendingCommands("cron");
-      for (const cmd of commands) {
-        if (cmd.action !== "cron:run_job") continue;
-        await acknowledgeCommand(cmd.id);
-        const jobId = cmd.payload.jobId as string;
-        if (!jobId) continue;
-        const job = await deps.cronStore.getJob(jobId);
-        if (!job) {
-          log.warn("cron:run_job command for unknown job", { jobId });
-          continue;
-        }
-        log.info("Running job via command", { jobId, jobName: job.name });
-        executeCronJob(job, {
-          cronStore: deps.cronStore,
-          agentRegistry: deps.agentRegistry,
-          baseToolRegistry: deps.baseToolRegistry,
-          channels: deps.channels,
-          defaultTimeoutSeconds: deps.config.defaultTimeoutSeconds,
-          buildRegistryForAgent: deps.buildRegistryForAgent,
-          buildSystemPrompt: deps.buildSystemPrompt,
-          deliveryStore: deps.deliveryStore,
-        }).catch((error) => {
-          log.error("Manual cron job execution failed", { jobId, error });
-        });
-      }
+      await processCommands();
     } catch (error) {
       log.error("Cron tick error", error);
     } finally {
