@@ -351,7 +351,7 @@ export function createWebApp(deps: WebAppDeps): Hono {
   const signals = createSignalsRoutes();
   app.route("/api", signals);
 
-  const googleTrends = createGoogleTrendsRoutes();
+  const googleTrends = createGoogleTrendsRoutes({ coreClient: cc });
   app.route("/api", googleTrends);
 
   const appStore = createAppStoreRoutes();

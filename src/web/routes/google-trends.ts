@@ -1,8 +1,14 @@
 import { Hono } from "hono";
+import { createLogger } from "../../logger";
 import { getTrends } from "../../sources/google-trends/store";
 import { getDb } from "../../store/db";
+import type { CoreClient } from "../core-client";
 
-export function createGoogleTrendsRoutes(): Hono {
+const log = createLogger("google-trends-api");
+
+export function createGoogleTrendsRoutes(opts: {
+  coreClient?: CoreClient;
+} = {}): Hono {
   const app = new Hono();
 
   app.get("/trends/list", async (c) => {
@@ -24,6 +30,28 @@ export function createGoogleTrendsRoutes(): Hono {
     `;
     const stats = rows[0] ?? { total_trends: 0, last_updated_at: null, categories: 0 };
     return c.json({ success: true, data: stats });
+  });
+
+  app.post("/trends/scrape-now", async (c) => {
+    log.info("Manual Google Trends scrape triggered");
+
+    if (opts.coreClient) {
+      const result = await opts.coreClient.scraperAction("google-trends", "scrape-now", {});
+      return c.json({ success: true, data: result.data });
+    }
+
+    return c.json({ success: false, error: "Google Trends scraper not available" }, 503);
+  });
+
+  app.post("/trends/backfill-rag", async (c) => {
+    log.info("Google Trends RAG backfill triggered");
+
+    if (opts.coreClient) {
+      const result = await opts.coreClient.scraperAction("google-trends", "backfill-rag");
+      return c.json({ success: true, data: result.data });
+    }
+
+    return c.json({ success: false, error: "Google Trends scraper not available" }, 503);
   });
 
   return app;

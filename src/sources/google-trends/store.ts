@@ -8,6 +8,8 @@ export interface TrendRow {
   readonly source: string;
   readonly source_url: string;
   readonly related_queries: string;
+  readonly picture_url: string | null;
+  readonly news_items_json: string | null;
   readonly geo: string;
   readonly category: string;
   readonly first_seen_at: number;
@@ -25,10 +27,11 @@ export async function upsertTrends(trends: readonly TrendRow[]): Promise<number>
     await db`
       INSERT INTO google_trends (
         id, title, traffic_volume, description, source, source_url,
-        related_queries, geo, category, first_seen_at, updated_at
+        related_queries, picture_url, news_items_json, geo, category, first_seen_at, updated_at
       ) VALUES (
         ${t.id}, ${t.title}, ${t.traffic_volume}, ${t.description},
         ${t.source}, ${t.source_url}, ${t.related_queries},
+        ${t.picture_url ?? null}, ${t.news_items_json ?? null},
         ${t.geo}, ${t.category}, ${t.first_seen_at}, ${t.updated_at}
       )
       ON CONFLICT (id) DO UPDATE SET
@@ -37,6 +40,8 @@ export async function upsertTrends(trends: readonly TrendRow[]): Promise<number>
         source = EXCLUDED.source,
         source_url = EXCLUDED.source_url,
         related_queries = EXCLUDED.related_queries,
+        picture_url = EXCLUDED.picture_url,
+        news_items_json = EXCLUDED.news_items_json,
         updated_at = EXCLUDED.updated_at
     `;
     upserted++;

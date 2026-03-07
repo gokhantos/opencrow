@@ -1512,4 +1512,28 @@ export const MIGRATIONS = [
   `ALTER TABLE reddit_posts ADD COLUMN IF NOT EXISTS top_comments_json TEXT DEFAULT NULL`,
   `ALTER TABLE reddit_posts ADD COLUMN IF NOT EXISTS flair TEXT DEFAULT NULL`,
   `ALTER TABLE reddit_posts ADD COLUMN IF NOT EXISTS thumbnail_url TEXT DEFAULT NULL`,
+
+  // --- Google Trends ---
+  `CREATE TABLE IF NOT EXISTS google_trends (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    traffic_volume TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    related_queries TEXT NOT NULL DEFAULT '',
+    picture_url TEXT DEFAULT NULL,
+    news_items_json TEXT DEFAULT NULL,
+    geo TEXT NOT NULL DEFAULT 'US',
+    category TEXT NOT NULL DEFAULT 'all',
+    first_seen_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    indexed_at INTEGER DEFAULT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_google_trends_updated ON google_trends(updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_google_trends_category ON google_trends(category, updated_at DESC)`,
+
+  // --- Google Trends: add picture_url and news_items_json to existing tables ---
+  `ALTER TABLE google_trends ADD COLUMN IF NOT EXISTS picture_url TEXT DEFAULT NULL`,
+  `ALTER TABLE google_trends ADD COLUMN IF NOT EXISTS news_items_json TEXT DEFAULT NULL`,
 ];

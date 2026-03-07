@@ -13,10 +13,10 @@ const TICK_INTERVAL_MS = 1_800_000; // 30 minutes
 
 const FEEDS = [
   { url: "https://trends.google.com/trending/rss?geo=US", category: "all" },
-  {
-    url: "https://trends.google.com/trending/rss?geo=US&category=t",
-    category: "tech",
-  },
+  { url: "https://trends.google.com/trending/rss?geo=US&category=t", category: "tech" },
+  { url: "https://trends.google.com/trending/rss?geo=US&category=b", category: "business" },
+  { url: "https://trends.google.com/trending/rss?geo=US&category=e", category: "entertainment" },
+  { url: "https://trends.google.com/trending/rss?geo=US&category=m", category: "health" },
 ] as const;
 
 const GEO = "US";
@@ -83,8 +83,8 @@ function splitItems(xml: string): readonly string[] {
 
 function extractNewsItems(
   itemXml: string,
-): readonly { title: string; url: string; source: string }[] {
-  const results: { title: string; url: string; source: string }[] = [];
+): readonly { title: string; url: string; source: string; picture: string }[] {
+  const results: { title: string; url: string; source: string; picture: string }[] = [];
   let searchFrom = 0;
 
   while (true) {
@@ -98,9 +98,10 @@ function extractNewsItems(
     const title = extractCdataContent(newsBlock, "ht:news_item_title");
     const url = extractCdataContent(newsBlock, "ht:news_item_url");
     const source = extractCdataContent(newsBlock, "ht:news_item_source");
+    const picture = extractCdataContent(newsBlock, "ht:news_item_picture");
 
     if (title || url) {
-      results.push({ title, url, source });
+      results.push({ title, url, source, picture });
     }
   }
 
@@ -121,7 +122,7 @@ function parseItem(
     const newsItems = extractNewsItems(itemXml);
     const firstNews = newsItems[0];
 
-    const description = firstNews?.title ?? "";
+    const description = newsItems.map((n) => n.title).filter(Boolean).join(" | ");
     const source = firstNews?.source ?? "";
     const sourceUrl = firstNews?.url ?? "";
 
@@ -130,6 +131,9 @@ function parseItem(
     const relatedQueries = relatedRaw
       ? relatedRaw.split(",").map((q) => q.trim()).filter(Boolean).join(", ")
       : "";
+
+    const pictureUrl = extractTagContent(itemXml, "ht:picture");
+    const newsItemsJson = newsItems.length > 0 ? JSON.stringify(newsItems) : null;
 
     const now = Math.floor(Date.now() / 1000);
     const id = hashId(title, pubDate || String(now));
@@ -142,6 +146,8 @@ function parseItem(
       source,
       source_url: sourceUrl,
       related_queries: relatedQueries,
+      picture_url: pictureUrl || null,
+      news_items_json: newsItemsJson,
       geo: GEO,
       category,
       first_seen_at: now,
@@ -199,6 +205,16 @@ function rowsToArticlesForIndex(
       t.description,
       t.traffic_volume ? `Traffic: ${t.traffic_volume}` : "",
       t.related_queries ? `Related: ${t.related_queries}` : "",
+      (() => {
+        if (!t.news_items_json) return "";
+        try {
+          const items = JSON.parse(t.news_items_json) as { title: string }[];
+          const titles = items.map((i) => i.title).filter(Boolean).join("; ");
+          return titles ? `News: ${titles}` : "";
+        } catch {
+          return "";
+        }
+      })(),
     ]
       .filter(Boolean)
       .join("\n"),
