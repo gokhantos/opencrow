@@ -28,14 +28,17 @@ export const whatsappPlugin: ChannelPlugin = {
     },
 
     applyConfig(config: OpenCrowConfig, input: ChannelSetupInput): OpenCrowConfig {
-      const current = config.channels.whatsapp;
+      const current = config.channels.whatsapp ?? {
+        allowedNumbers: [],
+        allowedGroups: [],
+        defaultAgent: "opencrow",
+      };
       return {
         ...config,
         channels: {
           ...config.channels,
           whatsapp: {
             ...current,
-            ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
             ...(input.allowedNumbers !== undefined
               ? { allowedNumbers: [...input.allowedNumbers] }
               : {}),
@@ -50,7 +53,7 @@ export const whatsappPlugin: ChannelPlugin = {
 
   config: {
     isEnabled(config: OpenCrowConfig): boolean {
-      return config.channels.whatsapp.enabled;
+      return config.channels.whatsapp !== undefined;
     },
 
     isConfigured(_config: OpenCrowConfig): boolean {
@@ -64,25 +67,25 @@ export const whatsappPlugin: ChannelPlugin = {
     ): ChannelAccountSnapshot {
       const waChannel = channel as WhatsAppChannel | undefined;
       return {
-        enabled: config.channels.whatsapp.enabled,
+        enabled: config.channels.whatsapp !== undefined,
         configured: true,
         connected: channel?.isConnected() ?? false,
         lastError: null,
         pairingState: waChannel?.getPairingState?.() ?? "disconnected",
         qrCode: waChannel?.getQrCode?.() ?? null,
-        allowedNumbers: config.channels.whatsapp.allowedNumbers,
-        allowedGroups: config.channels.whatsapp.allowedGroups,
+        allowedNumbers: config.channels.whatsapp?.allowedNumbers ?? [],
+        allowedGroups: config.channels.whatsapp?.allowedGroups ?? [],
       };
     },
 
     getAllowedSenders(config: OpenCrowConfig): readonly string[] {
-      return config.channels.whatsapp.allowedNumbers;
+      return config.channels.whatsapp?.allowedNumbers ?? [];
     },
   },
 
   gateway: {
     createChannel(config: OpenCrowConfig): Channel {
-      const defaultAgentId = config.channels.whatsapp.defaultAgent;
+      const defaultAgentId = config.channels.whatsapp?.defaultAgent;
       const agent = defaultAgentId
         ? config.agents.find((a) => a.id === defaultAgentId)
         : undefined;

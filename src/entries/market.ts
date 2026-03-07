@@ -35,8 +35,8 @@ async function main(): Promise<void> {
   // Reload with DB overrides now that DB is initialized
   const config = await loadConfigWithOverrides();
 
-  if (!config.market.enabled) {
-    log.warn("Market pipeline disabled in config, exiting");
+  if (config.market === undefined) {
+    log.warn("Market pipeline not configured, exiting");
     process.exit(0);
   }
 

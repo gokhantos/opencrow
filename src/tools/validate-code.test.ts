@@ -3,7 +3,6 @@ import { createValidateCodeTool } from "./validate-code";
 import type { ToolsConfig } from "../config/schema";
 
 const config: ToolsConfig = {
-  enabled: true,
   allowedDirectories: ["/tmp"],
   blockedCommands: [],
   maxBashTimeout: 30000,
@@ -80,7 +79,6 @@ describe("createValidateCodeTool", () => {
   describe("execute - path validation", () => {
     it("should reject paths outside allowed directories", async () => {
       const restrictedConfig: ToolsConfig = {
-        enabled: true,
         allowedDirectories: ["/tmp/allowed-only-xyz"],
         blockedCommands: [],
         maxBashTimeout: 30000,

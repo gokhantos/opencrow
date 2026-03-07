@@ -234,7 +234,7 @@ export function createKlineStream(options: StreamOptions): KlineStream {
     if (!entry) return;
 
     const attempts = entry.reconnectAttempts + 1;
-    if (attempts > config.stream.maxReconnectAttempts) {
+    if (attempts > config.stream!.maxReconnectAttempts) {
       log.error("Max reconnect attempts reached", { key, attempts });
       return;
     }
@@ -242,7 +242,7 @@ export function createKlineStream(options: StreamOptions): KlineStream {
     entries.set(key, { ...entry, reconnectAttempts: attempts });
 
     const delay =
-      config.stream.reconnectDelayMs * Math.pow(2, Math.min(attempts - 1, 5));
+      config.stream!.reconnectDelayMs * Math.pow(2, Math.min(attempts - 1, 5));
     log.info("Scheduling reconnect", {
       key,
       attempt: attempts,
@@ -266,7 +266,7 @@ export function createKlineStream(options: StreamOptions): KlineStream {
 
       for (const marketType of config.marketTypes) {
         for (const symbol of config.symbols) {
-          for (const timeframe of config.stream.timeframes) {
+          for (const timeframe of config.stream!.timeframes) {
             const key = streamKey(marketType, symbol, timeframe as TimeFrame);
             entries.set(key, {
               ws: null,
@@ -289,7 +289,7 @@ export function createKlineStream(options: StreamOptions): KlineStream {
       log.info("Kline streams started", {
         marketTypes: config.marketTypes,
         symbols: config.symbols,
-        timeframes: config.stream.timeframes,
+        timeframes: config.stream!.timeframes,
         totalStreams: entries.size,
       });
     },

@@ -16,7 +16,6 @@ function applyEnvOverrides(
     telegram = {
       ...telegram,
       botToken: env.TELEGRAM_BOT_TOKEN,
-      enabled: telegram.enabled ?? true,
     };
   }
 
@@ -67,21 +66,6 @@ describe("applyEnvOverrides", () => {
     const telegram = (result.channels as Record<string, unknown>)
       .telegram as Record<string, unknown>;
     expect(telegram.botToken).toBe("test-token-123");
-    expect(telegram.enabled).toBe(true);
-  });
-
-  test("preserves existing telegram.enabled when setting token", () => {
-    const result = applyEnvOverrides(
-      {
-        channels: {
-          telegram: { enabled: false },
-        },
-      },
-      { TELEGRAM_BOT_TOKEN: "tok" },
-    );
-    const telegram = (result.channels as Record<string, unknown>)
-      .telegram as Record<string, unknown>;
-    expect(telegram.enabled).toBe(false);
   });
 
   test("parses TELEGRAM_ALLOWED_USER_IDS as comma-separated numbers", () => {

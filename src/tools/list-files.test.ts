@@ -12,7 +12,6 @@ describe("createListFilesTool", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "listfiles-test-"));
     config = {
-      enabled: true,
       allowedDirectories: [tempDir],
       blockedCommands: [],
       maxBashTimeout: 30000,

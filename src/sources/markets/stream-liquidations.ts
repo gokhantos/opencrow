@@ -172,13 +172,13 @@ export function createLiquidationStream(
     if (!running || signal?.aborted) return;
 
     reconnectAttempts++;
-    if (reconnectAttempts > config.stream.maxReconnectAttempts) {
+    if (reconnectAttempts > config.stream!.maxReconnectAttempts) {
       log.error("Liquidation stream: max reconnect attempts reached");
       return;
     }
 
     const delay =
-      config.stream.reconnectDelayMs *
+      config.stream!.reconnectDelayMs *
       Math.pow(2, Math.min(reconnectAttempts - 1, 5));
 
     log.info("Liquidation stream reconnecting", {

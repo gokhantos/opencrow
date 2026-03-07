@@ -8,13 +8,11 @@ const globalDefaults: AgentConfig = {
   systemPrompt: "You are OpenCrow.",
   retry: { attempts: 3, minDelayMs: 500, maxDelayMs: 30000, jitter: 0.15 },
   compaction: {
-    enabled: true,
     maxContextTokens: 180_000,
     targetHistoryTokens: 80_000,
     summaryMaxTokens: 2048,
     stripToolResultsAfterTurns: 3,
   },
-  failover: { enabled: false, fallbackModels: [], tokenCooldownMs: 60_000 },
 };
 
 describe("createAgentRegistry", () => {

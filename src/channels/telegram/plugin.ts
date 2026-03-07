@@ -34,7 +34,6 @@ export const telegramPlugin: ChannelPlugin = {
           ...config.channels,
           telegram: {
             ...current,
-            ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
             ...(input.botToken !== undefined ? { botToken: input.botToken } : {}),
             ...(input.allowedUserIds !== undefined
               ? { allowedUserIds: [...input.allowedUserIds] }
@@ -47,7 +46,7 @@ export const telegramPlugin: ChannelPlugin = {
 
   config: {
     isEnabled(config: OpenCrowConfig): boolean {
-      return config.channels.telegram.enabled
+      return Boolean(config.channels.telegram.botToken)
     },
 
     isConfigured(config: OpenCrowConfig): boolean {
@@ -56,7 +55,7 @@ export const telegramPlugin: ChannelPlugin = {
 
     getSnapshot(config: OpenCrowConfig, channel?: Channel): ChannelAccountSnapshot {
       return {
-        enabled: config.channels.telegram.enabled,
+        enabled: Boolean(config.channels.telegram.botToken),
         configured: Boolean(config.channels.telegram.botToken),
         connected: channel?.isConnected() ?? false,
         lastError: null,

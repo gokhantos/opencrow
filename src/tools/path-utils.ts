@@ -69,5 +69,25 @@ export function isPathAllowedSync(
   allowedDirs: readonly string[]
 ): boolean {
   const resolved = resolve(target)
-  return checkPrefix(resolved, allowedDirs)
+  let real = resolved
+  try {
+    real = realpathSync(resolved)
+  } catch {
+    // Path doesn't exist yet — walk up to find existing ancestor
+    let current = resolved
+    let parent = dirname(current)
+    while (parent !== current) {
+      try {
+        const realAncestor = realpathSync(parent)
+        // Reconstruct path with real ancestor prefix
+        const suffix = resolved.slice(parent.length)
+        real = realAncestor + suffix
+        break
+      } catch {
+        current = parent
+        parent = dirname(current)
+      }
+    }
+  }
+  return checkPrefix(real, allowedDirs)
 }

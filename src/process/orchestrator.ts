@@ -1,7 +1,7 @@
 import type { Subprocess } from "bun";
-import type { OpenCrowConfig, ProcessSpec } from "../config/schema";
+import type { OpenCrowConfig } from "../config/schema";
 import type { AgentRegistry } from "../agents/registry";
-import { resolveManifest } from "./manifest";
+import { resolveManifest, type ResolvedProcessSpec } from "./manifest";
 import { listProcesses } from "./registry";
 import { createLogger } from "../logger";
 
@@ -14,7 +14,7 @@ const BACKOFF_RESET_STABLE_MS = 300_000; // 5 min stable → reset backoff
 const GRACEFUL_SHUTDOWN_MS = 10_000;
 
 interface ChildState {
-  readonly spec: ProcessSpec;
+  readonly spec: ResolvedProcessSpec;
   status: "running" | "backoff" | "crash-loop" | "stopped";
   proc: Subprocess | null;
   pid: number | null;

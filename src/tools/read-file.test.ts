@@ -12,7 +12,6 @@ describe("createReadFileTool", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "readfile-test-"));
     config = {
-      enabled: true,
       allowedDirectories: [tempDir],
       blockedCommands: [],
       maxBashTimeout: 30000,

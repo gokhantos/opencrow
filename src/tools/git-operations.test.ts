@@ -29,7 +29,6 @@ mock.module("./shell-runner", () => ({
 const { createGitOperationsTool } = await import("./git-operations");
 
 const DEFAULT_CONFIG: ToolsConfig = {
-  enabled: true,
   allowedDirectories: ["/home/test/projects"],
   blockedCommands: [],
   maxBashTimeout: 600_000,

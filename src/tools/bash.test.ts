@@ -12,7 +12,6 @@ describe("createBashTool", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "bash-test-"));
     config = {
-      enabled: true,
       allowedDirectories: [tempDir],
       blockedCommands: ["sudo", "rm -rf /", "mkfs", "dd"],
       maxBashTimeout: 30000,

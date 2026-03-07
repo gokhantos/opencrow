@@ -168,7 +168,7 @@ export async function bootstrap(
 
   let baseToolRegistry: ToolRegistry | null = null;
   let toolRouter: ReturnType<typeof createToolRouter> | null = null;
-  if (config.tools.enabled) {
+  if (config.tools !== undefined) {
     const registry = createToolRegistry(config.tools).withTools([
       createListSkillsTool(),
       createUseSkillTool(),
@@ -186,7 +186,7 @@ export async function bootstrap(
   }
 
   let memoryManager: MemoryManager | null = null;
-  if (!opts.skipMemory && config.memorySearch.enabled) {
+  if (!opts.skipMemory && config.memorySearch !== undefined) {
     const embeddingKey =
       process.env.OPENROUTER_API_KEY ?? process.env.VOYAGE_API_KEY;
     const embeddingProvider = embeddingKey
@@ -199,11 +199,12 @@ export async function bootstrap(
       );
     }
 
-    const qdrantUrl = process.env.QDRANT_URL ?? config.memorySearch.qdrant.url;
-    const qdrantCollection = config.memorySearch.qdrant.collection;
+    const memSearch = config.memorySearch!;
+    const qdrantUrl = process.env.QDRANT_URL ?? memSearch.qdrant.url;
+    const qdrantCollection = memSearch.qdrant.collection;
     const qdrantClient = await createQdrantClient({
       url: qdrantUrl,
-      apiKey: config.memorySearch.qdrant.apiKey,
+      apiKey: memSearch.qdrant.apiKey,
     });
 
     if (qdrantClient.available) {
@@ -214,24 +215,24 @@ export async function bootstrap(
       embeddingProvider,
       qdrantClient,
       qdrantCollection,
-      shared: config.memorySearch.shared,
-      defaultLimit: config.memorySearch.defaultLimit,
-      minScore: config.memorySearch.minScore,
-      vectorWeight: config.memorySearch.vectorWeight,
-      textWeight: config.memorySearch.textWeight,
-      mmrLambda: config.memorySearch.mmrLambda,
+      shared: memSearch.shared,
+      defaultLimit: memSearch.defaultLimit,
+      minScore: memSearch.minScore,
+      vectorWeight: memSearch.vectorWeight,
+      textWeight: memSearch.textWeight,
+      mmrLambda: memSearch.mmrLambda,
     });
     log.info("Memory search initialized", {
       vectorEnabled: Boolean(embeddingKey),
       qdrantAvailable: qdrantClient.available,
-      autoIndex: config.memorySearch.autoIndex,
+      autoIndex: memSearch.autoIndex,
     });
   }
 
   let observationHook: ObservationHook | null = null;
   if (!opts.skipObservations) {
-    const obsConfig = config.observations ?? { enabled: true };
-    if (obsConfig.enabled !== false) {
+    const obsConfig = config.observations;
+    if (obsConfig !== undefined) {
       observationHook = createObservationHook({
         memoryManager,
         minMessages: obsConfig.minMessages ?? 4,
@@ -243,7 +244,7 @@ export async function bootstrap(
   }
 
   // Initialize QuestDB read-only client for market query tools
-  if (config.market.enabled) {
+  if (config.market !== undefined) {
     await initQuestDBReadOnly();
   }
 
@@ -271,11 +272,11 @@ export async function bootstrap(
   ): Promise<string> {
     let prompt = basePrompt;
 
-    if (agent.id === "crypto-analyst" && config.market.enabled) {
+    if (agent.id === "crypto-analyst" && config.market !== undefined) {
       try {
         const marketContext = await buildMarketContext({
-          symbols: config.market.symbols,
-          marketTypes: config.market.marketTypes,
+          symbols: config.market!.symbols,
+          marketTypes: config.market!.marketTypes,
           timeframes: ["5m", "15m", "1h", "4h", "1d"],
           includeFunding: true,
         });
@@ -352,8 +353,8 @@ export async function bootstrap(
 
     {
       const marketTools = createMarketTools(
-        config.market.symbols,
-        config.market.marketTypes,
+        config.market?.symbols ?? [],
+        config.market?.marketTypes ?? [],
       ).filter((t) => allowsTool(t.name));
       if (marketTools.length > 0) registry = registry.withTools(marketTools);
     }

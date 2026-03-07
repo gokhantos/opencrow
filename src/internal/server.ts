@@ -45,7 +45,7 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
       for (const proc of statuses) {
         if (proc.name.startsWith("agent:")) {
           const agentId = proc.name.replace("agent:", "");
-          const isWaOwner = agentId === waDefaultAgent && currentConfig.channels?.whatsapp?.enabled;
+          const isWaOwner = agentId === waDefaultAgent && currentConfig.channels?.whatsapp !== undefined;
           channelStatus[proc.name] = {
             status: proc.status === "alive" ? "connected" : "disconnected",
             type: isWaOwner ? "telegram+whatsapp" : "telegram",

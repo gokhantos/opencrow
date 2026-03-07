@@ -251,7 +251,6 @@ describe("run-tests tool", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "run-tests-test-"));
     config = {
-      enabled: true,
       allowedDirectories: [tempDir],
       blockedCommands: ["sudo", "rm -rf /"],
       maxBashTimeout: 30000,

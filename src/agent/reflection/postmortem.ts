@@ -23,14 +23,12 @@ export interface ReflectionResult {
 }
 
 export interface ReflectionConfig {
-  enabled: boolean;
   minRevisionsForReflection: number;
   includeSuccessReflections: boolean;
   maxReflectionsPerDay: number;
 }
 
 const DEFAULT_CONFIG: ReflectionConfig = {
-  enabled: true,
   minRevisionsForReflection: 2,
   includeSuccessReflections: false,
   maxReflectionsPerDay: 10,
@@ -52,11 +50,6 @@ export async function generatePostMortem(
   },
   config: ReflectionConfig = DEFAULT_CONFIG,
 ): Promise<ReflectionResult | null> {
-  if (!config.enabled) {
-    log.debug("Reflection generation disabled", { sessionId });
-    return null;
-  }
-
   // Check if reflection should be generated
   if (outcome.status === "success" && !config.includeSuccessReflections) {
     log.debug("Skipping reflection for successful task", { sessionId });

@@ -12,7 +12,6 @@ describe("createGlobTool", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "glob-test-"));
     config = {
-      enabled: true,
       allowedDirectories: [tempDir],
       blockedCommands: [],
       maxBashTimeout: 30000,

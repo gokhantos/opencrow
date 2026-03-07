@@ -12,7 +12,6 @@ describe("createEditFileTool", () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "editfile-test-"));
     config = {
-      enabled: true,
       allowedDirectories: [tempDir],
       blockedCommands: [],
       maxBashTimeout: 30000,
