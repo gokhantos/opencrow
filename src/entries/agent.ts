@@ -190,6 +190,10 @@ async function main(): Promise<void> {
     }
   }
 
+  // --- Tool stats flusher ---
+  const { startToolStatsFlush } = await import("../agent/tool-stats");
+  startToolStatsFlush();
+
   // --- Supervisor ---
   const supervisor = createProcessSupervisor(processName, {
     agentId,

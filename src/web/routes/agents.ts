@@ -406,5 +406,18 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
     }
   });
 
+  // --- Tool failure stats ---
+  app.get("/agents/tool-stats", async (c) => {
+    try {
+      const { getToolStats } = await import("../../agent/tool-stats");
+      const agentId = c.req.query("agentId");
+      const stats = await getToolStats(agentId || undefined);
+      return c.json({ success: true, data: stats });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to get tool stats";
+      return c.json({ success: false, error: msg }, 500);
+    }
+  });
+
   return app;
 }

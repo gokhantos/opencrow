@@ -31,6 +31,7 @@ import {
   MAX_DETAIL_LENGTH,
   MAX_THINKING_SUMMARY,
 } from "./sdk-progress";
+import { recordToolResult } from "./tool-stats";
 
 
 const log = createLogger("agent-sdk");
@@ -192,6 +193,7 @@ async function runQuery(
   let resultText = "";
   let lastAssistantText = prev.lastAssistantText;
   let toolUseCount = prev.toolUseCount;
+  const pendingToolNames: string[] = [];
   let capturedSessionId = sessionId;
   const sessionCapture = { done: Boolean(sessionId) };
   let usage = prev.usage;
@@ -248,6 +250,7 @@ async function runQuery(
             hasToolUseInMessage = true;
             toolUseCount++;
             const toolName = block.name as string;
+            pendingToolNames.push(toolName);
             const toolInput = (block.input as Record<string, unknown>) ?? {};
             const display = formatToolProgress(toolName, toolInput);
             onProgress?.({ type: "tool_start", agentId, tool: display });
@@ -294,10 +297,17 @@ async function runQuery(
                   (textBlock as Record<string, unknown>).text ?? "",
                 );
             }
+            const matchedToolName = pendingToolNames.shift() ?? "unknown";
+            recordToolResult(
+              agentId,
+              matchedToolName,
+              isErr,
+              isErr ? resultStr.slice(0, 500) : undefined,
+            );
             onProgress?.({
               type: "tool_done",
               agentId,
-              tool: "",
+              tool: matchedToolName,
               result: truncate(resultStr, MAX_DETAIL_LENGTH),
               isError: isErr,
             });

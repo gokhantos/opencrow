@@ -82,6 +82,10 @@ async function main(): Promise<void> {
     }
   }
 
+  // --- Tool stats flusher ---
+  const { startToolStatsFlush } = await import("../agent/tool-stats");
+  startToolStatsFlush();
+
   const supervisor = createProcessSupervisor("cron", {
     type: "cron",
   });
