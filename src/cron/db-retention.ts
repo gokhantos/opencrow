@@ -27,6 +27,8 @@ const RETENTION_RULES: ReadonlyArray<{
   { table: "monitor_alerts", column: "created_at", format: "epoch", days: 90 },
   { table: "tool_stats", column: "updated_at", format: "epoch", days: 90 },
   { table: "agent_messages", column: "created_at", format: "timestamptz", days: 30 },
+  { table: "process_logs", column: "created_at", format: "timestamptz", days: 30 },
+  { table: "token_usage", column: "created_at", format: "epoch", days: 90 },
 ];
 
 export interface RetentionResult {
@@ -67,6 +69,26 @@ export async function runDbRetention(): Promise<RetentionResult> {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  // Special: prune completed/failed tasks older than 7 days
+  try {
+    const taskCutoff = Math.floor(Date.now() / 1000) - 7 * 86400;
+    const taskResult = await db.unsafe(
+      `DELETE FROM task_queue WHERE status IN ('completed', 'failed') AND enqueued_at < $1`,
+      [taskCutoff],
+    );
+    const taskDeleted = taskResult.count ?? 0;
+    if (taskDeleted > 0) {
+      details.push({ table: "task_queue", deleted: taskDeleted });
+      totalDeleted += taskDeleted;
+      log.info("Retention cleanup", { table: "task_queue", deleted: taskDeleted, cutoffDays: 7 });
+    }
+  } catch (err) {
+    log.warn("Retention cleanup failed for table", {
+      table: "task_queue",
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   log.info("Retention cleanup complete", { totalDeleted, tables: details.length });

@@ -48,11 +48,13 @@ export async function getOrCreateSession(
   return rowToSession(row as SessionRow);
 }
 
-export async function getAllSessions(): Promise<readonly StoredSession[]> {
+export async function getAllSessions(
+  limit = 200,
+): Promise<readonly StoredSession[]> {
   const db = getDb();
 
   const rows = await db`
-    SELECT * FROM sessions ORDER BY updated_at DESC
+    SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ${limit}
   `;
 
   return (rows as SessionRow[]).map(rowToSession);

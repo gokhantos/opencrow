@@ -109,41 +109,40 @@ export async function clearObservationsByChat(
 ): Promise<number> {
   const db = getDb();
 
-  // 1. Get observation IDs for this chat
-  const obsRows = await db`
-    SELECT id FROM conversation_observations
-    WHERE channel = ${channel} AND chat_id = ${chatId}
-  `;
-  const obsIds = obsRows.map((r: { id: string }) => r.id);
-
-  if (obsIds.length === 0) return 0;
-
-  // 2. Find memory_sources that indexed any of these observations
-  //    (metadata_json contains observationIds as comma-separated string)
-  const matchedSources: { id: string }[] = [];
-  for (const obsId of obsIds) {
-    const rows = await db`
-      SELECT id FROM memory_sources
-      WHERE kind = 'observation'
-      AND metadata_json LIKE ${"%" + obsId + "%"}
+  return db.begin(async (tx) => {
+    // 1. Get observation IDs for this chat
+    const obsRows = await tx`
+      SELECT id FROM conversation_observations
+      WHERE channel = ${channel} AND chat_id = ${chatId}
     `;
-    for (const r of rows) matchedSources.push(r as { id: string });
-  }
-  const sourceIds = [...new Set(matchedSources.map((r) => r.id))];
+    const obsIds = obsRows.map((r: { id: string }) => r.id);
 
-  // 3. Delete memory_chunks and memory_sources for matched sources
-  if (sourceIds.length > 0) {
-    await db`DELETE FROM memory_chunks WHERE source_id IN ${db(sourceIds)}`;
-    await db`DELETE FROM memory_sources WHERE id IN ${db(sourceIds)}`;
-  }
+    if (obsIds.length === 0) return 0;
 
-  // 4. Delete from conversation_observations
-  const result = await db`
-    DELETE FROM conversation_observations
-    WHERE channel = ${channel} AND chat_id = ${chatId}
-  `;
+    // 2. Find memory_sources that indexed any of these observations
+    //    Uses JSONB containment instead of LIKE scan
+    const obsIdArray = `{${obsIds.join(",")}}`;
+    const matchedSourceRows = await tx`
+      SELECT DISTINCT id FROM memory_sources
+      WHERE kind = 'observation'
+      AND metadata_json::JSONB -> 'observationIds' ?| ${obsIdArray}::TEXT[]
+    `;
+    const sourceIds = matchedSourceRows.map((r: { id: string }) => r.id);
 
-  return result.count;
+    // 3. Delete memory_chunks and memory_sources for matched sources
+    if (sourceIds.length > 0) {
+      await tx`DELETE FROM memory_chunks WHERE source_id IN ${tx(sourceIds)}`;
+      await tx`DELETE FROM memory_sources WHERE id IN ${tx(sourceIds)}`;
+    }
+
+    // 4. Delete from conversation_observations
+    const result = await tx`
+      DELETE FROM conversation_observations
+      WHERE channel = ${channel} AND chat_id = ${chatId}
+    `;
+
+    return result.count;
+  });
 }
 
 export function formatObservationBlock(

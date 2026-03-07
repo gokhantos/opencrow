@@ -28,10 +28,12 @@ function rowToRule(r: Record<string, unknown>): RoutingRule {
   };
 }
 
-export async function listRoutingRules(): Promise<RoutingRule[]> {
+export async function listRoutingRules(
+  limit = 100,
+): Promise<RoutingRule[]> {
   const db = getDb();
   const rows =
-    (await db`SELECT * FROM routing_rules ORDER BY priority DESC`) as Array<
+    (await db`SELECT * FROM routing_rules ORDER BY priority DESC LIMIT ${limit}`) as Array<
       Record<string, unknown>
     >;
   return rows.map(rowToRule);

@@ -56,6 +56,7 @@ export async function getAllOverrides(
     FROM config_overrides
     WHERE namespace = ${namespace}
     ORDER BY key
+    LIMIT 500
   `;
   return (rows as Array<Record<string, unknown>>).map((row) => ({
     namespace: row.namespace as string,
