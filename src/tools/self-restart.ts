@@ -73,7 +73,7 @@ export function createSelfRestartTool(): ToolDefinition {
       "With no target, restarts the calling process (this agent).",
       "Use 'list' to see all processes and their status before acting.",
     ].join(" "),
-    categories: ["system", "deploy"] as readonly ToolCategory[],
+    categories: ["system"] as readonly ToolCategory[],
     inputSchema: {
       type: "object",
       properties: {

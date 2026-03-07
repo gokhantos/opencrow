@@ -71,7 +71,7 @@ import { createValidationTools } from "../tools/validation";
 import { createProjectContextTool } from "../tools/project-context";
 import { createValidateCodeTool } from "../tools/validate-code";
 import { createRunTestsTool } from "../tools/run-tests";
-import { createDeployTool } from "../tools/deploy";
+
 import { createProcessMonitorTools } from "../tools/process-monitor";
 import { createLogCheckerTools } from "../tools/log-checker";
 import { createMemoryStatsTools } from "../tools/memory-stats";
@@ -561,10 +561,6 @@ export async function bootstrap(
     if (allowsTool("run_tests")) {
       registry = registry.withTools([createRunTestsTool(config.tools)]);
     }
-    if (allowsTool("deploy")) {
-      registry = registry.withTools([createDeployTool()]);
-    }
-
     return registry;
   }
 

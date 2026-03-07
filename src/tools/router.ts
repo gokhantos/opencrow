@@ -182,11 +182,6 @@ export class ToolRouter {
       intent.push("social");
     }
 
-    // Deploy
-    if (/deploy|push|release|production/.test(lower)) {
-      intent.push("deploy");
-    }
-
     return intent.length > 0 ? intent : ["research", "code"]; // Default to research + code
   }
 

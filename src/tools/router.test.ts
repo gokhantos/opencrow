@@ -34,7 +34,6 @@ describe("ToolRouter", () => {
       createMockTool("search_reddit", "Search Reddit posts", ["research", "social"]),
       createMockTool("search_hn", "Search Hacker News", ["research"]),
       createMockTool("spawn_agent", "Spawn sub-agent for tasks", ["system"]),
-      createMockTool("deploy", "Deploy changes to production", ["deploy"]),
       createMockTool("analytics", "Get usage analytics", ["analytics"]),
       createMockTool("get_idea", "Get startup ideas", ["ideas"]),
     ];
@@ -282,11 +281,6 @@ describe("ToolRouter.detectIntent", () => {
   it("should detect system intent", () => {
     const intent = ToolRouter.detectIntent("Restart the process");
     expect(intent).toContain("system");
-  });
-
-  it("should detect deploy intent", () => {
-    const intent = ToolRouter.detectIntent("Deploy to production");
-    expect(intent).toContain("deploy");
   });
 
   it("should detect ideas intent", () => {

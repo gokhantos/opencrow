@@ -39,7 +39,7 @@ import { createMcpWrapperTools } from "./mcp-wrappers";
 import { createProjectContextTool } from "./project-context";
 import { createValidateCodeTool } from "./validate-code";
 import { createRunTestsTool } from "./run-tests";
-import { createDeployTool } from "./deploy";
+
 import { createAgentCapacityTool } from "./agent-capacity";
 import { createFailurePatternsTool } from "./failure-patterns";
 import { createListSkillsTool } from "./list-skills";
@@ -62,7 +62,6 @@ const CATEGORY_MAP: Record<string, string> = {
   memory: "memory",
   ideas: "ideas",
   social: "social",
-  deploy: "development",
 };
 
 /** Override categories for specific tools that need more granular grouping */
@@ -441,8 +440,6 @@ export function buildToolCatalog(): readonly ToolCatalogEntry[] {
   tools.push(createProjectContextTool(defaultConfig));
   tools.push(createValidateCodeTool(defaultConfig));
   tools.push(createRunTestsTool(defaultConfig));
-  tools.push(createDeployTool());
-
   // Agent capacity & failure patterns
   tools.push(createAgentCapacityTool());
   tools.push(createFailurePatternsTool());

@@ -29,10 +29,9 @@ describe("self-restart tool (process_manage)", () => {
       expect(tool.name).toBe("process_manage");
     });
 
-    it("should have system and deploy categories", () => {
+    it("should have system category", () => {
       const tool = createSelfRestartTool();
       expect(tool.categories).toContain("system");
-      expect(tool.categories).toContain("deploy");
     });
 
     it("should require reason parameter", () => {
