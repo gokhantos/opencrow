@@ -19,6 +19,7 @@ import {
   SearchBar,
   FilterTabs,
 } from "../../components";
+import { useToast } from "../../components/Toast";
 
 /* ───── Constants ───── */
 const PROVIDER_TABS = [
@@ -32,6 +33,7 @@ const PROVIDER_TABS = [
    Main Page Component
    =============================================== */
 export default function Agents() {
+  const toast = useToast();
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -75,6 +77,8 @@ export default function Agents() {
       const apiErr = err as { status?: number };
       if (apiErr.status === 409) {
         await loadAgents();
+      } else {
+        toast.error("Failed to delete agent");
       }
       setDeletingAgent(null);
     }
@@ -90,7 +94,7 @@ export default function Agents() {
         if (res.configHash) setConfigHash(res.configHash);
       }
     } catch {
-      /* user can try again */
+      toast.error("Failed to load agent details");
     }
   }
 

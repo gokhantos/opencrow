@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ToastProvider } from "./components/Toast";
 import { createRoot } from "react-dom/client";
 import { Menu } from "lucide-react";
 
@@ -260,4 +261,8 @@ function App() {
 }
 
 const root = createRoot(document.getElementById("root")!);
-root.render(<App />);
+root.render(
+  <ToastProvider>
+    <App />
+  </ToastProvider>
+);

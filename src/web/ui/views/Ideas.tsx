@@ -3,6 +3,7 @@ import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
 import { Button, PageHeader, LoadingState, EmptyState } from "../components";
+import { useToast } from "../components/Toast";
 
 interface GeneratedIdea {
   readonly id: string;
@@ -265,6 +266,7 @@ function IdeaCard({
 
 
 export default function Ideas() {
+  const toast = useToast();
   const [ideas, setIdeas] = useState<readonly GeneratedIdea[]>([]);
   const [stats, setStats] = useState<readonly IdeaStat[]>([]);
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
@@ -297,7 +299,7 @@ export default function Ideas() {
       if (statsRes.success) setStats(statsRes.data);
       if (stageRes.success) setStageCounts(stageRes.data);
     } catch {
-      // ignore fetch errors
+      toast.error("Failed to load ideas");
     } finally {
       setLoading(false);
     }
@@ -326,7 +328,7 @@ export default function Ideas() {
           );
         }
       } catch {
-        // ignore rating errors
+        toast.error("Failed to save rating");
       }
     },
     [],
