@@ -106,17 +106,11 @@ function rowsToPapersForIndex(
 async function fetchKeyword(
   keyword: string,
   limit = 100,
+  maxPages = 5,
 ): Promise<
   | { ok: true; papers: readonly RawScholarPaper[] }
   | { ok: false; error: string }
 > {
-  const params = new URLSearchParams({
-    query: keyword,
-    limit: String(limit),
-    fields: SCHOLAR_FIELDS,
-  });
-  const url = `${SCHOLAR_API_URL}?${params}`;
-
   const headers: Record<string, string> = {
     "User-Agent": "OpenCrowBot/1.0 (research paper indexer)",
   };
@@ -125,25 +119,84 @@ async function fetchKeyword(
     headers["x-api-key"] = apiKey;
   }
 
-  try {
-    const resp = await fetch(url, {
-      headers,
-      signal: AbortSignal.timeout(30_000),
-    });
+  const allPapers: RawScholarPaper[] = [];
+  let offset = 0;
+  const MAX_RETRIES = 3;
 
-    if (!resp.ok) {
-      return {
-        ok: false,
-        error: `Scholar API ${resp.status}: ${resp.statusText}`,
-      };
+  for (let page = 0; page < maxPages; page++) {
+    const params = new URLSearchParams({
+      query: keyword,
+      limit: String(limit),
+      offset: String(offset),
+      fields: SCHOLAR_FIELDS,
+    });
+    const url = `${SCHOLAR_API_URL}?${params}`;
+
+    let lastError = "";
+    let fetched = false;
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        const resp = await fetch(url, {
+          headers,
+          signal: AbortSignal.timeout(30_000),
+        });
+
+        if (resp.status === 429) {
+          const retryAfter = Number(resp.headers.get("retry-after") || "0");
+          const backoffMs = Math.max(retryAfter * 1000, Math.pow(2, attempt + 1) * 1000);
+          log.warn("Scholar API rate limited, backing off", {
+            keyword,
+            attempt: attempt + 1,
+            backoffMs,
+          });
+          await sleep(backoffMs);
+          continue;
+        }
+
+        if (!resp.ok) {
+          return {
+            ok: false,
+            error: `Scholar API ${resp.status}: ${resp.statusText}`,
+          };
+        }
+
+        const json = (await resp.json()) as ScholarSearchResponse;
+        const papers = json.data ?? [];
+        allPapers.push(...papers);
+        fetched = true;
+
+        // Follow pagination if more results exist
+        if (json.next != null && papers.length > 0) {
+          offset = json.next;
+        } else {
+          // No more pages
+          return { ok: true, papers: allPapers };
+        }
+        break;
+      } catch (err) {
+        lastError = err instanceof Error ? err.message : String(err);
+        if (attempt < MAX_RETRIES - 1) {
+          await sleep(Math.pow(2, attempt + 1) * 1000);
+        }
+      }
     }
 
-    const json = (await resp.json()) as ScholarSearchResponse;
-    return { ok: true, papers: json.data ?? [] };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: `Scholar fetch error (${keyword}): ${msg}` };
+    if (!fetched) {
+      return {
+        ok: allPapers.length > 0,
+        papers: allPapers,
+        ...(allPapers.length === 0
+          ? { error: `Scholar fetch error (${keyword}): ${lastError}` }
+          : {}),
+      } as any;
+    }
+
+    // Delay between pages to respect rate limits
+    await sleep(apiKey ? 200 : 4_000);
   }
+
+  return { ok: true, papers: allPapers };
 }
 
 function sleep(ms: number): Promise<void> {
