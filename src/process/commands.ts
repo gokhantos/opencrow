@@ -57,6 +57,6 @@ export async function cleanupOldCommands(
 
   await db`
     DELETE FROM process_commands
-    WHERE acknowledged_at IS NOT NULL AND created_at < ${cutoff}
+    WHERE created_at < ${cutoff}
   `;
 }
