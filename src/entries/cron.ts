@@ -82,6 +82,10 @@ async function main(): Promise<void> {
     }
   }
 
+  // --- DB retention job ---
+  const { ensureDbRetentionJob } = await import("../cron/db-retention");
+  await ensureDbRetentionJob(cronStore);
+
   // --- Tool stats flusher ---
   const { startToolStatsFlush } = await import("../agent/tool-stats");
   startToolStatsFlush();

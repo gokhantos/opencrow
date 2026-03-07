@@ -106,6 +106,12 @@ async function executeInternalHandler(
         const archivedCount = await archiveStaleSignals(14);
         resultSummary = `Signal archival: ${archivedCount} stale signals archived`;
         break;
+      case "db-retention": {
+        const { runDbRetention } = await import("./db-retention");
+        const retentionResult = await runDbRetention();
+        resultSummary = `DB retention: ${retentionResult.totalDeleted} rows deleted across ${retentionResult.details.length} tables`;
+        break;
+      }
       default:
         throw new Error(`Unknown internal handler: ${handler}`);
     }
