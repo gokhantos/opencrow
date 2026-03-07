@@ -189,8 +189,7 @@ export const monitorConfigSchema = z
       memoryUsagePercent: 90,
       cronConsecutiveFailures: 3,
     },
-  })
-  .optional();
+  });
 
 export const postgresConfigSchema = z.object({
   url: z
@@ -236,8 +235,7 @@ export const observationsConfigSchema = z
     maxPerConversation: 3,
     maxRecentInPrompt: 10,
     debounceSec: 300,
-  })
-  .optional();
+  });
 
 export const processSpecSchema = z.object({
   name: z.string().min(1),
@@ -256,8 +254,7 @@ export const agentProcessesConfigSchema = z
   .default({
     entry: "src/entries/agent.ts",
     restartPolicy: "always",
-  })
-  .optional();
+  });
 
 export const scraperProcessesConfigSchema = z
   .object({
@@ -307,8 +304,7 @@ export const scraperProcessesConfigSchema = z
       "defillama",
       "dexscreener",
     ],
-  })
-  .optional();
+  });
 
 export const processesConfigSchema = z
   .object({
@@ -318,6 +314,33 @@ export const processesConfigSchema = z
   })
   .default({
     static: [],
+    agentProcesses: {
+      entry: "src/entries/agent.ts",
+      restartPolicy: "always",
+    },
+    scraperProcesses: {
+      entry: "src/entries/scraper.ts",
+      restartPolicy: "always",
+      scraperIds: [
+        "hackernews",
+        "huggingface",
+        "reddit",
+        "github",
+        "producthunt",
+        "arxiv",
+        "scholar",
+        "news",
+        "x-bookmarks",
+        "x-autolike",
+        "x-autofollow",
+        "x-timeline",
+        "google-trends",
+        "appstore",
+        "playstore",
+        "defillama",
+        "dexscreener",
+      ],
+    },
   });
 
 export const opencrowConfigSchema = z.object({
@@ -339,10 +362,19 @@ export const opencrowConfigSchema = z.object({
       telegram: telegramConfigSchema.default({
         allowedUserIds: [],
       }),
-      whatsapp: whatsappConfigSchema.optional(),
+      whatsapp: whatsappConfigSchema.default({
+        allowedNumbers: [],
+        allowedGroups: [],
+        defaultAgent: "opencrow",
+      }),
     })
     .default({
       telegram: { allowedUserIds: [] },
+      whatsapp: {
+        allowedNumbers: [],
+        allowedGroups: [],
+        defaultAgent: "opencrow",
+      },
     }),
   web: webConfigSchema.default({
     port: 48080,
@@ -382,9 +414,15 @@ export const opencrowConfigSchema = z.object({
       url: "http://127.0.0.1:6333",
       collection: "opencrow_memory",
     },
-  }).optional(),
+  }),
   observations: observationsConfigSchema,
-  market: marketPipelineConfigSchema.optional(),
+  market: marketPipelineConfigSchema.default({
+    questdbIlpUrl: "tcp::addr=127.0.0.1:9009",
+    questdbHttpUrl: "http://127.0.0.1:9000",
+    exchange: "binance",
+    marketTypes: ["spot", "futures"],
+    symbols: ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+  }),
   monitor: monitorConfigSchema,
   processes: processesConfigSchema,
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),

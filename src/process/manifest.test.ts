@@ -3,7 +3,19 @@ import { resolveManifest } from "./manifest";
 import type { OpenCrowConfig } from "../config/schema";
 import type { ResolvedAgent } from "../agents/types";
 
-function makeConfig(overrides: Partial<OpenCrowConfig> = {}): OpenCrowConfig {
+const defaultAgentProcesses = { entry: "src/entries/agent.ts", restartPolicy: "always" as const };
+const defaultScraperProcesses = { entry: "src/entries/scraper.ts", restartPolicy: "always" as const, scraperIds: [] as string[] };
+
+type ConfigOverrides = Omit<Partial<OpenCrowConfig>, "processes"> & {
+  processes?: Partial<OpenCrowConfig["processes"]> | undefined;
+};
+
+function makeConfig(overrides: ConfigOverrides = {}): OpenCrowConfig {
+  const defaultProcesses = {
+    static: [],
+    agentProcesses: defaultAgentProcesses,
+    scraperProcesses: defaultScraperProcesses,
+  };
   const base: OpenCrowConfig = {
     agent: {
       model: "claude-opus-4-6",
@@ -32,8 +44,11 @@ function makeConfig(overrides: Partial<OpenCrowConfig> = {}): OpenCrowConfig {
     cron: { defaultTimeoutSeconds: 300, tickIntervalMs: 10000 },
     postgres: { url: "postgres://test:test@localhost/test", max: 20 },
     logLevel: "info",
-    processes: { static: [] },
+    processes: defaultProcesses,
     ...overrides,
+    ...(overrides.processes !== undefined
+      ? { processes: overrides.processes as OpenCrowConfig["processes"] }
+      : {}),
   } as OpenCrowConfig;
   return base;
 }
