@@ -9,7 +9,7 @@ const POSTS_PER_PAGE = 25;
 const MAX_PAGES = 4;
 const MIN_DELAY_MS = 1500;
 const MAX_DELAY_MS = 3500;
-const DEFAULT_SUBREDDITS = [
+const FALLBACK_SUBREDDITS = [
   "programming",
   "technology",
   "startups",
@@ -68,6 +68,47 @@ function buildCookieHeader(cookiesJson: string): string {
   }
 }
 
+async function fetchSubscribedSubreddits(
+  headers: Record<string, string>,
+): Promise<readonly string[]> {
+  const subs: string[] = [];
+  let after: string | null = null;
+
+  for (let page = 0; page < 4; page++) {
+    try {
+      const params = after
+        ? `?limit=100&raw_json=1&after=${after}`
+        : "?limit=100&raw_json=1";
+      const resp = await fetch(
+        `${BASE_URL}/subreddits/mine/subscriber.json${params}`,
+        { headers },
+      );
+      if (!resp.ok) break;
+
+      const data = (await resp.json()) as {
+        data?: {
+          children?: Array<{ data: Record<string, unknown> }>;
+          after?: string | null;
+        };
+      };
+
+      const children = data?.data?.children ?? [];
+      for (const child of children) {
+        const name = String(child.data?.display_name ?? "");
+        if (name) subs.push(name);
+      }
+
+      after = data?.data?.after ?? null;
+      if (!after) break;
+      await delay(MIN_DELAY_MS, MAX_DELAY_MS);
+    } catch {
+      break;
+    }
+  }
+
+  return subs;
+}
+
 export async function scrapeRedditFeed(
   cookiesJson: string,
 ): Promise<readonly RawRedditPost[]> {
@@ -97,8 +138,23 @@ export async function scrapeRedditFeed(
     log.info("Scraped home feed", { count: homePosts.length });
   }
 
+  // Fetch user's subscribed subreddits, fall back to defaults
+  let subreddits: readonly string[];
+  if (cookieHeader) {
+    const subscribed = await fetchSubscribedSubreddits(headers);
+    if (subscribed.length > 0) {
+      subreddits = subscribed;
+      log.info("Using subscribed subreddits", { count: subscribed.length });
+    } else {
+      subreddits = FALLBACK_SUBREDDITS;
+      log.info("No subscriptions found, using fallback subreddits");
+    }
+  } else {
+    subreddits = FALLBACK_SUBREDDITS;
+  }
+
   // Subreddit feeds
-  for (const subreddit of DEFAULT_SUBREDDITS) {
+  for (const subreddit of subreddits) {
     await delay(MIN_DELAY_MS, MAX_DELAY_MS);
     const url = `${BASE_URL}/r/${subreddit}/hot.json?limit=${POSTS_PER_PAGE}&raw_json=1`;
     const posts = await scrapeFeed(url, subreddit, headers, seenIds);
