@@ -331,11 +331,60 @@ export async function triggerPostTaskSurvey(
   taskHash: string,
   result: string,
 ): Promise<void> {
-  // TODO: Integrate with Telegram bot to send survey buttons
-  // For now, log the survey trigger point
-  log.info("Post-task survey triggered", { sessionId, taskHash });
+  try {
+    const db = getDb();
 
-  // In production: Send Telegram message with buttons:
-  // [✓ Good] [! Neutral] [✗ Bad]
-  // This will be implemented in the Telegram handler
+    // Resolve chat ID from session messages
+    const chatRow = await db`
+      SELECT chat_id FROM messages
+      WHERE session_id = ${sessionId}
+      ORDER BY timestamp DESC
+      LIMIT 1
+    `;
+    const chatId = chatRow?.[0]?.chat_id;
+    if (!chatId) {
+      log.info("No chat ID found for survey — storing as pending", { sessionId, taskHash });
+    }
+
+    // Resolve agent ID from routing decision
+    const routingRow = await db`
+      SELECT selected_agent_id FROM routing_decisions
+      WHERE session_id = ${sessionId}
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+    const agentId = routingRow?.[0]?.selected_agent_id || "default";
+
+    // Attempt to get bot for the agent
+    let bot: import("grammy").Bot | undefined;
+    try {
+      const rows = await db`
+        SELECT value_json FROM config_overrides
+        WHERE namespace = 'agents' AND key = ${agentId}
+      `;
+      if (rows.length > 0) {
+        const config = JSON.parse(rows[0].value_json);
+        const token = config?.telegramBotToken;
+        if (token) {
+          const { Bot: GrammyBot } = await import("grammy");
+          bot = new GrammyBot(token);
+        }
+      }
+    } catch (err) {
+      log.warn("Failed to resolve bot for survey", { error: String(err), agentId });
+    }
+
+    // Delegate to the delivery system
+    const { sendPostTaskSurvey } = await import("./survey/delivery");
+    await sendPostTaskSurvey(
+      sessionId,
+      taskHash,
+      agentId,
+      chatId || "",
+      result,
+      bot,
+    );
+  } catch (err) {
+    log.warn("Failed to trigger post-task survey", { error: String(err), sessionId });
+  }
 }

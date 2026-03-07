@@ -1,4 +1,5 @@
 import { SQL } from "bun";
+import { Bot } from "grammy";
 import { getDb } from "../store/db";
 import { createLogger } from "../logger";
 import type { ProgressEvent } from "./types";
@@ -8,6 +9,27 @@ const log = createLogger("hooks");
 
 const MAX_AUDIT_LENGTH = 2000;
 const MAX_PROMPT_LENGTH = 4000;
+
+/**
+ * Resolve the Telegram Bot instance for a given agent by looking up its token.
+ */
+async function resolveAgentBot(agentId: string): Promise<Bot | null> {
+  try {
+    const db = getDb();
+    const rows = await db`
+      SELECT value_json FROM config_overrides
+      WHERE namespace = 'agents' AND key = ${agentId}
+    `;
+    if (rows.length === 0) return null;
+    const config = JSON.parse(rows[0].value_json);
+    const token = config?.telegramBotToken;
+    if (!token) return null;
+    return new Bot(token);
+  } catch (err) {
+    log.warn("Failed to resolve bot for agent", { error: String(err), agentId });
+    return null;
+  }
+}
 
 // ─── Hook Failure Tracking ──────────────────────────────────────────────────
 
@@ -301,12 +323,14 @@ async function recordSessionOutcome(
       const { sendPostTaskSurvey } = await import("./survey/delivery");
       const chatId = await getChatIdForSession(db, sessionId);
       if (chatId) {
+        const bot = await resolveAgentBot(agentId);
         await sendPostTaskSurvey(
           sessionId,
           taskHash,
           agentId,
           chatId,
           result.slice(0, 200),
+          bot ?? undefined,
         );
       } else {
         triggerPostTaskSurvey(sessionId, taskHash, result.slice(0, 200));
@@ -334,12 +358,14 @@ async function recordSessionOutcome(
     const { sendPostTaskSurvey } = await import("./survey/delivery");
     const chatId = await getChatIdForSession(db, sessionId);
     if (chatId) {
+      const bot = await resolveAgentBot(agentId);
       await sendPostTaskSurvey(
         sessionId,
         task_hash,
         agentId,
         chatId,
         result.slice(0, 200),
+        bot ?? undefined,
       );
     } else {
       triggerPostTaskSurvey(sessionId, task_hash, result.slice(0, 200));
