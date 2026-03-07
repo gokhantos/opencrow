@@ -29,6 +29,53 @@ export function createIdeasRoutes(): Hono {
     return c.json({ success: true, data: ideas });
   });
 
+  app.get("/ideas/export", async (c) => {
+    const format = c.req.query("format") === "csv" ? "csv" : "json";
+    const agentId = c.req.query("agent_id") || undefined;
+    const category = c.req.query("category") || undefined;
+
+    const ideas = await getIdeas({ agentId, category });
+
+    if (format === "csv") {
+      const headers = [
+        "id",
+        "agent_id",
+        "title",
+        "summary",
+        "reasoning",
+        "sources_used",
+        "category",
+        "rating",
+        "pipeline_stage",
+        "quality_score",
+        "model_references",
+        "created_at",
+      ] as const;
+
+      const escapeCsv = (val: unknown): string => {
+        const s = val == null ? "" : String(val);
+        return s.includes(",") || s.includes('"') || s.includes("\n")
+          ? `"${s.replace(/"/g, '""')}"`
+          : s;
+      };
+
+      const rows = [
+        headers.join(","),
+        ...ideas.map((idea) =>
+          headers.map((h) => escapeCsv(idea[h])).join(","),
+        ),
+      ];
+
+      c.header("Content-Type", "text/csv; charset=utf-8");
+      c.header("Content-Disposition", "attachment; filename=ideas-export.csv");
+      return c.body(rows.join("\n"));
+    }
+
+    c.header("Content-Type", "application/json; charset=utf-8");
+    c.header("Content-Disposition", "attachment; filename=ideas-export.json");
+    return c.body(JSON.stringify(ideas, null, 2));
+  });
+
   app.get("/ideas/stats", async (c) => {
     const stats = await getIdeaStats();
     return c.json({ success: true, data: stats });

@@ -422,6 +422,28 @@ export default function Ideas() {
               <option value="top_rated">Top Rated</option>
               <option value="lowest_rated">Lowest Rated</option>
             </select>
+            <div className="flex bg-bg-1 border border-border rounded-md overflow-hidden">
+              <button
+                className="h-8 px-3 flex items-center justify-center border-none bg-transparent text-faint cursor-pointer text-xs font-medium transition-colors hover:text-accent hover:bg-accent-subtle"
+                onClick={() => {
+                  const query = categoryFilter !== "all" ? `&category=${categoryFilter}` : "";
+                  window.open(`/api/ideas/export?format=csv${query}`, "_blank");
+                }}
+                title="Export as CSV"
+              >
+                CSV
+              </button>
+              <button
+                className="h-8 px-3 flex items-center justify-center border-l border-border bg-transparent text-faint cursor-pointer text-xs font-medium transition-colors hover:text-accent hover:bg-accent-subtle"
+                onClick={() => {
+                  const query = categoryFilter !== "all" ? `&category=${categoryFilter}` : "";
+                  window.open(`/api/ideas/export?format=json${query}`, "_blank");
+                }}
+                title="Export as JSON"
+              >
+                JSON
+              </button>
+            </div>
           </div>
         }
       />
