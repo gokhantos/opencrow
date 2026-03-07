@@ -1,20 +1,32 @@
 # Tool Usage Guide
 
+## CRITICAL: Use ToolSearch to Discover Your Tools
+
+Your 130+ specialized tools are exposed via the `opencrow-tools` MCP server. They are NOT visible by default — you MUST use `ToolSearch` to load them before calling them.
+
+**MANDATORY first step for ANY non-trivial request:**
+1. Use `ToolSearch` with keywords matching the task (e.g., "price market crypto", "defi protocol", "hacker news")
+2. The returned tools will have names like `mcp__opencrow-tools__get_price` — these are YOUR tools
+3. Call the discovered tools directly
+
+**NEVER skip ToolSearch and jump to WebSearch.** Your internal tools have fresher, more structured data than web search.
+
 ## CRITICAL: Internal Tools First
 
-You have 130+ specialized tools with real-time data from your own databases and APIs. **ALWAYS use internal tools before falling back to web search.**
-
-Web search (`WebSearch`, `websearch`, `web_fetch`) is a **last resort** — only use it when:
-- No internal tool covers the topic
-- You need information that isn't in any scraped source (e.g., a specific blog post, documentation)
+Web search (`WebSearch`) is a **last resort** — only use it when:
+- You searched with ToolSearch and no relevant internal tool exists
+- You need information outside your scraped data (specific blog posts, documentation pages)
 - Internal tool results are insufficient and you need supplementary context
 
-**NEVER use web search for**: crypto prices, market data, DeFi protocols, token info, news, HN stories, Reddit posts, arXiv papers, app store data, GitHub repos, Google Trends, or any other data that your tools already provide.
+**NEVER use WebSearch for**: crypto prices, market data, DeFi protocols, token info, news, HN stories, Reddit posts, arXiv papers, app store data, GitHub repos, Google Trends, or any other data that your tools already provide.
 
-## Tool Selection by Topic
+## ToolSearch Queries by Topic
+
+Use these ToolSearch queries to discover the right tools:
 
 ### Crypto & Market Analysis
-When asked about any crypto asset, token, or market:
+**ToolSearch**: `"price market crypto"`, `"technical analysis candles"`, `"futures funding liquidation"`
+Tools you'll find:
 1. `get_price` / `market_summary` — current prices, 24h change
 2. `technical_analysis` — RSI, MACD, Bollinger, trend indicators
 3. `get_candles` — OHLCV with technical overlays
@@ -27,6 +39,7 @@ When asked about any crypto asset, token, or market:
 10. `search_news` — crypto-specific news from scraped sources
 
 ### DeFi Analysis
+**ToolSearch**: `"defi protocol tvl"`, `"yield bridge hack"`, `"stablecoin treasury"`
 When asked about DeFi, protocols, TVL, yields:
 1. `get_defi_protocols` / `search_defi` — protocols by TVL
 2. `get_defi_movers` — top TVL movers (24h)
@@ -40,6 +53,7 @@ When asked about DeFi, protocols, TVL, yields:
 10. `get_defi_categories` / `get_global_defi_metrics` — DeFi overview
 
 ### Research & Trends
+**ToolSearch**: `"hacker news reddit"`, `"arxiv scholar papers"`, `"github trending"`, `"huggingface models"`, `"google trends"`, `"product hunt"`, `"news digest"`
 When asked about tech trends, papers, projects, or news:
 - `get_hn_digest` / `search_hn` — Hacker News
 - `get_reddit_digest` / `search_reddit` — Reddit
@@ -53,40 +67,48 @@ When asked about tech trends, papers, projects, or news:
 - `get_calendar` — economic calendar
 
 ### App & Mobile
+**ToolSearch**: `"appstore playstore rankings reviews"`
 When asked about apps, app stores, mobile trends:
 - `get_appstore_rankings` / `get_appstore_complaints` / `search_appstore_reviews` — Apple App Store
 - `get_playstore_rankings` / `get_playstore_complaints` / `search_playstore_reviews` — Google Play Store
 
 ### X / Twitter
+**ToolSearch**: `"twitter timeline tweets analytics"`
 When asked about tweets, social sentiment, Twitter activity:
 - `get_timeline_digest` / `search_x_timeline` — scraped timeline
 - `get_liked_tweets` — liked tweets
 - `get_x_analytics` — engagement analytics
 
 ### Cross-Source Search
+**ToolSearch**: `"cross source search"`
 When you need to search across ALL data sources at once:
 - `cross_source_search` — searches 19 indexed source types in one call
 
 ## Multi-Tool Analysis Pattern
 
-For any **analysis** request, use multiple tools to build a comprehensive picture:
+For any **analysis** request, follow this exact workflow:
 
 ```
 "Analyze Solana" →
-  1. get_price SOLUSDT           → current price & 24h change
-  2. technical_analysis SOLUSDT  → trend & indicators
-  3. futures_overview SOLUSDT    → derivatives sentiment
-  4. search_defi (solana)        → Solana DeFi ecosystem
-  5. get_chain_metrics (Solana)  → chain-level TVL, fees, volume
-  6. search_tokens (SOL)         → DEX token activity
-  7. search_news (solana)        → latest news
-  8. search_x_timeline (solana)  → social sentiment
+  Step 1: ToolSearch "price market crypto"     → discover market tools
+  Step 2: ToolSearch "defi protocol chain"     → discover DeFi tools
+  Step 3: ToolSearch "news search"             → discover news tools
+  Step 4: Call discovered tools:
+    - mcp__opencrow-tools__get_price (SOLUSDT)
+    - mcp__opencrow-tools__technical_analysis (SOLUSDT)
+    - mcp__opencrow-tools__futures_overview (SOLUSDT)
+    - mcp__opencrow-tools__get_chain_metrics (Solana)
+    - mcp__opencrow-tools__search_defi (solana)
+    - mcp__opencrow-tools__search_tokens (SOL)
+    - mcp__opencrow-tools__search_news (solana)
+  Step 5: Synthesize all data into analysis
 ```
 
-**NEVER answer an analysis request with just one tool or just web search.** Combine 3-5 internal tools minimum to give a data-rich answer.
+**NEVER answer an analysis request with just one tool or just WebSearch.** Combine 3-5+ internal tools minimum to give a data-rich answer.
 
 ## Memory & Knowledge
 
+**ToolSearch**: `"remember recall memory"`, `"observations"`
 - `remember` / `recall` — persist and retrieve key-value memories across sessions
 - `search_memory` — semantic search across all past conversations and knowledge
 - `get_observations` — your own learnings from past sessions
