@@ -1,6 +1,9 @@
 import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
 import type { ToolFilter } from "../agents/types";
+import type { EmbeddingProvider } from "../memory/types";
+import type { QdrantClient } from "../memory/qdrant";
+import { createSemanticToolIndex } from "./semantic-index";
 import { createBashTool } from "./bash";
 import { createReadFileTool } from "./read-file";
 import { createWriteFileTool } from "./write-file";
@@ -41,6 +44,14 @@ export interface ToolRegistry {
     keywords: readonly string[],
     limit?: number,
   ): readonly ToolDefinition[];
+  getRelevantToolsForMessage(
+    message: string,
+    limit?: number,
+  ): Promise<readonly ToolDefinition[]>;
+  withSemanticIndex(
+    embeddingProvider: EmbeddingProvider,
+    qdrantClient: QdrantClient,
+  ): Promise<ToolRegistry>;
   recordToolExecution(toolName: string, success: boolean): void;
 }
 
@@ -154,6 +165,45 @@ function buildRegistry(tools: readonly ToolDefinition[]): ToolRegistry {
         router = createToolRouter(dedupedTools);
       }
       return router.getRelevantTools(intent, keywords, limit);
+    },
+
+    async getRelevantToolsForMessage(
+      message: string,
+      limit = 25,
+    ): Promise<readonly ToolDefinition[]> {
+      if (!router) {
+        router = createToolRouter(dedupedTools);
+      }
+      return router.getRelevantToolsForMessage(message, limit);
+    },
+
+    async withSemanticIndex(
+      embeddingProvider: EmbeddingProvider,
+      qdrantClient: QdrantClient,
+    ): Promise<ToolRegistry> {
+      if (!router) {
+        router = createToolRouter(dedupedTools);
+      }
+      try {
+        const semanticIndex = createSemanticToolIndex(
+          embeddingProvider,
+          qdrantClient,
+        );
+        await semanticIndex.init(dedupedTools);
+        if (semanticIndex.isAvailable()) {
+          router.setSemanticIndex(semanticIndex);
+          log.info("Semantic tool index attached to router", {
+            toolCount: dedupedTools.length,
+          });
+        } else {
+          log.warn("Semantic tool index unavailable after init — using keyword routing");
+        }
+      } catch (err) {
+        log.warn("Failed to initialize semantic tool index — using keyword routing", {
+          err,
+        });
+      }
+      return this;
     },
 
     recordToolExecution(toolName: string, success: boolean): void {
