@@ -6,9 +6,9 @@ const log = createLogger("reddit-feed");
 
 const BASE_URL = "https://www.reddit.com";
 const POSTS_PER_PAGE = 25;
-const MAX_PAGES = 4;
-const MIN_DELAY_MS = 1500;
-const MAX_DELAY_MS = 3500;
+const MAX_PAGES = 2;
+const MIN_DELAY_MS = 4000;
+const MAX_DELAY_MS = 7000;
 const FALLBACK_SUBREDDITS = [
   "programming",
   "technology",
@@ -173,8 +173,8 @@ export async function scrapeRedditFeed(
 
   const enriched = await inBatches(
     allPosts,
-    5,
-    1500,
+    3,
+    4000,
     async (post): Promise<RawRedditPost> => {
       if (post.num_comments === 0) return post;
       const top_comments = await fetchTopComments(post.permalink, headers);
