@@ -14,6 +14,7 @@ interface CronJob {
   name: string;
   enabled: boolean;
   deleteAfterRun: boolean;
+  priority: number;
   schedule: {
     kind: string;
     at?: string;
@@ -349,6 +350,13 @@ function JobCard({
           <span className="cr-detail-label">Next Run</span>
           <span className="cr-detail-value">{formatTs(job.nextRunAt)}</span>
         </div>
+        <div className="cr-detail">
+          <span className="cr-detail-label">Priority</span>
+          <span className="cr-detail-value">
+            {job.priority <= 3 ? "High" : job.priority <= 7 ? "Medium" : "Normal"}{" "}
+            <span className="text-faint">({job.priority})</span>
+          </span>
+        </div>
         {job.payload.agentId && (
           <div className="cr-detail">
             <span className="cr-detail-label">Agent</span>
@@ -447,6 +455,7 @@ export default function Cron() {
   const [formMessage, setFormMessage] = useState("");
   const [formAgentId, setFormAgentId] = useState("");
   const [formDeleteAfterRun, setFormDeleteAfterRun] = useState(false);
+  const [formPriority, setFormPriority] = useState("10");
   const [formError, setFormError] = useState("");
 
   const loadJobs = useCallback(async () => {
@@ -569,6 +578,7 @@ export default function Cron() {
         agentId: formAgentId || undefined,
       },
       deleteAfterRun: formDeleteAfterRun,
+      priority: Number(formPriority),
     };
 
     try {
@@ -603,6 +613,7 @@ export default function Cron() {
     setFormMessage("");
     setFormAgentId("");
     setFormDeleteAfterRun(false);
+    setFormPriority("10");
     setFormError("");
   }
 
@@ -762,6 +773,22 @@ export default function Cron() {
                       {a.name} ({a.id})
                     </option>
                   ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-muted uppercase tracking-wide mb-2">
+                  Priority
+                </label>
+                <select
+                  className={selectClass}
+                  value={formPriority}
+                  onChange={(e) => setFormPriority(e.target.value)}
+                >
+                  <option value="1">High (1)</option>
+                  <option value="3">Medium-High (3)</option>
+                  <option value="5">Medium (5)</option>
+                  <option value="10">Normal (10)</option>
+                  <option value="15">Low (15)</option>
                 </select>
               </div>
               <div className="flex items-end pb-1">
