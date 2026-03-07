@@ -34,6 +34,7 @@ const createJobSchema = z.object({
   delivery: cronDeliverySchema.optional(),
   enabled: z.boolean().optional(),
   deleteAfterRun: z.boolean().optional(),
+  priority: z.number().int().min(0).max(20).optional(),
 });
 
 const patchJobSchema = z.object({
@@ -43,6 +44,7 @@ const patchJobSchema = z.object({
   delivery: cronDeliverySchema.optional(),
   enabled: z.boolean().optional(),
   deleteAfterRun: z.boolean().optional(),
+  priority: z.number().int().min(0).max(20).optional(),
 });
 
 export function createCronRoutes(deps: WebAppDeps): Hono {
