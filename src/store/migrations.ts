@@ -1573,4 +1573,37 @@ export const MIGRATIONS = [
   `ALTER TABLE appstore_rankings ADD COLUMN IF NOT EXISTS price TEXT NOT NULL DEFAULT 'Free'`,
   `ALTER TABLE appstore_rankings ADD COLUMN IF NOT EXISTS bundle_id TEXT NOT NULL DEFAULT ''`,
   `ALTER TABLE appstore_rankings ADD COLUMN IF NOT EXISTS release_date TEXT NOT NULL DEFAULT ''`,
+
+  // --- Google Play Store ---
+  `CREATE TABLE IF NOT EXISTS playstore_rankings (
+    id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    developer TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    rank INTEGER NOT NULL,
+    list_type TEXT NOT NULL,
+    icon_url TEXT NOT NULL DEFAULT '',
+    store_url TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    price TEXT NOT NULL DEFAULT 'Free',
+    rating REAL,
+    installs TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    indexed_at INTEGER,
+    PRIMARY KEY (id, list_type)
+  )`,
+
+  `CREATE TABLE IF NOT EXISTS playstore_reviews (
+    id TEXT PRIMARY KEY,
+    app_id TEXT NOT NULL,
+    app_name TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT '',
+    rating INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    content TEXT NOT NULL DEFAULT '',
+    thumbs_up INTEGER NOT NULL DEFAULT 0,
+    version TEXT NOT NULL DEFAULT '',
+    first_seen_at INTEGER NOT NULL,
+    indexed_at INTEGER
+  )`,
 ];

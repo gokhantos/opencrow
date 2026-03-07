@@ -47,6 +47,7 @@ export type Tab =
   | "scholar"
   | "google-trends"
   | "appstore"
+  | "playstore"
   | "defillama"
   | "dexscreener"
   | "news"
@@ -108,6 +109,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       { id: "scholar", label: "Scholar", Icon: GraduationCap },
       { id: "google-trends", label: "Google Trends", Icon: Search },
       { id: "appstore", label: "App Store", Icon: Smartphone },
+      { id: "playstore", label: "Play Store", Icon: Smartphone },
       { id: "defillama", label: "DeFi Llama", Icon: Wallet },
       { id: "dexscreener", label: "DexScreener", Icon: BarChart2 },
     ],

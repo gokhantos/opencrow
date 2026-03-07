@@ -55,6 +55,8 @@ import { createGithubTools } from "../tools/github";
 import { createArxivTools } from "../tools/arxiv";
 import { createScholarTools } from "../tools/scholar";
 import { createXTimelineTools } from "../tools/x-timeline";
+import { createAppStoreTools } from "../tools/appstore";
+import { createPlayStoreTools } from "../tools/playstore";
 import { createCrossSourceSearchTool } from "../tools/cross-search";
 import { createGetScraperStatusTool } from "../tools/scraper-status";
 import { createGetSubagentRunsTool } from "../tools/subagent-runs";
@@ -424,6 +426,16 @@ export async function bootstrap(
       );
       if (xTimelineTools.length > 0)
         registry = registry.withTools(xTimelineTools);
+    }
+
+    {
+      const appStoreTools = createAppStoreTools(memoryManager).filter((t) => allowsTool(t.name));
+      if (appStoreTools.length > 0) registry = registry.withTools(appStoreTools);
+    }
+
+    {
+      const playStoreTools = createPlayStoreTools(memoryManager).filter((t) => allowsTool(t.name));
+      if (playStoreTools.length > 0) registry = registry.withTools(playStoreTools);
     }
 
     if (memoryManager && allowsTool("cross_source_search")) {

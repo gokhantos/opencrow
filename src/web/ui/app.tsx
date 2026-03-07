@@ -40,6 +40,7 @@ import Memory from "./views/Memory";
 import Failures from "./views/Failures";
 import GoogleTrends from "./views/GoogleTrends";
 import AppStore from "./views/AppStore";
+import PlayStore from "./views/PlayStore";
 import DefiLlama from "./views/DefiLlama";
 import DexScreener from "./views/DexScreener";
 
@@ -237,6 +238,7 @@ function App() {
           {tab === "scholar" && <Scholar />}
           {tab === "google-trends" && <GoogleTrends />}
           {tab === "appstore" && <AppStore />}
+          {tab === "playstore" && <PlayStore />}
           {tab === "defillama" && <DefiLlama />}
           {tab === "dexscreener" && <DexScreener />}
           {tab === "news" && <News />}

@@ -159,6 +159,12 @@ async function main(): Promise<void> {
       scraper.start();
       break;
     }
+    case "playstore": {
+      const { createPlayStoreScraper } = await import("../sources/playstore/scraper");
+      const scraper = createPlayStoreScraper({ memoryManager: memoryManager ?? undefined });
+      scraper.start();
+      break;
+    }
     case "defillama": {
       const { createDefiLlamaScraper } =
         await import("../sources/defillama/scraper");

@@ -36,6 +36,7 @@ import { createReflectionsRoutes } from "./routes/reflections";
 import { createFailureRoutes } from "./routes/failures";
 import { createGoogleTrendsRoutes } from "./routes/google-trends";
 import { createAppStoreRoutes } from "./routes/appstore";
+import { createPlayStoreRoutes } from "./routes/playstore";
 import { createDefiLlamaRoutes } from "./routes/defillama";
 import { createDexScreenerRoutes } from "./routes/dexscreener";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
@@ -356,6 +357,9 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
   const appStore = createAppStoreRoutes({ coreClient: cc });
   app.route("/api", appStore);
+
+  const playStore = createPlayStoreRoutes({ coreClient: cc });
+  app.route("/api", playStore);
 
   const defiLlama = createDefiLlamaRoutes();
   app.route("/api", defiLlama);
