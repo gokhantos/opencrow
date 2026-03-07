@@ -38,6 +38,14 @@ function countTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+async function hashText(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
   async function insertChunks(
     sourceId: string,
@@ -47,46 +55,103 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
   ): Promise<void> {
     const db = getDb();
 
+    // Compute content hashes for dedup
+    const hashes = await Promise.all(texts.map(hashText));
+
+    // Check which hashes already exist
+    const existingRows = await db`
+      SELECT content_hash FROM memory_chunks
+      WHERE content_hash IN ${db(hashes)}
+    `;
+    const existingHashes = new Set(
+      existingRows.map((r: { content_hash: string }) => r.content_hash),
+    );
+
+    // Filter to only new (non-duplicate) chunks
+    const newIndices: number[] = [];
+    for (let i = 0; i < texts.length; i++) {
+      if (!existingHashes.has(hashes[i]!)) {
+        newIndices.push(i);
+      }
+    }
+
+    if (newIndices.length === 0) {
+      log.debug("All chunks deduplicated, skipping", {
+        sourceId,
+        total: texts.length,
+      });
+      return;
+    }
+
+    if (newIndices.length < texts.length) {
+      log.debug("Deduplicated chunks", {
+        sourceId,
+        total: texts.length,
+        new: newIndices.length,
+        skipped: texts.length - newIndices.length,
+      });
+    }
+
+    const newTexts = newIndices.map((i) => texts[i]!);
+    const newHashes = newIndices.map((i) => hashes[i]!);
+
     let embeddings: Float32Array[] | null = null;
     if (config.embeddingProvider) {
       try {
-        embeddings = await config.embeddingProvider.embed(texts);
+        embeddings = await config.embeddingProvider.embed(newTexts);
       } catch (error) {
         log.error("Embedding failed, storing without vectors", { error });
       }
     }
 
-    const chunkIds: string[] = [];
+    // Track which chunks were actually inserted (not skipped by ON CONFLICT)
+    interface ChunkResult {
+      readonly id: string;
+      readonly textIndex: number;
+    }
+    const insertedChunks: ChunkResult[] = [];
     const now = Math.floor(Date.now() / 1000);
 
     await db.begin(async (tx) => {
-      for (let i = 0; i < texts.length; i++) {
+      for (let i = 0; i < newTexts.length; i++) {
         const id = crypto.randomUUID();
-        chunkIds.push(id);
-        const text = texts[i]!;
+        const text = newTexts[i]!;
         const tokenCount = countTokens(text);
+        const contentHash = newHashes[i]!;
 
-        await tx`
-          INSERT INTO memory_chunks (id, source_id, content, chunk_index, token_count, created_at)
-          VALUES (${id}, ${sourceId}, ${text}, ${i}, ${tokenCount}, ${now})
+        // ON CONFLICT DO NOTHING + RETURNING: only get id back if row was inserted
+        const rows = await tx`
+          INSERT INTO memory_chunks (id, source_id, content, chunk_index, token_count, created_at, content_hash)
+          VALUES (${id}, ${sourceId}, ${text}, ${newIndices[i]!}, ${tokenCount}, ${now}, ${contentHash})
+          ON CONFLICT (content_hash) DO NOTHING
+          RETURNING id
         `;
+
+        if (rows.length > 0) {
+          insertedChunks.push({ id, textIndex: i });
+        }
       }
     });
 
-    // Upsert vectors to Qdrant with kind + createdAt in payload
+    if (insertedChunks.length === 0) {
+      log.debug("All chunks deduplicated at insert time", { sourceId });
+      return;
+    }
+
+    // Upsert vectors to Qdrant — only for actually inserted chunks
     if (embeddings && config.qdrantClient?.available) {
       try {
         const points: QdrantPoint[] = [];
-        for (let i = 0; i < chunkIds.length; i++) {
-          const vec = embeddings[i];
+        for (const { id: chunkId, textIndex } of insertedChunks) {
+          const vec = embeddings[textIndex];
           if (vec) {
             points.push({
-              id: chunkIds[i]!,
+              id: chunkId,
               vector: Array.from(vec),
               payload: {
                 sourceId,
                 agentId,
-                chunkIndex: i,
+                chunkIndex: newIndices[textIndex]!,
                 kind,
                 createdAt: now,
               },
@@ -105,11 +170,15 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     }
 
     // Update FTS columns non-blocking (failures are silent)
-    await Promise.all(chunkIds.map((id, i) => updateChunkFts(id, texts[i]!)));
+    await Promise.all(
+      insertedChunks.map(({ id, textIndex }) =>
+        updateChunkFts(id, newTexts[textIndex]!),
+      ),
+    );
 
     log.debug("Indexed chunks", {
       sourceId,
-      count: texts.length,
+      count: insertedChunks.length,
     });
   }
 
