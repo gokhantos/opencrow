@@ -157,9 +157,6 @@ export function AgentFormModal({
   const [allowAgents, setAllowAgents] = useState(
     initial?.subagents?.allowAgents?.join(", ") ?? "*",
   );
-  const [maxSpawnDepth, setMaxSpawnDepth] = useState(
-    initial?.subagents?.maxSpawnDepth ?? 2,
-  );
   const [maxChildren, setMaxChildren] = useState(
     initial?.subagents?.maxChildren ?? 5,
   );
@@ -338,7 +335,7 @@ export function AgentFormModal({
           modelParams,
           systemPrompt,
           toolFilter: { mode: toolMode, tools },
-          subagents: { allowAgents: agents, maxSpawnDepth, maxChildren },
+          subagents: { allowAgents: agents, maxChildren },
           mcpServers: {
             browser: mcpBrowser || undefined,
             github: mcpGithub || undefined,
@@ -886,18 +883,6 @@ export function AgentFormModal({
                         value={allowAgents}
                         onChange={(e) => setAllowAgents(e.target.value)}
                         placeholder="* for all, or specific IDs"
-                      />
-                    </div>
-                    <div className="mb-5">
-                      <Input
-                        label="Max Depth"
-                        type="number"
-                        value={maxSpawnDepth}
-                        onChange={(e) =>
-                          setMaxSpawnDepth(Number(e.target.value))
-                        }
-                        min={0}
-                        max={5}
                       />
                     </div>
                     <div className="mb-5">

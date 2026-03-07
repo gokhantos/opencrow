@@ -63,7 +63,7 @@ function makeAgent(overrides: Partial<ResolvedAgent> = {}): ResolvedAgent {
     model: "claude-opus-4-6",
     systemPrompt: "test prompt",
     toolFilter: { mode: "all", tools: [] },
-    subagents: { allowAgents: [], maxSpawnDepth: 1, maxChildren: 5 },
+    subagents: { allowAgents: [], maxChildren: 5 },
     mcpServers: {},
     skills: [],
     ...overrides,

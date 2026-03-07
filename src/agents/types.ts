@@ -5,7 +5,6 @@ export interface ToolFilter {
 
 export interface SubagentConfig {
   readonly allowAgents: readonly string[];
-  readonly maxSpawnDepth: number;
   readonly maxChildren: number;
 }
 

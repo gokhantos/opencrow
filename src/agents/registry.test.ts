@@ -78,7 +78,6 @@ describe("createAgentRegistry", () => {
         name: "Orchestrator",
         subagents: {
           allowAgents: ["worker"],
-          maxSpawnDepth: 1,
           maxChildren: 5,
         },
       },
