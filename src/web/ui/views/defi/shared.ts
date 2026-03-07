@@ -5,19 +5,21 @@ export const TH =
   "text-[10px] font-semibold text-faint uppercase tracking-[0.1em] px-4 py-2.5 whitespace-nowrap";
 export const TD = "px-4 py-3 whitespace-nowrap";
 
-export function formatTvl(value: number | null | undefined): string {
-  if (value == null || value === 0) return "—";
+export function formatTvl(raw: number | string | null | undefined): string {
+  const value = Number(raw);
+  if (raw == null || !isFinite(value) || value === 0) return "—";
   if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
   if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
   return `$${value.toFixed(0)}`;
 }
 
-export function formatPct(value: number | null | undefined): {
+export function formatPct(raw: number | string | null | undefined): {
   readonly text: string;
   readonly className: string;
 } {
-  if (value == null) return { text: "—", className: "text-faint" };
+  const value = Number(raw);
+  if (raw == null || !isFinite(value)) return { text: "—", className: "text-faint" };
   const sign = value >= 0 ? "+" : "";
   return {
     text: `${sign}${value.toFixed(2)}%`,

@@ -10,8 +10,8 @@ import type { ProtocolRow, ChainTvlRow, ChainTvlHistoryRow, ChainMetricsRow } fr
 // --- Target chains ---
 export const MAJOR_CHAINS = [
   "Ethereum", "Solana", "Base", "Arbitrum", "BSC", "Polygon",
-  "Optimism", "Avalanche", "Sui", "Aptos", "Tron", "TON",
-  "Fantom", "Near", "Cosmos",
+  "OP Mainnet", "Avalanche", "Sui", "Aptos", "Tron", "TON",
+  "Fantom",
 ] as const;
 export type MajorChain = (typeof MAJOR_CHAINS)[number];
 

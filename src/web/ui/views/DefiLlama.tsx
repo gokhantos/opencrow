@@ -58,8 +58,9 @@ const TABS = [
   { id: "treasury", label: "Treasury" },
 ] as const;
 
-function formatCompact(value: number | null | undefined): string {
-  if (value == null || value === 0) return "—";
+function formatCompact(raw: number | string | null | undefined): string {
+  const value = Number(raw);
+  if (raw == null || !isFinite(value) || value === 0) return "—";
   if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
   if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
   if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;

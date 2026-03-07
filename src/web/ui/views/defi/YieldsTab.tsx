@@ -26,10 +26,11 @@ function formatApy(value: number | null | undefined): {
   readonly text: string;
   readonly className: string;
 } {
-  if (value == null) return { text: "—", className: "text-faint" };
-  const text = `${value.toFixed(2)}%`;
+  const num = Number(value);
+  if (value == null || !isFinite(num)) return { text: "—", className: "text-faint" };
+  const text = `${num.toFixed(2)}%`;
   const className =
-    value > 10 ? "text-success font-bold" : value > 0 ? "text-foreground" : "text-faint";
+    num > 10 ? "text-success font-bold" : num > 0 ? "text-foreground" : "text-faint";
   return { text, className };
 }
 

@@ -13,10 +13,11 @@ interface StablecoinRow {
   readonly price: number | null;
 }
 
-function PriceCell({ price }: { readonly price: number | null }) {
-  if (price == null) return <span className="text-faint font-mono text-[13px]">—</span>;
+function PriceCell({ price }: { readonly price: number | string | null }) {
+  const num = Number(price);
+  if (price == null || !isFinite(num)) return <span className="text-faint font-mono text-[13px]">—</span>;
 
-  const deviation = Math.abs(price - 1.0);
+  const deviation = Math.abs(num - 1.0);
   const className =
     deviation <= 0.005
       ? "text-success"
@@ -26,7 +27,7 @@ function PriceCell({ price }: { readonly price: number | null }) {
 
   return (
     <span className={cn("font-mono text-[13px] font-semibold tabular-nums", className)}>
-      ${price.toFixed(4)}
+      ${num.toFixed(4)}
     </span>
   );
 }

@@ -78,7 +78,7 @@ export default function DefiOverviewTab() {
     );
   if (!data) return <EmptyState description="No data available." />;
 
-  const maxCategoryTvl = data.categories[0]?.tvl ?? 1;
+  const maxCategoryTvl = Number(data.categories[0]?.tvl) || 1;
 
   return (
     <div className="flex flex-col gap-6">
@@ -200,7 +200,7 @@ export default function DefiOverviewTab() {
                 </thead>
                 <tbody>
                   {data.categories.map((cat, idx) => {
-                    const pct = maxCategoryTvl > 0 ? (cat.tvl / maxCategoryTvl) * 100 : 0;
+                    const pct = maxCategoryTvl > 0 ? (Number(cat.tvl) / maxCategoryTvl) * 100 : 0;
                     return (
                       <tr
                         key={cat.name}

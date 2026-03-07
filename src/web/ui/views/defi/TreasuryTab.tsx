@@ -15,13 +15,13 @@ interface TreasuryRow {
 }
 
 function CompositionBar({ row }: { readonly row: TreasuryRow }) {
-  const total = row.total ?? 0;
+  const total = Number(row.total) || 0;
   if (total === 0) return null;
 
-  const stablePct = ((row.stablecoins ?? 0) / total) * 100;
-  const majorsPct = ((row.majors ?? 0) / total) * 100;
-  const ownPct = ((row.own_tokens ?? 0) / total) * 100;
-  const othersPct = ((row.others ?? 0) / total) * 100;
+  const stablePct = (Number(row.stablecoins ?? 0) / total) * 100;
+  const majorsPct = (Number(row.majors ?? 0) / total) * 100;
+  const ownPct = (Number(row.own_tokens ?? 0) / total) * 100;
+  const othersPct = (Number(row.others ?? 0) / total) * 100;
 
   return (
     <div className="flex h-1 w-full rounded-full overflow-hidden gap-px mt-1">
