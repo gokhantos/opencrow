@@ -22,6 +22,7 @@ import {
 import { TEMPLATES } from "../../tools/agent-templates";
 
 const PROMPTS_DIR = `${process.cwd()}/prompts`;
+const SAFE_AGENT_ID = /^[a-z0-9][a-z0-9-]*$/;
 
 /** Determine whether an agent's prompt comes from files or inline config */
 async function getPromptMeta(
@@ -178,8 +179,11 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
   });
 
   app.get("/agents/:id", async (c) => {
-    await reloadRegistry(deps);
     const agentId = c.req.param("id");
+    if (!SAFE_AGENT_ID.test(agentId)) {
+      return c.json({ success: false, error: "Invalid agent ID" }, 400);
+    }
+    await reloadRegistry(deps);
     const agent = deps.agentRegistry.getById(agentId);
     if (!agent) {
       return c.json({ success: false, error: "Agent not found" }, 404);
@@ -283,6 +287,9 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
 
   app.put("/agents/:id", async (c) => {
     const agentId = c.req.param("id");
+    if (!SAFE_AGENT_ID.test(agentId)) {
+      return c.json({ success: false, error: "Invalid agent ID" }, 400);
+    }
 
     const body = await c.req.json().catch(() => null);
     if (!body) {
@@ -330,6 +337,9 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
 
   app.delete("/agents/:id", async (c) => {
     const agentId = c.req.param("id");
+    if (!SAFE_AGENT_ID.test(agentId)) {
+      return c.json({ success: false, error: "Invalid agent ID" }, 400);
+    }
 
     const agent = deps.agentRegistry.getById(agentId);
     if (agent?.default) {
