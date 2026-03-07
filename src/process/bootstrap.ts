@@ -335,18 +335,16 @@ export async function bootstrap(
       registry = registry.withTools([cronTool]);
     }
 
-    if (agent.provider !== "agent-sdk" && agent.provider !== "openrouter" && agent.provider !== "alibaba") {
+    {
       const memoryTools = createMemoryTools(agent.id).filter((t) =>
         allowsTool(t.name),
       );
       if (memoryTools.length > 0) registry = registry.withTools(memoryTools);
 
-      {
-        const extraTools: ToolDefinition[] = [];
-        if (memoryManager && allowsTool("search_memory"))
-          extraTools.push(createSearchMemoryTool(agent.id, memoryManager));
-        if (extraTools.length > 0) registry = registry.withTools(extraTools);
-      }
+      const extraTools: ToolDefinition[] = [];
+      if (memoryManager && allowsTool("search_memory"))
+        extraTools.push(createSearchMemoryTool(agent.id, memoryManager));
+      if (extraTools.length > 0) registry = registry.withTools(extraTools);
     }
 
     {
