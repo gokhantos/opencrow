@@ -111,15 +111,21 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
         };
       }
 
-      if (
-        /guardian\.sh/.test(command) &&
-        /\b(rm|mv|cp|chmod|chown|sed|awk|tee|truncate|>)\b/.test(command)
-      ) {
-        return {
-          output:
-            "Error: guardian.sh is a protected system file and cannot be modified via bash",
-          isError: true,
-        };
+      {
+        const normalized = command.replace(/["'\\`]/g, "");
+        const GUARDIAN_PATTERNS = [/guardian\.sh/, /guardian-web\.sh/];
+        const DESTRUCTIVE_OPS =
+          /\b(rm|mv|cp|chmod|chown|sed|awk|tee|truncate|dd|install)\b|>/;
+        if (
+          GUARDIAN_PATTERNS.some((p) => p.test(normalized)) &&
+          DESTRUCTIVE_OPS.test(normalized)
+        ) {
+          return {
+            output:
+              "Error: guardian scripts are protected system files and cannot be modified via bash",
+            isError: true,
+          };
+        }
       }
 
       if (!isPathAllowedSync(workDir, allowedDirs)) {
