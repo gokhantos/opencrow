@@ -39,6 +39,7 @@ async function loadOptionalPromptFile(name: string): Promise<string> {
 export async function buildMainAgentPrompt(): Promise<string> {
   const parts = await Promise.all([
     loadPromptFile("SOUL.md"),
+    loadPromptFile("TOOLS.md"),
     loadPromptFile("WORKFLOW.md"),
     loadPromptFile("ORCHESTRATION.md"),
     loadPromptFile("TECH.md"),
@@ -70,7 +71,8 @@ export async function buildSubAgentPrompt(
   }
 
   const techContent = await loadPromptFile("TECH.md");
-  const prompt = [techContent, agentContent]
+  const toolsContent = await loadOptionalPromptFile("TOOLS.md");
+  const prompt = [techContent, toolsContent, agentContent]
     .filter(Boolean)
     .join("\n\n---\n\n");
 
