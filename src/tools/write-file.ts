@@ -1,5 +1,6 @@
-import { resolve, dirname, basename } from "path";
-import { mkdir } from "node:fs/promises";
+import { resolve, dirname, basename, join } from "path";
+import { mkdir, rename, unlink } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
 import { resolveAllowedDirs, expandHome, isPathAllowed } from "./path-utils";
@@ -57,12 +58,21 @@ export function createWriteFileTool(config: ToolsConfig): ToolDefinition {
         const dir = dirname(filePath);
         await mkdir(dir, { recursive: true });
 
-        const bytesWritten = await Bun.write(filePath, content);
-
-        return {
-          output: `Successfully wrote ${bytesWritten} bytes to ${filePath}`,
-          isError: false,
-        };
+        const tmpPath = join(
+          dir,
+          `.${basename(filePath)}.${randomBytes(6).toString("hex")}.tmp`,
+        );
+        try {
+          const bytesWritten = await Bun.write(tmpPath, content);
+          await rename(tmpPath, filePath);
+          return {
+            output: `Successfully wrote ${bytesWritten} bytes to ${filePath}`,
+            isError: false,
+          };
+        } catch (writeErr) {
+          await unlink(tmpPath).catch(() => {});
+          throw writeErr;
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         log.error("Write file error", error);

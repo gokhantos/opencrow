@@ -1,4 +1,6 @@
-import { resolve, basename } from "path";
+import { resolve, basename, dirname, join } from "path";
+import { rename, unlink } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
 import { resolveAllowedDirs, expandHome, isPathAllowed } from "./path-utils";
@@ -7,6 +9,7 @@ import { createLogger } from "../logger";
 const log = createLogger("tool:edit-file");
 
 const PROTECTED_FILES = ["guardian.sh", ".env", ".env.local", ".env.production", "id_rsa", "id_ed25519", "authorized_keys"];
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
 export function createEditFileTool(config: ToolsConfig): ToolDefinition {
   const allowedDirs = resolveAllowedDirs(config.allowedDirectories);
@@ -76,6 +79,14 @@ export function createEditFileTool(config: ToolsConfig): ToolDefinition {
           };
         }
 
+        const fileSize = file.size;
+        if (fileSize > MAX_FILE_SIZE) {
+          return {
+            output: `Error: file too large (${Math.round(fileSize / 1024 / 1024)}MB). Max ${MAX_FILE_SIZE / 1024 / 1024}MB`,
+            isError: true,
+          };
+        }
+
         const content = await file.text();
 
         // Count occurrences
@@ -109,7 +120,18 @@ export function createEditFileTool(config: ToolsConfig): ToolDefinition {
           content.slice(0, editIdx) +
           newString +
           content.slice(editIdx + oldString.length);
-        await Bun.write(filePath, updated);
+
+        const tmpPath = join(
+          dirname(filePath),
+          `.${basename(filePath)}.${randomBytes(6).toString("hex")}.tmp`,
+        );
+        try {
+          await Bun.write(tmpPath, updated);
+          await rename(tmpPath, filePath);
+        } catch (writeErr) {
+          await unlink(tmpPath).catch(() => {});
+          throw writeErr;
+        }
         const lineNumber = content.slice(0, editIdx).split("\n").length;
         const oldLines = oldString.split("\n").length;
         const newLines = newString.split("\n").length;
