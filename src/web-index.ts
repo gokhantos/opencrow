@@ -285,7 +285,10 @@ async function main(): Promise<void> {
         });
 
         upstream.addEventListener("error", (event) => {
-          log.warn("Upstream market WS error", { error: String(event) });
+          const errMsg = event instanceof ErrorEvent
+            ? event.message || "WebSocket error"
+            : String(event);
+          log.warn("Upstream market WS error", { error: errMsg });
           if (ws.data.kind === "market") ws.data.upstream = null;
           try {
             ws.close(1011, "upstream error");

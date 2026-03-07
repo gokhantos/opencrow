@@ -198,6 +198,16 @@ async function scrapeFeed(
   for (let page = 0; page < MAX_PAGES; page++) {
     try {
       const resp = await fetch(currentUrl, { headers });
+      if (resp.status === 429) {
+        const retryAfter = Number(resp.headers.get("retry-after") || "0");
+        const backoffMs = Math.max(retryAfter * 1000, 30_000);
+        log.warn("Reddit rate limited, backing off", {
+          url: currentUrl,
+          backoffMs,
+        });
+        await delay(backoffMs, backoffMs + 5000);
+        break;
+      }
       if (!resp.ok) {
         log.warn("Feed fetch failed", {
           url: currentUrl,

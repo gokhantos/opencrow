@@ -215,7 +215,8 @@ export function createScholarScraper(config?: {
     .filter(Boolean);
 
   const hasApiKey = Boolean(process.env.SEMANTIC_SCHOLAR_API_KEY);
-  const delayMs = hasApiKey ? 100 : 3_500; // 100 req/s with key, conservative without
+  const delayMs = hasApiKey ? 500 : 10_000;
+  const rateLimitCooldownMs = hasApiKey ? 5_000 : 30_000;
 
   async function scrape(): Promise<ScrapeResult> {
     let totalCount = 0;
@@ -233,6 +234,8 @@ export function createScholarScraper(config?: {
           keyword,
           error: result.error,
         });
+        // Extra cooldown after rate-limit failure before trying next keyword
+        await sleep(rateLimitCooldownMs);
         continue;
       }
 
