@@ -1,4 +1,5 @@
 import type { ToolDefinition, ToolCategory } from "./types";
+import type { SemanticToolIndex } from "./semantic-index";
 
 interface ToolScore {
   tool: ToolDefinition;
@@ -24,23 +25,56 @@ export class ToolRouter {
   private executionHistory: ToolExecutionRecord[] = [];
   private readonly maxHistorySize = 100;
   private readonly recencyWindowMs = 3600000; // 1 hour
+  private semanticIndex: SemanticToolIndex | null = null;
 
   constructor(private tools: readonly ToolDefinition[]) {}
+
+  /**
+   * Attach a semantic index for embedding-based routing.
+   */
+  setSemanticIndex(index: SemanticToolIndex): void {
+    this.semanticIndex = index;
+  }
 
   /**
    * Record a tool execution result for history tracking
    */
   recordExecution(toolName: string, success: boolean): void {
-    this.executionHistory.push({
+    const record: ToolExecutionRecord = {
       toolName,
       timestamp: Date.now(),
       success,
-    });
+    };
+    const appended = [...this.executionHistory, record];
+    this.executionHistory =
+      appended.length > this.maxHistorySize
+        ? appended.slice(-this.maxHistorySize)
+        : appended;
+  }
 
-    // Keep history bounded
-    if (this.executionHistory.length > this.maxHistorySize) {
-      this.executionHistory = this.executionHistory.slice(-this.maxHistorySize);
+  /**
+   * Get relevant tools from a raw message string.
+   * Uses semantic index when available; falls back to keyword/category routing.
+   */
+  async getRelevantToolsForMessage(
+    message: string,
+    limit = 25,
+  ): Promise<readonly ToolDefinition[]> {
+    if (this.semanticIndex?.isAvailable()) {
+      const names = await this.semanticIndex.search(message, limit);
+      if (names.length > 0) {
+        const nameSet = new Set(names);
+        const matched = this.tools.filter((t) => nameSet.has(t.name));
+        // Preserve semantic ranking order
+        matched.sort((a, b) => names.indexOf(a.name) - names.indexOf(b.name));
+        return matched;
+      }
     }
+
+    // Fallback: keyword/category routing
+    const intent = ToolRouter.detectIntent(message);
+    const keywords = ToolRouter.extractKeywords(message);
+    return this.getRelevantTools(intent, keywords, limit);
   }
 
   /**

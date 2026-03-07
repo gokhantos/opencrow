@@ -227,6 +227,26 @@ export async function bootstrap(
       qdrantAvailable: qdrantClient.available,
       autoIndex: memSearch.autoIndex,
     });
+
+    // Wire semantic tool routing if both embedding provider and Qdrant are available
+    if (baseToolRegistry && embeddingProvider && qdrantClient.available) {
+      try {
+        baseToolRegistry = await baseToolRegistry.withSemanticIndex(
+          embeddingProvider,
+          qdrantClient,
+        );
+      } catch (err) {
+        log.warn("Semantic tool index init failed — using keyword routing", {
+          error: String(err),
+        });
+      }
+    } else {
+      log.warn("Semantic tool routing disabled", {
+        hasEmbeddings: Boolean(embeddingProvider),
+        qdrantAvailable: qdrantClient.available,
+        hasToolRegistry: Boolean(baseToolRegistry),
+      });
+    }
   }
 
   let observationHook: ObservationHook | null = null;
