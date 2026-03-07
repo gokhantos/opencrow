@@ -66,7 +66,11 @@ export async function upsertPosts(posts: RedditPostRow[]): Promise<number> {
         updated_at = EXCLUDED.updated_at,
         top_comments_json = COALESCE(EXCLUDED.top_comments_json, reddit_posts.top_comments_json),
         flair = COALESCE(EXCLUDED.flair, reddit_posts.flair),
-        thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, reddit_posts.thumbnail_url)
+        thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, reddit_posts.thumbnail_url),
+        indexed_at = CASE
+          WHEN reddit_posts.top_comments_json IS DISTINCT FROM
+            COALESCE(EXCLUDED.top_comments_json, reddit_posts.top_comments_json)
+          THEN NULL ELSE reddit_posts.indexed_at END
     `;
     upserted++;
   }

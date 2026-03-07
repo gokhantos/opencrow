@@ -129,7 +129,10 @@ export async function insertScrapedTweets(
         views = ${t.views},
         bookmarks = ${t.bookmarks},
         quotes = ${t.quotes},
-        scraped_at = ${now}
+        scraped_at = ${now},
+        indexed_at = CASE
+          WHEN x_scraped_tweets.text IS DISTINCT FROM ${t.text}
+          THEN NULL ELSE x_scraped_tweets.indexed_at END
     `;
   }
 }

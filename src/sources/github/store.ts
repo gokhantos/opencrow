@@ -44,7 +44,10 @@ export async function upsertRepos(
         forks = GREATEST(github_repos.forks, EXCLUDED.forks),
         stars_today = EXCLUDED.stars_today,
         built_by_json = EXCLUDED.built_by_json,
-        updated_at = EXCLUDED.updated_at
+        updated_at = EXCLUDED.updated_at,
+        indexed_at = CASE
+          WHEN github_repos.description IS DISTINCT FROM EXCLUDED.description
+          THEN NULL ELSE github_repos.indexed_at END
     `;
     upserted++;
   }

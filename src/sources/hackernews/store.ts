@@ -48,7 +48,11 @@ export async function upsertStories(stories: HNStoryRow[]): Promise<number> {
         hn_url = EXCLUDED.hn_url,
         updated_at = EXCLUDED.updated_at,
         description = EXCLUDED.description,
-        top_comments_json = EXCLUDED.top_comments_json
+        top_comments_json = EXCLUDED.top_comments_json,
+        indexed_at = CASE
+          WHEN hn_stories.description IS DISTINCT FROM EXCLUDED.description
+            OR hn_stories.top_comments_json IS DISTINCT FROM EXCLUDED.top_comments_json
+          THEN NULL ELSE hn_stories.indexed_at END
     `;
     upserted++;
   }
