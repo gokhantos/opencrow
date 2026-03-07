@@ -6,8 +6,7 @@ export type ToolCategory =
   | "system"
   | "memory"
   | "ideas"
-  | "social"
-  | "deploy";
+  | "social";
 
 export interface ToolResult {
   readonly output: string;

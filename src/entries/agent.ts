@@ -56,18 +56,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // --- Worktree for default agent (isolate from running processes) ---
-  let agentCwd: string | undefined;
-  if (isDefault) {
-    try {
-      const { ensureWorktree } = await import("../worktree/manager");
-      agentCwd = await ensureWorktree();
-      log.info("Worktree ready", { path: agentCwd });
-    } catch (err) {
-      log.warn("Failed to setup worktree, using main repo", { error: err });
-    }
-  }
-
   // No fallback — agent must have an explicit telegramBotToken to get Telegram.
   const telegramToken = resolvedAgent.telegramBotToken;
 
@@ -84,7 +72,7 @@ async function main(): Promise<void> {
       const router = createRouter({
         getDefaultAgentOptions: async (onProgress) => {
           const agent = ctx.agentRegistry.getDefault();
-          return ctx.buildOptionsForAgent(agent, onProgress, agentCwd);
+          return ctx.buildOptionsForAgent(agent, onProgress);
         },
         channels: channelManager.getChannels(),
         channelRegistry,
@@ -164,7 +152,7 @@ async function main(): Promise<void> {
           ctx.buildOptionsForAgent(
             agent,
             onProgress,
-            isDefault ? agentCwd : undefined,
+            undefined,
           ),
         agentRegistry: ctx.agentRegistry,
         observationHook: ctx.observationHook ?? undefined,

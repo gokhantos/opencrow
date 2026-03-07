@@ -661,11 +661,6 @@ describe('Tool Router', () => {
       expect(intent).toContain('ideas')
     })
 
-    test('deploy intent', () => {
-      const intent = ToolRouter.detectIntent('Push to production')
-      expect(intent).toContain('deploy')
-    })
-
     test('default intent when no match', () => {
       const intent = ToolRouter.detectIntent('Hello there')
       expect(intent).toEqual(['research', 'code'])
