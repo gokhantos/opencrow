@@ -55,10 +55,16 @@ export function createEmbeddingProvider(apiKey: string): EmbeddingProvider {
 
       const json = (await response.json()) as EmbeddingResponse;
 
+      if (!json.data || !Array.isArray(json.data)) {
+        throw new Error(
+          `Unexpected embedding response (missing data): ${JSON.stringify(json).slice(0, 200)}`,
+        );
+      }
+
       log.info("Embedded batch", {
         model: EMBEDDING_MODEL,
         chunks: json.data.length,
-        tokens: json.usage.total_tokens,
+        tokens: json.usage?.total_tokens,
       });
 
       return json.data.map((d) => new Float32Array(d.embedding));
