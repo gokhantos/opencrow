@@ -191,7 +191,7 @@ function ProcessCard({
 }: {
   process: ProcessInfo;
   index: number;
-  onAction: (name: string, action: "restart" | "stop" | "start") => void;
+  onAction: (name: string, action: "restart" | "stop" | "start") => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
   const isStopped = proc.syncStatus === "stopped";
@@ -200,10 +200,13 @@ function ProcessCard({
   const isOrchestrated = proc.orchestrated ?? false;
   const type = getProcessType(proc.name);
 
-  function fire(action: "restart" | "stop" | "start") {
+  async function fire(action: "restart" | "stop" | "start") {
     setPending(true);
-    onAction(proc.name, action);
-    setTimeout(() => setPending(false), 3000);
+    try {
+      await onAction(proc.name, action);
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
@@ -364,7 +367,7 @@ function GroupSection({
 }: {
   group: ProcessGroup;
   startIndex: number;
-  onAction: (name: string, action: "restart" | "stop" | "start") => void;
+  onAction: (name: string, action: "restart" | "stop" | "start") => Promise<void>;
 }) {
   const aliveCount = group.processes.filter((p) => p.status === "alive").length;
 
