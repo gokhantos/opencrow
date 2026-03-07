@@ -10,7 +10,16 @@
     "url": "https://github.com/gokhantos/opencrow.git"
   },
   "homepage": "https://github.com/gokhantos/opencrow",
-  "keywords": ["ai", "agent", "multi-agent", "telegram", "bun", "claude", "orchestration", "self-hosted"],
+  "keywords": [
+    "ai",
+    "agent",
+    "multi-agent",
+    "telegram",
+    "bun",
+    "claude",
+    "orchestration",
+    "self-hosted"
+  ],
   "engines": {
     "bun": ">=1.1.0"
   },
@@ -64,6 +73,7 @@
     "google-play-scraper": "^10.1.2",
     "grammy": "^1.40.0",
     "hono": "^4.12.0",
+    "js-tiktoken": "^1.0.21",
     "lucide-react": "^0.575.0",
     "pino": "^10.3.1",
     "playwright": "^1.58.2",

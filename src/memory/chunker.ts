@@ -1,3 +1,5 @@
+import { encodingForModel } from "js-tiktoken";
+
 const DEFAULT_MAX_TOKENS = 400;
 const DEFAULT_OVERLAP = 80;
 
@@ -6,8 +8,10 @@ interface ChunkOptions {
   readonly overlap?: number;
 }
 
+const encoder = encodingForModel("text-embedding-3-small");
+
 function countTokens(text: string): number {
-  return Math.ceil(text.length / 4);
+  return encoder.encode(text).length;
 }
 
 function splitSentences(text: string): string[] {
