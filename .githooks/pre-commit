@@ -46,9 +46,19 @@ if [[ -n "$BUN" ]]; then
     fi
   done
 
-  if [[ -n "$TEST_FILES" ]]; then
+  # Filter out integration tests that require a database
+  UNIT_TEST_FILES=""
+  for tf in $TEST_FILES; do
+    if grep -q 'initDb\|DATABASE_URL' "$tf" 2>/dev/null; then
+      echo "  skipping integration test: $tf"
+    else
+      UNIT_TEST_FILES="$UNIT_TEST_FILES $tf"
+    fi
+  done
+
+  if [[ -n "$UNIT_TEST_FILES" ]]; then
     echo "  tests..."
-    $BUN test --timeout 30000 $TEST_FILES
+    $BUN test --timeout 30000 $UNIT_TEST_FILES
   fi
 fi
 

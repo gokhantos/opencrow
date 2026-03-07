@@ -108,10 +108,41 @@ export async function clearObservationsByChat(
   chatId: string,
 ): Promise<number> {
   const db = getDb();
+
+  // 1. Get observation IDs for this chat
+  const obsRows = await db`
+    SELECT id FROM conversation_observations
+    WHERE channel = ${channel} AND chat_id = ${chatId}
+  `;
+  const obsIds = obsRows.map((r: { id: string }) => r.id);
+
+  if (obsIds.length === 0) return 0;
+
+  // 2. Find memory_sources that indexed any of these observations
+  //    (metadata_json contains observationIds as comma-separated string)
+  const matchedSources: { id: string }[] = [];
+  for (const obsId of obsIds) {
+    const rows = await db`
+      SELECT id FROM memory_sources
+      WHERE kind = 'observation'
+      AND metadata_json LIKE ${"%" + obsId + "%"}
+    `;
+    for (const r of rows) matchedSources.push(r as { id: string });
+  }
+  const sourceIds = [...new Set(matchedSources.map((r) => r.id))];
+
+  // 3. Delete memory_chunks and memory_sources for matched sources
+  if (sourceIds.length > 0) {
+    await db`DELETE FROM memory_chunks WHERE source_id IN ${db(sourceIds)}`;
+    await db`DELETE FROM memory_sources WHERE id IN ${db(sourceIds)}`;
+  }
+
+  // 4. Delete from conversation_observations
   const result = await db`
     DELETE FROM conversation_observations
     WHERE channel = ${channel} AND chat_id = ${chatId}
   `;
+
   return result.count;
 }
 
