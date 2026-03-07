@@ -8,259 +8,35 @@ import type {
 import type { ToolRegistry } from "../tools/registry";
 import { createOpenCrowMcpServer } from "./mcp-bridge";
 import { createLogger } from "../logger";
-import { searchRelatedSessions } from "../memory/cross-session-memory";
 import {
-  getActivePreferences,
-  formatPreferencesForPrompt,
-} from "../memory/preference-extractor";
+  buildPromptWithHistory,
+  enrichPromptWithContext,
+} from "./prompt-context";
+import {
+  buildThinkingOptions,
+  buildSystemPromptOption,
+  buildMcpServers,
+  buildAllowedTools,
+} from "./sdk-options";
+import {
+  type SdkUsage,
+  createEmptyUsage,
+  extractUsageFromResult,
+} from "./sdk-usage";
+import {
+  formatToolProgress,
+  truncate,
+  summarizeThinking,
+  shortenPath,
+  MAX_DETAIL_LENGTH,
+  MAX_THINKING_SUMMARY,
+} from "./sdk-progress";
+
 
 const log = createLogger("agent-sdk");
 
 const ALIBABA_DEFAULT_BASE_URL =
   "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic";
-
-const MAX_DETAIL_LENGTH = 60;
-const MAX_THINKING_SUMMARY = 100;
-
-function truncate(str: string, max: number = MAX_DETAIL_LENGTH): string {
-  return str.length > max ? `${str.slice(0, max - 1)}…` : str;
-}
-
-function summarizeThinking(text: string): string {
-  const firstSentence = text.match(/^[^.!?\n]+[.!?]?/)?.[0] ?? text;
-  return truncate(firstSentence.trim(), MAX_THINKING_SUMMARY);
-}
-
-function shortenPath(filePath: string): string {
-  const parts = filePath.split("/").filter(Boolean);
-  const short = parts.length > 3 ? parts.slice(-3).join("/") : parts.join("/");
-  return truncate(short);
-}
-
-function formatToolProgress(
-  name: string,
-  input: Record<string, unknown>,
-): string {
-  switch (name) {
-    case "Read":
-      return input.file_path
-        ? `Reading ${shortenPath(String(input.file_path))}`
-        : "Reading file";
-    case "Write":
-      return input.file_path
-        ? `Writing ${shortenPath(String(input.file_path))}`
-        : "Writing file";
-    case "Edit":
-      return input.file_path
-        ? `Editing ${shortenPath(String(input.file_path))}`
-        : "Editing file";
-    case "Bash":
-      if (input.description) return truncate(String(input.description));
-      if (input.command) return `Running: ${truncate(String(input.command))}`;
-      return "Running command";
-    case "Grep":
-      return input.pattern
-        ? `Searching "${truncate(String(input.pattern), 40)}"`
-        : "Searching";
-    case "Glob":
-      return input.pattern
-        ? `Finding ${truncate(String(input.pattern), 40)}`
-        : "Finding files";
-    case "WebSearch":
-      return input.query
-        ? `Web: ${truncate(String(input.query), 45)}`
-        : "Web search";
-    case "WebFetch":
-      return input.url
-        ? `Fetching ${truncate(String(input.url), 45)}`
-        : "Fetching URL";
-    case "Task":
-      if (input.description)
-        return `Agent: ${truncate(String(input.description), 45)}`;
-      if (input.prompt) return `Agent: ${truncate(String(input.prompt), 45)}`;
-      return "Running agent";
-    default: {
-      const clean = name.replace(/^mcp__[^_]+__/, "");
-      return clean;
-    }
-  }
-}
-
-/**
- * Build thinking/effort/beta options from AgentOptions.
- * Uses per-agent modelParams when available, falls back to sane defaults.
- */
-function buildThinkingOptions(options: AgentOptions): Record<string, unknown> {
-  const params = options.modelParams;
-  const result: Record<string, unknown> = {};
-
-  // Thinking configuration
-  const mode =
-    params?.thinkingMode ??
-    (options.reasoning === true ? "adaptive" : undefined);
-  if (mode === "adaptive") {
-    result.thinking = { type: "adaptive" };
-  } else if (mode === "enabled") {
-    result.thinking = {
-      type: "enabled",
-      budgetTokens: params?.thinkingBudget ?? 32_000,
-    };
-  } else if (mode === "disabled") {
-    result.thinking = { type: "disabled" };
-  }
-
-  // Effort level — not supported by agent-sdk CLI, skipped.
-  // The thinking budget effectively controls effort instead.
-
-  // Extended context window beta
-  if (params?.extendedContext) {
-    result.betas = ["context-1m-2025-08-07"];
-  }
-
-  // Budget limit
-  if (params?.maxBudgetUsd !== undefined) {
-    result.maxBudgetUsd = params.maxBudgetUsd;
-  }
-
-  return result;
-}
-
-/**
- * Extract the last user message content as the prompt for query().
- */
-function lastUserMessage(messages: readonly ConversationMessage[]): string {
-  if (messages.length === 0) return "";
-  return messages[messages.length - 1]!.content;
-}
-
-const MAX_HISTORY_IN_PROMPT = 10;
-
-/**
- * Build a prompt that includes recent conversation history.
- *
- * The Agent SDK's session resume is supposed to maintain context, but sessions
- * break on errors, process restarts, or expiry. By including recent history
- * in the prompt, the model retains conversational context even when the session
- * is lost. When the session IS valid, the history is redundant but harmless.
- */
-function buildPromptWithHistory(
-  messages: readonly ConversationMessage[],
-): string {
-  const lastMsg = lastUserMessage(messages);
-
-  // Single message or empty — no history to include
-  if (messages.length <= 1) return lastMsg;
-
-  // Take recent history (excluding the last message)
-  const historySlice = messages.slice(
-    Math.max(0, messages.length - 1 - MAX_HISTORY_IN_PROMPT),
-    messages.length - 1,
-  );
-
-  if (historySlice.length === 0) return lastMsg;
-
-  const history = historySlice
-    .map((m) => `[${m.role}]: ${m.content}`)
-    .join("\n\n");
-
-  return `<conversation_history>\n${history}\n</conversation_history>\n\n[user]: ${lastMsg}`;
-}
-
-/**
- * Build the systemPrompt option using the claude_code preset.
- * This keeps Claude Code's full built-in system prompt (tool usage, methodology,
- * CLAUDE.md loading, etc.) and appends OpenCrow's custom instructions on top.
- */
-function buildSystemPromptOption(customPrompt: string): {
-  type: "preset";
-  preset: "claude_code";
-  append: string;
-} {
-  return {
-    type: "preset",
-    preset: "claude_code",
-    append: customPrompt,
-  };
-}
-
-/**
- * Inject cross-session memory and user preferences into the prompt.
- * Phase 5: Advanced Intelligence
- */
-async function enrichPromptWithContext(
-  basePrompt: string,
-  sessionId?: string,
-): Promise<string> {
-  let enrichedPrompt = basePrompt;
-
-  // Add cross-session context if sessionId provided
-  if (sessionId) {
-    try {
-      const lastMsg = lastUserMessageFromPrompt(basePrompt);
-      const topics = extractTopicsFromMessage(lastMsg);
-      const relatedMemories = await searchRelatedSessions(topics, 2);
-
-      if (relatedMemories.length > 0) {
-        enrichedPrompt += "\n\n<cross_session_context>\n";
-        for (const memory of relatedMemories) {
-          enrichedPrompt += `- Previous session (${memory.context.sessionId}): ${memory.context.summary}\n`;
-          if (memory.matchedTopics.length > 0) {
-            enrichedPrompt += `  Related topics: ${memory.matchedTopics.join(", ")}\n`;
-          }
-        }
-        enrichedPrompt += "</cross_session_context>\n";
-      }
-    } catch (err) {
-      log.debug("Cross-session memory lookup failed", { error: String(err) });
-    }
-  }
-
-  // Add user preferences
-  try {
-    const preferences = await getActivePreferences();
-    if (preferences.length > 0) {
-      const formattedPrefs = formatPreferencesForPrompt(preferences);
-      enrichedPrompt += `\n\n${formattedPrefs}`;
-    }
-  } catch (err) {
-    log.debug("Failed to load user preferences", { error: String(err) });
-  }
-
-  return enrichedPrompt;
-}
-
-function extractTopicsFromMessage(message: string): string[] {
-  const topics: string[] = [];
-  const topicPatterns = [
-    { pattern: /database|db|sql|query|table|schema/i, topic: "database" },
-    { pattern: /api|endpoint|route|rest|graphql/i, topic: "api" },
-    { pattern: /react|component|ui|frontend|css|style/i, topic: "frontend" },
-    { pattern: /server|backend|node|express|hono/i, topic: "backend" },
-    { pattern: /test|spec|jest|vitest|coverage/i, topic: "testing" },
-    { pattern: /deploy|docker|kubernetes|ci|cd|pipeline/i, topic: "devops" },
-    { pattern: /security|auth|owasp|xss|injection/i, topic: "security" },
-    { pattern: /performance|optimize|slow|benchmark/i, topic: "performance" },
-    { pattern: /refactor|migrate|upgrade|modernize/i, topic: "refactoring" },
-    { pattern: /bug|fix|error|issue|debug/i, topic: "bugfix" },
-    {
-      pattern: /feature|create|build|implement/i,
-      topic: "feature-development",
-    },
-  ];
-
-  for (const { pattern, topic } of topicPatterns) {
-    if (pattern.test(message)) {
-      topics.push(topic);
-    }
-  }
-
-  return topics;
-}
-
-function lastUserMessageFromPrompt(prompt: string): string {
-  const match = prompt.match(/\[user\]:\s*(.+)$/s);
-  return match ? match[1]!.trim() : prompt;
-}
 
 /**
  * Capture session_id from the first SDK message that has one.
@@ -335,14 +111,7 @@ export async function chat(
   try {
     let resultText = "";
     const sessionCapture = { done: false };
-    const usage: SdkUsage = {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreationTokens: 0,
-      costUsd: 0,
-      durationMs: 0,
-    };
+    let usage: SdkUsage = createEmptyUsage();
 
     for await (const message of query({
       prompt: enrichedPrompt,
@@ -365,40 +134,10 @@ export async function chat(
       );
 
       if (message.type === "result") {
-        const msg = message as Record<string, unknown>;
-
-        const modelUsage = msg.modelUsage as
-          | Record<string, Record<string, unknown>>
-          | undefined;
-        if (modelUsage) {
-          for (const mu of Object.values(modelUsage)) {
-            usage.inputTokens += Number(mu.inputTokens ?? 0);
-            usage.outputTokens += Number(mu.outputTokens ?? 0);
-            usage.cacheReadTokens += Number(mu.cacheReadInputTokens ?? 0);
-            usage.cacheCreationTokens += Number(
-              mu.cacheCreationInputTokens ?? 0,
-            );
-            usage.costUsd += Number(mu.costUSD ?? 0);
-          }
-        }
-        usage.durationMs += Number(msg.duration_ms ?? 0);
-
-        // Fallback: use top-level usage fields if modelUsage isn't present
-        if (!modelUsage && msg.usage) {
-          const u = msg.usage as Record<string, unknown>;
-          usage.inputTokens += Number(u.input_tokens ?? u.inputTokens ?? 0);
-          usage.outputTokens += Number(u.output_tokens ?? u.outputTokens ?? 0);
-          usage.cacheReadTokens += Number(
-            u.cache_read_input_tokens ?? u.cacheReadInputTokens ?? 0,
-          );
-          usage.cacheCreationTokens += Number(
-            u.cache_creation_input_tokens ?? u.cacheCreationInputTokens ?? 0,
-          );
-        }
-
-        if (typeof msg.total_cost_usd === "number") {
-          usage.costUsd = msg.total_cost_usd;
-        }
+        usage = extractUsageFromResult(
+          message as Record<string, unknown>,
+          usage,
+        );
 
         if (message.subtype === "success") {
           resultText = message.result;
@@ -417,14 +156,7 @@ export async function chat(
     return {
       text: resultText,
       provider: "agent-sdk",
-      usage: {
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        cacheReadTokens: usage.cacheReadTokens,
-        cacheCreationTokens: usage.cacheCreationTokens,
-        costUsd: usage.costUsd,
-        durationMs: usage.durationMs,
-      },
+      usage: { ...usage },
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -433,21 +165,12 @@ export async function chat(
   }
 }
 
-interface SdkUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  costUsd: number;
-  durationMs: number;
-}
-
 interface QueryRunState {
-  resultText: string;
-  lastAssistantText: string;
-  toolUseCount: number;
-  sessionId: string | undefined;
-  usage: SdkUsage;
+  readonly resultText: string;
+  readonly lastAssistantText: string;
+  readonly toolUseCount: number;
+  readonly sessionId: string | undefined;
+  readonly usage: SdkUsage;
 }
 
 /**
@@ -464,7 +187,6 @@ async function runQuery(
   prev: QueryRunState,
   onProgress?: (event: ProgressEvent) => void,
 ): Promise<QueryRunState> {
-  // Enrich prompt with cross-session context and user preferences (Phase 5)
   const enrichedPrompt = await enrichPromptWithContext(prompt, sessionId);
 
   let resultText = "";
@@ -472,6 +194,7 @@ async function runQuery(
   let toolUseCount = prev.toolUseCount;
   let capturedSessionId = sessionId;
   const sessionCapture = { done: Boolean(sessionId) };
+  let usage = prev.usage;
 
   for await (const message of query({
     prompt: enrichedPrompt,
@@ -482,143 +205,8 @@ async function runQuery(
       maxTurns,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
-      mcpServers: {
-        "opencrow-tools": opencrowMcp,
-        ...(options.browserEnabled
-          ? {
-              playwright: {
-                type: "stdio" as const,
-                command: "npx",
-                args: ["@playwright/mcp@latest", "--headless"],
-              },
-            }
-          : {}),
-        ...(options.githubEnabled
-          ? {
-              github: {
-                type: "http" as const,
-                url: "https://api.githubcopilot.com/mcp/",
-              },
-            }
-          : {}),
-        ...(options.context7Enabled
-          ? {
-              context7: {
-                type: "stdio" as const,
-                command: "npx",
-                args: ["-y", "@upstash/context7-mcp@latest"],
-              },
-            }
-          : {}),
-        ...(options.sequentialThinkingEnabled
-          ? {
-              "sequential-thinking": {
-                type: "stdio" as const,
-                command: "npx",
-                args: [
-                  "-y",
-                  "@modelcontextprotocol/server-sequential-thinking",
-                ],
-              },
-            }
-          : {}),
-        ...(options.dbhubEnabled
-          ? {
-              dbhub: {
-                type: "stdio" as const,
-                command: "npx",
-                args: [
-                  "-y",
-                  "@bytebase/dbhub",
-                  "--dsn",
-                  process.env.DATABASE_URL ??
-                    "postgres://opencrow:opencrow@127.0.0.1:5432/opencrow",
-                ],
-              },
-            }
-          : {}),
-        ...(options.filesystemEnabled
-          ? {
-              filesystem: {
-                type: "stdio" as const,
-                command: "npx",
-                args: [
-                  "-y",
-                  "@modelcontextprotocol/server-filesystem",
-                  "/home/opencrow",
-                ],
-              },
-            }
-          : {}),
-        ...(options.gitEnabled
-          ? {
-              git: {
-                type: "stdio" as const,
-                command: `${process.env.HOME}/.local/bin/uvx`,
-                args: ["mcp-server-git"],
-              },
-            }
-          : {}),
-        ...(options.qdrantEnabled
-          ? {
-              qdrant: {
-                type: "stdio" as const,
-                command: `${process.env.HOME}/.local/bin/uvx`,
-                args: ["qdrant-mcp-server"],
-                env: {
-                  QDRANT_URL: process.env.QDRANT_URL ?? "http://127.0.0.1:6333",
-                  ...(process.env.QDRANT_API_KEY
-                    ? { QDRANT_API_KEY: process.env.QDRANT_API_KEY }
-                    : {}),
-                },
-              },
-            }
-          : {}),
-        ...(options.braveSearchEnabled
-          ? {
-              "brave-search": {
-                type: "stdio" as const,
-                command: "npx",
-                args: ["-y", "brave-search-mcp"],
-                env: {
-                  ...(process.env.BRAVE_API_KEY
-                    ? { BRAVE_API_KEY: process.env.BRAVE_API_KEY }
-                    : {}),
-                },
-              },
-            }
-          : {}),
-        ...(options.firecrawlEnabled
-          ? {
-              firecrawl: {
-                type: "stdio" as const,
-                command: "npx",
-                args: ["-y", "firecrawl-mcp"],
-                env: {
-                  ...(process.env.FIRECRAWL_API_KEY
-                    ? { FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY }
-                    : {}),
-                },
-              },
-            }
-          : {}),
-      },
-      allowedTools: [
-        "mcp__opencrow-tools__*",
-        ...(options.webSearchEnabled ? ["WebSearch", "WebFetch"] : []),
-        ...(options.browserEnabled ? ["mcp__playwright__*"] : []),
-        ...(options.githubEnabled ? ["mcp__github__*"] : []),
-        ...(options.context7Enabled ? ["mcp__context7__*"] : []),
-        ...(options.sequentialThinkingEnabled
-          ? ["mcp__sequential-thinking__*"]
-          : []),
-        ...(options.dbhubEnabled ? ["mcp__dbhub__*"] : []),
-        ...(options.filesystemEnabled ? ["mcp__filesystem__*"] : []),
-        ...(options.gitEnabled ? ["mcp__git__*"] : []),
-        ...(options.qdrantEnabled ? ["mcp__qdrant__*"] : []),
-        ...(options.braveSearchEnabled ? ["mcp__brave-search__*"] : []),
-        ...(options.firecrawlEnabled ? ["mcp__firecrawl__*"] : []),
-      ],
+      mcpServers: buildMcpServers(options, opencrowMcp),
+      allowedTools: buildAllowedTools(options),
       ...buildThinkingOptions(options),
       ...(options.sdkHooks ? { hooks: options.sdkHooks } : {}),
       ...(sessionId ? { resume: sessionId } : {}),
@@ -744,43 +332,7 @@ async function runQuery(
     }
 
     if (message.type === "result") {
-      const msg = message as Record<string, unknown>;
-
-      // Extract usage from both success and error results
-      const modelUsage = msg.modelUsage as
-        | Record<string, Record<string, unknown>>
-        | undefined;
-      if (modelUsage) {
-        for (const mu of Object.values(modelUsage)) {
-          prev.usage.inputTokens += Number(mu.inputTokens ?? 0);
-          prev.usage.outputTokens += Number(mu.outputTokens ?? 0);
-          prev.usage.cacheReadTokens += Number(mu.cacheReadInputTokens ?? 0);
-          prev.usage.cacheCreationTokens += Number(
-            mu.cacheCreationInputTokens ?? 0,
-          );
-          prev.usage.costUsd += Number(mu.costUSD ?? 0);
-        }
-      }
-      prev.usage.durationMs += Number(msg.duration_ms ?? 0);
-
-      // Fallback: use top-level usage fields if modelUsage isn't present
-      if (!modelUsage && msg.usage) {
-        const u = msg.usage as Record<string, unknown>;
-        prev.usage.inputTokens += Number(u.input_tokens ?? u.inputTokens ?? 0);
-        prev.usage.outputTokens += Number(
-          u.output_tokens ?? u.outputTokens ?? 0,
-        );
-        prev.usage.cacheReadTokens += Number(
-          u.cache_read_input_tokens ?? u.cacheReadInputTokens ?? 0,
-        );
-        prev.usage.cacheCreationTokens += Number(
-          u.cache_creation_input_tokens ?? u.cacheCreationInputTokens ?? 0,
-        );
-      }
-
-      if (typeof msg.total_cost_usd === "number") {
-        prev.usage.costUsd = msg.total_cost_usd;
-      }
+      usage = extractUsageFromResult(message as Record<string, unknown>, usage);
 
       if (message.subtype === "success") {
         resultText = message.result;
@@ -795,7 +347,7 @@ async function runQuery(
     lastAssistantText,
     toolUseCount,
     sessionId: capturedSessionId,
-    usage: prev.usage,
+    usage,
   };
 }
 
@@ -826,14 +378,7 @@ export async function agenticChat(
       lastAssistantText: "",
       toolUseCount: 0,
       sessionId: options.sdkSessionId,
-      usage: {
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
-        costUsd: 0,
-        durationMs: 0,
-      },
+      usage: createEmptyUsage(),
     };
 
     // Initial query
@@ -908,14 +453,7 @@ export async function agenticChat(
       text: finalText,
       provider: "agent-sdk",
       toolUseCount: state.toolUseCount,
-      usage: {
-        inputTokens: state.usage.inputTokens,
-        outputTokens: state.usage.outputTokens,
-        cacheReadTokens: state.usage.cacheReadTokens,
-        cacheCreationTokens: state.usage.cacheCreationTokens,
-        costUsd: state.usage.costUsd,
-        durationMs: state.usage.durationMs,
-      },
+      usage: { ...state.usage },
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -924,15 +462,7 @@ export async function agenticChat(
   }
 }
 
-// Export internal functions for testing
-// These are exported solely for unit testing purposes
-export {
-  formatToolProgress,
-  buildThinkingOptions,
-  buildPromptWithHistory,
-  buildSystemPromptOption,
-  truncate,
-  summarizeThinking,
-  shortenPath,
-  lastUserMessage,
-};
+// Re-export internal functions for backward compatibility with tests
+export { formatToolProgress, truncate, summarizeThinking, shortenPath } from "./sdk-progress";
+export { buildThinkingOptions, buildSystemPromptOption } from "./sdk-options";
+export { buildPromptWithHistory, lastUserMessage } from "./prompt-context";
