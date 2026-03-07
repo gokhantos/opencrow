@@ -144,12 +144,14 @@ export function createDefiLlamaRoutes(): Hono {
         getChainTvls(10),
       ]);
 
-      // Get top protocols per target chain
+      // Get top protocols per target chain (parallel)
+      const protocolResults = await Promise.all(
+        TARGET_CHAINS.map((chain) => getProtocols({ chain, limit: 10 })),
+      );
       const protocolsByChain: Record<string, unknown[]> = {};
-      for (const chain of TARGET_CHAINS) {
-        const protocols = await getProtocols({ chain, limit: 10 });
-        protocolsByChain[chain] = protocols;
-      }
+      TARGET_CHAINS.forEach((chain, i) => {
+        protocolsByChain[chain] = protocolResults[i] ?? [];
+      });
 
       return c.json({
         success: true,
