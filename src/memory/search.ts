@@ -133,7 +133,7 @@ export function createMemorySearch(config: SearchConfig): MemorySearch {
     // If multiple kinds, over-fetch to allow app-level filtering for multi-kind queries.
     // Single kind or no kind filter is handled in Qdrant directly.
     const needsAppKindFilter = kinds && kinds.length > 1;
-    const fetchLimit = needsAppKindFilter ? limit * 2 : limit;
+    const fetchLimit = needsAppKindFilter ? Math.ceil(limit * 1.3) : limit;
 
     const opts: QdrantSearchOptions = {
       filter,
@@ -210,8 +210,8 @@ export function createMemorySearch(config: SearchConfig): MemorySearch {
       // 1. Parallel hybrid search: vector + FTS concurrently
       const { ftsQuery } = expandQuery(query);
       const [vectorScores, ftsResults] = await Promise.all([
-        vectorSearch(agentId, query, limit * 2, minScore, kinds),
-        ftsSearch(agentId, ftsQuery, limit * 2, { shared: config.shared }),
+        vectorSearch(agentId, query, Math.ceil(limit * 1.3), minScore, kinds),
+        ftsSearch(agentId, ftsQuery, Math.ceil(limit * 1.3), { shared: config.shared }),
       ]);
 
       // Build a map of FTS scores keyed by chunk ID
