@@ -119,16 +119,19 @@ export function createAgentBotHandler(deps: AgentBotHandlerDeps): void {
       return;
     }
 
+    // Claim the session slot synchronously before any async work
+    // to prevent concurrent messages from both passing the has() check
+    const abortController = new AbortController();
+    activeSessions.set(msg.chatId, abortController);
+
     const freshDef = agentRegistry?.getById(agentId) ?? agent;
     if (freshDef.maxInputLength && text.length > freshDef.maxInputLength) {
+      activeSessions.delete(msg.chatId);
       await channel.sendMessage(msg.chatId, {
         text: `Message too long (${text.length} chars). Maximum is ${freshDef.maxInputLength} characters.`,
       });
       return;
     }
-
-    const abortController = new AbortController();
-    activeSessions.set(msg.chatId, abortController);
 
     await addUserMessage(
       sessionNamespace,
