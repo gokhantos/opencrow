@@ -25,6 +25,7 @@ export interface CronJob {
   readonly name: string;
   readonly enabled: boolean;
   readonly deleteAfterRun: boolean;
+  readonly priority: number;
   readonly schedule: CronSchedule;
   readonly payload: CronPayload;
   readonly delivery: CronDelivery;
@@ -67,6 +68,7 @@ export interface CronJobCreate {
   readonly delivery?: CronDelivery;
   readonly enabled?: boolean;
   readonly deleteAfterRun?: boolean;
+  readonly priority?: number;
 }
 
 export interface CronJobPatch {
@@ -76,4 +78,5 @@ export interface CronJobPatch {
   readonly delivery?: CronDelivery;
   readonly enabled?: boolean;
   readonly deleteAfterRun?: boolean;
+  readonly priority?: number;
 }

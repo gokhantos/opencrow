@@ -55,12 +55,13 @@ export function createCronStore(): CronStore {
       const delivery = input.delivery ?? { mode: "none" };
       const enabled = input.enabled ?? true;
       const deleteAfterRun = input.deleteAfterRun ?? false;
+      const priority = input.priority ?? 10;
 
       const db = getDb();
       await db`
         INSERT INTO cron_jobs
-          (id, name, enabled, delete_after_run, schedule_json, payload_json, delivery_json, next_run_at, created_at, updated_at)
-        VALUES (${id}, ${input.name}, ${enabled}, ${deleteAfterRun}, ${JSON.stringify(input.schedule)}, ${JSON.stringify(input.payload)}, ${JSON.stringify(delivery)}, ${nextRunAt ? Math.floor(nextRunAt / 1000) : null}, ${now}, ${now})
+          (id, name, enabled, delete_after_run, priority, schedule_json, payload_json, delivery_json, next_run_at, created_at, updated_at)
+        VALUES (${id}, ${input.name}, ${enabled}, ${deleteAfterRun}, ${priority}, ${JSON.stringify(input.schedule)}, ${JSON.stringify(input.payload)}, ${JSON.stringify(delivery)}, ${nextRunAt ? Math.floor(nextRunAt / 1000) : null}, ${now}, ${now})
       `;
 
       log.info("Cron job created", { id, name: input.name });
@@ -90,6 +91,10 @@ export function createCronStore(): CronStore {
       if (patch.deleteAfterRun !== undefined) {
         setClauses.push(`delete_after_run = $${paramIdx++}`);
         params.push(patch.deleteAfterRun);
+      }
+      if (patch.priority !== undefined) {
+        setClauses.push(`priority = $${paramIdx++}`);
+        params.push(patch.priority);
       }
       if (patch.schedule !== undefined) {
         setClauses.push(`schedule_json = $${paramIdx++}`);
@@ -146,6 +151,7 @@ export function createCronStore(): CronStore {
       const rows = await db`
         SELECT * FROM cron_jobs
         WHERE enabled = TRUE AND next_run_at IS NOT NULL AND next_run_at <= ${nowSec}
+        ORDER BY priority ASC, next_run_at ASC
       `;
       return (rows as Record<string, unknown>[]).map(rowToJob);
     },
@@ -250,6 +256,7 @@ function rowToJob(row: Record<string, unknown>): CronJob {
     name: row.name as string,
     enabled: row.enabled !== false && row.enabled !== 0,
     deleteAfterRun: Boolean(row.delete_after_run),
+    priority: (row.priority as number) ?? 10,
     schedule: JSON.parse(row.schedule_json as string) as CronSchedule,
     payload: JSON.parse(row.payload_json as string) as CronPayload,
     delivery: JSON.parse(row.delivery_json as string) as CronDelivery,

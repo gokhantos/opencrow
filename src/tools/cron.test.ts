@@ -172,6 +172,7 @@ describe("createCronTool", () => {
               createdAt: 0,
               updatedAt: 0,
               deleteAfterRun: false,
+              priority: 10,
             },
             {
               id: "j2",
@@ -187,6 +188,7 @@ describe("createCronTool", () => {
               createdAt: 0,
               updatedAt: 0,
               deleteAfterRun: false,
+              priority: 10,
             },
           ] as readonly CronJob[],
       );
@@ -335,6 +337,7 @@ describe("createCronTool", () => {
         createdAt: 0,
         updatedAt: 0,
         deleteAfterRun: false,
+              priority: 10,
       }));
       (mockStore.listJobs as ReturnType<typeof mock>).mockImplementation(
         async () => fiftyJobs as readonly CronJob[],

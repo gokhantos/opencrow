@@ -14,6 +14,8 @@ import { createLogger } from "../logger";
 
 const log = createLogger("cron:scheduler");
 
+const DEFAULT_MAX_CONCURRENCY = 4;
+
 export interface CronSchedulerDeps {
   readonly cronStore: CronStore;
   readonly agentRegistry: AgentRegistry;
@@ -55,23 +57,30 @@ export function createCronScheduler(deps: CronSchedulerDeps): CronScheduler {
 
     try {
       const dueJobs = await deps.cronStore.getDueJobs(Date.now());
+      const maxConcurrency = deps.config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
 
+      // Run jobs concurrently (ordered by priority from getDueJobs)
+      const executing = new Set<Promise<unknown>>();
       for (const job of dueJobs) {
-        try {
-          await executeCronJob(job, {
-            cronStore: deps.cronStore,
-            agentRegistry: deps.agentRegistry,
-            baseToolRegistry: deps.baseToolRegistry,
-            channels: deps.channels,
-            defaultTimeoutSeconds: deps.config.defaultTimeoutSeconds,
-            buildRegistryForAgent: deps.buildRegistryForAgent,
-            buildSystemPrompt: deps.buildSystemPrompt,
-            deliveryStore: deps.deliveryStore,
-          });
-        } catch (error) {
+        const task = executeCronJob(job, {
+          cronStore: deps.cronStore,
+          agentRegistry: deps.agentRegistry,
+          baseToolRegistry: deps.baseToolRegistry,
+          channels: deps.channels,
+          defaultTimeoutSeconds: deps.config.defaultTimeoutSeconds,
+          buildRegistryForAgent: deps.buildRegistryForAgent,
+          buildSystemPrompt: deps.buildSystemPrompt,
+          deliveryStore: deps.deliveryStore,
+        }).catch((error) => {
           log.error("Cron job execution failed", { jobId: job.id, error });
+        });
+        executing.add(task);
+        task.finally(() => executing.delete(task));
+        if (executing.size >= maxConcurrency) {
+          await Promise.race(executing);
         }
       }
+      await Promise.all(executing);
 
       // Process "run now" commands from other processes (web UI)
       const commands = await consumePendingCommands("cron");

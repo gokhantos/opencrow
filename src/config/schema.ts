@@ -148,6 +148,7 @@ export const internalApiConfigSchema = z.object({
 export const cronConfigSchema = z.object({
   defaultTimeoutSeconds: z.number().int().min(1).default(300),
   tickIntervalMs: z.number().int().min(1000).default(10000),
+  maxConcurrency: z.number().int().min(1).max(16).default(4),
 });
 
 export const monitorThresholdsSchema = z
@@ -393,6 +394,7 @@ export const opencrowConfigSchema = z.object({
   cron: cronConfigSchema.default({
     defaultTimeoutSeconds: 300,
     tickIntervalMs: 10000,
+    maxConcurrency: 4,
   }),
   postgres: postgresConfigSchema.default({
     url: "postgres://opencrow:opencrow@127.0.0.1:5432/opencrow",
