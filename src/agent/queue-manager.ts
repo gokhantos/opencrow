@@ -119,7 +119,7 @@ export async function dequeueTask(
           FROM task_queue
           WHERE status = 'pending'
             ${domain ? db`AND domain = ${domain}` : db``}
-          ORDER BY priority DESC, enqueued_at ASC
+          ORDER BY (priority + EXTRACT(EPOCH FROM (NOW() - enqueued_at)) / 3600.0) DESC
           LIMIT 1
           FOR UPDATE SKIP LOCKED
         )
