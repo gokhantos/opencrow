@@ -29,6 +29,7 @@ const RETENTION_RULES: ReadonlyArray<{
   { table: "agent_messages", column: "created_at", format: "timestamptz", days: 30 },
   { table: "process_logs", column: "created_at", format: "timestamptz", days: 30 },
   { table: "token_usage", column: "created_at", format: "epoch", days: 90 },
+  { table: "dead_tasks", column: "dead_at", format: "timestamptz", days: 30 },
 ];
 
 export interface RetentionResult {

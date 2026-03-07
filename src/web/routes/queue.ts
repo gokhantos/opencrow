@@ -35,5 +35,23 @@ export function createQueueRoutes(): Hono {
     }
   });
 
+  /**
+   * GET /api/queue/dead - List dead-lettered tasks
+   */
+  app.get("/queue/dead", async (c) => {
+    try {
+      const { getDb } = await import("../../store/db");
+      const db = getDb();
+      const limit = Math.min(100, Math.max(1, Number(c.req.query("limit") ?? "50")));
+      const rows = await db`
+        SELECT * FROM dead_tasks ORDER BY dead_at DESC LIMIT ${limit}
+      `;
+      return c.json({ success: true, data: rows });
+    } catch (err) {
+      log.warn("Failed to get dead tasks", { error: String(err) });
+      return c.json({ success: false, error: "Failed to get dead tasks" }, 500);
+    }
+  });
+
   return app;
 }

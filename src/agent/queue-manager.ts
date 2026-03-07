@@ -41,6 +41,8 @@ export interface QueuedTask {
   startedAt?: Date;
   completedAt?: Date;
   errorMessage?: string;
+  retryCount: number;
+  maxRetries: number;
 }
 
 /**
@@ -54,6 +56,7 @@ export async function enqueueTask(
   options?: {
     priority?: TaskPriority;
     preferredAgent?: string;
+    maxRetries?: number;
   },
 ): Promise<string> {
   const db = getDb();
@@ -64,11 +67,12 @@ export async function enqueueTask(
     await db`
       INSERT INTO task_queue (
         queue_id, task_id, session_id, domain, task,
-        priority, preferred_agent, status, enqueued_at
+        priority, preferred_agent, max_retries, status, enqueued_at
       )
       VALUES (
         ${queueId}, ${taskId}, ${sessionId}, ${domain}, ${task},
-        ${priority}, ${options?.preferredAgent || null}, 'pending', NOW()
+        ${priority}, ${options?.preferredAgent || null},
+        ${options?.maxRetries ?? 3}, 'pending', NOW()
       )
     `;
 
@@ -151,6 +155,8 @@ export async function dequeueTask(
       startedAt: row.started_at,
       completedAt: row.completed_at,
       errorMessage: row.error_message,
+      retryCount: row.retry_count ?? 0,
+      maxRetries: row.max_retries ?? 3,
     };
   } catch (err) {
     log.error("Failed to dequeue task", {
@@ -200,18 +206,65 @@ export async function failTask(
   const db = getDb();
 
   try {
-    await db`
+    // Atomically increment retry_count and check if retries exhausted
+    const rows = await db`
       UPDATE task_queue
-      SET
-        status = 'failed',
-        completed_at = NOW(),
-        error_message = ${errorMessage}
+      SET retry_count = retry_count + 1
       WHERE queue_id = ${queueId}
+      RETURNING queue_id, task_id, session_id, domain, task, priority,
+        preferred_agent, assigned_agent, retry_count, max_retries, enqueued_at
     `;
 
-    log.warn("Failed task", { queueId, error: errorMessage });
+    if (rows.length === 0) return;
+
+    const row = rows[0] as Record<string, unknown>;
+    const retryCount = row.retry_count as number;
+    const maxRetries = row.max_retries as number;
+
+    if (retryCount >= maxRetries) {
+      // Move to dead_tasks and remove from queue
+      await db`
+        INSERT INTO dead_tasks (
+          queue_id, task_id, session_id, domain, task, priority,
+          preferred_agent, assigned_agent, error_message, retry_count, enqueued_at
+        ) VALUES (
+          ${row.queue_id}, ${row.task_id}, ${row.session_id}, ${row.domain},
+          ${row.task}, ${row.priority}, ${row.preferred_agent}, ${row.assigned_agent},
+          ${errorMessage}, ${retryCount}, ${row.enqueued_at}
+        )
+        ON CONFLICT (queue_id) DO NOTHING
+      `;
+
+      await db`DELETE FROM task_queue WHERE queue_id = ${queueId}`;
+
+      log.error("Task moved to dead letter queue", {
+        queueId,
+        retryCount,
+        maxRetries,
+        error: errorMessage,
+      });
+    } else {
+      // Re-enqueue for retry
+      await db`
+        UPDATE task_queue
+        SET
+          status = 'pending',
+          assigned_agent = NULL,
+          started_at = NULL,
+          completed_at = NULL,
+          error_message = ${errorMessage}
+        WHERE queue_id = ${queueId}
+      `;
+
+      log.warn("Task failed, re-enqueued for retry", {
+        queueId,
+        retryCount,
+        maxRetries,
+        error: errorMessage,
+      });
+    }
   } catch (err) {
-    log.error("Failed to mark task as failed", {
+    log.error("Failed to handle task failure", {
       queueId,
       error: String(err),
     });
