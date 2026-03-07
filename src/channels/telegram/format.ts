@@ -22,7 +22,21 @@ export function escapeHtml(text: string): string {
  * Handles: code blocks, inline code, bold, italic, strikethrough,
  * headers (→ bold), links, blockquotes, and unordered/ordered lists.
  */
+/**
+ * Detect if text is already Telegram-compatible HTML (contains common HTML tags
+ * that aren't the result of markdown conversion).
+ */
+function isAlreadyHtml(text: string): boolean {
+  // Check for common HTML tags that agents might produce directly
+  return /<\/?(?:b|i|u|s|a|pre|code|blockquote|tg-spoiler)[\s>]/i.test(text);
+}
+
 export function markdownToTelegramHtml(md: string): string {
+  // If input already contains HTML tags, return as-is (agent produced HTML directly)
+  if (isAlreadyHtml(md)) {
+    return md;
+  }
+
   const lines = md.split("\n");
   const result: string[] = [];
   let i = 0;
