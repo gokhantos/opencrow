@@ -8,23 +8,17 @@ import { createEmbeddingProvider } from "../memory/embeddings";
 
 const log = createLogger("embedding-generator");
 
-// OpenRouter configuration
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-
 // Cached provider instance
 let embeddingProvider: ReturnType<typeof createEmbeddingProvider> | null = null;
 
 /**
  * Get or create the embedding provider instance
  */
-function getProvider(): ReturnType<typeof createEmbeddingProvider> {
+function getProvider(): ReturnType<typeof createEmbeddingProvider> | null {
   if (!embeddingProvider) {
-    if (!OPENROUTER_API_KEY) {
-      throw new Error(
-        "OPENROUTER_API_KEY not set, embedding generation unavailable",
-      );
-    }
-    embeddingProvider = createEmbeddingProvider(OPENROUTER_API_KEY);
+    const key = process.env.OPENROUTER_API_KEY ?? process.env.VOYAGE_API_KEY;
+    if (!key) return null;
+    embeddingProvider = createEmbeddingProvider(key);
   }
   return embeddingProvider;
 }
@@ -35,18 +29,16 @@ function getProvider(): ReturnType<typeof createEmbeddingProvider> {
  */
 export async function generateEmbedding(text: string): Promise<Float32Array> {
   const provider = getProvider();
-
-  try {
-    const embeddings = await provider.embed([text]);
-    const embedding = embeddings[0];
-    if (!embedding) {
-      throw new Error("Failed to generate embedding - empty response");
-    }
-    return embedding;
-  } catch (err) {
-    log.error("Embedding generation failed", { error: String(err) });
-    throw err;
+  if (!provider) {
+    throw new Error("No embedding API key available");
   }
+
+  const embeddings = await provider.embed([text]);
+  const embedding = embeddings[0];
+  if (!embedding) {
+    throw new Error("Failed to generate embedding - empty response");
+  }
+  return embedding;
 }
 
 /**
@@ -56,5 +48,8 @@ export async function generateEmbeddings(
   texts: string[],
 ): Promise<Float32Array[]> {
   const provider = getProvider();
+  if (!provider) {
+    throw new Error("No embedding API key available");
+  }
   return provider.embed(texts);
 }
