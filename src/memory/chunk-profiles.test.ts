@@ -43,7 +43,6 @@ describe("getChunkProfile", () => {
       "product",
       "story",
       "reddit_post",
-      "hf_model",
       "github_repo",
       "observation",
       "idea",
@@ -59,7 +58,6 @@ describe("getChunkProfile", () => {
   test("short-content types have no overlap", () => {
     expect(getChunkProfile("tweet").overlap).toBe(0);
     expect(getChunkProfile("product").overlap).toBe(0);
-    expect(getChunkProfile("hf_model").overlap).toBe(0);
     expect(getChunkProfile("github_repo").overlap).toBe(0);
   });
 

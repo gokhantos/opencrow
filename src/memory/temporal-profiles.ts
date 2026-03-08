@@ -8,7 +8,6 @@ const halfLifeDays: Record<MemorySourceKind, number> = {
   article: 60,
   story: 60,
   product: 90,
-  hf_model: 90,
   github_repo: 90,
   note: 180,
   document: 180,

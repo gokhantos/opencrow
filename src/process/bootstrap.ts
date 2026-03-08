@@ -46,7 +46,6 @@ import { initQuestDBReadOnly } from "../sources/markets/questdb";
 import { createNewsTools } from "../tools/news";
 import { createPHTools } from "../tools/ph";
 import { createHNTools } from "../tools/hn";
-import { createHFTools } from "../tools/huggingface";
 import { createRedditTools } from "../tools/reddit";
 import { createGithubTools } from "../tools/github";
 import { createXTimelineTools } from "../tools/x-timeline";
@@ -388,13 +387,6 @@ export async function bootstrap(
         allowsTool(t.name),
       );
       if (hnTools.length > 0) registry = registry.withTools(hnTools);
-    }
-
-    {
-      const hfTools = createHFTools(memoryManager).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (hfTools.length > 0) registry = registry.withTools(hfTools);
     }
 
     {

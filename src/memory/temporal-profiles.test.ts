@@ -30,8 +30,8 @@ describe("getTemporalHalfLife", () => {
   test("all memory source kinds have profiles", () => {
     const kinds: MemorySourceKind[] = [
       "conversation", "note", "document", "tweet", "article",
-      "product", "story", "reddit_post", "hf_model", "github_repo",
-      "observation", "idea",
+      "product", "story", "reddit_post", "github_repo",
+      "arxiv_paper", "observation", "idea",
     ];
     for (const kind of kinds) {
       const hl = getTemporalHalfLife(kind);

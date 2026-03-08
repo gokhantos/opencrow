@@ -197,7 +197,7 @@ function IdeaCard({
         {idea.model_references && (
           <span
             className="inline-flex items-center gap-1 text-sm italic bg-accent-subtle text-accent px-2 py-0.5 rounded"
-            title="HuggingFace models referenced"
+            title="AI models referenced"
           >
             {idea.model_references}
           </span>

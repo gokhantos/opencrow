@@ -29,7 +29,7 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 **Step 3 — Product & capability landscape (MANDATORY every run):**
 - Call `get_product_digest` to see recent dev tool launches on Product Hunt
 - Call `search_products` for developer tools
-- Call `get_hf_models` to spot AI models that could power new dev tools
+- Call `search_arxiv_papers` for papers on code analysis, testing, developer productivity
 
 **Step 4 — Deep dive with WebSearch (SUPPLEMENTARY):**
 - Use WebSearch and WebFetch to go deeper on signals from steps 1–3

@@ -6,7 +6,6 @@ import type {
   ProductForIndex,
   RedditPostForIndex,
   StoryForIndex,
-  HFModelForIndex,
   GithubRepoForIndex,
   ObservationForIndex,
   IdeaForIndex,
@@ -437,43 +436,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       log.info("Indexed reddit posts", {
         agentId,
         postCount: posts.length,
-        chunks: chunks.length,
-      });
-      return sourceId;
-    },
-
-    async indexHFModels(agentId, models: readonly HFModelForIndex[], metadata) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
-      const modelIds = models.map((m) => m.id).join(",");
-      const metadataJson = JSON.stringify({
-        ...(metadata ?? {}),
-        modelIds,
-        modelCount: String(models.length),
-      });
-
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'hf_model', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
-
-      const hfProfile = getChunkProfile("hf_model");
-      const chunks = models.flatMap((m) => {
-        const tags =
-          m.tags.length > 0 ? ` [${m.tags.slice(0, 8).join(", ")}]` : "";
-        const desc = m.description ? `\n${m.description.slice(0, 500)}` : "";
-        const text = `HuggingFace: ${m.id} (${m.pipelineTag || "unknown"})${tags}\nDownloads: ${m.downloads} | Likes: ${m.likes} | Trending: ${m.trendingScore}\nLibrary: ${m.libraryName} | Author: ${m.author}${desc}`;
-        const itemChunks = chunkText(text, hfProfile);
-        return itemChunks.length > 0 ? itemChunks : [text];
-      });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "hf_model", chunks);
-      }
-
-      log.info("Indexed HF models", {
-        agentId,
-        modelCount: models.length,
         chunks: chunks.length,
       });
       return sourceId;

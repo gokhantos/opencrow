@@ -27,7 +27,6 @@ import XAccounts from "./views/x-accounts/XAccounts";
 import ProductHunt from "./views/ProductHunt";
 import HackerNews from "./views/HackerNews";
 import Reddit from "./views/Reddit";
-import HuggingFace from "./views/HuggingFace";
 import News from "./views/News";
 import Ideas from "./views/Ideas";
 import GitHub from "./views/GitHub";
@@ -248,7 +247,6 @@ function App() {
             {tab === "producthunt" && <ProductHunt />}
             {tab === "hackernews" && <HackerNews />}
             {tab === "reddit" && <Reddit />}
-            {tab === "huggingface" && <HuggingFace />}
             {tab === "github" && <GitHub />}
             {tab === "google-trends" && <GoogleTrends />}
             {tab === "appstore" && <AppStore />}

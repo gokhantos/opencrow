@@ -226,7 +226,6 @@ export function createGateway(config: OpenCrowConfig): Gateway {
         autofollowProcessor: instances.autofollowProcessor,
         timelineScrapeProcessor: instances.timelineScrapeProcessor,
         hnScraper: instances.hnScraper,
-        hfScraper: instances.hfScraper,
         redditScraper: instances.redditScraper,
         phScraper: instances.phScraper,
         githubScraper: instances.githubScraper,

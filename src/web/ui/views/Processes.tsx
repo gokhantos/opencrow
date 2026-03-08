@@ -48,7 +48,6 @@ function displayName(name: string): string {
     const id = name.slice(8);
     const labels: Record<string, string> = {
       hackernews: "Hacker News",
-      huggingface: "HuggingFace",
       producthunt: "Product Hunt",
       "x-bookmarks": "X Bookmarks",
       "x-autolike": "X Autolike",

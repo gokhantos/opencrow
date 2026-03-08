@@ -264,7 +264,6 @@ export const scraperProcessesConfigSchema = z
       .array(z.string())
       .default([
         "hackernews",
-        "huggingface",
         "reddit",
         "github",
         "producthunt",
@@ -282,7 +281,6 @@ export const scraperProcessesConfigSchema = z
     restartPolicy: "always",
     scraperIds: [
       "hackernews",
-      "huggingface",
       "reddit",
       "github",
       "producthunt",
@@ -314,7 +312,6 @@ export const processesConfigSchema = z
       restartPolicy: "always",
       scraperIds: [
         "hackernews",
-        "huggingface",
         "reddit",
         "github",
         "producthunt",

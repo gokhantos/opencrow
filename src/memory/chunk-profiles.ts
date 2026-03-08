@@ -8,7 +8,6 @@ interface ChunkProfile {
 const profiles: Record<MemorySourceKind, ChunkProfile> = {
   tweet: { maxTokens: 150, overlap: 0 },
   product: { maxTokens: 200, overlap: 0 },
-  hf_model: { maxTokens: 200, overlap: 0 },
   github_repo: { maxTokens: 200, overlap: 0 },
   conversation: { maxTokens: 400, overlap: 80 },
   reddit_post: { maxTokens: 400, overlap: 80 },

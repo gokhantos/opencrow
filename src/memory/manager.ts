@@ -7,7 +7,6 @@ import type {
   ProductForIndex,
   RedditPostForIndex,
   StoryForIndex,
-  HFModelForIndex,
   GithubRepoForIndex,
   ObservationForIndex,
   IdeaForIndex,
@@ -126,19 +125,6 @@ export function createMemoryManager(config: ManagerConfig): MemoryManager {
         return await indexer.indexRedditPosts(agentId, posts, metadata);
       } catch (error) {
         log.error("Failed to index reddit posts", { agentId, error });
-        throw error;
-      }
-    },
-
-    async indexHFModels(
-      agentId: string,
-      models: readonly HFModelForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
-      try {
-        return await indexer.indexHFModels(agentId, models, metadata);
-      } catch (error) {
-        log.error("Failed to index HF models", { agentId, error });
         throw error;
       }
     },

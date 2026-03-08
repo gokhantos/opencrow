@@ -23,7 +23,6 @@ import {
 } from "../sources/x/timeline/processor";
 import { createPHScraper, type PHScraper } from "../sources/producthunt/scraper";
 import { createHNScraper, type HNScraper } from "../sources/hackernews/scraper";
-import { createHFScraper, type HFScraper } from "../sources/huggingface/scraper";
 import {
   createRedditScraper,
   type RedditScraper,
@@ -49,7 +48,6 @@ export interface SubsystemInstances {
   readonly timelineScrapeProcessor: TimelineScrapeProcessor | undefined;
   readonly phScraper: PHScraper | undefined;
   readonly hnScraper: HNScraper | undefined;
-  readonly hfScraper: HFScraper | undefined;
   readonly redditScraper: RedditScraper | undefined;
   readonly githubScraper: GithubScraper | undefined;
   readonly newsProcessor: NewsProcessor | undefined;
@@ -81,7 +79,6 @@ export function createSubsystemRegistry(opts: {
   let timelineScrapeProcessor: TimelineScrapeProcessor | undefined;
   let phScraper: PHScraper | undefined;
   let hnScraper: HNScraper | undefined;
-  let hfScraper: HFScraper | undefined;
   let redditScraper: RedditScraper | undefined;
   let githubScraper: GithubScraper | undefined;
   let newsProcessor: NewsProcessor | undefined;
@@ -146,11 +143,6 @@ export function createSubsystemRegistry(opts: {
         hnScraper.start();
       });
 
-      await tryStart("hf-scraper", () => {
-        hfScraper = createHFScraper({ memoryManager: mm });
-        hfScraper.start();
-      });
-
       await tryStart("reddit-scraper", () => {
         redditScraper = createRedditScraper({ memoryManager: mm });
         redditScraper.start();
@@ -197,7 +189,6 @@ export function createSubsystemRegistry(opts: {
           timelineScrapeProcessor,
           phScraper,
           hnScraper,
-          hfScraper,
           redditScraper,
           githubScraper,
           newsProcessor,
@@ -212,12 +203,6 @@ export function createSubsystemRegistry(opts: {
         hnScraper.stop();
         hnScraper = undefined;
         log.info("HN scraper stopped");
-      }
-
-      if (hfScraper) {
-        hfScraper.stop();
-        hfScraper = undefined;
-        log.info("HF scraper stopped");
       }
 
       if (redditScraper) {

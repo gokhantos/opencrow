@@ -70,9 +70,9 @@ const GITHUB_TOOLS = [
   "search_github_repos",
 ] as const;
 
-const HF_TOOLS = [
-  "get_hf_models",
-  "search_hf_models",
+const ARXIV_TOOLS = [
+  "get_arxiv_papers",
+  "search_arxiv_papers",
 ] as const;
 
 const OBSERVABILITY_TOOLS = [
@@ -189,7 +189,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...HN_TOOLS,
         ...PRODUCT_TOOLS,
         ...CROSS_SOURCE_TOOLS,
-        ...HF_TOOLS,
+        ...ARXIV_TOOLS,
         ...GITHUB_TOOLS,
         ...OBSERVABILITY_TOOLS,
       ],
@@ -324,7 +324,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         "get_reddit_digest",
         "get_product_digest",
         "get_github_repos",
-        "get_hf_models",
         "get_news_digest",
         "get_timeline_digest",
         "cross_source_search",
@@ -426,7 +425,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...PRODUCT_TOOLS,
         ...CROSS_SOURCE_TOOLS,
         ...GITHUB_TOOLS,
-        ...HF_TOOLS,
+        ...ARXIV_TOOLS,
         ...OBSERVABILITY_TOOLS,
       ],
     },
@@ -475,7 +474,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...PRODUCT_TOOLS,
         ...CROSS_SOURCE_TOOLS,
         ...GITHUB_TOOLS,
-        ...HF_TOOLS,
+        ...ARXIV_TOOLS,
         "get_calendar",
         "read_file",
         "grep",

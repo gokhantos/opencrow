@@ -26,7 +26,6 @@ export type MemorySourceKind =
   | "product"
   | "story"
   | "reddit_post"
-  | "hf_model"
   | "github_repo"
   | "observation"
   | "idea"
@@ -45,7 +44,6 @@ export const MEMORY_SOURCE_KINDS = [
   "product",
   "story",
   "reddit_post",
-  "hf_model",
   "github_repo",
   "observation",
   "idea",
@@ -133,18 +131,6 @@ export interface RedditPostForIndex {
   readonly permalink: string;
   readonly topComments?: readonly string[];
   readonly flair?: string;
-}
-
-export interface HFModelForIndex {
-  readonly id: string;
-  readonly author: string;
-  readonly pipelineTag: string;
-  readonly tags: readonly string[];
-  readonly downloads: number;
-  readonly likes: number;
-  readonly trendingScore: number;
-  readonly description: string;
-  readonly libraryName: string;
 }
 
 export interface GithubRepoForIndex {
@@ -272,11 +258,6 @@ export interface MemoryIndexer {
     posts: readonly RedditPostForIndex[],
     metadata?: Record<string, string>,
   ): Promise<string>;
-  indexHFModels(
-    agentId: string,
-    models: readonly HFModelForIndex[],
-    metadata?: Record<string, string>,
-  ): Promise<string>;
   indexGithubRepos(
     agentId: string,
     repos: readonly GithubRepoForIndex[],
@@ -352,11 +333,6 @@ export interface MemoryManager {
   indexRedditPosts(
     agentId: string,
     posts: readonly RedditPostForIndex[],
-    metadata?: Record<string, string>,
-  ): Promise<string>;
-  indexHFModels(
-    agentId: string,
-    models: readonly HFModelForIndex[],
     metadata?: Record<string, string>,
   ): Promise<string>;
   indexGithubRepos(

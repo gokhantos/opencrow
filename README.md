@@ -20,7 +20,7 @@ A self-hosted multi-agent AI platform that orchestrates specialized agents acros
 ## What Can OpenCrow Do?
 
 - **Run AI agents** on Telegram, WhatsApp, and web — each with its own persona, model, tools, and memory
-- **Scrape 15 data sources** autonomously — HackerNews, Reddit, GitHub, X/Twitter, App Store, Play Store, DeFi protocols, crypto tokens, Google Trends, news, and more
+- **Scrape 15 data sources** autonomously — HackerNews, Reddit, GitHub, X/Twitter, App Store, Play Store, DeFi protocols, crypto tokens, news, and more
 - **Remember everything** — conversations, facts, and observations are indexed into vector memory and recalled across sessions
 - **Generate ideas** — research agents collect signals, ideation agents synthesize them into product/crypto/AI startup ideas on a schedule
 - **Monitor markets** — real-time crypto derivatives via Binance WebSocket (prices, liquidations, open interest, technical indicators)
@@ -170,8 +170,6 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 | `get_product_digest` / `search_products` | Product Hunt products and launches |
 | `get_timeline_digest` / `search_x_timeline` | X/Twitter timeline and semantic search |
 | `get_liked_tweets` / `get_x_analytics` | X/Twitter liked tweets and engagement analytics |
-| `get_hf_models` / `search_hf_models` | Trending HuggingFace ML models |
-| `get_trends_digest` / `search_trends` | Google Trends with category filtering |
 | `get_appstore_rankings` / `get_appstore_complaints` / `search_appstore_reviews` | App Store rankings, low-rated reviews, and semantic search |
 | `get_playstore_rankings` / `get_playstore_complaints` / `search_playstore_reviews` | Play Store rankings, low-rated reviews, and semantic search |
 | `get_news_digest` / `search_news` | Multi-source news articles |
@@ -260,10 +258,9 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 | **Reddit** | 30 min | Posts from user feeds, multi-account support with cookies |
 | **GitHub** | 12 hrs | Daily + weekly trending repos (stars, forks, language) |
 | **Product Hunt** | 10 min | Daily products (votes, topics, makers), multi-account |
-| **HuggingFace** | 30 min | Trending, most-liked, recently-modified ML models |
+| **arXiv** | 60 min | Papers across categories (cs.AI, cs.LG, cs.CL, cs.CV, stat.ML) |
 | **News** | 15-120 min | CryptoPanic, Cointelegraph, Reuters, Investing.com (articles + economic calendar) |
 | **X/Twitter** | varies | Timeline, bookmarks, auto-like, auto-follow via Playwright + GraphQL interception |
-| **Google Trends** | 30 min | Trending topics (US) with traffic volume and related queries |
 | **App Store** | 60 min | Top Free/Paid rankings + reviews for top 10 apps |
 | **Play Store** | 60 min | Top Free rankings + reviews with full descriptions via gplay |
 | **DeFi Llama** | 30 min | 18 endpoints — protocols, chains, DEX volumes, yields, bridges, hacks, stablecoins, treasuries (filters >$100K TVL) |
@@ -302,7 +299,7 @@ Hybrid search engine combining vector similarity and full-text search for long-t
 
 ### Memory types
 
-17 source kinds, each with its own chunk profile and temporal decay: conversations, notes, documents, tweets, articles, products, stories, Reddit posts, HuggingFace models, GitHub repos, observations, ideas, app reviews, app rankings, trends, DeFi protocols, and DEX tokens.
+17 source kinds, each with its own chunk profile and temporal decay: conversations, notes, documents, tweets, articles, products, stories, Reddit posts, GitHub repos, arXiv papers, observations, ideas, app reviews, app rankings, trends, DeFi protocols, and DEX tokens.
 
 ### Observation extraction
 
@@ -386,9 +383,8 @@ React SPA served via Bun HTML imports with Hono API backend. 30+ views covering 
 | **HackerNews** | Scraped stories browser |
 | **Reddit** | Reddit post browser with account management |
 | **GitHub** | Trending repos browser |
-| **HuggingFace** | ML model browser |
+| **arXiv** | Paper browser |
 | **News** | News article browser |
-| **Google Trends** | Trending topics browser |
 | **App Store** | App rankings and reviews |
 | **DeFi Llama** | Protocol TVL browser |
 | **X/Twitter** | Timeline, bookmarks, auto-like, auto-follow management |

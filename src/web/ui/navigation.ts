@@ -9,7 +9,6 @@ import {
   Rocket,
   Flame,
   MessageCircle,
-  Cpu,
   Github,
   GraduationCap,
   Newspaper,
@@ -25,6 +24,7 @@ import {
   Brain,
   AlertTriangle,
   Smartphone,
+  BookOpen,
 } from "lucide-react";
 
 export type Tab =
@@ -37,9 +37,8 @@ export type Tab =
   | "producthunt"
   | "hackernews"
   | "reddit"
-  | "huggingface"
   | "github"
-  | "google-trends"
+  | "arxiv"
   | "appstore"
   | "playstore"
   | "news"
@@ -70,8 +69,8 @@ export interface NavSection {
 
 export const VALID_TABS = new Set<Tab>([
   "overview", "agents", "skills", "sessions", "channels",
-  "x-accounts", "producthunt", "hackernews", "reddit", "huggingface",
-  "github", "google-trends", "appstore", "playstore",
+  "x-accounts", "producthunt", "hackernews", "reddit",
+  "github", "arxiv", "appstore", "playstore",
   "news", "markets", "ideas", "cron",
   "processes", "system", "tools", "usage", "agent-metrics", "routing",
   "memory", "failures", "logs",
@@ -104,9 +103,8 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       { id: "producthunt", label: "Product Hunt", Icon: Rocket },
       { id: "hackernews", label: "Hacker News", Icon: Flame },
       { id: "reddit", label: "Reddit", Icon: MessageCircle },
-      { id: "huggingface", label: "HuggingFace", Icon: Cpu },
       { id: "github", label: "GitHub", Icon: Github },
-      { id: "google-trends", label: "Google Trends", Icon: Search },
+      { id: "arxiv", label: "arXiv", Icon: BookOpen },
       { id: "appstore", label: "App Store", Icon: Smartphone },
       { id: "playstore", label: "Play Store", Icon: Smartphone },
     ],

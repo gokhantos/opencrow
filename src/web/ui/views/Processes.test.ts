@@ -9,7 +9,6 @@ function displayName(name: string): string {
     const id = name.slice(8);
     const labels: Record<string, string> = {
       hackernews: "Hacker News",
-      huggingface: "HuggingFace",
       producthunt: "Product Hunt",
       "x-bookmarks": "X Bookmarks",
       "x-autolike": "X Autolike",
@@ -92,7 +91,6 @@ test("displayName strips agent: prefix", () => {
 
 test("displayName maps known scraper ids to labels", () => {
   expect(displayName("scraper:hackernews")).toBe("Hacker News");
-  expect(displayName("scraper:huggingface")).toBe("HuggingFace");
   expect(displayName("scraper:producthunt")).toBe("Product Hunt");
   expect(displayName("scraper:x-bookmarks")).toBe("X Bookmarks");
   expect(displayName("scraper:x-autolike")).toBe("X Autolike");

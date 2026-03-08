@@ -15,7 +15,6 @@ function mockMemoryManager(): MemoryManager {
     indexProducts: async () => "ok",
     indexStories: async () => "ok",
     indexRedditPosts: async () => "ok",
-    indexHFModels: async () => "ok",
     indexGithubRepos: async () => "ok",
     indexObservations: async () => "ok",
     indexIdea: async () => "ok",

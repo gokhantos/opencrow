@@ -18,7 +18,6 @@ Use `ToolSearch` to discover digest/search tools for each source, then call them
 | Reddit | `"reddit digest"` |
 | Product Hunt | `"product hunt"` |
 | GitHub | `"github trending"` |
-| HuggingFace | `"huggingface models"` |
 | News | `"news digest"` |
 | X/Twitter | `"twitter timeline"` |
 | Cross-source | `"cross source search"` |

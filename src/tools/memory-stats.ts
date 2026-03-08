@@ -34,7 +34,6 @@ const MEMORY_KINDS = [
   "product",
   "story",
   "reddit_post",
-  "hf_model",
   "github_repo",
   "observation",
   "idea",

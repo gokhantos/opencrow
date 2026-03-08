@@ -52,15 +52,6 @@ async function main(): Promise<void> {
       scraper.start();
       break;
     }
-    case "huggingface": {
-      const { createHFScraper } =
-        await import("../sources/huggingface/scraper");
-      const scraper = createHFScraper({
-        memoryManager: memoryManager ?? undefined,
-      });
-      scraper.start();
-      break;
-    }
     case "reddit": {
       const { createRedditScraper } = await import("../sources/reddit/scraper");
       const scraper = createRedditScraper({

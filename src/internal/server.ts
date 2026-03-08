@@ -429,15 +429,6 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
             return c.json({ data: await deps.hnScraper.backfillRag() });
           break;
         }
-        case "hf": {
-          if (!deps.hfScraper)
-            return c.json({ error: "HF scraper not running" }, 503);
-          if (action === "scrape-now")
-            return c.json({ data: await deps.hfScraper.scrapeNow() });
-          if (action === "backfill-rag")
-            return c.json({ data: await deps.hfScraper.backfillRag() });
-          break;
-        }
         case "reddit": {
           if (!deps.redditScraper)
             return c.json({ error: "Reddit scraper not running" }, 503);

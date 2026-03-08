@@ -15,7 +15,6 @@ import type { AutolikeProcessor } from "../sources/x/interactions/processor";
 import type { AutofollowProcessor } from "../sources/x/follow/processor";
 import type { TimelineScrapeProcessor } from "../sources/x/timeline/processor";
 import type { HNScraper } from "../sources/hackernews/scraper";
-import type { HFScraper } from "../sources/huggingface/scraper";
 import type { RedditScraper } from "../sources/reddit/scraper";
 import type { GithubScraper } from "../sources/github/scraper";
 import type { PHScraper } from "../sources/producthunt/scraper";
@@ -44,7 +43,6 @@ export interface InternalApiDeps {
   readonly autofollowProcessor?: AutofollowProcessor;
   readonly timelineScrapeProcessor?: TimelineScrapeProcessor;
   readonly hnScraper?: HNScraper;
-  readonly hfScraper?: HFScraper;
   readonly redditScraper?: RedditScraper;
   readonly githubScraper?: GithubScraper;
   readonly phScraper?: PHScraper;
