@@ -206,8 +206,8 @@ export function AgentFormModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  /* Section collapse state */
-  const [showAdvanced, setShowAdvanced] = useState(mode === "edit");
+  /* Form tab navigation */
+  const [formTab, setFormTab] = useState<"basic" | "model" | "tools" | "advanced">("basic");
 
   /* Template picker state (create mode only) */
   const [templates, setTemplates] = useState<readonly AgentTemplate[]>([]);
@@ -416,6 +416,25 @@ export function AgentFormModal({
           </Button>
         </div>
 
+        {/* Tab Nav */}
+        <div className="flex border-b border-border px-6 shrink-0">
+          {(["basic", "model", "tools", "advanced"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              className={cn(
+                "px-4 py-3 text-sm font-medium capitalize border-b-2 -mb-px transition-colors",
+                formTab === t
+                  ? "border-accent text-accent"
+                  : "border-transparent text-muted hover:text-foreground",
+              )}
+              onClick={() => setFormTab(t)}
+            >
+              {t === "tools" ? "Tools & Skills" : t.charAt(0).toUpperCase() + t.slice(1)}
+            </button>
+          ))}
+        </div>
+
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto px-6 py-6 flex flex-col gap-6">
           {error && (
@@ -423,6 +442,9 @@ export function AgentFormModal({
               {error}
             </div>
           )}
+
+          {/* Basic Tab: Identity */}
+          {formTab === "basic" && (<>
 
           {/* Template Picker (create mode only) */}
           {mode === "create" && templates.length > 0 && (
@@ -502,6 +524,11 @@ export function AgentFormModal({
               </div>
             </div>
           </fieldset>
+
+          </>)}
+
+          {/* Model Tab: Model config + System Prompt */}
+          {formTab === "model" && (<>
 
           {/* Section: Model */}
           <fieldset className="border-none p-0 m-0">
@@ -737,449 +764,423 @@ export function AgentFormModal({
             )}
           </fieldset>
 
-          {/* Section: Advanced (collapsible) */}
-          <fieldset className="border-none p-0 m-0">
-            <legend
-              className="font-heading text-xs font-semibold uppercase tracking-widest text-accent mb-4 pb-2 border-b border-border w-full flex items-center justify-between cursor-pointer select-none hover:text-accent"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-            >
-              Advanced Settings
-              <span
-                className={cn(
-                  "inline-flex items-center transition-transform duration-150",
-                  showAdvanced && "rotate-90",
-                )}
-              >
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 12 12"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                >
-                  <path d="M4.5 3l3 3-3 3" />
-                </svg>
-              </span>
-            </legend>
+          </>)}
 
-            {showAdvanced && (
-              <div className="flex flex-col gap-4.5 animate-[agSlideIn_0.2s_ease-out]">
-                {/* Tool Access */}
-                <div className="flex flex-col gap-2.5">
-                  <h4 className="font-heading text-xs font-semibold uppercase tracking-wide text-muted m-0">
-                    Tool Access
-                  </h4>
-                  <div className="mb-5">
-                    <label className="block text-xs font-semibold text-muted uppercase tracking-wide mb-2">
-                      Mode
-                    </label>
-                    <select
-                      className={selectCls}
-                      value={toolMode}
-                      onChange={(e) =>
-                        setToolMode(
-                          e.target.value as "all" | "allowlist" | "blocklist",
-                        )
-                      }
-                    >
-                      <option value="all">All tools</option>
-                      <option value="allowlist">Allowlist</option>
-                      <option value="blocklist">Blocklist</option>
-                    </select>
-                  </div>
-                  {toolMode !== "all" && availableTools.length > 0 && (
-                    <div className="mt-2">
-                      <p className="text-xs text-faint mb-3 flex items-center justify-between">
-                        {toolMode === "allowlist"
-                          ? "Select tools this agent can use:"
-                          : "Select tools to block from this agent:"}
-                        <span className="font-mono text-xs font-semibold text-accent px-2 py-0.5 bg-accent-subtle rounded-full">
-                          {selectedTools.length} selected
-                        </span>
-                      </p>
-                      {Object.entries(
-                        availableTools.reduce<Record<string, ToolInfo[]>>(
-                          (acc, tool) => ({
-                            ...acc,
-                            [tool.category]: [
-                              ...(acc[tool.category] ?? []),
-                              tool,
-                            ],
-                          }),
-                          {},
-                        ),
-                      ).map(([category, tools]) => (
-                        <div key={category} className="mb-2.5">
-                          <span className="block font-heading text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-faint mb-2">
-                            {category.replace(/_/g, " ")}
-                          </span>
-                          <div className="flex flex-wrap gap-1">
-                            {tools.map((tool) => {
-                              const isSelected = selectedTools.includes(
-                                tool.name,
-                              );
-                              return (
-                                <button
-                                  key={tool.name}
-                                  type="button"
-                                  title={tool.description ?? tool.name}
-                                  className={cn(
-                                    "px-2.5 py-1 rounded-full border font-mono text-xs font-medium cursor-pointer transition-colors",
-                                    isSelected
-                                      ? "bg-accent-subtle border-accent text-accent font-semibold"
-                                      : "bg-bg-2 border-border text-muted hover:bg-bg-3 hover:border-border-2 hover:text-strong",
-                                  )}
-                                  onClick={() =>
-                                    setSelectedTools((prev) =>
-                                      isSelected
-                                        ? prev.filter((t) => t !== tool.name)
-                                        : [...prev, tool.name],
-                                    )
-                                  }
-                                >
-                                  {tool.name}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ))}
-                      <div className="flex gap-1.5 mt-2">
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          onClick={() =>
-                            setSelectedTools(availableTools.map((t) => t.name))
-                          }
-                        >
-                          Select all
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => setSelectedTools([])}
-                        >
-                          Clear all
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Sub-Agents */}
-                <div className="flex flex-col gap-2.5">
-                  <h4 className="font-heading text-xs font-semibold uppercase tracking-wide text-muted m-0">
-                    Sub-Agents
-                  </h4>
-                  <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
-                    <div className="mb-5">
-                      <Input
-                        label="Allowed Agents"
-                        type="text"
-                        value={allowAgents}
-                        onChange={(e) => setAllowAgents(e.target.value)}
-                        placeholder="* for all, or specific IDs"
-                      />
-                    </div>
-                    <div className="mb-5">
-                      <Input
-                        label="Max Children"
-                        type="number"
-                        value={maxChildren}
-                        onChange={(e) => setMaxChildren(Number(e.target.value))}
-                        min={1}
-                        max={20}
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* MCP Servers */}
-                <div className="flex flex-col gap-2.5">
-                  <h4 className="font-heading text-xs font-semibold uppercase tracking-wide text-muted m-0">
-                    MCP Servers
-                  </h4>
-                  <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpBrowser}
-                          onChange={(e) => setMcpBrowser(e.target.checked)}
-                        />
-                        <span className="select-none">
-                          Playwright (Browser)
-                        </span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpGithub}
-                          onChange={(e) => setMcpGithub(e.target.checked)}
-                        />
-                        <span className="select-none">GitHub</span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpContext7}
-                          onChange={(e) => setMcpContext7(e.target.checked)}
-                        />
-                        <span className="select-none">Context7 (Docs)</span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpSeqThinking}
-                          onChange={(e) => setMcpSeqThinking(e.target.checked)}
-                        />
-                        <span className="select-none">Sequential Thinking</span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpDbhub}
-                          onChange={(e) => setMcpDbhub(e.target.checked)}
-                        />
-                        <span className="select-none">DBHub (Database)</span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpFilesystem}
-                          onChange={(e) => setMcpFilesystem(e.target.checked)}
-                        />
-                        <span className="select-none">Filesystem</span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpGit}
-                          onChange={(e) => setMcpGit(e.target.checked)}
-                        />
-                        <span className="select-none">Git</span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpQdrant}
-                          onChange={(e) => setMcpQdrant(e.target.checked)}
-                        />
-                        <span className="select-none">Qdrant (Vector DB)</span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpBraveSearch}
-                          onChange={(e) => setMcpBraveSearch(e.target.checked)}
-                        />
-                        <span className="select-none">Brave Search</span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpFirecrawl}
-                          onChange={(e) => setMcpFirecrawl(e.target.checked)}
-                        />
-                        <span className="select-none">
-                          Firecrawl (Scraping)
-                        </span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={mcpSerena}
-                          onChange={(e) => setMcpSerena(e.target.checked)}
-                        />
-                        <span className="select-none">
-                          Serena (Code Navigation)
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Hooks */}
-                <div className="flex flex-col gap-2.5">
-                  <h4 className="font-heading text-xs font-semibold uppercase tracking-wide text-muted m-0">
-                    Hooks
-                  </h4>
-                  <p className="text-sm text-faint m-0 mb-2.5 leading-[1.4]">
-                    Hooks run during agent execution for auditing and
-                    notifications. All hooks are on by default.
-                  </p>
-                  <div className="ml-1">
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={hookAuditLog}
-                          onChange={(e) => setHookAuditLog(e.target.checked)}
-                        />
-                        <span className="select-none">
-                          Audit Log (tool calls to DB)
-                        </span>
-                      </label>
-                    </div>
-                    <div className="flex items-center mb-5">
-                      <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 accent-accent cursor-pointer"
-                          checked={hookNotifications}
-                          onChange={(e) =>
-                            setHookNotifications(e.target.checked)
-                          }
-                        />
-                        <span className="select-none">
-                          Notification Forwarding
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Preloaded Skills */}
-                <div className="flex flex-col gap-2.5">
-                  <h4 className="font-heading text-xs font-semibold uppercase tracking-wide text-muted m-0">
-                    Preloaded Skills
-                    {selectedSkills.length > 0 && (
-                      <span className="inline-flex items-center justify-center min-w-[20px] h-[20px] px-[5px] ml-1.5 text-xs font-semibold rounded-[10px] bg-purple text-white align-middle">
-                        {selectedSkills.length}
-                      </span>
-                    )}
-                  </h4>
-                  <p className="text-sm text-faint m-0 mb-2.5 leading-[1.4]">
-                    Skills are injected into the agent's system prompt
-                    automatically on every turn.
-                  </p>
-                  {availableSkills.length > 0 && (
-                    <Input
-                      type="text"
-                      value={skillSearch}
-                      onChange={(e) => setSkillSearch(e.target.value)}
-                      placeholder="Filter skills..."
-                      className="mb-2"
-                    />
-                  )}
-                  <div className="flex flex-wrap gap-1.5 max-h-[200px] overflow-y-auto py-0.5">
-                    {availableSkills
-                      .filter(
-                        (s) =>
-                          !skillSearch ||
-                          s.name
-                            .toLowerCase()
-                            .includes(skillSearch.toLowerCase()) ||
-                          s.id
-                            .toLowerCase()
-                            .includes(skillSearch.toLowerCase()) ||
-                          s.description
-                            .toLowerCase()
-                            .includes(skillSearch.toLowerCase()),
+          {/* Tools Tab: Tool Access + Skills */}
+          {formTab === "tools" && (
+            <div className="flex flex-col gap-6">
+              {/* Tool Access */}
+              <div className="flex flex-col gap-2.5">
+                <h4 className="font-heading text-xs font-semibold uppercase tracking-widest text-accent mb-1 pb-2 border-b border-border">
+                  Tool Access
+                </h4>
+                <div className="mb-5">
+                  <label className="block text-xs font-semibold text-muted uppercase tracking-wide mb-2">
+                    Mode
+                  </label>
+                  <select
+                    className={selectCls}
+                    value={toolMode}
+                    onChange={(e) =>
+                      setToolMode(
+                        e.target.value as "all" | "allowlist" | "blocklist",
                       )
-                      .map((skill) => {
-                        const active = selectedSkills.includes(skill.id);
-                        return (
-                          <label
-                            key={skill.id}
-                            className={cn(
-                              "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs cursor-pointer border transition-colors select-none max-w-full",
-                              active
-                                ? "bg-purple/15 border-purple text-foreground"
-                                : "bg-bg-2 border-border text-muted hover:border-purple hover:text-foreground",
-                            )}
-                          >
-                            <input
-                              type="checkbox"
-                              className="hidden"
-                              checked={active}
-                              onChange={() =>
-                                setSelectedSkills(
-                                  active
-                                    ? selectedSkills.filter(
-                                        (s) => s !== skill.id,
-                                      )
-                                    : [...selectedSkills, skill.id],
-                                )
-                              }
-                            />
-                            <span className="font-medium whitespace-nowrap">
-                              {skill.name}
-                            </span>
-                            {skill.description && (
-                              <span
-                                className="text-xs text-faint overflow-hidden text-ellipsis whitespace-nowrap max-w-[200px]"
-                                title={skill.description}
-                              >
-                                {skill.description}
-                              </span>
-                            )}
-                          </label>
-                        );
-                      })}
-                    {availableSkills.length === 0 && (
-                      <p className="text-faint text-sm m-0">
-                        No skills available
-                      </p>
-                    )}
-                  </div>
+                    }
+                  >
+                    <option value="all">All tools</option>
+                    <option value="allowlist">Allowlist</option>
+                    <option value="blocklist">Blocklist</option>
+                  </select>
                 </div>
+                {toolMode !== "all" && availableTools.length > 0 && (
+                  <div className="mt-2">
+                    <p className="text-xs text-faint mb-3 flex items-center justify-between">
+                      {toolMode === "allowlist"
+                        ? "Select tools this agent can use:"
+                        : "Select tools to block from this agent:"}
+                      <span className="font-mono text-xs font-semibold text-accent px-2 py-0.5 bg-accent-subtle rounded-full">
+                        {selectedTools.length} selected
+                      </span>
+                    </p>
+                    {Object.entries(
+                      availableTools.reduce<Record<string, ToolInfo[]>>(
+                        (acc, tool) => ({
+                          ...acc,
+                          [tool.category]: [
+                            ...(acc[tool.category] ?? []),
+                            tool,
+                          ],
+                        }),
+                        {},
+                      ),
+                    ).map(([category, tools]) => (
+                      <div key={category} className="mb-2.5">
+                        <span className="block font-heading text-[0.68rem] font-semibold uppercase tracking-[0.08em] text-faint mb-2">
+                          {category.replace(/_/g, " ")}
+                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {tools.map((tool) => {
+                            const isSelected = selectedTools.includes(
+                              tool.name,
+                            );
+                            return (
+                              <button
+                                key={tool.name}
+                                type="button"
+                                title={tool.description ?? tool.name}
+                                className={cn(
+                                  "px-2.5 py-1 rounded-full border font-mono text-xs font-medium cursor-pointer transition-colors",
+                                  isSelected
+                                    ? "bg-accent-subtle border-accent text-accent font-semibold"
+                                    : "bg-bg-2 border-border text-muted hover:bg-bg-3 hover:border-border-2 hover:text-strong",
+                                )}
+                                onClick={() =>
+                                  setSelectedTools((prev) =>
+                                    isSelected
+                                      ? prev.filter((t) => t !== tool.name)
+                                      : [...prev, tool.name],
+                                  )
+                                }
+                              >
+                                {tool.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                    <div className="flex gap-1.5 mt-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() =>
+                          setSelectedTools(availableTools.map((t) => t.name))
+                        }
+                      >
+                        Select all
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setSelectedTools([])}
+                      >
+                        Clear all
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
 
-                {/* Telegram */}
-                <div className="flex flex-col gap-2.5">
-                  <h4 className="font-heading text-xs font-semibold uppercase tracking-wide text-muted m-0">
-                    Telegram
-                  </h4>
+              {/* Preloaded Skills */}
+              <div className="flex flex-col gap-2.5">
+                <h4 className="font-heading text-xs font-semibold uppercase tracking-widest text-accent mb-1 pb-2 border-b border-border">
+                  Preloaded Skills
+                  {selectedSkills.length > 0 && (
+                    <span className="inline-flex items-center justify-center min-w-[20px] h-[20px] px-[5px] ml-1.5 text-xs font-semibold rounded-[10px] bg-purple text-white align-middle">
+                      {selectedSkills.length}
+                    </span>
+                  )}
+                </h4>
+                <p className="text-sm text-faint m-0 mb-2.5 leading-[1.4]">
+                  Skills are injected into the agent's system prompt
+                  automatically on every turn.
+                </p>
+                {availableSkills.length > 0 && (
+                  <Input
+                    type="text"
+                    value={skillSearch}
+                    onChange={(e) => setSkillSearch(e.target.value)}
+                    placeholder="Filter skills..."
+                    className="mb-2"
+                  />
+                )}
+                <div className="flex flex-wrap gap-1.5 max-h-[200px] overflow-y-auto py-0.5">
+                  {availableSkills
+                    .filter(
+                      (s) =>
+                        !skillSearch ||
+                        s.name
+                          .toLowerCase()
+                          .includes(skillSearch.toLowerCase()) ||
+                        s.id
+                          .toLowerCase()
+                          .includes(skillSearch.toLowerCase()) ||
+                        s.description
+                          .toLowerCase()
+                          .includes(skillSearch.toLowerCase()),
+                    )
+                    .map((skill) => {
+                      const active = selectedSkills.includes(skill.id);
+                      return (
+                        <label
+                          key={skill.id}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs cursor-pointer border transition-colors select-none max-w-full",
+                            active
+                              ? "bg-purple/15 border-purple text-foreground"
+                              : "bg-bg-2 border-border text-muted hover:border-purple hover:text-foreground",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            className="hidden"
+                            checked={active}
+                            onChange={() =>
+                              setSelectedSkills(
+                                active
+                                  ? selectedSkills.filter(
+                                      (s) => s !== skill.id,
+                                    )
+                                  : [...selectedSkills, skill.id],
+                              )
+                            }
+                          />
+                          <span className="font-medium whitespace-nowrap">
+                            {skill.name}
+                          </span>
+                          {skill.description && (
+                            <span
+                              className="text-xs text-faint overflow-hidden text-ellipsis whitespace-nowrap max-w-[200px]"
+                              title={skill.description}
+                            >
+                              {skill.description}
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  {availableSkills.length === 0 && (
+                    <p className="text-faint text-sm m-0">
+                      No skills available
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Advanced Tab: Sub-Agents + MCP + Hooks + Telegram */}
+          {formTab === "advanced" && (
+            <div className="flex flex-col gap-6">
+              {/* Sub-Agents */}
+              <div className="flex flex-col gap-2.5">
+                <h4 className="font-heading text-xs font-semibold uppercase tracking-widest text-accent mb-1 pb-2 border-b border-border">
+                  Sub-Agents
+                </h4>
+                <div className="grid grid-cols-3 gap-4 max-md:grid-cols-1">
                   <div className="mb-5">
                     <Input
-                      label="Bot Token"
-                      type="password"
-                      value={telegramBotToken}
-                      onChange={(e) => setTelegramBotToken(e.target.value)}
-                      placeholder="Leave empty to disable dedicated bot"
-                      autoComplete="off"
+                      label="Allowed Agents"
+                      type="text"
+                      value={allowAgents}
+                      onChange={(e) => setAllowAgents(e.target.value)}
+                      placeholder="* for all, or specific IDs"
+                    />
+                  </div>
+                  <div className="mb-5">
+                    <Input
+                      label="Max Children"
+                      type="number"
+                      value={maxChildren}
+                      onChange={(e) => setMaxChildren(Number(e.target.value))}
+                      min={1}
+                      max={20}
                     />
                   </div>
                 </div>
               </div>
-            )}
-          </fieldset>
+
+              {/* MCP Servers */}
+              <div className="flex flex-col gap-2.5">
+                <h4 className="font-heading text-xs font-semibold uppercase tracking-widest text-accent mb-1 pb-2 border-b border-border">
+                  MCP Servers
+                </h4>
+                <div className="grid grid-cols-2 gap-4 max-md:grid-cols-1">
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpBrowser}
+                        onChange={(e) => setMcpBrowser(e.target.checked)}
+                      />
+                      <span className="select-none">Playwright (Browser)</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpGithub}
+                        onChange={(e) => setMcpGithub(e.target.checked)}
+                      />
+                      <span className="select-none">GitHub</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpContext7}
+                        onChange={(e) => setMcpContext7(e.target.checked)}
+                      />
+                      <span className="select-none">Context7 (Docs)</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpSeqThinking}
+                        onChange={(e) => setMcpSeqThinking(e.target.checked)}
+                      />
+                      <span className="select-none">Sequential Thinking</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpDbhub}
+                        onChange={(e) => setMcpDbhub(e.target.checked)}
+                      />
+                      <span className="select-none">DBHub (Database)</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpFilesystem}
+                        onChange={(e) => setMcpFilesystem(e.target.checked)}
+                      />
+                      <span className="select-none">Filesystem</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpGit}
+                        onChange={(e) => setMcpGit(e.target.checked)}
+                      />
+                      <span className="select-none">Git</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpQdrant}
+                        onChange={(e) => setMcpQdrant(e.target.checked)}
+                      />
+                      <span className="select-none">Qdrant (Vector DB)</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpBraveSearch}
+                        onChange={(e) => setMcpBraveSearch(e.target.checked)}
+                      />
+                      <span className="select-none">Brave Search</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpFirecrawl}
+                        onChange={(e) => setMcpFirecrawl(e.target.checked)}
+                      />
+                      <span className="select-none">Firecrawl (Scraping)</span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={mcpSerena}
+                        onChange={(e) => setMcpSerena(e.target.checked)}
+                      />
+                      <span className="select-none">Serena (Code Navigation)</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Hooks */}
+              <div className="flex flex-col gap-2.5">
+                <h4 className="font-heading text-xs font-semibold uppercase tracking-widest text-accent mb-1 pb-2 border-b border-border">
+                  Hooks
+                </h4>
+                <p className="text-sm text-faint m-0 mb-2.5 leading-[1.4]">
+                  Hooks run during agent execution for auditing and
+                  notifications. All hooks are on by default.
+                </p>
+                <div className="ml-1">
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={hookAuditLog}
+                        onChange={(e) => setHookAuditLog(e.target.checked)}
+                      />
+                      <span className="select-none">
+                        Audit Log (tool calls to DB)
+                      </span>
+                    </label>
+                  </div>
+                  <div className="flex items-center mb-5">
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-foreground">
+                      <input
+                        type="checkbox"
+                        className="w-4 h-4 accent-accent cursor-pointer"
+                        checked={hookNotifications}
+                        onChange={(e) =>
+                          setHookNotifications(e.target.checked)
+                        }
+                      />
+                      <span className="select-none">
+                        Notification Forwarding
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              {/* Telegram */}
+              <div className="flex flex-col gap-2.5">
+                <h4 className="font-heading text-xs font-semibold uppercase tracking-widest text-accent mb-1 pb-2 border-b border-border">
+                  Telegram
+                </h4>
+                <div className="mb-5">
+                  <Input
+                    label="Bot Token"
+                    type="password"
+                    value={telegramBotToken}
+                    onChange={(e) => setTelegramBotToken(e.target.value)}
+                    placeholder="Leave empty to disable dedicated bot"
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+            </div>
+          )
         </div>
 
         {/* Footer */}
