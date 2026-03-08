@@ -29,6 +29,8 @@ interface Props {
   readonly funding: FundingData | null;
   readonly pipeline: PipelineStatus | null;
   readonly livePrice?: number | null;
+  readonly onAlertsClick?: () => void;
+  readonly alertCount?: number;
 }
 
 function SymbolDropdown({
@@ -171,6 +173,8 @@ export default function MarketHeader({
   funding,
   pipeline,
   livePrice,
+  onAlertsClick,
+  alertCount,
 }: Props) {
   const summary = summaries.find(
     (s) => s.symbol === symbol && s.marketType === marketType,
@@ -326,6 +330,24 @@ export default function MarketHeader({
               </button>
             ))}
           </div>
+
+          {onAlertsClick && (
+            <button
+              className="relative p-1.5 rounded-md text-faint hover:text-foreground hover:bg-bg-3 transition-colors cursor-pointer"
+              onClick={onAlertsClick}
+              title="Price alerts"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+              {!!alertCount && (
+                <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] rounded-full bg-accent text-bg text-[9px] font-bold flex items-center justify-center leading-none">
+                  {alertCount}
+                </span>
+              )}
+            </button>
+          )}
 
           {pipeline && (
             <div

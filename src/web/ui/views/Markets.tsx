@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect } from "react";
+import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { cn } from "../lib/cn";
 import type { TimeFrame, MarketType } from "./market/types";
 import {
@@ -24,6 +24,168 @@ import {
 import { useLiveKline } from "./market/useLiveKline";
 import { useDocumentTitle } from "./market/useDocumentTitle";
 import { formatPrice } from "./market/format";
+import { useToast } from "../components/Toast";
+
+interface PriceAlert {
+  readonly id: string;
+  readonly symbol: string;
+  readonly targetPrice: number;
+  readonly direction: "above" | "below";
+}
+
+function loadAlerts(): PriceAlert[] {
+  try {
+    return JSON.parse(localStorage.getItem("markets:alerts") ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function AlertPanel({
+  symbol,
+  currentPrice,
+  alerts,
+  onAdd,
+  onRemove,
+  onClose,
+}: {
+  symbol: string;
+  currentPrice: number | null;
+  alerts: PriceAlert[];
+  onAdd: (a: PriceAlert) => void;
+  onRemove: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [input, setInput] = useState("");
+  const [direction, setDirection] = useState<"above" | "below">("above");
+  const panelRef = useRef<HTMLDivElement>(null);
+  const symbolAlerts = alerts.filter((a) => a.symbol === symbol);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [onClose]);
+
+  function handleAdd() {
+    const price = parseFloat(input);
+    if (isNaN(price) || price <= 0) return;
+    onAdd({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      symbol,
+      targetPrice: price,
+      direction,
+    });
+    setInput("");
+  }
+
+  const ticker = symbol.split("/")[0] ?? symbol;
+
+  return (
+    <div
+      ref={panelRef}
+      className="absolute top-[50px] right-0 w-72 bg-bg-1 border border-border-2 rounded-xl shadow-xl shadow-black/30 z-30 overflow-hidden"
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+        <span className="text-sm font-semibold text-strong">
+          Price Alerts · {ticker}
+        </span>
+        {currentPrice !== null && (
+          <span className="font-mono text-xs text-muted">
+            {formatPrice(currentPrice)}
+          </span>
+        )}
+      </div>
+
+      {/* Add row */}
+      <div className="px-4 py-3 border-b border-border flex flex-col gap-2">
+        <div className="flex gap-1">
+          {(["above", "below"] as const).map((d) => (
+            <button
+              key={d}
+              className={cn(
+                "flex-1 py-1 rounded-md text-xs font-semibold border transition-colors duration-150",
+                direction === d
+                  ? d === "above"
+                    ? "bg-success-subtle text-success border-success/30"
+                    : "bg-danger-subtle text-danger border-danger/30"
+                  : "bg-transparent text-faint border-border hover:text-foreground hover:bg-bg-3",
+              )}
+              onClick={() => setDirection(d)}
+            >
+              {d === "above" ? "≥ Above" : "≤ Below"}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="number"
+            step="any"
+            placeholder="Target price"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+            className="flex-1 bg-bg-2 border border-border rounded-md px-3 py-1.5 text-sm font-mono text-foreground placeholder:text-faint outline-none focus:border-accent/60 transition-colors"
+          />
+          <button
+            className="px-3 py-1.5 rounded-md bg-accent text-bg text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-40"
+            disabled={!input || isNaN(parseFloat(input))}
+            onClick={handleAdd}
+          >
+            Add
+          </button>
+        </div>
+      </div>
+
+      {/* Alert list */}
+      <div className="max-h-52 overflow-y-auto">
+        {symbolAlerts.length === 0 ? (
+          <div className="px-4 py-5 text-center text-sm text-faint">
+            No alerts for {ticker}
+          </div>
+        ) : (
+          symbolAlerts.map((a) => (
+            <div
+              key={a.id}
+              className="flex items-center justify-between px-4 py-2.5 border-b border-border last:border-0 hover:bg-bg-2 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className={cn(
+                    "text-xs font-semibold px-1.5 py-0.5 rounded",
+                    a.direction === "above"
+                      ? "bg-success-subtle text-success"
+                      : "bg-danger-subtle text-danger",
+                  )}
+                >
+                  {a.direction === "above" ? "≥" : "≤"}
+                </span>
+                <span className="font-mono text-sm text-foreground">
+                  {formatPrice(a.targetPrice)}
+                </span>
+              </div>
+              <button
+                className="text-faint hover:text-danger transition-colors p-1 rounded"
+                onClick={() => onRemove(a.id)}
+                title="Remove alert"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
 
 function buildDefaultSet(
   items: readonly { key?: string; id?: string; defaultEnabled: boolean }[],
@@ -74,10 +236,41 @@ export default function Markets() {
   const [hoursMultiplier, setHoursMultiplier] = useState(1);
 
   const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const toast = useToast();
 
   useEffect(() => { localStorage.setItem("markets:symbol", symbol); }, [symbol]);
   useEffect(() => { localStorage.setItem("markets:timeframe", timeframe); }, [timeframe]);
   useEffect(() => { localStorage.setItem("markets:marketType", marketType); }, [marketType]);
+
+  const [alerts, setAlerts] = useState<PriceAlert[]>(loadAlerts);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const triggeredIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    localStorage.setItem("markets:alerts", JSON.stringify(alerts));
+  }, [alerts]);
+
+  // Check price alerts on every tick
+  useEffect(() => {
+    if (currentPrice === null) return;
+    const toTrigger = alerts.filter((a) => {
+      if (a.symbol !== symbol) return false;
+      if (triggeredIds.current.has(a.id)) return false;
+      return a.direction === "above"
+        ? currentPrice >= a.targetPrice
+        : currentPrice <= a.targetPrice;
+    });
+    if (toTrigger.length === 0) return;
+    for (const a of toTrigger) {
+      triggeredIds.current.add(a.id);
+      const ticker = a.symbol.split("/")[0] ?? a.symbol;
+      toast.success(
+        `${ticker} alert: price ${a.direction === "above" ? "≥" : "≤"} ${formatPrice(a.targetPrice)}`,
+      );
+    }
+    const triggeredSet = new Set(toTrigger.map((a) => a.id));
+    setAlerts((prev) => prev.filter((a) => !triggeredSet.has(a.id)));
+  }, [currentPrice, symbol, alerts]);
 
   useEffect(() => {
     setHoursMultiplier(1);
@@ -239,6 +432,8 @@ export default function Markets() {
 
   const chartResetKey = `${symbol}-${timeframe}-${marketType}`;
 
+  const symbolAlertCount = alerts.filter((a) => a.symbol === symbol).length;
+
   return (
     <div className="flex flex-col h-screen max-md:h-[calc(100dvh-46px)] overflow-y-auto overflow-x-hidden relative bg-bg">
       <MarketHeader
@@ -253,7 +448,19 @@ export default function Markets() {
         funding={isFutures ? latestFunding.data : null}
         pipeline={pipeline.data}
         livePrice={matchedLive?.close ?? null}
+        onAlertsClick={() => setAlertsOpen((v) => !v)}
+        alertCount={symbolAlertCount}
       />
+      {alertsOpen && (
+        <AlertPanel
+          symbol={symbol}
+          currentPrice={currentPrice}
+          alerts={alerts}
+          onAdd={(a) => setAlerts((prev) => [...prev, a])}
+          onRemove={(id) => setAlerts((prev) => prev.filter((a) => a.id !== id))}
+          onClose={() => setAlertsOpen(false)}
+        />
+      )}
 
       {/* 2-column grid: chart left, sidebar right (only with futures on desktop) */}
       <div
