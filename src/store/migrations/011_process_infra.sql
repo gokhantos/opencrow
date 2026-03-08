@@ -72,6 +72,8 @@ CREATE INDEX IF NOT EXISTS idx_token_usage_created ON token_usage(created_at DES
 
 CREATE INDEX IF NOT EXISTS idx_token_usage_source ON token_usage(source, created_at DESC);
 
-ALTER TABLE process_commands DROP CONSTRAINT IF EXISTS process_commands_action_check;
-
-ALTER TABLE process_commands ADD CONSTRAINT process_commands_action_check CHECK(action IN ('restart','stop','cron:run_job'));
+DO $$ BEGIN
+  ALTER TABLE process_commands DROP CONSTRAINT IF EXISTS process_commands_action_check;
+  ALTER TABLE process_commands ADD CONSTRAINT process_commands_action_check CHECK(action IN ('restart','stop','cron:run_job'));
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
