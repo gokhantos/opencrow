@@ -34,24 +34,7 @@ CREATE INDEX IF NOT EXISTS idx_user_preferences_type ON user_preferences(prefere
 
 CREATE INDEX IF NOT EXISTS idx_user_preferences_active ON user_preferences(is_active, updated_at DESC);
 
-CREATE TABLE IF NOT EXISTS cross_session_context (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    topics_json TEXT NOT NULL DEFAULT '[]',
-    task_embedding REAL[] DEFAULT '{}',
-    summary TEXT NOT NULL,
-    key_decisions_json TEXT NOT NULL DEFAULT '[]',
-    files_touched TEXT[] DEFAULT '{}',
-    agents_spawned TEXT[] DEFAULT '{}',
-    outcomes_json TEXT NOT NULL DEFAULT '[]',
-    relevance_decay REAL NOT NULL DEFAULT 1.0,
-    expires_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  );
-
-CREATE INDEX IF NOT EXISTS idx_cross_session_session ON cross_session_context(session_id);
-
-CREATE INDEX IF NOT EXISTS idx_cross_session_expiry ON cross_session_context(expires_at);
+-- cross_session_context removed (dropped in 034_drop_cross_session_context.sql)
 
 -- self_reflection_logs table removed - redundant with failure-analyzer.ts
 

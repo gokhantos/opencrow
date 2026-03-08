@@ -59,20 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_task_outcomes_hash ON task_outcomes(task_hash);
 
 CREATE INDEX IF NOT EXISTS idx_task_outcomes_domain ON task_outcomes(domain);
 
-CREATE TABLE IF NOT EXISTS survey_responses (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    task_hash TEXT NOT NULL,
-    feedback_type TEXT NOT NULL CHECK(feedback_type IN ('good', 'neutral', 'bad')),
-    feedback_text TEXT,
-    revision_requested BOOLEAN DEFAULT FALSE,
-    response_time_sec INTEGER,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  );
-
-CREATE INDEX IF NOT EXISTS idx_survey_responses_session ON survey_responses(session_id);
-
-CREATE INDEX IF NOT EXISTS idx_survey_responses_feedback ON survey_responses(feedback_type);
+-- survey_responses removed (dropped in 032_drop_survey_tables.sql)
 
 CREATE TABLE IF NOT EXISTS task_revisions (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -113,28 +100,7 @@ CREATE TABLE IF NOT EXISTS agent_capacity (
 
 CREATE INDEX IF NOT EXISTS idx_agent_capacity_load ON agent_capacity(current_load);
 
-CREATE TABLE IF NOT EXISTS task_queue (
-    queue_id TEXT PRIMARY KEY,
-    task_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    domain TEXT NOT NULL,
-    task TEXT NOT NULL,
-    priority INTEGER NOT NULL DEFAULT 5,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'running', 'completed', 'cancelled', 'failed')),
-    preferred_agent TEXT,
-    assigned_agent TEXT,
-    result TEXT,
-    error_message TEXT,
-    enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    started_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ
-  );
-
-CREATE INDEX IF NOT EXISTS idx_task_queue_status ON task_queue(status, priority DESC, enqueued_at ASC);
-
-CREATE INDEX IF NOT EXISTS idx_task_queue_session ON task_queue(session_id);
-
-CREATE INDEX IF NOT EXISTS idx_task_queue_agent ON task_queue(assigned_agent);
+-- task_queue removed (dropped in 035_drop_task_queue.sql)
 
 CREATE TABLE IF NOT EXISTS workload_history (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
