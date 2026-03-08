@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useLocalStorage } from "../lib/useLocalStorage";
 import { apiFetch } from "../api";
 import { LoadingState, EmptyState, PageHeader, SearchBar } from "../components";
 import { cn } from "../lib/cn";
@@ -162,7 +163,7 @@ export default function Memory() {
     [],
   );
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<ActiveTab>("search");
+  const [activeTab, setActiveTab] = useLocalStorage<ActiveTab>("memory:tab", "search");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchAgent, setSearchAgent] = useState("");
   const [searching, setSearching] = useState(false);

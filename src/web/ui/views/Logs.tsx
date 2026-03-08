@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useLocalStorage } from "../lib/useLocalStorage";
 import { apiFetch } from "../api";
 import { formatLogTimestamp } from "../lib/format";
 import { cn } from "../lib/cn";
@@ -136,15 +137,15 @@ const selectClass =
 export default function Logs() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<LogLevel>("info");
+  const [filter, setFilter] = useLocalStorage<LogLevel>("logs:level", "info");
   const [search, setSearch] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const [isPaused, setIsPaused] = useState(false);
   const [processes, setProcesses] = useState<string[]>([]);
-  const [selectedProcess, setSelectedProcess] = useState<string>("");
+  const [selectedProcess, setSelectedProcess] = useLocalStorage<string>("logs:process", "");
   const [contexts, setContexts] = useState<string[]>([]);
-  const [selectedContext, setSelectedContext] = useState<string>("");
+  const [selectedContext, setSelectedContext] = useLocalStorage<string>("logs:context", "");
   const [newLogCount, setNewLogCount] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);

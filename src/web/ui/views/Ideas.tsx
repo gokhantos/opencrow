@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useLocalStorage } from "../lib/useLocalStorage";
 import { ChevronRight, Archive, RotateCcw } from "lucide-react";
 import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
@@ -360,12 +361,12 @@ export default function Ideas() {
   const toast = useToast();
   const [ideas, setIdeas] = useState<readonly GeneratedIdea[]>([]);
   const [stats, setStats] = useState<readonly IdeaStat[]>([]);
-  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
-  const [sortMode, setSortMode] = useState<SortMode>("newest");
-  const [ratingFilter, setRatingFilter] = useState<RatingFilter>("all");
-  const [viewMode, setViewMode] = useState<ViewMode>("list");
+  const [categoryFilter, setCategoryFilter] = useLocalStorage<CategoryFilter>("ideas:categoryFilter", "all");
+  const [sortMode, setSortMode] = useLocalStorage<SortMode>("ideas:sortMode", "newest");
+  const [ratingFilter, setRatingFilter] = useLocalStorage<RatingFilter>("ideas:ratingFilter", "all");
+  const [viewMode, setViewMode] = useLocalStorage<ViewMode>("ideas:viewMode", "list");
   const [searchQuery, setSearchQuery] = useState("");
-  const [stageFilter, setStageFilter] = useState<string>("all");
+  const [stageFilter, setStageFilter] = useLocalStorage<string>("ideas:stageFilter", "all");
   const [stageCounts, setStageCounts] = useState<readonly StageCounts[]>([]);
   const [loading, setLoading] = useState(true);
 

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useLocalStorage } from "../lib/useLocalStorage";
 import * as echarts from "echarts";
 import { apiFetch } from "../api";
 import { PageHeader, LoadingState, EmptyState, FilterTabs } from "../components";
@@ -230,7 +231,7 @@ function ErrorTimeline({ data }: { data: readonly TimelineBucket[] }) {
 /* ── main component ────────────────────────────────────────────── */
 
 export default function Failures() {
-  const [range, setRange] = useState("24h");
+  const [range, setRange] = useLocalStorage<string>("failures:range", "24h");
   const [summary, setSummary] = useState<FailureSummary | null>(null);
   const [recent, setRecent] = useState<FailureRecord[]>([]);
   const [patterns, setPatterns] = useState<FailurePattern[]>([]);

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useLocalStorage } from "../../lib/useLocalStorage";
 import { apiFetch, deleteAgent, setConfigHash } from "../../api";
 import type {
   AgentInfo,
@@ -38,7 +39,7 @@ export default function Agents() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
-  const [providerFilter, setProviderFilter] = useState<ProviderFilter>("all");
+  const [providerFilter, setProviderFilter] = useLocalStorage<ProviderFilter>("agents:providerFilter", "all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   /* Modal state */
