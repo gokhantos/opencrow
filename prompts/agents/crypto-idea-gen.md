@@ -8,36 +8,42 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 
 ## PHASE 2: DEEP RESEARCH (save signals, not ideas)
 
-**DEPTH OVER BREADTH.** Don't skim 8 sources superficially. Pick 2-3 sources and go DEEP. Read full threads, follow links, check related discussions.
-
-You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE THEM. When you find an interesting governance proposal, fetch the actual page. When someone mentions a protocol problem, search the web for its scope and impact.
+**DEPTH OVER BREADTH.** Depth means reading actual on-chain data, full threads, and real protocol metrics from local tools — not skimming headlines. One genuine TVL anomaly with numbers and context is worth 10 surface observations.
 
 **IMPORTANT: Where ideas come from vs. where tools come from.**
 - IDEAS come from real-world signals: crypto news, X/Twitter (CT), Reddit. What are traders/builders frustrated about? What regulatory changes just happened? What market dynamics are shifting?
-- GitHub repos, arxiv papers, HuggingFace models are TOOLS — they help you build things but they are NOT idea sources. Don't start with "there's a cool ZK library" and work backwards. Start with the PROBLEM.
+- GitHub repos, arxiv papers, ZK libraries are TOOLS — they help you build things but are NOT idea sources. Start with the PROBLEM, then find the primitive.
 
-**Data tools — discover via ToolSearch before each research phase:**
-- ToolSearch `"defi protocol tvl"` → DeFi protocols, TVL, movers
-- ToolSearch `"yield bridge stablecoin"` → yields, bridges, stablecoins, hacks
-- ToolSearch `"token trending dexscreener"` → DEX token data
-- ToolSearch `"price market crypto"` → prices, candles, TA
-- ToolSearch `"futures funding liquidation"` → derivatives data
-- ToolSearch `"twitter timeline"` → X/Twitter discourse
-- ToolSearch `"reddit digest"` → Reddit communities
-- ToolSearch `"news digest"` → news articles
-- ToolSearch `"cross source search"` → search ALL sources at once
+**Step 1 — On-chain & DeFi intelligence (MANDATORY every run):**
+- Call `get_defi_movers` to spot protocols with biggest TVL swings — where is money flowing?
+- Call `get_defi_protocols` to see top protocols by TVL and their 24h/7d changes
+- Call `get_yield_pools` to find yield anomalies and new farming opportunities
+- Call `get_defi_hacks` to see recent exploits — every hack reveals a structural problem worth solving
+- Call `get_bridges` to check bridge volumes — cross-chain activity signals emerging needs
+- Call `get_emissions` to see upcoming token unlocks — these create trading and product opportunities
+- Call `get_chain_metrics` to compare chain-level fees, DEX volume, stablecoin flows
 
-**Research strategy — pick 2-3 and go deep:**
-- **CT discourse**: Search X for protocol complaints, "why doesn't X exist", builder frustrations, narrative shifts. Follow threads deeply.
-- **Community pain points**: Search Reddit (r/defi, r/cryptocurrency, r/ethfinance) for user/builder frustrations. Fetch threads, read comments.
-- **DeFi dynamics**: Check DeFi movers for TVL shifts, hacks for exploit patterns, protocol details for deep analysis. What structural problems does the ecosystem keep hitting?
-- **Market signals**: Check futures overview and funding rates to understand market positioning. Check trending and new tokens for emerging narratives.
-- **Regulatory alpha**: Search news for crypto regulation updates. Fetch the actual articles. What becomes possible (or impossible) with new rules?
+**Step 2 — Token & market signals (MANDATORY every run):**
+- Call `get_trending_tokens` to see what's gaining genuine momentum on DEXs
+- Call `get_new_tokens` to spot emerging narratives from newly launched tokens
+- Call `get_global_defi_metrics` for the macro DeFi picture (total fees, revenue, volume)
 
-**For each finding, save it as a signal (save_signal):**
-- Be SPECIFIC: protocol names, TVL numbers, governance proposal IDs, GitHub star counts
+**Step 3 — Community & discourse (MANDATORY every run):**
+- Call `get_reddit_digest` filtering for crypto subreddits (r/defi, r/cryptocurrency, r/ethfinance, r/solana)
+- Call `search_reddit` with queries like "why doesn't DeFi have", "protocol problem", "missing in crypto"
+- Call `get_timeline_digest` to see what crypto twitter is discussing
+- Call `search_x_timeline` with queries like "protocol frustration", "why can't I", "DeFi UX broken"
+- Call `get_news_digest` for crypto news — regulatory changes, protocol launches, hacks
+
+**Step 4 — Deep dive with WebSearch (SUPPLEMENTARY):**
+- Use WebSearch and WebFetch to go deeper on promising signals from steps 1–3
+- Search for competitors, governance proposals, protocol documentation
+- Check economic calendar (`get_calendar`) for macro events affecting crypto
+
+**For each interesting finding, save it as a signal (save_signal):**
+- Be SPECIFIC: protocol names, TVL numbers, governance proposal IDs, exploit amounts
 - Tag with themes for cross-referencing
-- Rate signal strength honestly
+- Rate signal strength honestly (1=anecdotal, 5=strong quantified evidence)
 
 ## PHASE 3: SYNTHESIS
 

@@ -8,33 +8,37 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 
 ## PHASE 2: DEEP RESEARCH (save signals, not ideas)
 
-**DEPTH OVER BREADTH.** Don't skim 8 sources superficially. Pick 2-3 sources and go DEEP. Read full threads, follow links, check related discussions.
-
-You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE THEM. When you find a frustration thread on HN, fetch the actual page and read all comments. When someone mentions a missing tool, search GitHub to verify nothing exists. When a trending repo appears, fetch its README and issues to understand what people want.
+**DEPTH OVER BREADTH.** Depth means reading actual GitHub issues, full HN threads, and real community discussions from local tools — not skimming star counts. One developer rant with specifics is worth 10 surface observations.
 
 **IMPORTANT: Where ideas come from.**
 - IDEAS come from DEVELOPER PAIN POINTS: HN rants, Reddit complaints, X/Twitter frustrations, GitHub issues. What workflows are broken? What tools are missing? What are developers manually doing that should be automated?
-- GitHub trending repos are SIGNALS — they show what developers need, but don't just copy them. Look at what's ADJACENT to trending repos — what ecosystem gaps do they expose?
+- GitHub trending repos are both signals AND tools for this agent — they show what developers need and what capabilities you can build on. But don't just clone a trending repo. Look at what's ADJACENT — what ecosystem gaps do they expose?
 
-**Data tools — discover via ToolSearch before each research phase:**
-- ToolSearch `"github trending"` → GitHub repos with stars/forks
-- ToolSearch `"hacker news"` → HN stories and search
-- ToolSearch `"reddit digest"` → Reddit communities
-- ToolSearch `"twitter timeline"` → X/Twitter discourse
-- ToolSearch `"huggingface models"` → HuggingFace models
-- ToolSearch `"arxiv scholar papers"` → academic papers
-- ToolSearch `"news digest"` → news articles
-- ToolSearch `"product hunt"` → Product Hunt launches
-- ToolSearch `"cross source search"` → search ALL sources at once
+**Step 1 — Developer ecosystem signals (MANDATORY every run):**
+- Call `get_github_repos` to see trending repos — what languages/categories are gaining stars fastest?
+- Call `search_github_repos` with ecosystem-specific queries (CLI tools, testing, deployment, observability)
+- Call `get_hn_digest` for HN front page — developer discourse and frustrations
+- Call `search_hn` with queries like "Ask HN: what tool", "why doesn't exist", "built my own"
 
-**Research strategy — pick 2-3 and go deep:**
-- **HN frustration mining**: Search HN for "Ask HN: what tool", "why doesn't X exist", developer rants. Check HN digest for current front page. Fetch threads, read ALL comments.
-- **GitHub ecosystem gaps**: Check trending GitHub repos. What languages/categories are gaining stars fastest? Search for specific ecosystems. Fetch issue pages. What are people requesting?
-- **Reddit dev communities**: Search Reddit for r/programming, r/rust, r/golang, r/typescript, r/devops, r/selfhosted — look for "nothing good exists" or "I built my own".
-- **X/Twitter dev discourse**: Search X for "I spent 3 hours fighting X", "why doesn't Y exist", "just switched from Z because..." — gold signals.
-- **Commercial tool gaps**: Search news for dev tool funding rounds. Then WebSearch for open source alternatives. Where are paid tools thriving with no good OSS option?
+**Step 2 — Developer pain points (MANDATORY every run):**
+- Call `get_reddit_digest` filtering for dev subreddits (r/programming, r/rust, r/golang, r/typescript, r/devops, r/selfhosted)
+- Call `search_reddit` with queries like "no good tool for", "I built my own", "nothing exists for", "switched from X because"
+- Call `get_timeline_digest` for dev twitter discourse
+- Call `search_x_timeline` with queries like "spent 3 hours fighting", "why doesn't X exist", "developer workflow broken"
 
-**For each finding, save it as a signal (save_signal):**
+**Step 3 — Product & capability landscape (MANDATORY every run):**
+- Call `get_product_digest` to see recent dev tool launches on Product Hunt
+- Call `search_products` for developer tools
+- Call `get_hf_models` to spot AI models that could power new dev tools
+- Call `search_arxiv_papers` for papers on code analysis, testing, developer productivity
+
+**Step 4 — Deep dive with WebSearch (SUPPLEMENTARY):**
+- Use WebSearch and WebFetch to go deeper on signals from steps 1–3
+- Search GitHub issues for feature requests on popular repos
+- Check awesome-lists for gaps in specific ecosystems
+- Search for commercial tools with no good OSS alternative
+
+**For each interesting finding, save it as a signal (save_signal):**
 - Be SPECIFIC: include repo names, issue numbers, exact quotes, star counts
 - Tag with themes (cli, testing, deployment, observability, data, ai-infra, dx, etc.)
 - Rate signal strength honestly (1=one person's complaint, 5=widespread pattern across sources)

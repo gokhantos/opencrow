@@ -10,29 +10,30 @@ Your goal is NOVELTY. Past ideas are territory already covered. Explore new terr
 
 ## PHASE 2: DEEP RESEARCH (save signals, not ideas)
 
-**DEPTH OVER BREADTH.** Don't skim 8 sources superficially. Pick 2-3 sources and go DEEP. Read full threads, follow links, look at comments, check related discussions. One deeply researched signal is worth 10 surface-level observations.
-
-You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE THEM. When you find an interesting thread on Reddit, fetch the actual page and read the comments. When someone mentions a problem, search the web to understand how widespread it is. When news breaks about a platform change, search for developer reactions.
+**DEPTH OVER BREADTH.** Depth means reading actual reviews, comments, and threads from local data — not skimming rankings. One real user complaint with quotes and context is worth 10 surface-level observations.
 
 **IMPORTANT: Where ideas come from vs. where tools come from.**
-- IDEAS come from real-world signals: news, X/Twitter, Reddit. What are people talking about? What problems do they have? What's changing in the world?
+- IDEAS come from real-world signals: news, X/Twitter, Reddit, app store reviews. What are people talking about? What problems do they have? What's changing in the world?
 - TOOLS come from GitHub, HuggingFace, arxiv. These help you BUILD ideas, but they are NOT idea sources. Don't look at a GitHub repo and say "let's build something with this." Start with the PROBLEM, then find the tool.
 
-**Data tools — discover via ToolSearch before each research phase:**
-- ToolSearch `"appstore playstore rankings"` → App Store / Play Store rankings, reviews, complaints
-- ToolSearch `"product hunt"` → Product Hunt launches
-- ToolSearch `"reddit digest"` → Reddit communities
-- ToolSearch `"twitter timeline"` → X/Twitter discourse
-- ToolSearch `"news digest"` → news articles
-- ToolSearch `"google trends"` → Google Trends data
-- ToolSearch `"cross source search"` → search ALL sources at once
+**Step 1 — App Store & Play Store intelligence (MANDATORY every run):**
+- Call `get_appstore_rankings` and `get_playstore_rankings` to see what's trending
+- Call `get_appstore_complaints` and `get_playstore_complaints` to find pain points in low-rated reviews — this is a goldmine for ideas
+- Call `search_appstore_reviews` and `search_playstore_reviews` with category-specific queries to find user frustrations
 
-**Research strategy — pick 2-3 of these and go deep:**
-- **App store intelligence**: Check App Store and Play Store rankings for what's trending. Check complaints to find low-rated apps — these reveal unmet needs. Search reviews for specific categories.
-- **Pain point mining**: Search Reddit for r/apps, r/androidapps, r/iphone frustration posts. Dig into threads — what workarounds do they use? WebSearch the problem to understand how widespread it is.
-- **News-driven opportunities**: Search news for industry changes, regulatory shifts, cultural moments. Check Google Trends for what's trending. When something changes in the real world, what mobile experience becomes possible or necessary?
-- **X/Twitter pulse**: Search X for "I wish there was an app for", product complaints, viral moments. What are people frustrated about RIGHT NOW?
-- **Product gap analysis**: Check Product Hunt for recent mobile launches. When you find a weak product in an interesting space, web search for competitors. What's the landscape? What's missing?
+**Step 2 — Reddit pain point mining (MANDATORY every run):**
+- Call `get_reddit_digest` filtering for app-related subreddits (r/apps, r/androidapps, r/iphone, r/iosgaming, etc.)
+- Call `search_reddit` with pain-point queries like "wish there was an app", "frustrated with", "alternative to"
+- When you find interesting threads, use WebFetch to read the full comment thread
+
+**Step 3 — X/Twitter pulse (MANDATORY every run):**
+- Call `get_timeline_digest` to see what's trending in tech/mobile discourse
+- Call `search_x_timeline` with queries like "app idea", "wish there was", "why doesn't [app] have"
+
+**Step 4 — Deep dive with WebSearch (SUPPLEMENTARY):**
+- Use WebSearch and WebFetch to go deeper on promising signals found in steps 1–3
+- Search for competitors, market size, technical feasibility
+- Check Product Hunt, Google Trends, news for additional context
 
 **For each interesting finding, save it as a signal (save_signal):**
 - Be SPECIFIC: include quotes, names, numbers, URLs

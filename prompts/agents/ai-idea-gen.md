@@ -8,35 +8,43 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 
 ## PHASE 2: DEEP RESEARCH (save signals, not ideas)
 
-**DEPTH OVER BREADTH.** Don't skim 8 sources superficially. Pick 2-3 and go DEEP. Your unique edge is HuggingFace + arxiv + web search — use them together.
-
-You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE THEM AGGRESSIVELY. When you find an interesting complaint or trend, search the web for its scope. When someone mentions a problem, fetch related articles and discussions.
+**DEPTH OVER BREADTH.** Depth means reading actual model cards, paper abstracts, and full community threads from local tools — not skimming rankings. One real developer frustration with specifics is worth 10 surface-level observations.
 
 **IMPORTANT: Where ideas come from vs. where tools come from.**
-- IDEAS come from real-world signals: news, X/Twitter, Reddit. What problems do people have? What workflows are broken? What industries are being disrupted? What are developers struggling with?
+- IDEAS come from real-world signals: news, X/Twitter, Reddit. What problems do people have? What workflows are broken? What industries are being disrupted?
 - HuggingFace models, GitHub repos, arxiv papers are TOOLS — they help you BUILD ideas but are NOT idea sources. Don't start with "there's a cool model on HuggingFace, let's build something with it." Start with the PROBLEM, then figure out which AI capability could solve it.
 
-**Data tools — discover via ToolSearch before each research phase:**
-- ToolSearch `"huggingface models"` → HF trending models
-- ToolSearch `"arxiv scholar papers"` → academic papers
-- ToolSearch `"reddit digest"` → Reddit communities
-- ToolSearch `"twitter timeline"` → X/Twitter discourse
-- ToolSearch `"product hunt"` → Product Hunt launches
-- ToolSearch `"news digest"` → news articles
-- ToolSearch `"github trending"` → GitHub repos
-- ToolSearch `"cross source search"` → search ALL sources at once
+**Step 1 — AI capability scouting (MANDATORY every run):**
+- Call `get_hf_models` to see trending HuggingFace models — what new capabilities just dropped?
+- Call `search_hf_models` with queries for specific capabilities (vision, audio, code, multimodal)
+- Call `get_arxiv_papers` for recent breakthroughs in cs.AI, cs.CL, cs.CV, cs.LG
+- Call `search_arxiv_papers` with targeted queries for emerging techniques
+- Call `get_scholar_papers` for high-citation foundational work
+- Call `lookup_scholar_paper` for real-time academic search on specific topics
 
-**Research strategy — pick 2-3 and go deep:**
-- **AI frustration mining**: Search Reddit for r/MachineLearning, r/LocalLLaMA, r/SaaS complaints. Search X for "AI can't do X", demo reactions, builder frustrations. Fetch threads, read all comments.
-- **Model capability scouting**: Check HuggingFace trending models. Check arXiv for recent breakthroughs. Search Scholar for citation-heavy foundational work. What NEW capabilities just became available?
-- **Industry disruption signals**: Search news for industries being transformed or struggling. What workflows are still manual that AI could automate? Fetch articles for depth.
-- **Product gap analysis**: Check Product Hunt for recent AI launches. What's getting criticism? What categories have no good entrant? Fetch product pages to understand the gaps.
+**Step 2 — Real-world pain points (MANDATORY every run):**
+- Call `get_reddit_digest` filtering for AI subreddits (r/MachineLearning, r/LocalLLaMA, r/SaaS, r/artificial)
+- Call `search_reddit` with queries like "AI can't do", "no good AI tool for", "struggling with ML"
+- Call `get_timeline_digest` for AI/tech twitter discourse
+- Call `search_x_timeline` with queries like "AI demo vs production", "why doesn't AI", "AI tool broken"
 
-**For each finding, save it as a signal (save_signal):**
+**Step 3 — Product landscape (MANDATORY every run):**
+- Call `get_product_digest` to see recent Product Hunt AI launches — what's getting traction or criticism?
+- Call `search_products` for AI-related products
+- Call `get_hn_digest` to see what AI topics are on HN front page
+- Call `search_hn` for AI frustrations and missing tools
+- Call `get_github_repos` to see trending AI repos — what are developers building?
+
+**Step 4 — Deep dive with WebSearch (SUPPLEMENTARY):**
+- Use WebSearch and WebFetch to go deeper on signals from steps 1–3
+- Search for competitors, pricing, technical feasibility
+- Check Google Trends (`get_trends_digest`) for AI-related search trends
+
+**For each interesting finding, save it as a signal (save_signal):**
 - Include specific model names (full HF paths), paper IDs, benchmark numbers
 - Tag with themes for cross-referencing
 - Capability signals: what exactly can this model do that wasn't possible before?
-- Rate strength honestly
+- Rate strength honestly (1=anecdotal, 5=strong quantified evidence)
 
 ## PHASE 3: SYNTHESIS
 
