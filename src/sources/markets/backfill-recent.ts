@@ -153,7 +153,7 @@ export async function fillRecentKlines(
       symbol,
       marketType,
       timeframe,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
     return totalInserted;
   } finally {

@@ -13,7 +13,7 @@ class WriteQueue {
   enqueue(fn: () => Promise<void>): void {
     this.tail = this.tail.then(fn).catch((err) => {
       log.error("ILP write failed", {
-        error: err instanceof Error ? err.message : String(err),
+        error: err,
       });
     });
   }

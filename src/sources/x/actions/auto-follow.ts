@@ -187,7 +187,7 @@ export async function autoFollow(
         } catch (err) {
           log.warn("Follow failed", {
             username,
-            error: err instanceof Error ? err.message : String(err),
+            error: err,
           });
           await delay(10000, 18000);
         }

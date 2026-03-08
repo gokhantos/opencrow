@@ -172,7 +172,7 @@ export async function autoLike(
         } catch (err) {
           log.warn("Like failed", {
             tweetId: tweet.id,
-            error: err instanceof Error ? err.message : String(err),
+            error: err,
           });
           await delay(5000, 10000);
         }

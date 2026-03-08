@@ -134,7 +134,7 @@ export async function initQuestDBReadOnly(httpUrl?: string): Promise<boolean> {
       "QuestDB REST API unreachable — market query tools will be unavailable",
       {
         url: http,
-        error: err instanceof Error ? err.message : String(err),
+        error: err,
       },
     );
     return false;

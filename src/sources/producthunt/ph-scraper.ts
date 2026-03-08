@@ -221,7 +221,7 @@ async function withRetry<T>(
         log.warn("GraphQL request failed, retrying", {
           attempt: attempt + 1,
           delayMs,
-          error: err instanceof Error ? err.message : String(err),
+          error: err,
         });
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }

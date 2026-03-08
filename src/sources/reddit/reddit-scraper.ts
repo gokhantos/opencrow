@@ -247,7 +247,7 @@ async function scrapeFeed(
     } catch (err) {
       log.warn("Feed scrape error", {
         url: currentUrl,
-        error: err instanceof Error ? err.message : String(err),
+        error: err,
       });
       break;
     }

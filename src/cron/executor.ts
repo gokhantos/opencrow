@@ -22,6 +22,7 @@ import {
   failTask,
 } from "../agent/queue-manager";
 
+import { getErrorMessage } from "../lib/error-serialization";
 const IDEA_GEN_AGENTS = new Set([
   "mobile-idea-gen",
   "crypto-idea-gen",
@@ -112,7 +113,7 @@ async function executeInternalHandler(
         throw new Error(`Unknown internal handler: ${handler}`);
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     status = "error";
     error = msg;
     log.error("Internal cron handler failed", {
@@ -363,7 +364,7 @@ export async function executeCronJob(
       }
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
 
     if (msg.includes("timed out")) {
       status = "timeout";

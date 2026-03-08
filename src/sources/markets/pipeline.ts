@@ -86,7 +86,7 @@ export function createMarketPipeline(
         questdbConnected = true;
       } catch (err) {
         log.warn("QuestDB unavailable — pipeline running without storage", {
-          error: err instanceof Error ? err.message : String(err),
+          error: err,
         });
       }
 

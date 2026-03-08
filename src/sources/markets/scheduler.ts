@@ -80,7 +80,7 @@ function runJob(job: Job): void {
   job.fn().catch((err) => {
     log.error("Scheduled job failed", {
       job: job.name,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
   });
 }
@@ -143,7 +143,7 @@ export function createScheduler(
               symbol,
               marketType,
               timeframe: "1m",
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             }),
           );
         }
@@ -191,7 +191,7 @@ export function createScheduler(
               symbol,
               marketType,
               timeframe: "1m",
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             }),
           );
         }
@@ -235,7 +235,7 @@ export function createScheduler(
                 marketType,
                 from: new Date(window.fromMs).toISOString(),
                 to: new Date(window.toMs).toISOString(),
-                error: err instanceof Error ? err.message : String(err),
+                error: err,
               }),
             );
           }
@@ -270,7 +270,7 @@ export function createScheduler(
           ).catch((err) =>
             log.error("Failed to fill metrics gaps", {
               symbol,
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             }),
           );
         }
@@ -283,7 +283,7 @@ export function createScheduler(
         if (signal?.aborted) return;
         await pollLatestFundingRates(config, signal).catch((err) =>
           log.error("Funding rate poll failed", {
-            error: err instanceof Error ? err.message : String(err),
+            error: err,
           }),
         );
       }),
@@ -317,7 +317,7 @@ export function createScheduler(
             ).catch((err) =>
               log.error("Failed to fill funding gap", {
                 symbol,
-                error: err instanceof Error ? err.message : String(err),
+                error: err,
               }),
             );
           }
@@ -349,7 +349,7 @@ export function createScheduler(
           ).catch((err) =>
             log.error("Failed to fill mark price gaps", {
               symbol,
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             }),
           );
         }
@@ -378,28 +378,28 @@ export function createScheduler(
           await fillOpenInterestGap(config, ps, signal).catch((err) =>
             log.error("OI gap fill failed", {
               periods: ps,
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             }),
           );
           if (signal?.aborted) return;
           await fillTopTraderPositionGap(config, ps, signal).catch((err) =>
             log.error("Top trader position gap fill failed", {
               periods: ps,
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             }),
           );
           if (signal?.aborted) return;
           await fillTopTraderAccountGap(config, ps, signal).catch((err) =>
             log.error("Top trader account gap fill failed", {
               periods: ps,
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             }),
           );
           if (signal?.aborted) return;
           await fillGlobalLongShortGap(config, ps, signal).catch((err) =>
             log.error("Global L/S gap fill failed", {
               periods: ps,
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             }),
           );
         }),
