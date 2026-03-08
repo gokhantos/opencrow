@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useLocalStorage } from "../lib/useLocalStorage";
-import { ChevronRight, Archive, RotateCcw } from "lucide-react";
+import { ChevronRight, Archive, RotateCcw, Check } from "lucide-react";
 import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
@@ -16,6 +16,7 @@ interface GeneratedIdea {
   readonly sources_used: string;
   readonly category: string;
   readonly rating: number | null;
+  readonly quality_score: number | null;
   readonly pipeline_stage: string;
   readonly model_references: string;
   readonly created_at: number;
@@ -39,7 +40,7 @@ type CategoryFilter =
   | "ai_app"
   | "open_source"
   | "general";
-type SortMode = "newest" | "oldest";
+type SortMode = "newest" | "oldest" | "score";
 type ViewMode = "list" | "grid";
 
 const CATEGORY_TABS: readonly {
@@ -97,9 +98,22 @@ export function sortIdeas(
       return sorted.sort((a, b) => b.created_at - a.created_at);
     case "oldest":
       return sorted.sort((a, b) => a.created_at - b.created_at);
+    case "score":
+      return sorted.sort((a, b) => {
+        if (b.quality_score === null && a.quality_score === null) return 0;
+        if (b.quality_score === null) return -1;
+        if (a.quality_score === null) return 1;
+        return b.quality_score - a.quality_score;
+      });
     default:
       return sorted;
   }
+}
+
+function qualityScoreStyle(score: number): string {
+  if (score >= 4.0) return "bg-success-subtle text-success border border-success/20";
+  if (score >= 3.0) return "bg-warning-subtle text-warning border border-warning/20";
+  return "bg-danger-subtle text-danger border border-danger/20";
 }
 
 function IdeaCard({
@@ -213,6 +227,19 @@ function IdeaCard({
           {currentStage}
         </span>
 
+        {/* Quality score badge */}
+        {idea.quality_score !== null && (
+          <span
+            className={cn(
+              "inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold font-mono shrink-0",
+              qualityScoreStyle(idea.quality_score),
+            )}
+            title="Quality score"
+          >
+            {idea.quality_score.toFixed(1)}/5
+          </span>
+        )}
+
         {/* Stage action buttons */}
         {isArchived ? (
           <button
@@ -230,11 +257,16 @@ function IdeaCard({
               <button
                 disabled={stagePending}
                 onClick={handleAdvance}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-border bg-transparent text-faint text-xs font-medium cursor-pointer font-sans transition-colors hover:bg-bg-2 hover:text-strong disabled:opacity-40 disabled:cursor-not-allowed"
+                className={cn(
+                  "inline-flex items-center gap-1 px-2.5 py-1 rounded-full border text-xs font-medium cursor-pointer font-sans transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+                  next === "validated"
+                    ? "border-success/30 bg-success-subtle text-success hover:border-success hover:bg-success-subtle"
+                    : "border-border bg-transparent text-faint hover:bg-bg-2 hover:text-strong",
+                )}
                 title={`Move to ${next}`}
               >
-                <ChevronRight size={12} />
-                {next}
+                {next === "validated" ? <Check size={11} /> : <ChevronRight size={12} />}
+                {next === "validated" ? "Validate" : next}
               </button>
             )}
             <button
@@ -422,6 +454,7 @@ export default function Ideas() {
             >
               <option value="newest">Newest</option>
               <option value="oldest">Oldest</option>
+              <option value="score">Top Score</option>
             </select>
             <div className="flex bg-bg-1 border border-border rounded-md overflow-hidden">
               <button
@@ -449,6 +482,25 @@ export default function Ideas() {
         }
       />
 
+      {/* Pipeline Summary Bar */}
+      {stageCounts.length > 0 && (() => {
+        const ideaCount = stageCounts.find((s) => s.stage === "idea")?.count ?? 0;
+        const validatedCount = stageCounts.find((s) => s.stage === "validated")?.count ?? 0;
+        const archivedCount = stageCounts.find((s) => s.stage === "archived")?.count ?? 0;
+        return (
+          <div className="flex items-center gap-2 mb-3 text-sm text-faint font-mono">
+            <span className="text-strong font-semibold">{ideaCount}</span>
+            <span>ideas</span>
+            <ChevronRight size={13} className="text-border-2" />
+            <span className="text-success font-semibold">{validatedCount}</span>
+            <span>validated</span>
+            <ChevronRight size={13} className="text-border-2" />
+            <span className="text-danger font-semibold">{archivedCount}</span>
+            <span>archived</span>
+          </div>
+        );
+      })()}
+
       {/* Pipeline Funnel */}
       {stageCounts.length > 0 && (
         <div className="flex gap-1.5 flex-wrap mb-5 p-2 bg-bg border border-border rounded-md">
@@ -466,7 +518,8 @@ export default function Ideas() {
             (stage) => {
               const count =
                 stageCounts.find((s) => s.stage === stage)?.count ?? 0;
-              if (count === 0 && stage !== "idea") return null;
+              const alwaysShow = ["idea", "validated", "archived"].includes(stage);
+              if (count === 0 && !alwaysShow) return null;
               return (
                 <button
                   key={stage}
