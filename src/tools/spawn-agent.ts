@@ -9,11 +9,6 @@ import { createLogger } from "../logger";
 import { routeTask } from "../agent/intelligent-router";
 import { classifyTask } from "../agent/task-classifier";
 import type { AgentRunResult } from "../agents/runner";
-import {
-  enqueueTask,
-  completeTask,
-  failTask,
-} from "../agent/queue-manager";
 
 const log = createLogger("tool:spawn-agent");
 
@@ -181,20 +176,6 @@ export function createSpawnAgentTool(
 
       const sessionKey = `${config.currentAgentId}`;
 
-      // Check queue depth before spawning
-      try {
-        const { getSessionQueueStatus } = await import("../agent/queue-manager");
-        const queueStatus = await getSessionQueueStatus(config.sessionId);
-        if (queueStatus.pendingTasks + queueStatus.runningTasks >= 10) {
-          return {
-            output: `Error: too many queued tasks (${queueStatus.pendingTasks} pending, ${queueStatus.runningTasks} running). Wait for some to complete.`,
-            isError: true,
-          };
-        }
-      } catch {
-        // queue check is non-fatal
-      }
-
       const activeCount = config.tracker.countActiveForSession(sessionKey);
       if (activeCount >= currentAgent.subagents.maxChildren) {
         return {
@@ -277,18 +258,6 @@ async function executeSingleAgent(
   });
 
   // --- Attempt execution with retry and escalation (Improvement #5) ---
-
-  // Enqueue for observability (non-fatal)
-  let queueId: string | undefined;
-  try {
-    const taskHash = `${config.sessionId}-${targetAgentId}-${Date.now()}`;
-    queueId = await enqueueTask(taskHash, config.sessionId, routedDomain, task, {
-      preferredAgent: targetAgentId,
-    });
-  } catch {
-    // queue tracking is non-fatal
-  }
-
   try {
     const result = await runWithRetryAndEscalation(
       config,
@@ -307,8 +276,6 @@ async function executeSingleAgent(
 
     await config.tracker.complete(runId, result.text);
 
-    if (queueId) completeTask(queueId, result.text.slice(0, 2000)).catch(() => {});
-
     const meta = [
       "\n---",
       `[Worker: ${result.toolUseCount ?? 0} tool calls, ${result.usage?.inputTokens ?? 0} input / ${result.usage?.outputTokens ?? 0} output tokens]`,
@@ -324,8 +291,6 @@ async function executeSingleAgent(
 
     const message = error instanceof Error ? error.message : String(error);
     await config.tracker.fail(runId, message);
-
-    if (queueId) failTask(queueId, message).catch(() => {});
 
     log.error("Sub-agent failed after retries", { runId, error: message });
     return { output: `Sub-agent error: ${message}`, isError: true };

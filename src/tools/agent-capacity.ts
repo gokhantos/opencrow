@@ -6,7 +6,6 @@
 
 import { createLogger } from "../logger";
 import { getAllAgentCapacity, sampleWorkload } from "../agent/load-balancer";
-import { getQueueDepthByDomain, getQueueStats } from "../agent/queue-manager";
 
 const log = createLogger("agent-capacity-tool");
 
@@ -16,7 +15,6 @@ export interface AgentCapacityToolResult {
     currentLoad: number;
     maxCapacity: number;
     availableCapacity: number;
-    queueDepth: number;
     isAvailable: boolean;
     utilizationPercent: number;
   }>;
@@ -24,24 +22,10 @@ export interface AgentCapacityToolResult {
     totalAgents: number;
     availableAgents: number;
     busyAgents: number;
-    totalQueueDepth: number;
     avgUtilization: number;
-  };
-  queueByDomain: Array<{
-    domain: string;
-    count: number;
-    avgPriority: number;
-  }>;
-  queueStats: {
-    totalEnqueued: number;
-    totalCompleted: number;
-    totalFailed: number;
-    avgWaitTimeSec: number;
-    avgProcessTimeSec: number;
   };
   workload: {
     totalTasks: number;
-    avgQueueDepth: number;
     agentUtilization: Array<{
       agentId: string;
       utilization: number;
@@ -62,7 +46,6 @@ export async function getAgentCapacity(
       currentLoad: c.currentLoad,
       maxCapacity: c.maxCapacity,
       availableCapacity: c.availableCapacity,
-      queueDepth: c.queueDepth,
       isAvailable: c.isAvailable,
       utilizationPercent: Math.round((c.currentLoad / c.maxCapacity) * 100),
     }));
@@ -71,7 +54,6 @@ export async function getAgentCapacity(
     const totalAgents = capacities.length;
     const availableAgents = capacities.filter((c) => c.isAvailable).length;
     const busyAgents = totalAgents - availableAgents;
-    const totalQueueDepth = capacities.reduce((sum, c) => sum + c.queueDepth, 0);
     const avgUtilization =
       totalAgents > 0
         ? capacities.reduce(
@@ -79,12 +61,6 @@ export async function getAgentCapacity(
             0,
           ) / totalAgents
         : 0;
-
-    // Get queue by domain
-    const queueByDomain = await getQueueDepthByDomain();
-
-    // Get queue stats
-    const queueStats = await getQueueStats(window);
 
     // Get workload sample
     const workload = await sampleWorkload(window);
@@ -95,14 +71,10 @@ export async function getAgentCapacity(
         totalAgents,
         availableAgents,
         busyAgents,
-        totalQueueDepth,
         avgUtilization: Math.round(avgUtilization * 100),
       },
-      queueByDomain,
-      queueStats,
       workload: {
         totalTasks: workload.totalTasks,
-        avgQueueDepth: Math.round(workload.avgQueueDepth * 100) / 100,
         agentUtilization: workload.agentUtilization.map((u) => ({
           agentId: u.agentId,
           utilization: Math.round(u.utilization * 100),
@@ -129,9 +101,7 @@ export function formatCapacityResult(
   lines.push(
     `Total: ${result.summary.totalAgents} | Available: ${result.summary.availableAgents} | Busy: ${result.summary.busyAgents}`,
   );
-  lines.push(
-    `Queue Depth: ${result.summary.totalQueueDepth} | Avg Utilization: ${result.summary.avgUtilization}%`,
-  );
+  lines.push(`Avg Utilization: ${result.summary.avgUtilization}%`);
   lines.push("");
 
   // Agents
@@ -140,30 +110,14 @@ export function formatCapacityResult(
     const status = agent.isAvailable ? "✓" : "⊗";
     const bar = "█".repeat(Math.ceil(agent.utilizationPercent / 10));
     lines.push(
-      `  ${status} *${agent.agentId}*: ${agent.currentLoad}/${agent.maxCapacity} [${bar}] ${agent.utilizationPercent}% (queue: ${agent.queueDepth})`,
+      `  ${status} *${agent.agentId}*: ${agent.currentLoad}/${agent.maxCapacity} [${bar}] ${agent.utilizationPercent}%`,
     );
   }
   lines.push("");
 
-  // Queue by domain
-  if (result.queueByDomain.length > 0) {
-    lines.push(`*Queue by Domain:*`);
-    for (const q of result.queueByDomain) {
-      lines.push(
-        `  • ${q.domain}: ${q.count} tasks (avg priority: ${q.avgPriority.toFixed(1)})`,
-      );
-    }
-    lines.push("");
-  }
-
-  // Queue stats
-  lines.push(`*Queue Stats (${window}):*`);
-  lines.push(
-    `  Enqueued: ${result.queueStats.totalEnqueued} | Completed: ${result.queueStats.totalCompleted} | Failed: ${result.queueStats.totalFailed}`,
-  );
-  lines.push(
-    `  Avg Wait: ${result.queueStats.avgWaitTimeSec.toFixed(1)}s | Avg Process: ${result.queueStats.avgProcessTimeSec.toFixed(1)}s`,
-  );
+  // Workload stats
+  lines.push(`*Workload Stats (${window}):*`);
+  lines.push(`  Total Tasks: ${result.workload.totalTasks}`);
 
   return lines.join("\n");
 }
@@ -177,7 +131,7 @@ export function createAgentCapacityTool(): ToolDefinition {
   return {
     name: "agent_capacity",
     description:
-      "Get real-time agent load balancing and capacity information. Shows which agents are available, their current load, queue depth, and utilization. Use this to understand system capacity before spawning new tasks.",
+      "Get real-time agent load balancing and capacity information. Shows which agents are available, their current load, and utilization.",
     inputSchema: {
       type: "object",
       properties: {

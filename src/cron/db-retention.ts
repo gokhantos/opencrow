@@ -69,26 +69,6 @@ export async function runDbRetention(): Promise<RetentionResult> {
     }
   }
 
-  // Special: prune completed/failed tasks older than 7 days
-  try {
-    const taskCutoff = Math.floor(Date.now() / 1000) - 7 * 86400;
-    const taskResult = await db.unsafe(
-      `DELETE FROM task_queue WHERE status IN ('completed', 'failed') AND enqueued_at < $1`,
-      [taskCutoff],
-    );
-    const taskDeleted = taskResult.count ?? 0;
-    if (taskDeleted > 0) {
-      details.push({ table: "task_queue", deleted: taskDeleted });
-      totalDeleted += taskDeleted;
-      log.info("Retention cleanup", { table: "task_queue", deleted: taskDeleted, cutoffDays: 7 });
-    }
-  } catch (err) {
-    log.warn("Retention cleanup failed for table", {
-      table: "task_queue",
-      error: err,
-    });
-  }
-
   // Clean up empty memory sources (sources with zero chunks)
   try {
     const emptyResult = await db`

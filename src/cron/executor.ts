@@ -16,12 +16,6 @@ import { createLogger } from "../logger";
 import { runScoringEngine } from "./scoring-engine";
 import { runWorkloadSampler } from "./workload-sampler";
 import { runFailureClusterCompute } from "./failure-cluster-compute";
-import {
-  enqueueTask,
-  completeTask,
-  failTask,
-} from "../agent/queue-manager";
-
 import { getErrorMessage } from "../lib/error-serialization";
 const IDEA_GEN_AGENTS = new Set([
   "mobile-idea-gen",
@@ -279,17 +273,6 @@ export async function executeCronJob(
   const mode: IdeaGenMode = (isIdeaGen && job.payload.mode) ? job.payload.mode : "pipeline";
   const task = buildTaskMessage(job.payload.message ?? "", isIdeaGen, mode);
 
-  // Enqueue for observability (non-fatal)
-  let queueId: string | undefined;
-  try {
-    const taskHash = `cron-${job.id}-${Date.now()}`;
-    queueId = await enqueueTask(taskHash, job.id, agentId, task, {
-      preferredAgent: agentId,
-    });
-  } catch {
-    // queue tracking is non-fatal
-  }
-
   try {
     const result = await runAgentIsolated({
       agentRegistry: deps.agentRegistry,
@@ -305,8 +288,6 @@ export async function executeCronJob(
         source: "cron" as const,
       },
     });
-
-    if (queueId) completeTask(queueId, result.text.slice(0, 2000)).catch(() => {});
 
     resultSummary = result.text.slice(0, 2000);
 
@@ -373,8 +354,6 @@ export async function executeCronJob(
       status = "error";
       error = msg;
     }
-
-    if (queueId) failTask(queueId, msg).catch(() => {});
 
     log.error("Cron job failed", { jobId: job.id, error: msg });
   } finally {

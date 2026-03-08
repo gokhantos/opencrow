@@ -154,14 +154,6 @@ export function createRouter(routerConfig: RouterConfig) {
       await clearAllSdkSessions(channelName, chatId);
       activeAgents.delete(key);
 
-      // Cancel any pending queued tasks for this session
-      import("../agent/queue-manager")
-        .then(({ cancelSessionTasks }) => cancelSessionTasks(key))
-        .catch((err: unknown) =>
-          log.warn("Failed to cancel queued tasks on /clear", {
-            error: String(err),
-          }),
-        );
       await sendReply(channelName, chatId, "Session cleared. Starting fresh.");
       return;
     }

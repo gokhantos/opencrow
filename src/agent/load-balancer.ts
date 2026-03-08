@@ -12,7 +12,6 @@ export interface AgentCapacity {
   currentLoad: number;
   maxCapacity: number;
   availableCapacity: number;
-  queueDepth: number;
   avgTaskDurationSec: number;
   isAvailable: boolean;
   lastUpdated: Date;
@@ -73,16 +72,6 @@ export async function getAllAgentCapacity(
       GROUP BY subagent_id
     `;
 
-    // Get queue depths per agent (tasks assigned but not started)
-    const queueDepths = await db`
-      SELECT
-        preferred_agent as agent_id,
-        COUNT(*) as queue_count
-      FROM task_queue
-      WHERE started_at IS NULL AND status = 'pending'
-      GROUP BY preferred_agent
-    `;
-
     // Build capacity map
     const capacityMap = new Map<string, AgentCapacity>();
 
@@ -90,38 +79,16 @@ export async function getAllAgentCapacity(
     for (const row of activeTasks || []) {
       const agentId = row.subagent_id;
       const currentLoad = Number(row.active_count);
-      const queueDepth =
-        queueDepths?.find(
-          (q: { agent_id: string; queue_count: unknown }) =>
-            q.agent_id === agentId,
-        )?.queue_count || 0;
 
       capacityMap.set(agentId, {
         agentId,
         currentLoad,
         maxCapacity: config.maxConcurrentTasks,
         availableCapacity: Math.max(0, config.maxConcurrentTasks - currentLoad),
-        queueDepth: Number(queueDepth),
         avgTaskDurationSec: Number(row.avg_duration) || 60,
         isAvailable: currentLoad < config.maxConcurrentTasks,
         lastUpdated: new Date(),
       });
-    }
-
-    // Add agents from queue that have no active tasks
-    for (const row of queueDepths || []) {
-      if (!capacityMap.has(row.agent_id)) {
-        capacityMap.set(row.agent_id, {
-          agentId: row.agent_id,
-          currentLoad: 0,
-          maxCapacity: config.maxConcurrentTasks,
-          availableCapacity: config.maxConcurrentTasks,
-          queueDepth: Number(row.queue_count),
-          avgTaskDurationSec: 60,
-          isAvailable: true,
-          lastUpdated: new Date(),
-        });
-      }
     }
 
     return Array.from(capacityMap.values());
@@ -160,20 +127,7 @@ export async function selectAgentByCapacity(
   const availableAgents = capacities.filter((c) => c.isAvailable);
 
   if (availableAgents.length === 0) {
-    // All agents at capacity - find one with shortest queue
-    const leastLoaded = capacities.sort(
-      (a, b) => a.queueDepth - b.queueDepth,
-    )[0];
-
-    if (leastLoaded) {
-      return {
-        agentId: leastLoaded.agentId,
-        reason: `All agents at capacity, ${leastLoaded.agentId} has shortest queue (${leastLoaded.queueDepth} tasks)`,
-        estimatedWaitSec:
-          leastLoaded.queueDepth * leastLoaded.avgTaskDurationSec,
-      };
-    }
-
+    // All agents at capacity - return null
     return null;
   }
 
@@ -198,7 +152,7 @@ export async function selectAgentByCapacity(
 
   return {
     agentId: bestAgent.agentId,
-    reason: `Highest available capacity: ${bestAgent.availableCapacity}/${bestAgent.maxCapacity} (load: ${bestAgent.currentLoad}, queue: ${bestAgent.queueDepth})`,
+    reason: `Highest available capacity: ${bestAgent.availableCapacity}/${bestAgent.maxCapacity} (load: ${bestAgent.currentLoad})`,
     estimatedWaitSec: 0, // Available immediately
   };
 }
@@ -237,7 +191,6 @@ export async function updateAgentLoad(
  */
 export async function sampleWorkload(window: string = "1h"): Promise<{
   totalTasks: number;
-  avgQueueDepth: number;
   agentUtilization: Array<{ agentId: string; utilization: number }>;
 }> {
   const db = getDb();
@@ -252,14 +205,6 @@ export async function sampleWorkload(window: string = "1h"): Promise<{
       WHERE created_at >= NOW() - (${hours} * INTERVAL '1 hour')
     `;
     const totalTasks = Number(totalResult?.[0]?.count || 0);
-
-    // Average queue depth
-    const queueResult = await db`
-      SELECT AVG(queue_depth) as avg_depth
-      FROM workload_history
-      WHERE sampled_at >= NOW() - (${hours} * INTERVAL '1 hour')
-    `;
-    const avgQueueDepth = Number(queueResult?.[0]?.avg_depth || 0);
 
     // Agent utilization
     const utilizationResult = await db`
@@ -280,14 +225,12 @@ export async function sampleWorkload(window: string = "1h"): Promise<{
 
     return {
       totalTasks,
-      avgQueueDepth,
       agentUtilization,
     };
   } catch (err) {
     log.warn("Failed to sample workload", { error: String(err) });
     return {
       totalTasks: 0,
-      avgQueueDepth: 0,
       agentUtilization: [],
     };
   }
