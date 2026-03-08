@@ -31,8 +31,8 @@ export function buildThinkingOptions(
     result.thinking = { type: "disabled" };
   }
 
-  // Effort level
-  if (params?.effort) {
+  // Effort level — only supported on claude-opus-4-6
+  if (params?.effort && options.model?.toLowerCase().includes("opus")) {
     result.effort = params.effort;
   }
 

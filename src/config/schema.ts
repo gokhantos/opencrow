@@ -72,7 +72,7 @@ export const modelParamsSchema = z.object({
   /** Fixed thinking budget in tokens (only used when thinkingMode='enabled') */
   thinkingBudget: z.number().int().min(1024).default(128_000),
   /** Effort level: how hard the model works on reasoning */
-  effort: z.enum(["low", "medium", "high", "max"]).default("max"),
+  effort: z.enum(["low", "medium", "high", "max"]).optional(),
   /** Enable 1M context window beta (Sonnet 4/4.5 only) */
   extendedContext: z.boolean().default(false),
   /** Max spend per query in USD */
