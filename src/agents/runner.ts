@@ -84,29 +84,10 @@ export async function runAgentIsolated(
     contextBlock = `## Prior Agent Results\n${sections.join("\n\n")}`;
   }
 
-  // Inject relevant reflections (lessons from past failures)
-  let reflectionBlock = "";
-  try {
-    const { getRelevantReflections } = await import(
-      "../agent/reflection/postmortem"
-    );
-    const reflections = await getRelevantReflections(input.agentId, 3);
-    if (reflections.length > 0) {
-      const lessons = reflections
-        .flatMap((r) => r.lessonsLearned)
-        .slice(0, 5);
-      if (lessons.length > 0) {
-        reflectionBlock = `## Lessons from Past Runs\n${lessons.map((l) => `- ${l}`).join("\n")}`;
-      }
-    }
-  } catch {
-    // Reflection lookup is best-effort
-  }
-
-  // Build system prompt: prompt file (if exists) or inline prompt + memories + context + reflections
+  // Build system prompt: prompt file (if exists) or inline prompt + memories + context
   const loadedPrompt = await buildSubAgentPrompt(input.agentId);
   const agentPrompt = loadedPrompt ?? agent.systemPrompt;
-  const basePrompt = [agentPrompt, memoryBlock, contextBlock, reflectionBlock]
+  const basePrompt = [agentPrompt, memoryBlock, contextBlock]
     .filter(Boolean)
     .join("\n\n");
   const systemPrompt = input.buildSystemPrompt

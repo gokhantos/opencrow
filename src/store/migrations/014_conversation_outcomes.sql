@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS agent_score_adjustments (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     agent_id TEXT NOT NULL,
     domain TEXT,
-    adjustment_type TEXT NOT NULL CHECK(adjustment_type IN ('outcome_bonus', 'revision_penalty', 'survey_bonus', 'survey_penalty', 'timeout_penalty')),
+    adjustment_type TEXT NOT NULL CHECK(adjustment_type IN ('outcome_bonus', 'revision_penalty', 'timeout_penalty')),
     adjustment_value REAL NOT NULL,
     reason TEXT NOT NULL,
     session_id TEXT,

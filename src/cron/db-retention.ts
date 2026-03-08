@@ -20,7 +20,6 @@ const RETENTION_RULES: ReadonlyArray<{
   { table: "task_classification", column: "created_at", format: "timestamptz", days: 60 },
   { table: "routing_decisions", column: "created_at", format: "timestamptz", days: 60 },
   { table: "failure_records", column: "created_at", format: "timestamptz", days: 90 },
-  { table: "learning_events", column: "created_at", format: "timestamptz", days: 90 },
   { table: "self_reflection_logs", column: "created_at", format: "timestamptz", days: 60 },
   { table: "prediction_records", column: "created_at", format: "timestamptz", days: 60 },
   { table: "workload_history", column: "sampled_at", format: "timestamptz", days: 30 },

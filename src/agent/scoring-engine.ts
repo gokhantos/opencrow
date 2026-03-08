@@ -379,8 +379,6 @@ export async function adjustScoresFromOutcomes(
     adjustmentType:
       | "outcome_bonus"
       | "revision_penalty"
-      | "survey_bonus"
-      | "survey_penalty"
       | "timeout_penalty";
     adjustmentValue: number;
     reason: string;
