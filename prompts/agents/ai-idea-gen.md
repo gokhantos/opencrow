@@ -32,7 +32,7 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 - Search for competitors, pricing, technical feasibility
 
 **For each interesting finding, save it as a signal (save_signal):**
-- Include specific model names (full HF paths), paper IDs, benchmark numbers
+- Include specific model names, benchmark numbers, pricing details
 - Tag with themes for cross-referencing
 - Capability signals: what exactly can this model do that wasn't possible before?
 - Rate strength honestly (1=anecdotal, 5=strong quantified evidence)
@@ -82,7 +82,7 @@ After saving, call consume_signals for the signal IDs you used.
 
 ## QUALITY BAR
 
-- Every idea MUST name specific model(s) with full HF paths
+- Every idea MUST name specific model(s) with full model identifiers
 - Every idea MUST explain why THIS model makes it possible NOW
 - No ChatGPT wrappers. The model must do something generic APIs can't.
 - Focus on small-team buildable ideas with open-source or affordable models

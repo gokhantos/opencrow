@@ -77,35 +77,6 @@ const OBSERVABILITY_TOOLS = [
   "search_observations",
 ] as const;
 
-const DEFI_TOOLS = [
-  "get_defi_movers",
-  "get_chain_tvls",
-  "get_chain_metrics",
-  "get_chain_tvl_history",
-  "search_defi",
-  "get_yield_pools",
-  "get_bridges",
-  "get_defi_hacks",
-  "get_emissions",
-  "get_defi_categories",
-  "get_stablecoins",
-  "get_treasury",
-  "get_protocol_detail",
-  "get_global_defi_metrics",
-] as const;
-
-const DEX_TOOLS = [
-  "get_dex_pairs",
-  "get_dex_new_pairs",
-  "get_dex_movers",
-  "get_dex_boosted",
-  "search_dex",
-  "get_trending_tokens",
-  "get_new_tokens",
-  "search_tokens",
-  "token_stats",
-] as const;
-
 const MARKET_TOOLS = [
   "get_price",
   "market_summary",
@@ -167,7 +138,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
     id: "ai-idea-gen",
     name: "AI Idea Generator",
     description:
-      "Deep-research agent that discovers trending AI models, papers, and cross-references with HN, Product Hunt, Reddit, and news to generate AI-powered app ideas.",
+      "Deep-research agent that synthesizes signals from X, HN, Product Hunt, Reddit, GitHub, and news to generate AI-powered app ideas.",
     model: "claude-sonnet-4-6",
     maxIterations: 40,
     stateless: true,
@@ -218,7 +189,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
     id: "crypto-analyst",
     name: "Crypto Analyst",
     description:
-      "Crypto market analyst with full access to DeFi, DEX, futures, and market data. Analyzes trends, finds opportunities, and tracks portfolio signals.",
+      "Crypto market analyst that researches trends, finds opportunities, and tracks signals via news, social media, market data, and web research.",
     model: "claude-sonnet-4-6",
     maxIterations: 50,
     stateless: true,
@@ -227,8 +198,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
       mode: "allowlist",
       tools: [
         ...MEMORY_TOOLS,
-        ...DEFI_TOOLS,
-        ...DEX_TOOLS,
         ...MARKET_TOOLS,
         ...SIGNAL_TOOLS,
         ...IDEA_TOOLS,
@@ -251,7 +220,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
     id: "crypto-idea-gen",
     name: "Crypto Idea Generator",
     description:
-      "Generates crypto/DeFi project ideas by cross-referencing on-chain data, market trends, news, and community signals.",
+      "Generates crypto/web3 project ideas by cross-referencing market data, news, community signals, and web research.",
     model: "claude-sonnet-4-6",
     maxIterations: 40,
     stateless: true,
@@ -267,8 +236,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...HN_TOOLS,
         ...PRODUCT_TOOLS,
         ...CROSS_SOURCE_TOOLS,
-        ...DEFI_TOOLS,
-        ...DEX_TOOLS,
         ...MARKET_TOOLS,
         ...OBSERVABILITY_TOOLS,
       ],

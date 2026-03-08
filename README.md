@@ -20,7 +20,7 @@ A self-hosted multi-agent AI platform that orchestrates specialized agents acros
 ## What Can OpenCrow Do?
 
 - **Run AI agents** on Telegram, WhatsApp, and web — each with its own persona, model, tools, and memory
-- **Scrape 15 data sources** autonomously — HackerNews, Reddit, GitHub, X/Twitter, App Store, Play Store, DeFi protocols, crypto tokens, news, and more
+- **Scrape data sources** autonomously — HackerNews, Reddit, GitHub, X/Twitter, App Store, Play Store, news, and more
 - **Remember everything** — conversations, facts, and observations are indexed into vector memory and recalled across sessions
 - **Generate ideas** — research agents collect signals, ideation agents synthesize them into product/crypto/AI startup ideas on a schedule
 - **Monitor markets** — real-time crypto derivatives via Binance WebSocket (prices, liquidations, open interest, technical indicators)
@@ -175,21 +175,6 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 | `get_news_digest` / `search_news` | Multi-source news articles |
 | `get_calendar` | Economic calendar events with filtering |
 | `cross_source_search` | Search across ALL 19 indexed source types in one call |
-
-### Crypto & DeFi
-| Tool | Description |
-|------|-------------|
-| `token_stats` | Aggregate token statistics by chain, trending vs new |
-| `search_defi` | DeFi protocols by TVL |
-| `get_defi_movers` | Top moving DeFi protocols by TVL change (24h) |
-| `get_chain_tvls` / `get_chain_metrics` / `get_chain_tvl_history` | Chain-level TVL, fees, DEX volume, stablecoin data, time series |
-| `get_yield_pools` | Top yield pools by APY and TVL |
-| `get_bridges` | Bridge volumes ranked by 24h volume |
-| `get_defi_hacks` | Historical DeFi exploits and hack database |
-| `get_emissions` | Token unlock schedules |
-| `get_stablecoins` / `get_treasury` | Stablecoin data and protocol treasury breakdowns |
-| `get_protocol_detail` | Deep protocol info (symbol, MCap, fees, revenue, raises, Twitter) |
-| `get_defi_categories` / `get_global_defi_metrics` | Category breakdowns and aggregated DeFi overview |
 
 ### Markets & Trading
 | Tool | Description |

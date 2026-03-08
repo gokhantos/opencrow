@@ -14,30 +14,22 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 - IDEAS come from real-world signals: crypto news, X/Twitter (CT), Reddit. What are traders/builders frustrated about? What regulatory changes just happened? What market dynamics are shifting?
 - GitHub repos and ZK libraries are TOOLS — they help you build things but are NOT idea sources. Start with the PROBLEM, then find the primitive.
 
-**Step 1 — On-chain & DeFi intelligence (MANDATORY every run):**
-- Call `get_defi_movers` to spot protocols with biggest TVL swings — where is money flowing?
-- Call `get_yield_pools` to find yield anomalies and new farming opportunities
-- Call `get_defi_hacks` to see recent exploits — every hack reveals a structural problem worth solving
-- Call `get_bridges` to check bridge volumes — cross-chain activity signals emerging needs
-- Call `get_emissions` to see upcoming token unlocks — these create trading and product opportunities
-- Call `get_chain_metrics` to compare chain-level fees, DEX volume, stablecoin flows
-
-**Step 2 — Token & market signals (MANDATORY every run):**
-- Call `get_trending_tokens` to see what's gaining genuine momentum on DEXs
-- Call `get_new_tokens` to spot emerging narratives from newly launched tokens
-- Call `get_global_defi_metrics` for the macro DeFi picture (total fees, revenue, volume)
-
-**Step 3 — Community & discourse (MANDATORY every run):**
+**Step 1 — Community & discourse (MANDATORY every run):**
 - Call `get_reddit_digest` filtering for crypto subreddits (r/defi, r/cryptocurrency, r/ethfinance, r/solana)
 - Call `search_reddit` with queries like "why doesn't DeFi have", "protocol problem", "missing in crypto"
 - Call `get_timeline_digest` to see what crypto twitter is discussing
 - Call `search_x_timeline` with queries like "protocol frustration", "why can't I", "DeFi UX broken"
 - Call `get_news_digest` for crypto news — regulatory changes, protocol launches, hacks
 
-**Step 4 — Deep dive with WebSearch (SUPPLEMENTARY):**
-- Use WebSearch and WebFetch to go deeper on promising signals from steps 1–3
-- Search for competitors, governance proposals, protocol documentation
+**Step 2 — On-chain & market intelligence via web (MANDATORY every run):**
+- Use WebSearch to find DeFi TVL movers, yield anomalies, recent exploits/hacks, bridge volumes
+- Search for token unlock schedules, chain-level fee comparisons, DEX volume shifts
+- Search for trending tokens and emerging narratives from newly launched projects
 - Check economic calendar (`get_calendar`) for macro events affecting crypto
+
+**Step 3 — Deep dive with WebSearch (SUPPLEMENTARY):**
+- Use WebSearch and WebFetch to go deeper on promising signals from steps 1–2
+- Search for competitors, governance proposals, protocol documentation
 
 **For each interesting finding, save it as a signal (save_signal):**
 - Be SPECIFIC: protocol names, TVL numbers, governance proposal IDs, exploit amounts
