@@ -252,28 +252,6 @@ export default function Markets() {
     localStorage.setItem("markets:alerts", JSON.stringify(alerts));
   }, [alerts]);
 
-  // Check price alerts on every tick
-  useEffect(() => {
-    if (currentPrice === null) return;
-    const toTrigger = alerts.filter((a) => {
-      if (a.symbol !== symbol) return false;
-      if (triggeredIds.current.has(a.id)) return false;
-      return a.direction === "above"
-        ? currentPrice >= a.targetPrice
-        : currentPrice <= a.targetPrice;
-    });
-    if (toTrigger.length === 0) return;
-    for (const a of toTrigger) {
-      triggeredIds.current.add(a.id);
-      const ticker = a.symbol.split("/")[0] ?? a.symbol;
-      toast.success(
-        `${ticker} alert: price ${a.direction === "above" ? "≥" : "≤"} ${formatPrice(a.targetPrice)}`,
-      );
-    }
-    const triggeredSet = new Set(toTrigger.map((a) => a.id));
-    setAlerts((prev) => prev.filter((a) => !triggeredSet.has(a.id)));
-  }, [currentPrice, symbol, alerts]);
-
   useEffect(() => {
     setHoursMultiplier(1);
   }, [symbol, timeframe, marketType]);
@@ -295,6 +273,29 @@ export default function Markets() {
   const matchedLive =
     liveCandle && liveCandle.symbol === symbol ? liveCandle : null;
   const currentPrice = matchedLive?.close ?? summary?.price ?? null;
+
+  // Check price alerts on every tick (must be after currentPrice is declared)
+  useEffect(() => {
+    if (currentPrice === null) return;
+    const toTrigger = alerts.filter((a) => {
+      if (a.symbol !== symbol) return false;
+      if (triggeredIds.current.has(a.id)) return false;
+      return a.direction === "above"
+        ? currentPrice >= a.targetPrice
+        : currentPrice <= a.targetPrice;
+    });
+    if (toTrigger.length === 0) return;
+    for (const a of toTrigger) {
+      triggeredIds.current.add(a.id);
+      const ticker = a.symbol.split("/")[0] ?? a.symbol;
+      toast.success(
+        `${ticker} alert: price ${a.direction === "above" ? "≥" : "≤"} ${formatPrice(a.targetPrice)}`,
+      );
+    }
+    const triggeredSet = new Set(toTrigger.map((a) => a.id));
+    setAlerts((prev) => prev.filter((a) => !triggeredSet.has(a.id)));
+  }, [currentPrice, symbol, alerts]);
+
   const titleSymbol = symbol.replace("/", "");
   const docTitle =
     currentPrice !== null

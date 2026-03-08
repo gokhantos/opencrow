@@ -1180,7 +1180,7 @@ export function AgentFormModal({
                 </div>
               </div>
             </div>
-          )
+          )}
         </div>
 
         {/* Footer */}

@@ -84,7 +84,7 @@ const STAGE_STYLES: Record<PipelineStage, string> = {
 function nextStage(current: string): PipelineStage | null {
   const idx = STAGE_ORDER.indexOf(current as PipelineStage);
   if (idx < 0 || idx >= STAGE_ORDER.indexOf("archived")) return null;
-  return STAGE_ORDER[idx + 1];
+  return STAGE_ORDER[idx + 1] ?? null;
 }
 
 export function computeRatingCounts(ideas: readonly GeneratedIdea[]) {
