@@ -565,7 +565,7 @@ export default function Ideas() {
           description={
             searchQuery
               ? `No ideas match "${searchQuery}". Try a different search term.`
-              : "Ideas are generated every 6 hours via cron, or you can chat directly with the idea generator bots on Telegram."
+              : "Ideas are generated 3× daily via cron, or you can chat directly with the idea generator bots on Telegram."
           }
         />
       ) : (

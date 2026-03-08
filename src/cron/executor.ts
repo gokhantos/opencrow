@@ -9,9 +9,9 @@ import type { ProgressEvent } from "../agent/types";
 import { runAgentIsolated } from "../agents/runner";
 import { computeNextRunAt } from "./schedule";
 import { getIdeasSince } from "../sources/ideas/store";
-import { getRecentSignals, archiveStaleSignals } from "../sources/ideas/signals-store";
+import { archiveStaleSignals } from "../sources/ideas/signals-store";
 import { formatIdeasMessage } from "./format-ideas";
-import { formatSignalsMessage } from "./format-signals";
+
 import { createLogger } from "../logger";
 import { runScoringEngine } from "./scoring-engine";
 import { runWorkloadSampler } from "./workload-sampler";
@@ -275,7 +275,7 @@ export async function executeCronJob(
   let error: string | null = null;
 
   const isIdeaGen = IDEA_GEN_AGENTS.has(agentId);
-  const mode: IdeaGenMode = (isIdeaGen && job.payload.mode) ? job.payload.mode : "full";
+  const mode: IdeaGenMode = (isIdeaGen && job.payload.mode) ? job.payload.mode : "pipeline";
   const task = buildTaskMessage(job.payload.message ?? "", isIdeaGen, mode);
 
   // Enqueue for observability (non-fatal)
@@ -314,51 +314,41 @@ export async function executeCronJob(
     let preformatted = false;
 
     if (isIdeaGen) {
-      if (mode === "research") {
-        // Research mode: report signals saved, not ideas
-        const signals = await getRecentSignals(agentId, 20);
-        const recentSignals = signals.filter((s) => s.created_at >= startedAt);
-        if (recentSignals.length > 0) {
-          deliveryText = formatSignalsMessage(job.name, recentSignals);
-          preformatted = true;
-        }
-      } else {
-        // Ideation or full mode: report ideas generated
-        const ideas = await getIdeasSince(agentId, startedAt);
-        if (ideas.length > 0) {
-          deliveryText = formatIdeasMessage(job.name, ideas);
-          preformatted = true;
+      // Pipeline and full mode: report ideas generated
+      const ideas = await getIdeasSince(agentId, startedAt);
+      if (ideas.length > 0) {
+        deliveryText = formatIdeasMessage(job.name, ideas);
+        preformatted = true;
 
-          // Chain validator: validate freshly generated ideas immediately
-          try {
-            log.info("Chaining idea-validator after ideation", {
-              agentId,
-              ideaCount: ideas.length,
-            });
-            const validatorResult = await runAgentIsolated({
-              agentRegistry: deps.agentRegistry,
-              baseToolRegistry: deps.baseToolRegistry,
-              agentId: "idea-validator",
-              task: "Validate unvalidated ideas. Process up to 10 ideas in the 'idea' stage.",
-              buildRegistryForAgent: deps.buildRegistryForAgent,
-              buildSystemPrompt: deps.buildSystemPrompt,
-              usageContext: {
-                channel: "cron",
-                chatId: job.id,
-                source: "cron" as const,
-              },
-            });
-            log.info("Idea-validator completed", {
-              agentId,
-              summary: validatorResult.text.slice(0, 200),
-            });
+        // Chain validator: validate freshly generated ideas immediately
+        try {
+          log.info("Chaining idea-validator after pipeline", {
+            agentId,
+            ideaCount: ideas.length,
+          });
+          const validatorResult = await runAgentIsolated({
+            agentRegistry: deps.agentRegistry,
+            baseToolRegistry: deps.baseToolRegistry,
+            agentId: "idea-validator",
+            task: "Validate unvalidated ideas. Process up to 10 ideas in the 'idea' stage.",
+            buildRegistryForAgent: deps.buildRegistryForAgent,
+            buildSystemPrompt: deps.buildSystemPrompt,
+            usageContext: {
+              channel: "cron",
+              chatId: job.id,
+              source: "cron" as const,
+            },
+          });
+          log.info("Idea-validator completed", {
+            agentId,
+            summary: validatorResult.text.slice(0, 200),
+          });
 
-            // Append validator summary to delivery
-            deliveryText += "\n\n─── Validation ───\n" + validatorResult.text.slice(0, 1500);
-          } catch (validatorErr) {
-            const msg = validatorErr instanceof Error ? validatorErr.message : String(validatorErr);
-            log.error("Idea-validator failed (non-fatal)", { agentId, error: msg });
-          }
+          // Append validator summary to delivery
+          deliveryText += "\n\n─── Validation ───\n" + validatorResult.text.slice(0, 1500);
+        } catch (validatorErr) {
+          const msg = validatorErr instanceof Error ? validatorErr.message : String(validatorErr);
+          log.error("Idea-validator failed (non-fatal)", { agentId, error: msg });
         }
       }
     }
@@ -456,13 +446,13 @@ export async function executeCronJob(
   };
 }
 
+const PIPELINE_MODE_INSTRUCTION =
+  "Run in PIPELINE MODE. Execute all phases: Phase 1 (dedup), Phase 2 (research & save signals), Phase 3 (synthesis), Phase 4 (ideation & self-critique), Phase 5 (save ideas). After saving ideas, consume the signals you used.";
+
 const MODE_INSTRUCTIONS: Record<IdeaGenMode, string> = {
-  research:
-    "Run in RESEARCH MODE. Focus entirely on Phase 1 (dedup check) and Phase 2 (deep research). Save signals liberally using save_signal. Do NOT generate or save ideas — just accumulate raw research signals.",
-  ideation:
-    "Run in IDEATION MODE. Focus on Phase 1 (dedup check), Phase 3 (synthesis from accumulated signals), Phase 4 (ideation & self-critique), and Phase 5 (save ideas). Use get_signals and get_signal_themes to read your accumulated research. Do NOT do broad research — work from your signal backlog.",
-  full:
-    "Run in FULL MODE. Execute all phases: Phase 1 (dedup), Phase 2 (research & save signals), Phase 3 (synthesis), Phase 4 (ideation & self-critique), Phase 5 (save ideas). After saving ideas, consume the signals you used.",
+  pipeline: PIPELINE_MODE_INSTRUCTION,
+  // "full" is kept as an alias for "pipeline" — identical behaviour
+  full: PIPELINE_MODE_INSTRUCTION,
 };
 
 function buildTaskMessage(

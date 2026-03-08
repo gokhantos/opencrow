@@ -62,37 +62,6 @@ const IDEA_GEN_AGENTS = [
   "oss-idea-gen",
 ] as const;
 
-type IdeaGenAgentId = (typeof IDEA_GEN_AGENTS)[number];
-
-interface IdeaCronJobSpec {
-  readonly name: string;
-  readonly agentId: IdeaGenAgentId;
-  readonly schedule: string;
-  readonly mode: "research" | "ideation";
-  readonly logLabel: string;
-}
-
-function buildIdeaCronJobSpecs(): IdeaCronJobSpec[] {
-  return IDEA_GEN_AGENTS.flatMap((agentId) => {
-    const label = agentId.replace(/-/g, " ").replace(" gen", "");
-    return [
-      {
-        name: `${agentId}-research`,
-        agentId,
-        schedule: "0 0,4,8,12,16,20 * * *",
-        mode: "research" as const,
-        logLabel: `${label} research (every 4h)`,
-      },
-      {
-        name: `${agentId}-ideation`,
-        agentId,
-        schedule: "0 6,18 * * *",
-        mode: "ideation" as const,
-        logLabel: `${label} ideation (9AM/9PM UTC+3)`,
-      },
-    ];
-  });
-}
 
 async function seedIdeaGenJobs(opts: {
   cronStore: CronStore;
@@ -103,86 +72,58 @@ async function seedIdeaGenJobs(opts: {
 }): Promise<void> {
   const { cronStore, existingJobs, primaryTelegramUser, agentBotChannels } = opts;
 
-  // Research: every 4h (UTC: 0,4,8,12,16,20) — accumulate signals
-  // Ideation: twice daily (UTC: 6,18 = 9AM/9PM UTC+3) — synthesize signals into ideas
-  // Research runs 2h before ideation so fresh signals are ready
+  // Migrate: remove old -research and -ideation jobs
+  const legacySuffixes = ["-research", "-ideation"];
+  for (const job of existingJobs) {
+    const isLegacy = IDEA_GEN_AGENTS.some((agentId) =>
+      legacySuffixes.some((suffix) => job.name === `${agentId}${suffix}`),
+    );
+    if (isLegacy) {
+      await cronStore.removeJob(job.id);
+      log.info("Removed legacy idea-gen cron job", { name: job.name, id: job.id });
+    }
+  }
 
-  for (const job of buildIdeaCronJobSpecs()) {
-    const existing = existingJobs.find((j) => j.name === job.name);
+  // Seed single pipeline job per agent (3x/day: 06:00, 14:00, 22:00 UTC)
+  for (const agentId of IDEA_GEN_AGENTS) {
+    const jobName = `${agentId}-pipeline`;
+    const existing = existingJobs.find((j) => j.name === jobName);
+    if (existing) continue;
 
-    if (!existing) {
-      const hasAgentBot = agentBotChannels.has(job.agentId);
-      const delivery =
-        primaryTelegramUser && hasAgentBot
+    const hasAgentBot = agentBotChannels.has(agentId);
+    const delivery =
+      primaryTelegramUser && hasAgentBot
+        ? {
+            mode: "announce" as const,
+            channel: `telegram:${agentId}`,
+            chatId: String(primaryTelegramUser),
+          }
+        : primaryTelegramUser
           ? {
               mode: "announce" as const,
-              channel: `telegram:${job.agentId}`,
+              channel: "telegram",
               chatId: String(primaryTelegramUser),
             }
-          : primaryTelegramUser
-            ? {
-                mode: "announce" as const,
-                channel: "telegram",
-                chatId: String(primaryTelegramUser),
-              }
-            : { mode: "none" as const };
+          : { mode: "none" as const };
 
-      await cronStore.addJob({
-        name: job.name,
-        enabled: true,
-        schedule: { kind: "cron", expr: job.schedule },
-        payload: {
-          kind: "agentTurn",
-          agentId: job.agentId,
-          mode: job.mode,
-        },
-        delivery,
-      });
-      log.info(`Registered ${job.logLabel} cron job`, {
-        agentId: job.agentId,
-        mode: job.mode,
-        delivery: delivery.mode,
-        channel:
-          delivery.mode === "announce"
-            ? (delivery as { channel: string }).channel
-            : "none",
-      });
-    } else if (existing.payload.kind === "agentTurn") {
-      // Sync mode and delivery channel for existing jobs
-      const hasAgentBot = agentBotChannels.has(job.agentId);
-      const expectedChannel = hasAgentBot ? `telegram:${job.agentId}` : "telegram";
+    await cronStore.addJob({
+      name: jobName,
+      enabled: true,
+      schedule: { kind: "cron", expr: "0 6,14,22 * * *" },
+      payload: {
+        kind: "agentTurn",
+        agentId,
+        mode: "pipeline",
+      },
+      delivery,
+    });
 
-      const needsModeUpdate = existing.payload.mode !== job.mode;
-      const needsDeliveryUpdate =
-        primaryTelegramUser &&
-        existing.delivery.mode === "announce" &&
-        existing.delivery.channel !== expectedChannel;
-
-      if (needsModeUpdate || needsDeliveryUpdate) {
-        await cronStore.updateJob(existing.id, {
-          ...(needsModeUpdate && {
-            payload: {
-              kind: "agentTurn" as const,
-              agentId: job.agentId,
-              mode: job.mode,
-            },
-          }),
-          ...(needsDeliveryUpdate && {
-            delivery: {
-              mode: "announce" as const,
-              channel: expectedChannel,
-              chatId: String(primaryTelegramUser),
-            },
-          }),
-        });
-        log.info(`Updated ${job.name} cron job`, {
-          agentId: job.agentId,
-          mode: job.mode,
-          modeUpdated: needsModeUpdate,
-          deliveryUpdated: needsDeliveryUpdate,
-        });
-      }
-    }
+    const label = agentId.replace(/-/g, " ").replace(" gen", "");
+    log.info(`Registered ${label} pipeline cron job (3x/day)`, {
+      agentId,
+      delivery: delivery.mode,
+      channel: delivery.mode === "announce" ? (delivery as { channel: string }).channel : "none",
+    });
   }
 }
 

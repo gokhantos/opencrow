@@ -111,9 +111,9 @@ export function createCronTool(config: CronToolConfig): ToolDefinition {
         },
         mode: {
           type: "string",
-          enum: ["research", "ideation", "full"],
+          enum: ["pipeline", "full"],
           description:
-            "For idea-gen agents only. research = save signals only, ideation = synthesize signals into ideas, full = research + ideation.",
+            "For idea-gen agents only. pipeline = research + ideation in one run (default), full = same as pipeline.",
         },
       },
       required: ["action"],
@@ -239,7 +239,7 @@ async function handleAdd(
     message,
     agentId: (input.agent_id as string) ?? config.currentAgentId,
     timeoutSeconds: (input.timeout_seconds as number) ?? undefined,
-    mode: mode === "research" || mode === "ideation" || mode === "full"
+    mode: mode === "pipeline" || mode === "full"
       ? mode
       : undefined,
   };
@@ -288,21 +288,25 @@ async function handleUpdate(
   if (!jobId) return { output: "Error: job_id is required", isError: true };
 
   const store = getStore();
+  const existing = await store.getJob(jobId);
+  if (!existing) return { output: `Error: job not found: ${jobId}`, isError: true };
+
+  const existingPayload = existing.payload;
   const patch: CronJobPatch = {
     name: input.name as string | undefined,
     enabled: input.enabled as boolean | undefined,
     schedule: input.schedule_kind
       ? (buildSchedule(input) ?? undefined)
       : undefined,
-    payload: input.message
+    payload: (input.message || input.agent_id || input.timeout_seconds || input.mode)
       ? {
           kind: "agentTurn",
-          message: input.message as string,
-          agentId: input.agent_id as string | undefined,
-          timeoutSeconds: input.timeout_seconds as number | undefined,
-          mode: (input.mode === "research" || input.mode === "ideation" || input.mode === "full")
+          message: (input.message as string | undefined) ?? existingPayload?.message ?? "",
+          agentId: (input.agent_id as string | undefined) ?? existingPayload?.agentId,
+          timeoutSeconds: (input.timeout_seconds as number | undefined) ?? existingPayload?.timeoutSeconds,
+          mode: (input.mode === "pipeline" || input.mode === "full")
             ? input.mode as CronPayload["mode"]
-            : undefined,
+            : existingPayload?.mode,
         }
       : undefined,
   };
