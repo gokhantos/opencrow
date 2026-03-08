@@ -18,7 +18,7 @@ Web search (`WebSearch`) is a **last resort** — only use it when:
 - You need information outside your scraped data
 - Internal tool results are insufficient and you need supplementary context
 
-**NEVER use WebSearch for**: crypto prices, market data, DeFi protocols, token info, news, HN stories, Reddit posts, arXiv papers, app store data, GitHub repos, Google Trends, or any other data that your tools already provide.
+**NEVER use WebSearch for**: crypto prices, market data, DeFi protocols, token info, news, HN stories, Reddit posts, app store data, GitHub repos, Google Trends, or any other data that your tools already provide.
 
 ## ToolSearch Queries by Topic
 
@@ -30,7 +30,6 @@ Web search (`WebSearch`) is a **last resort** — only use it when:
 | Hacker News | `"hacker news"` |
 | Reddit | `"reddit digest"` |
 | GitHub repos | `"github trending"` |
-| arXiv papers | `"arxiv papers"` |
 | HuggingFace models | `"huggingface models"` |
 | Product Hunt | `"product hunt"` |
 | App Store / Play Store | `"appstore playstore rankings"` |

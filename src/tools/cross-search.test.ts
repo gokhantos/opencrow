@@ -47,7 +47,6 @@ function mockMemoryManager(
     indexRedditPosts: async () => "ok",
     indexHFModels: async () => "ok",
     indexGithubRepos: async () => "ok",
-    indexArxivPapers: async () => "ok",
     indexObservations: async () => "ok",
     indexIdea: async () => "ok",
     indexAppReviews: async () => "ok",
@@ -106,14 +105,13 @@ describe("createCrossSourceSearchTool", () => {
     expect(sourceItems.enum).toContain("tweet");
     expect(sourceItems.enum).toContain("product");
     expect(sourceItems.enum).toContain("github_repo");
-    expect(sourceItems.enum).toContain("arxiv_paper");
     expect(sourceItems.enum).toContain("hf_model");
     expect(sourceItems.enum).toContain("app_review");
     expect(sourceItems.enum).toContain("app_ranking");
     expect(sourceItems.enum).toContain("trend");
     expect(sourceItems.enum).toContain("defi_protocol");
     expect(sourceItems.enum).toContain("dex_token");
-    expect(sourceItems.enum).toHaveLength(13);
+    expect(sourceItems.enum).toHaveLength(12);
   });
 
   // -- Execute: input validation --------------------------------------------

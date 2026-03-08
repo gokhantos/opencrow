@@ -20,7 +20,7 @@ A self-hosted multi-agent AI platform that orchestrates specialized agents acros
 ## What Can OpenCrow Do?
 
 - **Run AI agents** on Telegram, WhatsApp, and web — each with its own persona, model, tools, and memory
-- **Scrape 16 data sources** autonomously — HackerNews, Reddit, GitHub, arXiv, X/Twitter, App Store, Play Store, DeFi protocols, crypto tokens, Google Trends, news, and more
+- **Scrape 15 data sources** autonomously — HackerNews, Reddit, GitHub, X/Twitter, App Store, Play Store, DeFi protocols, crypto tokens, Google Trends, news, and more
 - **Remember everything** — conversations, facts, and observations are indexed into vector memory and recalled across sessions
 - **Generate ideas** — research agents collect signals, ideation agents synthesize them into product/crypto/AI startup ideas on a schedule
 - **Monitor markets** — real-time crypto derivatives via Binance WebSocket (prices, liquidations, open interest, technical indicators)
@@ -167,7 +167,6 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 | `get_hn_digest` / `search_hn` | HackerNews front page stories + semantic search |
 | `get_reddit_digest` / `search_reddit` | Reddit posts with subreddit filtering |
 | `get_github_repos` / `search_github_repos` | Trending GitHub repos with language filters |
-| `get_arxiv_papers` / `search_arxiv_papers` | arXiv preprints by category (cs.AI, cs.LG, etc.) |
 | `get_product_digest` / `search_products` | Product Hunt products and launches |
 | `get_timeline_digest` / `search_x_timeline` | X/Twitter timeline and semantic search |
 | `get_liked_tweets` / `get_x_analytics` | X/Twitter liked tweets and engagement analytics |
@@ -261,7 +260,6 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 | **Reddit** | 30 min | Posts from user feeds, multi-account support with cookies |
 | **GitHub** | 12 hrs | Daily + weekly trending repos (stars, forks, language) |
 | **Product Hunt** | 10 min | Daily products (votes, topics, makers), multi-account |
-| **arXiv** | 60 min | Papers across categories (cs.AI, cs.LG, cs.CL, cs.CV, stat.ML) |
 | **HuggingFace** | 30 min | Trending, most-liked, recently-modified ML models |
 | **News** | 15-120 min | CryptoPanic, Cointelegraph, Reuters, Investing.com (articles + economic calendar) |
 | **X/Twitter** | varies | Timeline, bookmarks, auto-like, auto-follow via Playwright + GraphQL interception |
@@ -277,7 +275,7 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 - **Anti-detection** — Stealth scripts, cookie auth, GraphQL API interception for X/Twitter
 - **Multi-account** — Reddit, Product Hunt support multiple accounts with separate cookies
 - **Selective indexing** — DeFi Llama only indexes significant movers (>5% change) or high TVL (>$10M)
-- **Rate limiting** — Per-source delays (arXiv: 3s between categories, App Store: 2s between calls)
+- **Rate limiting** — Per-source delays (App Store: 2s between calls)
 
 ### X/Twitter automation
 
@@ -304,7 +302,7 @@ Hybrid search engine combining vector similarity and full-text search for long-t
 
 ### Memory types
 
-18 source kinds, each with its own chunk profile and temporal decay: conversations, notes, documents, tweets, articles, products, stories, Reddit posts, HuggingFace models, GitHub repos, arXiv papers, observations, ideas, app reviews, app rankings, trends, DeFi protocols, and DEX tokens.
+17 source kinds, each with its own chunk profile and temporal decay: conversations, notes, documents, tweets, articles, products, stories, Reddit posts, HuggingFace models, GitHub repos, observations, ideas, app reviews, app rankings, trends, DeFi protocols, and DEX tokens.
 
 ### Observation extraction
 
@@ -388,7 +386,6 @@ React SPA served via Bun HTML imports with Hono API backend. 30+ views covering 
 | **HackerNews** | Scraped stories browser |
 | **Reddit** | Reddit post browser with account management |
 | **GitHub** | Trending repos browser |
-| **arXiv** | Paper browser |
 | **HuggingFace** | ML model browser |
 | **News** | News article browser |
 | **Google Trends** | Trending topics browser |

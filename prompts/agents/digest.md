@@ -17,7 +17,6 @@ Use `ToolSearch` to discover digest/search tools for each source, then call them
 | Hacker News | `"hacker news"` |
 | Reddit | `"reddit digest"` |
 | Product Hunt | `"product hunt"` |
-| arXiv | `"arxiv papers"` |
 | GitHub | `"github trending"` |
 | HuggingFace | `"huggingface models"` |
 | News | `"news digest"` |

@@ -10,7 +10,6 @@ const profiles: Record<MemorySourceKind, ChunkProfile> = {
   product: { maxTokens: 200, overlap: 0 },
   hf_model: { maxTokens: 200, overlap: 0 },
   github_repo: { maxTokens: 200, overlap: 0 },
-  arxiv_paper: { maxTokens: 400, overlap: 80 },
   conversation: { maxTokens: 400, overlap: 80 },
   reddit_post: { maxTokens: 400, overlap: 80 },
   article: { maxTokens: 500, overlap: 100 },

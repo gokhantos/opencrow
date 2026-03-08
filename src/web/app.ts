@@ -20,7 +20,6 @@ import { createHFRoutes } from "./routes/huggingface";
 import { createRedditAccountRoutes } from "./routes/reddit-accounts";
 import { createRedditRoutes } from "./routes/reddit";
 import { createGithubRoutes } from "./routes/github";
-import { createArxivRoutes } from "./routes/arxiv";
 import { createPHProductRoutes } from "./routes/ph-products";
 import { createNewsRoutes } from "./routes/news";
 import { createIdeasRoutes } from "./routes/ideas";
@@ -40,7 +39,6 @@ import type { HNScraper } from "../sources/hackernews/scraper";
 import type { HFScraper } from "../sources/huggingface/scraper";
 import type { RedditScraper } from "../sources/reddit/scraper";
 import type { GithubScraper } from "../sources/github/scraper";
-import type { ArxivScraper } from "../sources/arxiv/scraper";
 import type { PHScraper } from "../sources/producthunt/scraper";
 import type { NewsProcessor } from "../sources/news/processor";
 import type { MarketPipeline } from "../sources/markets/pipeline";
@@ -88,7 +86,6 @@ export interface WebAppDeps {
   readonly hfScraper?: HFScraper;
   readonly redditScraper?: RedditScraper;
   readonly githubScraper?: GithubScraper;
-  readonly arxivScraper?: ArxivScraper;
   readonly phScraper?: PHScraper;
   readonly newsProcessor?: NewsProcessor;
   readonly coreClient?: CoreClient;
@@ -311,14 +308,6 @@ export function createWebApp(deps: WebAppDeps): Hono {
       coreClient: cc,
     });
     app.route("/api", github);
-  }
-
-  if (deps.arxivScraper || cc) {
-    const arxiv = createArxivRoutes({
-      scraper: deps.arxivScraper,
-      coreClient: cc,
-    });
-    app.route("/api", arxiv);
   }
 
   if (deps.newsProcessor || cc) {

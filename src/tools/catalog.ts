@@ -14,7 +14,6 @@ import { createHNTools } from "./hn";
 import { createHFTools } from "./huggingface";
 import { createRedditTools } from "./reddit";
 import { createGithubTools } from "./github";
-import { createArxivTools } from "./arxiv";
 import { createXTimelineTools } from "./x-timeline";
 import { createAppStoreTools } from "./appstore";
 import { createPlayStoreTools } from "./playstore";
@@ -109,10 +108,6 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
   // GitHub
   get_github_repos: "github",
   search_github_repos: "github",
-
-  // arXiv
-  get_arxiv_papers: "arxiv",
-  search_arxiv_papers: "arxiv",
 
   // HuggingFace
   get_hf_models: "huggingface",
@@ -242,7 +237,6 @@ export const CATEGORY_LABELS: Record<string, string> = {
   hacker_news: "Hacker News",
   reddit: "Reddit",
   github: "GitHub",
-  arxiv: "arXiv",
   huggingface: "HuggingFace",
   x_timeline: "X / Twitter",
   appstore: "App Store",
@@ -336,7 +330,6 @@ export function buildToolCatalog(): readonly ToolCatalogEntry[] {
   tools.push(...createHFTools(mm));
   tools.push(...createRedditTools(mm));
   tools.push(...createGithubTools(mm));
-  tools.push(...createArxivTools(mm));
   tools.push(...createXTimelineTools(mm));
   tools.push(...createAppStoreTools(mm));
   tools.push(...createPlayStoreTools(mm));
@@ -408,7 +401,6 @@ const CATEGORY_ORDER = [
   "hacker_news",
   "reddit",
   "github",
-  "arxiv",
   "huggingface",
   "x_timeline",
   "appstore",

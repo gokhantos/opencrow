@@ -230,7 +230,6 @@ export function createGateway(config: OpenCrowConfig): Gateway {
         redditScraper: instances.redditScraper,
         phScraper: instances.phScraper,
         githubScraper: instances.githubScraper,
-        arxivScraper: instances.arxivScraper,
         newsProcessor: instances.newsProcessor,
         observationHook: observationHook ?? undefined,
       });

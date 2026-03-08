@@ -75,11 +75,6 @@ const HF_TOOLS = [
   "search_hf_models",
 ] as const;
 
-const ARXIV_TOOLS = [
-  "get_arxiv_papers",
-  "search_arxiv_papers",
-] as const;
-
 const OBSERVABILITY_TOOLS = [
   "get_scraper_status",
   "get_subagent_runs",
@@ -195,7 +190,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...PRODUCT_TOOLS,
         ...CROSS_SOURCE_TOOLS,
         ...HF_TOOLS,
-        ...ARXIV_TOOLS,
         ...GITHUB_TOOLS,
         ...OBSERVABILITY_TOOLS,
       ],
@@ -329,7 +323,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         "get_hn_digest",
         "get_reddit_digest",
         "get_product_digest",
-        "get_arxiv_papers",
         "get_github_repos",
         "get_hf_models",
         "get_news_digest",
@@ -416,7 +409,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
     id: "oss-idea-gen",
     name: "OSS Idea Generator",
     description:
-      "Generates open-source project ideas by analyzing GitHub trends, HN, Reddit, arXiv papers, and community signals.",
+      "Generates open-source project ideas by analyzing GitHub trends, HN, Reddit, and community signals.",
     model: "claude-sonnet-4-6",
     maxIterations: 40,
     stateless: true,
@@ -434,7 +427,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...CROSS_SOURCE_TOOLS,
         ...GITHUB_TOOLS,
         ...HF_TOOLS,
-        ...ARXIV_TOOLS,
         ...OBSERVABILITY_TOOLS,
       ],
     },
@@ -484,7 +476,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...CROSS_SOURCE_TOOLS,
         ...GITHUB_TOOLS,
         ...HF_TOOLS,
-        ...ARXIV_TOOLS,
         "get_calendar",
         "read_file",
         "grep",

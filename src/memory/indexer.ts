@@ -8,7 +8,6 @@ import type {
   StoryForIndex,
   HFModelForIndex,
   GithubRepoForIndex,
-  ArxivPaperForIndex,
   ObservationForIndex,
   IdeaForIndex,
   AppReviewForIndex,
@@ -520,52 +519,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       log.info("Indexed GitHub repos", {
         agentId,
         repoCount: repos.length,
-        chunks: chunks.length,
-      });
-      return sourceId;
-    },
-
-    async indexArxivPapers(
-      agentId,
-      papers: readonly ArxivPaperForIndex[],
-      metadata,
-    ) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
-      const paperIds = papers.map((p) => p.id).join(",");
-      const metadataJson = JSON.stringify({
-        ...(metadata ?? {}),
-        paperIds,
-        paperCount: String(papers.length),
-      });
-
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'arxiv_paper', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
-
-      const profile = getChunkProfile("arxiv_paper");
-      const chunks = papers.flatMap((p) => {
-        const authors =
-          p.authors.length > 0
-            ? `\nAuthors: ${p.authors.slice(0, 10).join(", ")}`
-            : "";
-        const cats =
-          p.categories.length > 0
-            ? `\nCategories: ${p.categories.join(", ")}`
-            : "";
-        const text = `arXiv [${p.primaryCategory}] ${p.title}${authors}${cats}\n${p.abstract.slice(0, 1500)}\nPDF: ${p.pdfUrl}`;
-        const itemChunks = chunkText(text, profile);
-        return itemChunks.length > 0 ? itemChunks : [text];
-      });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "arxiv_paper", chunks);
-      }
-
-      log.info("Indexed arXiv papers", {
-        agentId,
-        paperCount: papers.length,
         chunks: chunks.length,
       });
       return sourceId;

@@ -35,7 +35,7 @@ function createSaveSignalTool(agentId: string): ToolDefinition {
         },
         source: {
           type: "string",
-          description: "Where you found this (e.g., 'Hacker News', 'r/androidapps', 'Product Hunt', 'arxiv:2401.12345').",
+          description: "Where you found this (e.g., 'Hacker News', 'r/androidapps', 'Product Hunt', 'github.com/user/repo').",
         },
         source_url: {
           type: "string",

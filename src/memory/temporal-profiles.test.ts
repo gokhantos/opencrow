@@ -31,7 +31,7 @@ describe("getTemporalHalfLife", () => {
     const kinds: MemorySourceKind[] = [
       "conversation", "note", "document", "tweet", "article",
       "product", "story", "reddit_post", "hf_model", "github_repo",
-      "arxiv_paper", "observation", "idea",
+      "observation", "idea",
     ];
     for (const kind of kinds) {
       const hl = getTemporalHalfLife(kind);
@@ -44,7 +44,7 @@ describe("getTemporalHalfLife", () => {
       getTemporalHalfLife("document"),
     );
     expect(getTemporalHalfLife("reddit_post")).toBeLessThan(
-      getTemporalHalfLife("arxiv_paper"),
+      getTemporalHalfLife("idea"),
     );
   });
 });

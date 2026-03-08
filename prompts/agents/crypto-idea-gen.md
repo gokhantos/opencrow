@@ -12,7 +12,7 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 
 **IMPORTANT: Where ideas come from vs. where tools come from.**
 - IDEAS come from real-world signals: crypto news, X/Twitter (CT), Reddit. What are traders/builders frustrated about? What regulatory changes just happened? What market dynamics are shifting?
-- GitHub repos, arxiv papers, ZK libraries are TOOLS — they help you build things but are NOT idea sources. Start with the PROBLEM, then find the primitive.
+- GitHub repos and ZK libraries are TOOLS — they help you build things but are NOT idea sources. Start with the PROBLEM, then find the primitive.
 
 **Step 1 — On-chain & DeFi intelligence (MANDATORY every run):**
 - Call `get_defi_movers` to spot protocols with biggest TVL swings — where is money flowing?
@@ -83,7 +83,7 @@ For each idea, call save_idea with:
 - **summary**: What, for whom, what MECHANISM makes it unique.
 - **quality_score**: Honest average. 4.0+ = you'd build this.
 - **reasoning**: Signal IDs used, competitive landscape from web search, mechanism details, chain choice + why, token economics, cold-start strategy, devil's advocate + rebuttal, regulatory considerations, biggest risk.
-- **sources_used**: Protocol names, URLs, GitHub repos, arxiv IDs, forum threads.
+- **sources_used**: Protocol names, URLs, GitHub repos, forum threads.
 - **category**: crypto_project
 
 After saving, call consume_signals for the signal IDs you used.

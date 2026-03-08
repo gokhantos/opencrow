@@ -9,7 +9,6 @@ import type {
   StoryForIndex,
   HFModelForIndex,
   GithubRepoForIndex,
-  ArxivPaperForIndex,
   ObservationForIndex,
   IdeaForIndex,
   AppReviewForIndex,
@@ -153,19 +152,6 @@ export function createMemoryManager(config: ManagerConfig): MemoryManager {
         return await indexer.indexGithubRepos(agentId, repos, metadata);
       } catch (error) {
         log.error("Failed to index GitHub repos", { agentId, error });
-        throw error;
-      }
-    },
-
-    async indexArxivPapers(
-      agentId: string,
-      papers: readonly ArxivPaperForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
-      try {
-        return await indexer.indexArxivPapers(agentId, papers, metadata);
-      } catch (error) {
-        log.error("Failed to index arXiv papers", { agentId, error });
         throw error;
       }
     },

@@ -14,7 +14,7 @@ Your goal is NOVELTY. Past ideas are territory already covered. Explore new terr
 
 **IMPORTANT: Where ideas come from vs. where tools come from.**
 - IDEAS come from real-world signals: news, X/Twitter, Reddit, app store reviews. What are people talking about? What problems do they have? What's changing in the world?
-- TOOLS come from GitHub, HuggingFace, arxiv. These help you BUILD ideas, but they are NOT idea sources. Don't look at a GitHub repo and say "let's build something with this." Start with the PROBLEM, then find the tool.
+- TOOLS come from GitHub and HuggingFace. These help you BUILD ideas, but they are NOT idea sources. Don't look at a GitHub repo and say "let's build something with this." Start with the PROBLEM, then find the tool.
 
 **Step 1 — App Store & Play Store intelligence (MANDATORY every run):**
 - Call `get_appstore_rankings` and `get_playstore_rankings` to see what's trending

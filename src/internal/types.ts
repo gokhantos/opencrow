@@ -18,7 +18,6 @@ import type { HNScraper } from "../sources/hackernews/scraper";
 import type { HFScraper } from "../sources/huggingface/scraper";
 import type { RedditScraper } from "../sources/reddit/scraper";
 import type { GithubScraper } from "../sources/github/scraper";
-import type { ArxivScraper } from "../sources/arxiv/scraper";
 import type { PHScraper } from "../sources/producthunt/scraper";
 import type { NewsProcessor } from "../sources/news/processor";
 import type { ObservationHook } from "../memory/observation-hook";
@@ -48,7 +47,6 @@ export interface InternalApiDeps {
   readonly hfScraper?: HFScraper;
   readonly redditScraper?: RedditScraper;
   readonly githubScraper?: GithubScraper;
-  readonly arxivScraper?: ArxivScraper;
   readonly phScraper?: PHScraper;
   readonly newsProcessor?: NewsProcessor;
   readonly observationHook?: ObservationHook;

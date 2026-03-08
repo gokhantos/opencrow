@@ -460,13 +460,24 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
             return c.json({ data: await deps.githubScraper.backfillRag() });
           break;
         }
-        case "arxiv": {
-          if (!deps.arxivScraper)
-            return c.json({ error: "arXiv scraper not running" }, 503);
-          if (action === "scrape-now")
-            return c.json({ data: await deps.arxivScraper.scrapeNow() });
-          if (action === "backfill-rag")
-            return c.json({ data: await deps.arxivScraper.backfillRag() });
+        case "google-trends": {
+          if (action === "backfill-rag" && deps.memoryManager) {
+            const { getUnindexedTrends, markTrendsIndexed } =
+              await import("../sources/google-trends/store");
+            const { rowsToTrendsForIndex } =
+              await import("../sources/google-trends/scraper");
+            let totalIndexed = 0;
+            while (true) {
+              const unindexed = await getUnindexedTrends(50);
+              if (unindexed.length === 0) break;
+              const forIndex = rowsToTrendsForIndex(unindexed);
+              const ids = unindexed.map((t) => t.id);
+              await deps.memoryManager.indexTrends("google-trends", forIndex);
+              await markTrendsIndexed(ids);
+              totalIndexed += forIndex.length;
+            }
+            return c.json({ data: { indexed: totalIndexed } });
+          }
           break;
         }
         case "ph": {

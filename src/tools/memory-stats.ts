@@ -36,7 +36,6 @@ const MEMORY_KINDS = [
   "reddit_post",
   "hf_model",
   "github_repo",
-  "arxiv_paper",
   "observation",
   "idea",
 ] as const;

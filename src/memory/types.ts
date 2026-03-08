@@ -28,7 +28,6 @@ export type MemorySourceKind =
   | "reddit_post"
   | "hf_model"
   | "github_repo"
-  | "arxiv_paper"
   | "observation"
   | "idea"
   | "app_review"
@@ -48,7 +47,6 @@ export const MEMORY_SOURCE_KINDS = [
   "reddit_post",
   "hf_model",
   "github_repo",
-  "arxiv_paper",
   "observation",
   "idea",
   "app_review",
@@ -161,18 +159,6 @@ export interface GithubRepoForIndex {
   readonly builtBy: readonly string[];
   readonly url: string;
   readonly period: string;
-}
-
-export interface ArxivPaperForIndex {
-  readonly id: string;
-  readonly title: string;
-  readonly authors: readonly string[];
-  readonly abstract: string;
-  readonly categories: readonly string[];
-  readonly primaryCategory: string;
-  readonly publishedAt: string;
-  readonly pdfUrl: string;
-  readonly absUrl: string;
 }
 
 export interface ObservationForIndex {
@@ -296,11 +282,6 @@ export interface MemoryIndexer {
     repos: readonly GithubRepoForIndex[],
     metadata?: Record<string, string>,
   ): Promise<string>;
-  indexArxivPapers(
-    agentId: string,
-    papers: readonly ArxivPaperForIndex[],
-    metadata?: Record<string, string>,
-  ): Promise<string>;
   indexObservations(
     agentId: string,
     observations: readonly ObservationForIndex[],
@@ -381,11 +362,6 @@ export interface MemoryManager {
   indexGithubRepos(
     agentId: string,
     repos: readonly GithubRepoForIndex[],
-    metadata?: Record<string, string>,
-  ): Promise<string>;
-  indexArxivPapers(
-    agentId: string,
-    papers: readonly ArxivPaperForIndex[],
     metadata?: Record<string, string>,
   ): Promise<string>;
   indexObservations(

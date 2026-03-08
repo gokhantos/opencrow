@@ -31,7 +31,6 @@ import HuggingFace from "./views/HuggingFace";
 import News from "./views/News";
 import Ideas from "./views/Ideas";
 import GitHub from "./views/GitHub";
-import Arxiv from "./views/Arxiv";
 import Processes from "./views/Processes";
 import Skills from "./views/Skills";
 import Tools from "./views/Tools";
@@ -251,7 +250,7 @@ function App() {
             {tab === "reddit" && <Reddit />}
             {tab === "huggingface" && <HuggingFace />}
             {tab === "github" && <GitHub />}
-            {tab === "arxiv" && <Arxiv />}
+            {tab === "google-trends" && <GoogleTrends />}
             {tab === "appstore" && <AppStore />}
             {tab === "playstore" && <PlayStore />}
             {tab === "news" && <News />}

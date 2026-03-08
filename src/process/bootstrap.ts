@@ -49,7 +49,6 @@ import { createHNTools } from "../tools/hn";
 import { createHFTools } from "../tools/huggingface";
 import { createRedditTools } from "../tools/reddit";
 import { createGithubTools } from "../tools/github";
-import { createArxivTools } from "../tools/arxiv";
 import { createXTimelineTools } from "../tools/x-timeline";
 import { createAppStoreTools } from "../tools/appstore";
 import { createPlayStoreTools } from "../tools/playstore";
@@ -410,13 +409,6 @@ export async function bootstrap(
         allowsTool(t.name),
       );
       if (githubTools.length > 0) registry = registry.withTools(githubTools);
-    }
-
-    {
-      const arxivTools = createArxivTools(memoryManager).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (arxivTools.length > 0) registry = registry.withTools(arxivTools);
     }
 
     {

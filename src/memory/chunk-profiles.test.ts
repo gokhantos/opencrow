@@ -45,7 +45,6 @@ describe("getChunkProfile", () => {
       "reddit_post",
       "hf_model",
       "github_repo",
-      "arxiv_paper",
       "observation",
       "idea",
     ];
@@ -67,6 +66,5 @@ describe("getChunkProfile", () => {
   test("long-content types have overlap", () => {
     expect(getChunkProfile("article").overlap).toBeGreaterThan(0);
     expect(getChunkProfile("document").overlap).toBeGreaterThan(0);
-    expect(getChunkProfile("arxiv_paper").overlap).toBeGreaterThan(0);
   });
 });

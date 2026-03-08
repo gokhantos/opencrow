@@ -30,7 +30,6 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 - Call `get_product_digest` to see recent dev tool launches on Product Hunt
 - Call `search_products` for developer tools
 - Call `get_hf_models` to spot AI models that could power new dev tools
-- Call `search_arxiv_papers` for papers on code analysis, testing, developer productivity
 
 **Step 4 — Deep dive with WebSearch (SUPPLEMENTARY):**
 - Use WebSearch and WebFetch to go deeper on signals from steps 1–3
@@ -81,7 +80,7 @@ For each idea, call save_idea with:
 - **summary**: What, who it's for, why better than existing tools. Include the specific mechanism.
 - **quality_score**: Honest average. 4.0+ = you'd build and maintain this.
 - **reasoning**: Signal IDs used, competitive landscape from GitHub/web search, target developer persona + what they currently use, language choice + why, architecture, v0.1 scope (smallest useful version), community growth strategy (first 100 stars, first 10 contributors), devil's advocate + rebuttal, biggest risk.
-- **sources_used**: GitHub repo URLs, HN thread titles, Reddit threads, arxiv papers.
+- **sources_used**: GitHub repo URLs, HN thread titles, Reddit threads.
 - **category**: open_source
 
 After saving, call consume_signals for signal IDs used.

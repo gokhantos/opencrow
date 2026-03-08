@@ -33,10 +33,6 @@ import {
   type GithubScraper,
 } from "../sources/github/scraper";
 import {
-  createArxivScraper,
-  type ArxivScraper,
-} from "../sources/arxiv/scraper";
-import {
   createNewsProcessor,
   type NewsProcessor,
 } from "../sources/news/processor";
@@ -56,7 +52,6 @@ export interface SubsystemInstances {
   readonly hfScraper: HFScraper | undefined;
   readonly redditScraper: RedditScraper | undefined;
   readonly githubScraper: GithubScraper | undefined;
-  readonly arxivScraper: ArxivScraper | undefined;
   readonly newsProcessor: NewsProcessor | undefined;
 }
 
@@ -89,7 +84,6 @@ export function createSubsystemRegistry(opts: {
   let hfScraper: HFScraper | undefined;
   let redditScraper: RedditScraper | undefined;
   let githubScraper: GithubScraper | undefined;
-  let arxivScraper: ArxivScraper | undefined;
   let newsProcessor: NewsProcessor | undefined;
   return {
     async startAll(): Promise<SubsystemStartResult> {
@@ -167,11 +161,6 @@ export function createSubsystemRegistry(opts: {
         githubScraper.start();
       });
 
-      await tryStart("arxiv-scraper", () => {
-        arxivScraper = createArxivScraper({ memoryManager: mm });
-        arxivScraper.start();
-      });
-
       await tryStart("news-processor", () => {
         newsProcessor = createNewsProcessor({ memoryManager: mm });
         newsProcessor.start();
@@ -211,7 +200,6 @@ export function createSubsystemRegistry(opts: {
           hfScraper,
           redditScraper,
           githubScraper,
-          arxivScraper,
           newsProcessor,
         },
         failed,
@@ -248,12 +236,6 @@ export function createSubsystemRegistry(opts: {
         githubScraper.stop();
         githubScraper = undefined;
         log.info("GitHub scraper stopped");
-      }
-
-      if (arxivScraper) {
-        arxivScraper.stop();
-        arxivScraper = undefined;
-        log.info("arXiv scraper stopped");
       }
 
       if (bookmarkProcessor) {
