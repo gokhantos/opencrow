@@ -56,9 +56,10 @@ export function createTimelineScrapeProcessor(config?: {
     ct0: string,
     maxPages: number,
     sources: string,
+    languages: string | null,
   ): Promise<TimelineScrapeOutcome> {
     const { scrapeTimeline } = await import("../actions/scrape-timeline");
-    return scrapeTimeline(authToken, ct0, maxPages, sources);
+    return scrapeTimeline(authToken, ct0, maxPages, sources, languages);
   }
 
   async function processJob(accountId: string): Promise<void> {
@@ -76,15 +77,17 @@ export function createTimelineScrapeProcessor(config?: {
       const job = await getTimelineScrapeJob(accountId);
       const maxPages = job?.max_pages ?? 3;
       const sources = job?.sources ?? "home,top_posts";
+      const languages = job?.languages ?? null;
       const intervalMin = job?.interval_minutes ?? 120;
 
-      log.info("Running timeline scrape", { accountId, maxPages, sources });
+      log.info("Running timeline scrape", { accountId, maxPages, sources, languages });
 
       const result = await runScript(
         creds.auth_token,
         creds.ct0,
         maxPages,
         sources,
+        languages,
       );
 
       if (result.ok) {
@@ -189,12 +192,14 @@ export function createTimelineScrapeProcessor(config?: {
       const job = await getTimelineScrapeJob(accountId);
       const maxPages = job?.max_pages ?? 3;
       const sources = job?.sources ?? "home,top_posts";
+      const languages = job?.languages ?? null;
 
       const result = await runScript(
         creds.auth_token,
         creds.ct0,
         maxPages,
         sources,
+        languages,
       );
 
       if (result.ok && result.tweets.length > 0) {

@@ -18,6 +18,7 @@ interface TimelineJob {
   readonly last_run_at: number | null;
   readonly last_error: string | null;
   readonly sources: string;
+  readonly languages: string | null;
   readonly created_at: number;
   readonly updated_at: number;
 }
@@ -65,6 +66,7 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
   const [intervalMinutes, setIntervalMinutes] = useState(10);
   const [homeEnabled, setHomeEnabled] = useState(true);
   const [topEnabled, setTopEnabled] = useState(true);
+  const [languages, setLanguages] = useState("en");
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [loading, setLoading] = useState(true);
 
@@ -87,6 +89,7 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
         const srcs = j.sources.split(",");
         setHomeEnabled(srcs.includes("home"));
         setTopEnabled(srcs.includes("top_posts"));
+        setLanguages(j.languages ?? "en");
       }
       if (tweetsRes.success) {
         setTweets(tweetsRes.data);
@@ -110,6 +113,7 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
         home: homeEnabled,
         top: topEnabled,
       },
+      languages: languages.trim() || null,
     };
   }
 
@@ -225,6 +229,27 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
             Top Posts
           </button>
         </div>
+      </div>
+
+      {/* Language filter */}
+      <div className="mb-5">
+        <div className="font-sans text-xs font-semibold uppercase tracking-widest text-faint mb-3">
+          Languages
+        </div>
+        <input
+          type="text"
+          value={languages}
+          onChange={(e) => setLanguages(e.target.value)}
+          disabled={isRunning}
+          placeholder="en,es,fr"
+          className={cn(
+            "w-48 px-4 py-2 rounded-lg border bg-bg-2 border-border font-mono text-sm text-foreground placeholder:text-faint focus:outline-none focus:border-accent transition-colors",
+            isRunning && "opacity-40 cursor-not-allowed",
+          )}
+        />
+        <p className="text-faint text-xs mt-1 font-sans">
+          Comma-separated language codes. Leave empty to fetch all.
+        </p>
       </div>
 
       {/* Source filter tabs */}

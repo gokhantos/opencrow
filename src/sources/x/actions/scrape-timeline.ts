@@ -87,6 +87,7 @@ export async function scrapeTimeline(
   ct0: string,
   maxPages: number = 3,
   sources: string = "home,top_posts",
+  languages: string | null = null,
 ): Promise<TimelineScrapeOutcome> {
   const validation = validateCookies(authToken, ct0);
   if (!validation.valid) {
@@ -94,6 +95,9 @@ export async function scrapeTimeline(
   }
 
   const sourceSet = new Set(sources.split(",").map((s) => s.trim()));
+  const langSet = languages
+    ? new Set(languages.split(",").map((l) => l.trim().toLowerCase()))
+    : null;
   const session = await launchXBrowser(authToken, ct0);
 
   try {
@@ -108,7 +112,7 @@ export async function scrapeTimeline(
         for (const body of responses) {
           for (const entry of extractEntries(body)) {
             const tweet = parseTweetEntry(entry);
-            if (tweet && !seenIds.has(tweet.id)) {
+            if (tweet && !seenIds.has(tweet.id) && (!langSet || langSet.has(tweet.language))) {
               seenIds.add(tweet.id);
               allTweets.push(tweetToDict(tweet, "home"));
             }
@@ -124,7 +128,7 @@ export async function scrapeTimeline(
         for (const body of responses) {
           for (const entry of extractEntries(body)) {
             const tweet = parseTweetEntry(entry);
-            if (tweet && !seenIds.has(tweet.id)) {
+            if (tweet && !seenIds.has(tweet.id) && (!langSet || langSet.has(tweet.language))) {
               seenIds.add(tweet.id);
               allTweets.push(tweetToDict(tweet, "top_posts"));
             }

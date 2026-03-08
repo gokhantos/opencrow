@@ -17,6 +17,7 @@ export function upsertTimelineScrapeJob(
   intervalMinutes: number,
   status: "running" | "stopped",
   nextRunAt: number | null,
+  languages: string | null = null,
 ): Promise<TimelineScrapeJob> {
   const db = getDb();
   const id = crypto.randomUUID();
@@ -25,10 +26,10 @@ export function upsertTimelineScrapeJob(
   return db`
     INSERT INTO x_timeline_scrape_jobs (
       id, account_id, max_pages, sources, interval_minutes,
-      status, next_run_at, created_at, updated_at
+      status, next_run_at, languages, created_at, updated_at
     ) VALUES (
       ${id}, ${accountId}, ${maxPages}, ${sources}, ${intervalMinutes},
-      ${status}, ${nextRunAt}, ${now}, ${now}
+      ${status}, ${nextRunAt}, ${languages}, ${now}, ${now}
     )
     ON CONFLICT (account_id) DO UPDATE SET
       max_pages = ${maxPages},
@@ -36,6 +37,7 @@ export function upsertTimelineScrapeJob(
       interval_minutes = ${intervalMinutes},
       status = ${status},
       next_run_at = ${nextRunAt},
+      languages = ${languages},
       updated_at = ${now}
     RETURNING *
   `.then((rows) => rows[0] as TimelineScrapeJob);

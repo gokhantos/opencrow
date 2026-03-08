@@ -10,6 +10,7 @@ export interface TimelineScrapeJob {
   total_errors: number;
   last_run_at: number | null;
   last_error: string | null;
+  languages: string | null;
   created_at: number;
   updated_at: number;
 }

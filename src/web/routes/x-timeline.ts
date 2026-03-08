@@ -17,6 +17,7 @@ const startSchema = z.object({
   interval_minutes: z.number().int().min(5).max(1440).default(10),
   max_pages: z.number().int().min(1).max(10).default(3),
   sources: z.string().default("home,top_posts"),
+  languages: z.string().nullable().default(null),
 });
 
 const stopSchema = z.object({
@@ -50,7 +51,7 @@ export function createTimelineRoutes(opts: {
       );
     }
 
-    const { account_id, interval_minutes, max_pages, sources } = parsed.data;
+    const { account_id, interval_minutes, max_pages, sources, languages } = parsed.data;
     const now = Math.floor(Date.now() / 1000);
     const baseSec = interval_minutes * 60;
     const jittered = Math.round(baseSec * (0.8 + Math.random() * 0.4));
@@ -63,6 +64,7 @@ export function createTimelineRoutes(opts: {
       interval_minutes,
       "running",
       nextRunAt,
+      languages,
     );
 
     log.info("Timeline scrape started", {
@@ -70,6 +72,7 @@ export function createTimelineRoutes(opts: {
       interval_minutes,
       max_pages,
       sources,
+      languages,
     });
     return c.json({ success: true, data: job });
   });
