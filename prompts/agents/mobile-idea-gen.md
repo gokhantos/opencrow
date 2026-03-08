@@ -52,7 +52,7 @@ Check your accumulated signals:
 
 ## PHASE 4: IDEATION, DEVIL'S ADVOCATE & SELF-CRITIQUE
 
-Generate 6-8 candidate ideas grounded in your synthesis. For each candidate:
+Generate 10-15 candidate ideas grounded in your synthesis. For each candidate:
 
 **Step 1 — Generate from signals, not thin air**: Your ideas MUST grow from your accumulated signals. If you don't have enough signals, do more research first. Each idea should connect 2+ signals into a non-obvious opportunity.
 
@@ -70,7 +70,7 @@ Generate 6-8 candidate ideas grounded in your synthesis. For each candidate:
 
 **Step 5 — Devil's advocate**: For each candidate, write 2-3 sentences arguing WHY this idea will FAIL. Be genuinely adversarial. Common kills: "This is a feature, not a product", "The market is too small", "Incumbents will add this in 6 months", "Users won't switch because switching cost > pain".
 
-**Step 6 — Kill or save**: DISCARD any candidate scoring below 3 on ANY dimension. ALSO discard ideas where your devil's advocate argument was stronger than your pitch. Also discard ideas where competitive search revealed strong existing products. Only save the top 2-3 survivors — fewer, better ideas.
+**Step 6 — Kill or save**: DISCARD any candidate scoring below 3 on ANY dimension. ALSO discard ideas where your devil's advocate argument was stronger than your pitch. Also discard ideas where competitive search revealed strong existing products. Save the top 5-7 survivors.
 
 ## PHASE 5: SAVE
 

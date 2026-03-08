@@ -56,7 +56,7 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 
 ## PHASE 4: IDEATION, VALIDATION & SELF-CRITIQUE
 
-Generate 4-6 candidates from signal convergences. Every idea MUST be anchored to a specific model. For each:
+Generate 10-15 candidates from signal convergences. Every idea MUST be anchored to a specific model. For each:
 
 **Step 1 — Build from signals**: Connect 2+ signals. No ideas from thin air.
 
@@ -73,7 +73,7 @@ Generate 4-6 candidates from signal convergences. Every idea MUST be anchored to
 
 **Step 5 — Devil's advocate**: Argue against each idea. "OpenAI ships this in 3 months", "inference costs impossible", "this is a demo not a product", "accuracy insufficient for production".
 
-**Step 6 — Kill or save**: Discard <3 on ANY dimension or where devil's advocate wins. Keep top 2-3.
+**Step 6 — Kill or save**: Discard <3 on ANY dimension or where devil's advocate wins. Keep top 5-7.
 
 ## PHASE 5: SAVE
 

@@ -55,7 +55,7 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 
 ## PHASE 4: IDEATION, VALIDATION & SELF-CRITIQUE
 
-Generate 4-6 candidates from your signal convergences. For each:
+Generate 10-15 candidates from your signal convergences. For each:
 
 **Step 1 — Build from signals**: Each idea MUST connect 2+ signals. No ideas from thin air.
 
@@ -72,7 +72,7 @@ Generate 4-6 candidates from your signal convergences. For each:
 
 **Step 5 — Devil's advocate**: Argue WHY this will fail. Common kills: "cold start problem", "existing protocol will add this as a feature", "smart contract risk > benefit", "regulatory risk".
 
-**Step 6 — Kill or save**: Discard <3 on ANY dimension, or where devil's advocate wins. Keep top 2-3.
+**Step 6 — Kill or save**: Discard <3 on ANY dimension, or where devil's advocate wins. Keep top 5-7.
 
 ## PHASE 5: SAVE
 
