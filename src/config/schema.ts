@@ -45,7 +45,7 @@ export const failoverConfigSchema = z
   .optional();
 
 export const agentConfigSchema = z.object({
-  model: z.string().default("claude-opus-4-6"),
+  model: z.string().default("claude-sonnet-4-6"),
   systemPrompt: z
     .string()
     .default(
@@ -327,7 +327,7 @@ export const processesConfigSchema = z
 
 export const opencrowConfigSchema = z.object({
   agent: agentConfigSchema.default({
-    model: "claude-opus-4-6",
+    model: "claude-sonnet-4-6",
     systemPrompt:
       "You are OpenCrow, a helpful personal AI assistant. Be concise and direct.",
     retry: { attempts: 3, minDelayMs: 500, maxDelayMs: 30000, jitter: 0.15 },
