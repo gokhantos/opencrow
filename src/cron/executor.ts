@@ -16,8 +16,6 @@ import { createLogger } from "../logger";
 import { runScoringEngine } from "./scoring-engine";
 import { runWorkloadSampler } from "./workload-sampler";
 import { runFailureClusterCompute } from "./failure-cluster-compute";
-import { runSurveyExpiration } from "./survey-expiration";
-import { runOutcomeCacheRefresh } from "./outcome-cache-refresh";
 import {
   enqueueTask,
   completeTask,
@@ -93,14 +91,6 @@ async function executeInternalHandler(
       case "failure-cluster-compute":
         await runFailureClusterCompute();
         resultSummary = "Failure cluster computation completed";
-        break;
-      case "survey-expiration":
-        const surveyResult = await runSurveyExpiration();
-        resultSummary = `Survey expiration: ${surveyResult.expiredCount} surveys expired`;
-        break;
-      case "outcome-cache-refresh":
-        const outcomeResult = await runOutcomeCacheRefresh();
-        resultSummary = `Outcome cache refresh: ${outcomeResult.cachesUpdated} caches updated`;
         break;
       case "signal-archival":
         const archivedCount = await archiveStaleSignals(14);

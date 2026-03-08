@@ -76,38 +76,6 @@ export function createTelegramHandler(
       return;
     }
 
-    // Phase 4: Handle survey responses
-    if (data.startsWith("survey:")) {
-      const parts = data.split(":");
-      const sessionId = parts[1];
-      const questionId = parts[2];
-      const answer = parts[3];
-
-      if (sessionId && questionId && answer) {
-        try {
-          const { recordCallbackResponse } = await import("../../agent/survey/delivery");
-          await recordCallbackResponse(sessionId, questionId, answer);
-
-          // Edit the message to show acknowledgment
-          try {
-            const originalText = ctx.callbackQuery.message?.text ?? "";
-            await ctx.editMessageText(`${originalText}\n\n✅ Thank you for your feedback!`, {
-              reply_markup: undefined,
-            });
-          } catch {
-            // best-effort — message may not be editable
-          }
-
-          log.info("Survey response recorded", { sessionId, questionId, answer });
-        } catch (err) {
-          log.error("Failed to record survey response", { error: String(err) });
-        }
-      }
-
-      await ctx.answerCallbackQuery();
-      return;
-    }
-
     const bus = getQuestionBus();
     if (bus.hasPending(chatId)) {
       bus.answer(chatId, data);

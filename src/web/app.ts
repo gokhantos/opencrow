@@ -30,8 +30,6 @@ import { createSkillRoutes } from "./routes/skills";
 import { createUsageRoutes } from "./routes/usage";
 import { createToolsRoutes } from "./routes/tools";
 import { createRoutingRulesRoutes } from "./routes/routing-rules";
-import { createSurveyRoutes } from "./routes/surveys";
-import { createOutcomesRoutes } from "./routes/outcomes";
 import { createReflectionsRoutes } from "./routes/reflections";
 import { createPredictionsRoutes } from "./routes/predictions";
 import { createQueueRoutes } from "./routes/queue";
@@ -381,12 +379,6 @@ export function createWebApp(deps: WebAppDeps): Hono {
   const tools = createToolsRoutes();
   app.route("/api", tools);
 
-  // Phase 4: Deep Outcome Learning routes
-  const surveys = createSurveyRoutes();
-  app.route("/api", surveys);
-
-  const outcomes = createOutcomesRoutes();
-  app.route("/api", outcomes);
 
   const reflections = createReflectionsRoutes();
   app.route("/api", reflections);

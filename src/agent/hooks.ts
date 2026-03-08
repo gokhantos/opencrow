@@ -1,5 +1,4 @@
 import { SQL } from "bun";
-import { Bot } from "grammy";
 import { getDb } from "../store/db";
 import { createLogger } from "../logger";
 import type { ProgressEvent } from "./types";
@@ -9,27 +8,6 @@ const log = createLogger("hooks");
 
 const MAX_AUDIT_LENGTH = 2000;
 const MAX_PROMPT_LENGTH = 4000;
-
-/**
- * Resolve the Telegram Bot instance for a given agent by looking up its token.
- */
-async function resolveAgentBot(agentId: string): Promise<Bot | null> {
-  try {
-    const db = getDb();
-    const rows = await db`
-      SELECT value_json FROM config_overrides
-      WHERE namespace = 'agents' AND key = ${agentId}
-    `;
-    if (rows.length === 0) return null;
-    const config = JSON.parse(rows[0].value_json);
-    const token = config?.telegramBotToken;
-    if (!token) return null;
-    return new Bot(token);
-  } catch (err) {
-    log.warn("Failed to resolve bot for agent", { error: String(err), agentId });
-    return null;
-  }
-}
 
 // ─── Hook Failure Tracking ──────────────────────────────────────────────────
 
@@ -292,10 +270,7 @@ async function recordSessionOutcome(
   result: string,
 ): Promise<void> {
   try {
-    const { recordTaskOutcome, triggerPostTaskSurvey } =
-      await import("./outcome-tracker");
-    const { getConversationContext, updateConversationState } =
-      await import("./conversation-tracker");
+    const { recordTaskOutcome } = await import("./outcome-tracker");
 
     // Get the routing decision to find task hash and domain
     const routingDecision = await db`
@@ -307,7 +282,6 @@ async function recordSessionOutcome(
     `;
 
     if (!routingDecision || routingDecision.length === 0) {
-      // No routing decision found, create minimal outcome record
       const taskHash = `session-${sessionId}-${Date.now()}`;
       await recordTaskOutcome({
         taskId: sessionId,
@@ -318,29 +292,11 @@ async function recordSessionOutcome(
         revisionCount: 0,
         timeToCompleteSec: undefined,
       });
-
-      // Phase 4: Use new survey delivery system
-      const { sendPostTaskSurvey } = await import("./survey/delivery");
-      const chatId = await getChatIdForSession(db, sessionId);
-      if (chatId) {
-        const bot = await resolveAgentBot(agentId);
-        await sendPostTaskSurvey(
-          sessionId,
-          taskHash,
-          agentId,
-          chatId,
-          result.slice(0, 200),
-          bot ?? undefined,
-        );
-      } else {
-        triggerPostTaskSurvey(sessionId, taskHash, result.slice(0, 200));
-      }
       return;
     }
 
     const { task_hash, domain } = routingDecision[0];
 
-    // Record the outcome
     await recordTaskOutcome({
       taskId: sessionId,
       sessionId,
@@ -351,62 +307,6 @@ async function recordSessionOutcome(
       timeToCompleteSec: undefined,
     });
 
-    // Update conversation state to reflect completion
-    await updateConversationState(sessionId, "review", undefined);
-
-    // Phase 4: Use new survey delivery system
-    const { sendPostTaskSurvey } = await import("./survey/delivery");
-    const chatId = await getChatIdForSession(db, sessionId);
-    if (chatId) {
-      const bot = await resolveAgentBot(agentId);
-      await sendPostTaskSurvey(
-        sessionId,
-        task_hash,
-        agentId,
-        chatId,
-        result.slice(0, 200),
-        bot ?? undefined,
-      );
-    } else {
-      triggerPostTaskSurvey(sessionId, task_hash, result.slice(0, 200));
-    }
-
-    // Phase 4: Update outcome routing cache
-    const { updateOutcomeCache } = await import("./outcome/router");
-    await updateOutcomeCache(
-      domain || "general",
-      task_hash,
-      agentId,
-      "success",
-    );
-
-    // Phase 5: Save cross-session memory context
-    try {
-      const { saveSessionContext } =
-        await import("../memory/cross-session-memory");
-      await saveSessionContext({
-        id: `ctx-${sessionId}-${Date.now()}`,
-        sessionId,
-        topics: [domain || "general"],
-        taskEmbedding: [],
-        summary: result.slice(0, 500),
-        keyDecisions: [],
-        filesTouched: [],
-        agentsSpawned: [agentId],
-        outcomes: [
-          {
-            type: "success",
-            description: result.slice(0, 200),
-            timestamp: new Date(),
-          },
-        ],
-        relevanceDecay: 1.0,
-        createdAt: new Date(),
-      });
-    } catch (memErr) {
-      log.debug("Cross-session memory save skipped", { error: String(memErr) });
-    }
-
     log.debug("Recorded session outcome", {
       sessionId,
       taskHash: task_hash,
@@ -415,27 +315,6 @@ async function recordSessionOutcome(
     });
   } catch (err) {
     log.warn("Failed to record session outcome", { error: String(err) });
-  }
-}
-
-/**
- * Helper: Get chat ID for session
- */
-async function getChatIdForSession(
-  db: InstanceType<typeof SQL>,
-  sessionId: string,
-): Promise<string | null> {
-  try {
-    const result = await db`
-      SELECT chat_id FROM messages
-      WHERE session_id = ${sessionId}
-      ORDER BY timestamp DESC
-      LIMIT 1
-    `;
-    return result?.[0]?.chat_id || null;
-  } catch (err) {
-    log.warn("Failed to get chat ID for session", { error: String(err) });
-    return null;
   }
 }
 
@@ -498,12 +377,11 @@ function createSubagentStopHook(agentId: string): HookCallback {
             log.warn("Routing score update failed", { error: String(err) }),
         );
 
-        // Phase 2 & 4: Handle revision/failure
+        // Record revision/failure
         if (status !== "completed") {
           const { recordRevision } = await import("./outcome-tracker");
           const { classifyTask } = await import("./task-classifier");
 
-          // Get the task hash from classification
           const task = String(input.task ?? "");
           const { taskHash } = await classifyTask(task, sessionId);
 
@@ -515,7 +393,6 @@ function createSubagentStopHook(agentId: string): HookCallback {
             result.slice(0, 500),
           );
 
-          // Phase 3: Record failure for pattern analysis
           const { recordFailure } = await import("./failure-analyzer");
           await recordFailure(
             sessionId,
@@ -523,17 +400,6 @@ function createSubagentStopHook(agentId: string): HookCallback {
             "general",
             result.slice(0, 500),
             status === "timeout" ? "timeout" : "error",
-          );
-
-          // Phase 4: Handle failure (clustering, reflection, learning)
-          const { handleFailure } = await import("./outcome-orchestrator");
-          handleFailure(
-            sessionId,
-            subagentId,
-            taskHash,
-            result.slice(0, 500),
-          ).catch((err: unknown) =>
-            log.warn("Phase 4 failure handling failed", { error: String(err) }),
           );
         }
 

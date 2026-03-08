@@ -64,44 +64,7 @@ export async function routeTask(
     };
   }
 
-  // Phase 4: Try outcome-based routing first
-  try {
-    const { routeByOutcome } = await import("./outcome/router");
-    const outcomeResult = await routeByOutcome(task, domain, sessionId, {
-      minSimilarTasks: 3,
-      similarityThreshold: 0.7,
-      outcomeWeight: 0.6,
-      recencyWeight: 0.3,
-      fallbackToScoreBased: true,
-    });
-
-    if (
-      outcomeResult.confidence > 0.7 &&
-      outcomeResult.selectedAgentId !== "fallback"
-    ) {
-      log.info("Using outcome-based routing", {
-        domain,
-        selectedAgent: outcomeResult.selectedAgentId,
-        confidence: outcomeResult.confidence,
-        similarTasksFound: outcomeResult.similarTasksFound,
-      });
-
-      return {
-        selectedAgentId: outcomeResult.selectedAgentId,
-        alternativeAgents: outcomeResult.alternativeAgents.map(
-          (a) => a.agentId,
-        ),
-        decisionReason: `Outcome-based: ${outcomeResult.reasoning}`,
-        confidence: outcomeResult.confidence > 0.8 ? "high" : "medium",
-      };
-    }
-  } catch (err) {
-    log.warn("Outcome-based routing failed, falling back to score-based", {
-      error: String(err),
-    });
-  }
-
-  // Phase 3: Check anti-recommendations first
+  // Check anti-recommendations first
   const antiRecs = await getAntiRecommendations(undefined, domain);
   const blockedAgents = new Set(antiRecs.map((r) => r.agentId));
 

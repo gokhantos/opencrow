@@ -386,32 +386,6 @@ export async function classifyTask(
     confidenceScore = semanticConfidence;
   }
 
-  // Phase 2: Check conversation context for reference resolution
-  if (sessionId && semanticConfidence < 0.7) {
-    try {
-      const { getConversationContext } = await import("./conversation-tracker");
-      const { extractContext } = await import("./context-extractor");
-
-      const context = await getConversationContext(sessionId);
-      const extractedContext = await extractContext(task, sessionId);
-
-      // If user references previous turn and we have a topic, use that context
-      if (
-        extractedContext.referencesPreviousTurn &&
-        context?.currentTopic &&
-        context.currentTopic !== finalDomain
-      ) {
-        log.debug("Using conversation context for domain", {
-          previousTopic: context.currentTopic,
-          originalDomain: finalDomain,
-        });
-        // Keep the domain from context rather than re-classifying
-      }
-    } catch (err) {
-      log.warn("Failed to get conversation context", { error: String(err) });
-    }
-  }
-
   // Store classification asynchronously (don't block)
   try {
     const db = getDb();
