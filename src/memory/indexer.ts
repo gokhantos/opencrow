@@ -634,7 +634,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       const db = getDb();
       const sourceId = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
-      const observationIds = observations.map((o) => o.id).join(",");
+      const observationIds = observations.map((o) => o.id);
       const metadataJson = JSON.stringify({
         ...(metadata ?? {}),
         observationIds,
