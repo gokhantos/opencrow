@@ -5,6 +5,7 @@ import {
   setProcessName,
   getProcessName,
   getRecentLogs,
+  getLogPersistenceStatus,
 } from "./logger";
 
 describe("setProcessName / getProcessName", () => {
@@ -138,5 +139,17 @@ describe("getRecentLogs", () => {
     expect(last.timestamp).toBeTruthy();
     expect(last.timestamp).toMatch(/\d{4}-\d{2}-\d{2}T/);
     setLogLevel("info");
+  });
+});
+
+describe("getLogPersistenceStatus", () => {
+  test("returns status when db is not connected", () => {
+    const status = getLogPersistenceStatus();
+    expect(status.isConnected).toBe(false);
+    // Note: consecutiveFailures and pendingBatchSize may be > 0 due to other tests
+    // since logger state is global. We just check they're numbers >= 0.
+    expect(status.consecutiveFailures).toBeGreaterThanOrEqual(0);
+    expect(status.pendingBatchSize).toBeGreaterThanOrEqual(0);
+    expect(status.isHealthy).toBe(false); // false because no db connection
   });
 });

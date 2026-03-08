@@ -596,8 +596,11 @@ export async function bootstrap(
       try {
         const observations = await getRecentObservations(agent.id, maxInPrompt);
         observationBlock = formatObservationBlock(observations);
-      } catch {
-        // Non-fatal
+      } catch (err) {
+        log.warn("Failed to load recent observations", {
+          agentId: agent.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
@@ -633,7 +636,11 @@ export async function bootstrap(
       try {
         const { loadDomainStats: refresh } = await import("../agent/prediction-engine");
         await refresh();
-      } catch { /* non-fatal */ }
+      } catch (err) {
+        log.warn("Prediction engine domain stats refresh failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }, 5 * 60 * 1000);
   } catch (err) {
     log.warn("Failed to load prediction domain stats (non-fatal)", { error: String(err) });

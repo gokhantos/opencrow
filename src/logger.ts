@@ -90,6 +90,12 @@ export interface StoredLogEntry extends LogEntry {
 const RING_BUFFER_SIZE = 200;
 const ringBuffer: LogEntry[] = [];
 
+// Track consecutive flush failures for alerting
+let consecutiveFlushFailures = 0;
+const MAX_CONSECUTIVE_FAILURES_BEFORE_ALERT = 5;
+let lastFailureAlertTime = 0;
+const FAILURE_ALERT_COOLDOWN_MS = 60_000; // 1 minute
+
 function addToRingBuffer(entry: LogEntry): void {
   if (ringBuffer.length >= RING_BUFFER_SIZE) {
     ringBuffer.shift();
@@ -100,6 +106,20 @@ function addToRingBuffer(entry: LogEntry): void {
 export function getRecentLogs(limit: number = 100): readonly LogEntry[] {
   const start = Math.max(0, ringBuffer.length - limit);
   return ringBuffer.slice(start);
+}
+
+export function getLogPersistenceStatus(): {
+  readonly isConnected: boolean;
+  readonly consecutiveFailures: number;
+  readonly pendingBatchSize: number;
+  readonly isHealthy: boolean;
+} {
+  return {
+    isConnected: dbRef !== null,
+    consecutiveFailures: consecutiveFlushFailures,
+    pendingBatchSize: pendingBatch.length,
+    isHealthy: dbRef !== null && consecutiveFlushFailures < MAX_CONSECUTIVE_FAILURES_BEFORE_ALERT,
+  };
 }
 
 // --- PostgreSQL persistence (batched writes) ---
@@ -170,8 +190,29 @@ async function flushLogs(): Promise<void> {
        VALUES ${values.join(", ")}`,
       params,
     );
-  } catch {
-    // Non-fatal: logs are best-effort persistence
+    consecutiveFlushFailures = 0; // Reset on success
+  } catch (err) {
+    consecutiveFlushFailures++;
+
+    // Always log to stderr - this is critical visibility
+    const errorMsg = `[LOGGER] Database flush failed: ${err instanceof Error ? err.message : String(err)}`;
+    process.stderr.write(`${new Date().toISOString()} [error] [logger] ${errorMsg}\n`);
+
+    // Alert if failures exceed threshold and cooldown has passed
+    const now = Date.now();
+    if (consecutiveFlushFailures >= MAX_CONSECUTIVE_FAILURES_BEFORE_ALERT &&
+        now - lastFailureAlertTime > FAILURE_ALERT_COOLDOWN_MS) {
+      const criticalMsg = `[LOGGER] CRITICAL: ${consecutiveFlushFailures} consecutive database flush failures. Logs are NOT being persisted. Check database connection.`;
+      process.stderr.write(`${new Date().toISOString()} [error] [logger] ${criticalMsg}\n`);
+      lastFailureAlertTime = now;
+    }
+
+    // Re-queue the batch at the front of pendingBatch for retry
+    pendingBatch.unshift(...batch);
+    // Prevent unbounded growth on repeated failures
+    if (pendingBatch.length > MAX_BATCH_SIZE * 3) {
+      pendingBatch.splice(MAX_BATCH_SIZE * 2);
+    }
   }
 }
 
@@ -183,8 +224,9 @@ async function cleanupOldLogs(): Promise<void> {
       `DELETE FROM process_logs WHERE created_at < $1`,
       [cutoff],
     );
-  } catch {
-    // Non-fatal
+  } catch (err) {
+    // Log cleanup failures to stderr - non-fatal but should be visible
+    process.stderr.write(`${new Date().toISOString()} [warn] [logger] Cleanup failed: ${err instanceof Error ? err.message : String(err)}\n`);
   }
 }
 
@@ -198,10 +240,15 @@ export function startLogPersistence(
   if (flushTimer) return; // Already started
   dbRef = db;
   flushTimer = setInterval(() => {
-    flushLogs().catch(() => {});
+    flushLogs().catch((err) => {
+      // This should never happen since flushLogs catches errors, but guard anyway
+      process.stderr.write(`${new Date().toISOString()} [error] [logger] Unexpected flush error: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
   }, FLUSH_INTERVAL_MS);
   cleanupTimer = setInterval(() => {
-    cleanupOldLogs().catch(() => {});
+    cleanupOldLogs().catch((err) => {
+      process.stderr.write(`${new Date().toISOString()} [error] [logger] Unexpected cleanup error: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
   }, CLEANUP_INTERVAL_MS);
 }
 
@@ -214,8 +261,10 @@ export function stopLogPersistence(): void {
     clearInterval(cleanupTimer);
     cleanupTimer = null;
   }
-  // Final flush attempt
-  flushLogs().catch(() => {});
+  // Final flush attempt with error logging
+  flushLogs().catch((err) => {
+    process.stderr.write(`${new Date().toISOString()} [error] [logger] Final flush failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  });
   dbRef = null;
 }
 

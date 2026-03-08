@@ -307,7 +307,9 @@ export function createGetRoutingStatsTool(): ToolDefinition {
             for (const kw of keywords) {
               keywordFreq[kw] = (keywordFreq[kw] || 0) + 1;
             }
-          } catch {}
+          } catch {
+            // Ignore malformed JSON in keywords_json - skip this row
+          }
         }
         const topKeywordsList = Object.entries(keywordFreq)
           .sort((a, b) => b[1] - a[1])
