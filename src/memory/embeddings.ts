@@ -55,7 +55,21 @@ export function createEmbeddingProvider(apiKey: string): EmbeddingProvider {
 
       const json = (await response.json()) as EmbeddingResponse;
 
+      // OpenRouter returns HTTP 200 with an error body when no upstream provider
+      // could handle the request ("No successful provider responses", code 404).
+      // This is a transient routing failure — retry with backoff.
       if (!json.data || !Array.isArray(json.data)) {
+        const isProviderRouting =
+          (json as unknown as { error?: { code?: number } }).error?.code === 404;
+        if (isProviderRouting && attempt < MAX_RETRIES - 1) {
+          const backoffMs = Math.pow(2, attempt) * 1000;
+          log.warn("Embedding provider routing failure, retrying", {
+            attempt: attempt + 1,
+            backoffMs,
+          });
+          await delay(backoffMs);
+          continue;
+        }
         throw new Error(
           `Unexpected embedding response (missing data): ${JSON.stringify(json).slice(0, 200)}`,
         );
@@ -71,7 +85,7 @@ export function createEmbeddingProvider(apiKey: string): EmbeddingProvider {
     }
 
     throw new Error(
-      `Embedding failed after ${MAX_RETRIES} retries (rate limited)`,
+      `Embedding failed after ${MAX_RETRIES} retries (rate limited or no provider)`,
     );
   }
 
