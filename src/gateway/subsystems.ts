@@ -37,17 +37,9 @@ import {
   type ArxivScraper,
 } from "../sources/arxiv/scraper";
 import {
-  createScholarScraper,
-  type ScholarScraper,
-} from "../sources/scholar/scraper";
-import {
   createNewsProcessor,
   type NewsProcessor,
 } from "../sources/news/processor";
-import {
-  createDexScreenerProcessor,
-  type DexScreenerProcessor,
-} from "../sources/dexscreener/processor";
 import { createLiveKlineHub, type LiveKlineHub } from "../sources/markets/ws-hub";
 
 const log = createLogger("gateway:subsystems");
@@ -65,9 +57,7 @@ export interface SubsystemInstances {
   readonly redditScraper: RedditScraper | undefined;
   readonly githubScraper: GithubScraper | undefined;
   readonly arxivScraper: ArxivScraper | undefined;
-  readonly scholarScraper: ScholarScraper | undefined;
   readonly newsProcessor: NewsProcessor | undefined;
-  readonly dexScreenerProcessor: DexScreenerProcessor | undefined;
 }
 
 export interface SubsystemStartResult {
@@ -100,10 +90,7 @@ export function createSubsystemRegistry(opts: {
   let redditScraper: RedditScraper | undefined;
   let githubScraper: GithubScraper | undefined;
   let arxivScraper: ArxivScraper | undefined;
-  let scholarScraper: ScholarScraper | undefined;
   let newsProcessor: NewsProcessor | undefined;
-  let dexScreenerProcessor: DexScreenerProcessor | undefined;
-
   return {
     async startAll(): Promise<SubsystemStartResult> {
       const failed: string[] = [];
@@ -185,19 +172,9 @@ export function createSubsystemRegistry(opts: {
         arxivScraper.start();
       });
 
-      await tryStart("scholar-scraper", () => {
-        scholarScraper = createScholarScraper({ memoryManager: mm });
-        scholarScraper.start();
-      });
-
       await tryStart("news-processor", () => {
         newsProcessor = createNewsProcessor({ memoryManager: mm });
         newsProcessor.start();
-      });
-
-      await tryStart("dexscreener-processor", () => {
-        dexScreenerProcessor = createDexScreenerProcessor({ memoryManager: mm });
-        dexScreenerProcessor.start();
       });
 
       // Log aggregate result
@@ -235,9 +212,7 @@ export function createSubsystemRegistry(opts: {
           redditScraper,
           githubScraper,
           arxivScraper,
-          scholarScraper,
           newsProcessor,
-          dexScreenerProcessor,
         },
         failed,
         started,
@@ -279,12 +254,6 @@ export function createSubsystemRegistry(opts: {
         arxivScraper.stop();
         arxivScraper = undefined;
         log.info("arXiv scraper stopped");
-      }
-
-      if (scholarScraper) {
-        scholarScraper.stop();
-        scholarScraper = undefined;
-        log.info("Scholar scraper stopped");
       }
 
       if (bookmarkProcessor) {

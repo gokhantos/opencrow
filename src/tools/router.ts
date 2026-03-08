@@ -166,7 +166,7 @@ export class ToolRouter {
 
     // Research-related keywords
     if (
-      /search|find|look|news|article|blog|reddit|hacker news|product hunt|github|arxiv|scholar/.test(
+      /search|find|look|news|article|blog|reddit|hacker news|product hunt|github|arxiv/.test(
         lower,
       )
     ) {

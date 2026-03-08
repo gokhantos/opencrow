@@ -94,15 +94,6 @@ async function main(): Promise<void> {
       scraper.start();
       break;
     }
-    case "scholar": {
-      const { createScholarScraper } =
-        await import("../sources/scholar/scraper");
-      const scraper = createScholarScraper({
-        memoryManager: memoryManager ?? undefined,
-      });
-      scraper.start();
-      break;
-    }
     case "news": {
       const { createNewsProcessor } = await import("../sources/news/processor");
       const processor = createNewsProcessor({

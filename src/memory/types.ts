@@ -29,7 +29,6 @@ export type MemorySourceKind =
   | "hf_model"
   | "github_repo"
   | "arxiv_paper"
-  | "scholar_paper"
   | "observation"
   | "idea"
   | "app_review"
@@ -50,7 +49,6 @@ export const MEMORY_SOURCE_KINDS = [
   "hf_model",
   "github_repo",
   "arxiv_paper",
-  "scholar_paper",
   "observation",
   "idea",
   "app_review",
@@ -175,19 +173,6 @@ export interface ArxivPaperForIndex {
   readonly publishedAt: string;
   readonly pdfUrl: string;
   readonly absUrl: string;
-}
-
-export interface ScholarPaperForIndex {
-  readonly id: string;
-  readonly title: string;
-  readonly authors: readonly string[];
-  readonly abstract: string;
-  readonly year: number;
-  readonly venue: string;
-  readonly citationCount: number;
-  readonly referenceCount: number;
-  readonly url: string;
-  readonly tldr: string;
 }
 
 export interface ObservationForIndex {
@@ -316,11 +301,6 @@ export interface MemoryIndexer {
     papers: readonly ArxivPaperForIndex[],
     metadata?: Record<string, string>,
   ): Promise<string>;
-  indexScholarPapers(
-    agentId: string,
-    papers: readonly ScholarPaperForIndex[],
-    metadata?: Record<string, string>,
-  ): Promise<string>;
   indexObservations(
     agentId: string,
     observations: readonly ObservationForIndex[],
@@ -406,11 +386,6 @@ export interface MemoryManager {
   indexArxivPapers(
     agentId: string,
     papers: readonly ArxivPaperForIndex[],
-    metadata?: Record<string, string>,
-  ): Promise<string>;
-  indexScholarPapers(
-    agentId: string,
-    papers: readonly ScholarPaperForIndex[],
     metadata?: Record<string, string>,
   ): Promise<string>;
   indexObservations(

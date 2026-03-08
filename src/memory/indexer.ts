@@ -9,7 +9,6 @@ import type {
   HFModelForIndex,
   GithubRepoForIndex,
   ArxivPaperForIndex,
-  ScholarPaperForIndex,
   ObservationForIndex,
   IdeaForIndex,
   AppReviewForIndex,
@@ -565,60 +564,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       }
 
       log.info("Indexed arXiv papers", {
-        agentId,
-        paperCount: papers.length,
-        chunks: chunks.length,
-      });
-      return sourceId;
-    },
-
-    async indexScholarPapers(
-      agentId,
-      papers: readonly ScholarPaperForIndex[],
-      metadata,
-    ) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
-      const paperIds = papers.map((p) => p.id).join(",");
-      const metadataJson = JSON.stringify({
-        ...(metadata ?? {}),
-        paperIds,
-        paperCount: String(papers.length),
-      });
-
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'scholar_paper', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
-
-      // Skip papers without abstracts — useless for semantic search
-      const withAbstracts = papers.filter((p) => p.abstract.trim().length > 0);
-      if (withAbstracts.length < papers.length) {
-        log.debug("Filtered scholar papers without abstracts", {
-          total: papers.length,
-          withAbstracts: withAbstracts.length,
-          skipped: papers.length - withAbstracts.length,
-        });
-      }
-
-      const profile = getChunkProfile("scholar_paper");
-      const chunks = withAbstracts.flatMap((p) => {
-        const authors =
-          p.authors.length > 0
-            ? `\nAuthors: ${p.authors.slice(0, 10).join(", ")}`
-            : "";
-        const venue = p.venue ? `, ${p.venue}` : "";
-        const tldr = p.tldr ? `\nTL;DR: ${p.tldr}` : "";
-        const text = `${p.title} (${p.year}${venue})${authors}\nCitations: ${p.citationCount} | References: ${p.referenceCount}${tldr}\n${p.abstract.slice(0, 1500)}\nURL: ${p.url}`;
-        const itemChunks = chunkText(text, profile);
-        return itemChunks.length > 0 ? itemChunks : [text];
-      });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "scholar_paper", chunks);
-      }
-
-      log.info("Indexed Scholar papers", {
         agentId,
         paperCount: papers.length,
         chunks: chunks.length,

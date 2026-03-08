@@ -10,7 +10,6 @@ const SEARCHABLE_KINDS: readonly MemorySourceKind[] = [
   "product",
   "github_repo",
   "arxiv_paper",
-  "scholar_paper",
   "hf_model",
   "app_review",
   "app_ranking",
@@ -27,7 +26,6 @@ const KIND_LABELS: Record<string, string> = {
   product: "Product Hunt",
   github_repo: "GitHub",
   arxiv_paper: "arXiv",
-  scholar_paper: "Semantic Scholar",
   hf_model: "HuggingFace",
   app_review: "App Reviews",
   app_ranking: "App Rankings",
@@ -56,7 +54,7 @@ export function createCrossSourceSearchTool(
   return {
     name: "cross_source_search",
     description:
-      "Search across ALL indexed sources in one call: news, Hacker News, Reddit, X/Twitter, Product Hunt, GitHub, arXiv, Semantic Scholar, HuggingFace. Returns results ranked by relevance with source labels. Use this instead of calling 5+ individual search tools when you need a broad sweep across sources.",
+      "Search across ALL indexed sources in one call: news, Hacker News, Reddit, X/Twitter, Product Hunt, GitHub, arXiv, HuggingFace. Returns results ranked by relevance with source labels. Use this instead of calling 5+ individual search tools when you need a broad sweep across sources.",
     inputSchema: {
       type: "object",
       properties: {
@@ -71,7 +69,7 @@ export function createCrossSourceSearchTool(
             enum: [...SEARCHABLE_KINDS],
           },
           description:
-            "Optional: limit to specific sources. Omit to search all. Values: article, story, reddit_post, tweet, product, github_repo, arxiv_paper, scholar_paper, hf_model.",
+            "Optional: limit to specific sources. Omit to search all. Values: article, story, reddit_post, tweet, product, github_repo, arxiv_paper, hf_model.",
         },
         limit: {
           type: "number",

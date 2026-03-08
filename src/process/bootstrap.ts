@@ -44,14 +44,12 @@ import { createMarketTools } from "../sources/markets/tools";
 import { buildMarketContext } from "../sources/markets/context";
 import { initQuestDBReadOnly } from "../sources/markets/questdb";
 import { createNewsTools } from "../tools/news";
-import { createDexScreenerTools } from "../tools/dexscreener";
 import { createPHTools } from "../tools/ph";
 import { createHNTools } from "../tools/hn";
 import { createHFTools } from "../tools/huggingface";
 import { createRedditTools } from "../tools/reddit";
 import { createGithubTools } from "../tools/github";
 import { createArxivTools } from "../tools/arxiv";
-import { createScholarTools } from "../tools/scholar";
 import { createXTimelineTools } from "../tools/x-timeline";
 import { createAppStoreTools } from "../tools/appstore";
 import { createPlayStoreTools } from "../tools/playstore";
@@ -428,13 +426,6 @@ export async function bootstrap(
         allowsTool(t.name),
       );
       if (arxivTools.length > 0) registry = registry.withTools(arxivTools);
-    }
-
-    {
-      const scholarTools = createScholarTools(memoryManager).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (scholarTools.length > 0) registry = registry.withTools(scholarTools);
     }
 
     {

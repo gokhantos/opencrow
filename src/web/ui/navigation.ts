@@ -28,7 +28,6 @@ import {
   Search,
   Smartphone,
   Wallet,
-  BarChart2,
 } from "lucide-react";
 
 export type Tab =
@@ -44,12 +43,10 @@ export type Tab =
   | "huggingface"
   | "github"
   | "arxiv"
-  | "scholar"
   | "google-trends"
   | "appstore"
   | "playstore"
   | "defillama"
-  | "dexscreener"
   | "news"
   | "markets"
   | "ideas"
@@ -79,8 +76,8 @@ export interface NavSection {
 export const VALID_TABS = new Set<Tab>([
   "overview", "agents", "skills", "sessions", "channels",
   "x-accounts", "producthunt", "hackernews", "reddit", "huggingface",
-  "github", "arxiv", "scholar", "google-trends", "appstore", "playstore",
-  "defillama", "dexscreener", "news", "markets", "ideas", "cron",
+  "github", "arxiv", "google-trends", "appstore", "playstore",
+  "defillama", "news", "markets", "ideas", "cron",
   "processes", "system", "tools", "usage", "agent-metrics", "routing",
   "memory", "failures", "logs",
 ]);
@@ -115,12 +112,10 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       { id: "huggingface", label: "HuggingFace", Icon: Cpu },
       { id: "github", label: "GitHub", Icon: Github },
       { id: "arxiv", label: "arXiv", Icon: BookOpen },
-      { id: "scholar", label: "Scholar", Icon: GraduationCap },
       { id: "google-trends", label: "Google Trends", Icon: Search },
       { id: "appstore", label: "App Store", Icon: Smartphone },
       { id: "playstore", label: "Play Store", Icon: Smartphone },
       { id: "defillama", label: "DeFi Llama", Icon: Wallet },
-      { id: "dexscreener", label: "DexScreener", Icon: BarChart2 },
     ],
   },
   {

@@ -9,14 +9,12 @@ import { createToolRegistry } from "./registry";
 import { createMemoryTools, createGetObservationsTool } from "./memory";
 import { createMarketTools } from "../sources/markets/tools";
 import { createNewsTools } from "./news";
-import { createDexScreenerTools } from "./dexscreener";
 import { createPHTools } from "./ph";
 import { createHNTools } from "./hn";
 import { createHFTools } from "./huggingface";
 import { createRedditTools } from "./reddit";
 import { createGithubTools } from "./github";
 import { createArxivTools } from "./arxiv";
-import { createScholarTools } from "./scholar";
 import { createXTimelineTools } from "./x-timeline";
 import { createAppStoreTools } from "./appstore";
 import { createPlayStoreTools } from "./playstore";
@@ -118,11 +116,6 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
   get_arxiv_papers: "arxiv",
   search_arxiv_papers: "arxiv",
 
-  // Scholar
-  get_scholar_papers: "scholar",
-  search_scholar_papers: "scholar",
-  lookup_scholar_paper: "scholar",
-
   // HuggingFace
   get_hf_models: "huggingface",
   search_hf_models: "huggingface",
@@ -149,12 +142,6 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
 
   // Cross-source
   cross_source_search: "search",
-
-  // DexScreener
-  get_trending_tokens: "dexscreener",
-  get_new_tokens: "dexscreener",
-  search_tokens: "dexscreener",
-  token_stats: "dexscreener",
 
   // DeFi
   get_defi_protocols: "defi",
@@ -279,14 +266,12 @@ export const CATEGORY_LABELS: Record<string, string> = {
   reddit: "Reddit",
   github: "GitHub",
   arxiv: "arXiv",
-  scholar: "Scholar",
   huggingface: "HuggingFace",
   x_timeline: "X / Twitter",
   appstore: "App Store",
   playstore: "Play Store",
   google_trends: "Google Trends",
   search: "Cross-Source",
-  dexscreener: "DexScreener",
   defi: "DeFi",
   market: "Markets & Trading",
   ideas: "Ideas",
@@ -371,14 +356,12 @@ export function buildToolCatalog(): readonly ToolCatalogEntry[] {
     search: () => Promise.resolve([]),
   } as never;
   tools.push(...createNewsTools(mm));
-  tools.push(...createDexScreenerTools());
   tools.push(...createPHTools(mm));
   tools.push(...createHNTools(mm));
   tools.push(...createHFTools(mm));
   tools.push(...createRedditTools(mm));
   tools.push(...createGithubTools(mm));
   tools.push(...createArxivTools(mm));
-  tools.push(...createScholarTools(mm));
   tools.push(...createXTimelineTools(mm));
   tools.push(...createAppStoreTools(mm));
   tools.push(...createPlayStoreTools(mm));
@@ -453,14 +436,12 @@ const CATEGORY_ORDER = [
   "reddit",
   "github",
   "arxiv",
-  "scholar",
   "huggingface",
   "x_timeline",
   "appstore",
   "playstore",
   "google_trends",
   "search",
-  "dexscreener",
   "defi",
   "market",
   "ideas",

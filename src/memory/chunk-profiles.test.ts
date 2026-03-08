@@ -46,7 +46,6 @@ describe("getChunkProfile", () => {
       "hf_model",
       "github_repo",
       "arxiv_paper",
-      "scholar_paper",
       "observation",
       "idea",
     ];

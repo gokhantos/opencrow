@@ -10,7 +10,6 @@ import type {
   HFModelForIndex,
   GithubRepoForIndex,
   ArxivPaperForIndex,
-  ScholarPaperForIndex,
   ObservationForIndex,
   IdeaForIndex,
   AppReviewForIndex,
@@ -167,19 +166,6 @@ export function createMemoryManager(config: ManagerConfig): MemoryManager {
         return await indexer.indexArxivPapers(agentId, papers, metadata);
       } catch (error) {
         log.error("Failed to index arXiv papers", { agentId, error });
-        throw error;
-      }
-    },
-
-    async indexScholarPapers(
-      agentId: string,
-      papers: readonly ScholarPaperForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
-      try {
-        return await indexer.indexScholarPapers(agentId, papers, metadata);
-      } catch (error) {
-        log.error("Failed to index Scholar papers", { agentId, error });
         throw error;
       }
     },
