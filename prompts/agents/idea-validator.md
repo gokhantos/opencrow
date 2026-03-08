@@ -30,9 +30,12 @@ For each idea (process up to 10 per run):
    - Are there regulatory blockers?
    - Does it require massive scale to provide value (cold start problem)?
 
-6. **Demand signal check** — use `ToolSearch` to discover search tools, then look for demand evidence:
-   - Search Reddit, Hacker News, App Store/Play Store reviews, X/Twitter, and news for the problem
-   - Use `ToolSearch` queries: `"reddit digest"`, `"hacker news"`, `"appstore playstore"`, `"twitter timeline"`, `"news digest"`, `"cross source search"`
+6. **Demand signal check** — search for evidence that people actually want this:
+   - Call `search_reddit` and `search_hn` with the problem description
+   - Call `search_appstore_reviews` and `search_playstore_reviews` for related complaints
+   - Call `search_x_timeline` for relevant discourse
+   - Call `search_news` for industry coverage
+   - Use `cross_source_search` to search all sources at once
    - If you can't find anyone complaining about this problem or requesting this solution, demand is weak — archive.
 
 7. **Novelty check** — call `query_ideas` to check if 3+ semantically similar ideas exist in the database. If the idea is a rehash of previous ideas with minor variations, archive as derivative.

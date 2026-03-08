@@ -117,7 +117,7 @@ const agentFormSchema = z.object({
   description: z.string(),
   provider: z.string(),
   model: z.string(),
-  maxIterations: z.number().int().min(1).max(100),
+  maxIterations: z.number().int().min(1).max(500),
   reasoning: z.boolean(),
   thinkingMode: z.enum(["adaptive", "enabled", "disabled"]),
   thinkingBudget: z.number().int(),
@@ -224,6 +224,8 @@ export function AgentFormModal({
   const selectedTools = watch("selectedTools");
   const selectedSkills = watch("selectedSkills");
   const provider = watch("provider");
+  const model = watch("model");
+  const isOpus = model?.toLowerCase().includes("opus") ?? false;
 
   /* ── Template application ── */
   const applyTemplate = useCallback((tpl: AgentTemplate) => {
@@ -557,7 +559,7 @@ export function AgentFormModal({
                   label="Max Iterations"
                   type="number"
                   min={1}
-                  max={100}
+                  max={500}
                   {...register("maxIterations", { valueAsNumber: true })}
                 />
               </div>
