@@ -73,7 +73,7 @@ async function seedIdeaGenJobs(opts: {
   const { cronStore, existingJobs, primaryTelegramUser, agentBotChannels } = opts;
 
   // Migrate: remove old -research and -ideation jobs
-  const legacySuffixes = ["-research", "-ideation"];
+  const legacySuffixes = ["-research", "-ideation", "-generation"];
   for (const job of existingJobs) {
     const isLegacy = IDEA_GEN_AGENTS.some((agentId) =>
       legacySuffixes.some((suffix) => job.name === `${agentId}${suffix}`),
