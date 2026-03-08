@@ -42,14 +42,14 @@ function getToolByName(
 // ---------------------------------------------------------------------------
 
 describe("createIdeaTools", () => {
-  it("should return 7 tools without memoryManager", () => {
+  it("should return 6 tools without memoryManager", () => {
     const tools = createIdeaTools("test-agent");
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(6);
   });
 
-  it("should return 8 tools with memoryManager (adds search_similar_ideas)", () => {
+  it("should return 7 tools with memoryManager (adds search_similar_ideas)", () => {
     const tools = createIdeaTools("test-agent", mockMemoryManager());
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(7);
   });
 
   it("should include search_similar_ideas only when memoryManager provided", () => {
@@ -71,7 +71,6 @@ describe("createIdeaTools", () => {
     expect(names).toContain("get_idea_stats");
     expect(names).toContain("update_idea_stage");
     expect(names).toContain("query_ideas");
-    expect(names).toContain("get_ideas_by_rating");
     expect(names).toContain("get_ideas_trends");
     expect(names).toContain("search_similar_ideas");
   });
@@ -277,31 +276,6 @@ describe("query_ideas tool definition", () => {
       "open_source",
       "general",
     ]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: get_ideas_by_rating tool
-// ---------------------------------------------------------------------------
-
-describe("get_ideas_by_rating tool definition", () => {
-  const tools = createIdeaTools("test-agent");
-  const tool = getToolByName(tools, "get_ideas_by_rating")!;
-
-  it("should have the correct name", () => {
-    expect(tool.name).toBe("get_ideas_by_rating");
-  });
-
-  it("should require min_score", () => {
-    const required = tool.inputSchema.required as string[];
-    expect(required).toContain("min_score");
-  });
-
-  it("should have min_score, max_score, limit in properties", () => {
-    const props = tool.inputSchema.properties as Record<string, any>;
-    expect(props).toHaveProperty("min_score");
-    expect(props).toHaveProperty("max_score");
-    expect(props).toHaveProperty("limit");
   });
 });
 

@@ -3,7 +3,6 @@ import {
   getIdeas,
   getIdeaById,
   getIdeaStats,
-  updateIdeaRating,
   getStageCounts,
   updateIdeaStage,
 } from "../../sources/ideas/store";
@@ -45,7 +44,6 @@ export function createIdeasRoutes(): Hono {
         "reasoning",
         "sources_used",
         "category",
-        "rating",
         "pipeline_stage",
         "quality_score",
         "model_references",
@@ -93,35 +91,6 @@ export function createIdeasRoutes(): Hono {
       return c.json({ success: false, error: "Idea not found" }, 404);
     }
     return c.json({ success: true, data: idea });
-  });
-
-  app.patch("/ideas/:id", async (c) => {
-    const id = c.req.param("id");
-
-    let body: { rating?: number | null };
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ success: false, error: "Invalid JSON body" }, 400);
-    }
-
-    const { rating } = body;
-    if (rating !== null && rating !== undefined && (typeof rating !== "number" || !Number.isInteger(rating) || rating < 0 || rating > 5)) {
-      return c.json(
-        { success: false, error: "rating must be an integer 0-5 or null" },
-        400,
-      );
-    }
-
-    const updated = await updateIdeaRating(id, {
-      rating: rating ?? null,
-    });
-
-    if (!updated) {
-      return c.json({ success: false, error: "Idea not found" }, 404);
-    }
-
-    return c.json({ success: true, data: updated });
   });
 
   app.patch("/ideas/:id/stage", async (c) => {

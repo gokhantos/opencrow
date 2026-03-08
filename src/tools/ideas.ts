@@ -9,9 +9,7 @@ import {
   updateIdeaStage,
   getIdeas,
   getIdeasByStage,
-  getIdeasByRating,
   getStageTransitions,
-  getRatingInsights,
 } from "../sources/ideas/store";
 import { createLogger } from "../logger";
 
@@ -114,7 +112,7 @@ function createGetPreviousIdeasTool(agentId: string): ToolDefinition {
   return {
     name: "get_previous_ideas",
     description:
-      "Get a compact list of your previously generated idea titles, categories, and star ratings (0-5). Call this FIRST before generating new ideas to avoid duplicates. Use this list ONLY to avoid repeating past ideas — do not anchor on highly-rated ideas or try to generate similar ones. Prioritize novelty and unexplored directions over mimicking past successes.",
+      "Get a compact list of your previously generated idea titles and categories. Call this FIRST before generating new ideas to avoid duplicates. Use this list ONLY to avoid repeating past ideas. Prioritize novelty and unexplored directions.",
     inputSchema: {
       type: "object",
       properties: {
@@ -139,8 +137,7 @@ function createGetPreviousIdeasTool(agentId: string): ToolDefinition {
         }
 
         const lines = ideas.map((idea) => {
-          const ratingTag = idea.rating != null ? ` [${idea.rating}/5]` : "";
-          return `- ${idea.title} (${idea.category})${ratingTag}`;
+          return `- ${idea.title} (${idea.category})`;
         });
 
         return {
@@ -297,10 +294,9 @@ function createQueryIdeasTool(): ToolDefinition {
         }
 
         const lines = ideas.map((idea, i) => {
-          const rating = idea.rating != null ? ` [${idea.rating}/5]` : "";
           const stage = idea.pipeline_stage || "idea";
           return [
-            `${i + 1}. ${idea.title} (${idea.category})${rating} [${stage}]`,
+            `${i + 1}. ${idea.title} (${idea.category}) [${stage}]`,
             `  ID: ${idea.id}`,
             `  ${idea.summary}`,
           ].join("\n");
@@ -377,62 +373,6 @@ function createSearchSimilarIdeasTool(memoryManager: MemoryManager): ToolDefinit
 // Ideas Pipeline Enhancement Tools
 // ============================================================================
 
-function createGetIdeasByRatingTool(): ToolDefinition {
-  return {
-    name: "get_ideas_by_rating",
-    description:
-      "Filter and retrieve ideas by quality score. Useful for finding your best-rated ideas or filtering out low-quality concepts.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        min_score: {
-          type: "number",
-          description: "Minimum quality score (1.0-5.0).",
-        },
-        max_score: {
-          type: "number",
-          description: "Maximum quality score (1.0-5.0). Default 5.0.",
-        },
-        limit: {
-          type: "number",
-          description: "Max results (default 20, max 50).",
-        },
-      },
-      required: ["min_score"],
-    },
-    categories: ["ideas"] as readonly ToolCategory[],
-    async execute(input): Promise<{ output: string; isError: boolean }> {
-      const rawMin = Number(input.min_score ?? 1);
-      const minScore = isNaN(rawMin) ? 1 : Math.min(Math.max(rawMin, 1), 5);
-      const rawMax = Number(input.max_score ?? 5);
-      const maxScore = isNaN(rawMax) ? 5 : Math.min(Math.max(rawMax, 1), 5);
-      const limit = Math.min(Number(input.limit) || 20, 50);
-
-      try {
-        const ideas = await getIdeasByRating(minScore, maxScore, limit);
-
-        if (ideas.length === 0) {
-          return { output: "No ideas found with the specified quality score range.", isError: false };
-        }
-
-        const lines = ideas.map((idea, i) => {
-          const score = idea.quality_score?.toFixed(1) || "N/A";
-          const rating = idea.rating != null ? ` [${idea.rating}/5]` : "";
-          return `${i + 1}. ${idea.title} (${idea.category})\n   Score: ${score} | Stage: ${idea.pipeline_stage}${rating}`;
-        });
-
-        return {
-          output: `Found ${ideas.length} idea(s) with quality score ${minScore}-${maxScore}:\n\n${lines.join("\n\n")}`,
-          isError: false,
-        };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Error fetching ideas by rating: ${msg}`, isError: true };
-      }
-    },
-  };
-}
-
 function createGetIdeasTrendsTool(): ToolDefinition {
   return {
     name: "get_ideas_trends",
@@ -494,41 +434,6 @@ function createGetIdeasTrendsTool(): ToolDefinition {
   };
 }
 
-function createGetRatingInsightsTool(): ToolDefinition {
-  return {
-    name: "get_rating_insights",
-    description:
-      "Get meta-patterns from human ratings of past ideas. Shows which categories, agents, and characteristics correlate with higher ratings. Also reveals self-scoring calibration (are you over- or under-rating your own ideas?). Use this to calibrate your quality bar — NOT to copy past ideas. Focus on the structural patterns, not specific ideas.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    categories: ["ideas"] as readonly ToolCategory[],
-    async execute(): Promise<{ output: string; isError: boolean }> {
-      try {
-        const insights = await getRatingInsights();
-
-        if (insights.length === 0) {
-          return { output: "No rating insights available yet. Need at least 3 rated ideas per dimension.", isError: false };
-        }
-
-        const lines = insights.map((i) =>
-          `  ${i.pattern}: avg ${Number(i.avg_rating).toFixed(1)}/5 (${i.count} ideas)`,
-        );
-
-        return {
-          output: `Rating insights (patterns from human ratings):\n${lines.join("\n")}\n\nUse these to calibrate your quality bar. Do NOT try to copy highly-rated ideas.`,
-          isError: false,
-        };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Error fetching rating insights: ${msg}`, isError: true };
-      }
-    },
-  };
-}
-
 export function createIdeaTools(agentId: string, memoryManager?: MemoryManager | null): readonly ToolDefinition[] {
   const tools: ToolDefinition[] = [
     createSaveIdeaTool(agentId, memoryManager),
@@ -536,9 +441,7 @@ export function createIdeaTools(agentId: string, memoryManager?: MemoryManager |
     createGetIdeaStatsTool(),
     createUpdateIdeaStageTool(),
     createQueryIdeasTool(),
-    createGetIdeasByRatingTool(),
     createGetIdeasTrendsTool(),
-    createGetRatingInsightsTool(),
   ];
 
   if (memoryManager) {

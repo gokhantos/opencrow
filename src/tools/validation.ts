@@ -12,7 +12,7 @@ function createGetUnvalidatedIdeasTool(): ToolDefinition {
   return {
     name: "get_unvalidated_ideas",
     description:
-      "Get top-rated ideas that haven't been validated yet. These are in the 'idea' stage with rating >= 3. Review them for competitive viability, market size, and technical feasibility before promoting or archiving.",
+      "Get unvalidated ideas still in the 'idea' stage, ordered by self-assessed quality score. Review them for competitive viability, market size, and technical feasibility before promoting or archiving.",
     inputSchema: {
       type: "object",
       properties: {
@@ -31,14 +31,13 @@ function createGetUnvalidatedIdeasTool(): ToolDefinition {
         const ideas = await getTopUnvalidatedIdeas(limit);
 
         if (ideas.length === 0) {
-          return { output: "No unvalidated ideas with rating >= 3. Either no ideas have been rated yet, or all rated ideas have been processed.", isError: false };
+          return { output: "No unvalidated ideas in the 'idea' stage. All ideas have been processed or none have been generated yet.", isError: false };
         }
 
         const lines = ideas.map((idea, i) => {
-          const rating = idea.rating != null ? `${idea.rating}/5` : "unrated";
           const score = idea.quality_score != null ? ` (self-score: ${idea.quality_score.toFixed(1)})` : "";
           return [
-            `${i + 1}. ${idea.title} [${idea.category}] — ${rating}${score}`,
+            `${i + 1}. ${idea.title} [${idea.category}]${score}`,
             `   Agent: ${idea.agent_id}`,
             `   ID: ${idea.id}`,
             `   ${idea.summary}`,
@@ -47,7 +46,7 @@ function createGetUnvalidatedIdeasTool(): ToolDefinition {
         });
 
         return {
-          output: `${ideas.length} unvalidated ideas (rated 3+ stars):\n\n${lines.join("\n\n")}`,
+          output: `${ideas.length} unvalidated ideas:\n\n${lines.join("\n\n")}`,
           isError: false,
         };
       } catch (error) {
@@ -139,13 +138,12 @@ function createGetIdeaDetailTool(): ToolDefinition {
           return { output: `Idea not found: ${id}`, isError: true };
         }
 
-        const rating = idea.rating != null ? `${idea.rating}/5` : "unrated";
         const score = idea.quality_score != null ? `${idea.quality_score.toFixed(1)}` : "none";
         const lines = [
           `Title: ${idea.title}`,
           `Category: ${idea.category}`,
           `Agent: ${idea.agent_id}`,
-          `Rating: ${rating} | Self-score: ${score}`,
+          `Self-score: ${score}`,
           `Stage: ${idea.pipeline_stage || "idea"}`,
           `Created: ${new Date(idea.created_at * 1000).toISOString()}`,
           "",

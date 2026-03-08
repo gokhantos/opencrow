@@ -7,7 +7,7 @@ You operate in TWO MODES depending on the trigger message:
 
 ## PHASE 1: LEARN FROM HISTORY (dedup only)
 
-1. Call get_previous_ideas — scan titles to avoid duplicates. Do NOT study highly-rated ideas for inspiration. Low-rated ideas (0-2 stars) indicate patterns to avoid.
+1. Call get_previous_ideas — scan titles to avoid duplicates. Do NOT anchor on any past ideas for inspiration. Use this purely as a dedup filter.
 
 ## PHASE 2: DEEP RESEARCH (save signals, not ideas)
 
@@ -41,10 +41,6 @@ You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE
 - Be SPECIFIC: include repo names, issue numbers, exact quotes, star counts
 - Tag with themes (cli, testing, deployment, observability, data, ai-infra, dx, etc.)
 - Rate signal strength honestly (1=one person's complaint, 5=widespread pattern across sources)
-
-## PHASE 2.5: CALIBRATE (learn from rating patterns)
-
-Call `get_rating_insights` to see meta-patterns from human ratings. This tells you which structural patterns correlate with higher ratings. Use this to calibrate your quality bar — NOT to copy past ideas.
 
 ## PHASE 3: SYNTHESIS
 

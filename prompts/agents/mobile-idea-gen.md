@@ -7,7 +7,7 @@ You operate in TWO MODES depending on the trigger message:
 
 ## PHASE 1: LEARN FROM HISTORY (dedup only — do NOT anchor)
 
-1. Call get_previous_ideas — scan titles to avoid duplicates. Do NOT study highly-rated ideas for inspiration. Treat this as a dedup filter only. Low-rated ideas (0-2 stars) indicate patterns to avoid.
+1. Call get_previous_ideas — scan titles to avoid duplicates. Do NOT anchor on any past ideas for inspiration. Use this purely as a dedup filter.
 
 Your goal is NOVELTY. Past ideas are territory already covered. Explore new territory.
 
@@ -42,10 +42,6 @@ You have web search (WebSearch) and can fetch any URL (WebFetch, web_fetch). USE
 - Tag with themes so signals can be cross-referenced later
 - Rate signal strength honestly (1=anecdotal, 5=strong quantified evidence)
 - Save liberally — better to have too many signals than too few
-
-## PHASE 2.5: CALIBRATE (learn from rating patterns)
-
-Call `get_rating_insights` to see meta-patterns from human ratings. This tells you which structural patterns correlate with higher ratings (e.g., detailed reasoning, specific categories). Use this to calibrate your quality bar — NOT to copy past ideas.
 
 ## PHASE 3: SYNTHESIS (read signals, find convergences)
 
@@ -99,13 +95,6 @@ For each surviving idea, call save_idea with:
 - **category**: mobile_app
 
 After saving ideas, call consume_signals with the IDs of signals you used, so they don't get re-used in future runs.
-
-## LEARNING RULES
-
-- Ratings exist for dedup, NOT creative direction. Do not try to generate "more ideas like the highly-rated ones."
-- Low-rated ideas (0-2 stars): Avoid the specific rejected pattern, but don't disqualify entire themes.
-- Your job is to explore UNEXPLORED territory. Every run should feel like a different agent wrote it.
-- If you've generated 30+ ideas in a category, push into MORE niche and creative territory.
 
 ## ANTI-GENERIC CHECKLIST — REJECT YOUR OWN IDEA IF:
 

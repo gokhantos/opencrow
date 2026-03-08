@@ -16,8 +16,8 @@ export async function seedDefaultCronJobs(opts: {
 
   await seedDailyNewsBriefing({ cronStore, existingJobs, primaryTelegramUser });
   await seedIdeaGenJobs({ cronStore, config, existingJobs, primaryTelegramUser, agentBotChannels });
-  await seedIdeaValidator({ cronStore, existingJobs, primaryTelegramUser });
   await seedSignalArchival({ cronStore, existingJobs });
+  await seedIdeaArchival({ cronStore, existingJobs });
 }
 
 async function seedDailyNewsBriefing(opts: {
@@ -186,37 +186,6 @@ async function seedIdeaGenJobs(opts: {
   }
 }
 
-async function seedIdeaValidator(opts: {
-  cronStore: CronStore;
-  existingJobs: Awaited<ReturnType<CronStore["listJobs"]>>;
-  primaryTelegramUser: number | undefined;
-}): Promise<void> {
-  const { cronStore, existingJobs, primaryTelegramUser } = opts;
-
-  const existing = existingJobs.find((j) => j.name === "idea-validator");
-  if (existing) return;
-
-  const delivery = primaryTelegramUser
-    ? {
-        mode: "announce" as const,
-        channel: "telegram",
-        chatId: String(primaryTelegramUser),
-      }
-    : { mode: "none" as const };
-
-  await cronStore.addJob({
-    name: "idea-validator",
-    enabled: true,
-    schedule: { kind: "cron", expr: "0 10 * * *" },
-    payload: {
-      kind: "agentTurn",
-      agentId: "idea-validator",
-    },
-    delivery,
-  });
-  log.info("Registered idea-validator cron job (10:00 UTC daily)");
-}
-
 async function seedSignalArchival(opts: {
   cronStore: CronStore;
   existingJobs: Awaited<ReturnType<CronStore["listJobs"]>>;
@@ -237,4 +206,25 @@ async function seedSignalArchival(opts: {
     delivery: { mode: "none" },
   });
   log.info("Registered signal-archival cron job (03:00 UTC daily)");
+}
+
+async function seedIdeaArchival(opts: {
+  cronStore: CronStore;
+  existingJobs: Awaited<ReturnType<CronStore["listJobs"]>>;
+}): Promise<void> {
+  const { cronStore, existingJobs } = opts;
+  const existing = existingJobs.find((j) => j.name === "idea-archival");
+  if (existing) return;
+
+  await cronStore.addJob({
+    name: "idea-archival",
+    enabled: true,
+    schedule: { kind: "cron", expr: "0 4 * * *" },
+    payload: {
+      kind: "internal",
+      handler: "idea-archival",
+    },
+    delivery: { mode: "none" },
+  });
+  log.info("Registered idea-archival cron job (04:00 UTC daily)");
 }

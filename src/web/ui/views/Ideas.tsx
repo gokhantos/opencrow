@@ -4,7 +4,7 @@ import { ChevronRight, Archive, RotateCcw } from "lucide-react";
 import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
-import { Button, PageHeader, LoadingState, EmptyState } from "../components";
+import { PageHeader, LoadingState, EmptyState } from "../components";
 import { useToast } from "../components/Toast";
 
 interface GeneratedIdea {
@@ -39,8 +39,7 @@ type CategoryFilter =
   | "ai_app"
   | "open_source"
   | "general";
-type SortMode = "newest" | "top_rated" | "lowest_rated";
-type RatingFilter = "all" | "high" | "mid" | "low" | "unrated";
+type SortMode = "newest" | "oldest";
 type ViewMode = "list" | "grid";
 
 const CATEGORY_TABS: readonly {
@@ -88,26 +87,6 @@ function nextStage(current: string): PipelineStage | null {
   return STAGE_ORDER[idx + 1] ?? null;
 }
 
-export function computeRatingCounts(ideas: readonly GeneratedIdea[]) {
-  let rated = 0;
-  let unrated = 0;
-  let sum = 0;
-  for (const idea of ideas) {
-    if (idea.rating != null) {
-      rated++;
-      sum += idea.rating;
-    } else {
-      unrated++;
-    }
-  }
-  return {
-    total: ideas.length,
-    rated,
-    unrated,
-    average: rated > 0 ? sum / rated : null,
-  };
-}
-
 export function sortIdeas(
   ideas: readonly GeneratedIdea[],
   mode: SortMode,
@@ -116,78 +95,18 @@ export function sortIdeas(
   switch (mode) {
     case "newest":
       return sorted.sort((a, b) => b.created_at - a.created_at);
-    case "top_rated":
-      return sorted.sort((a, b) => {
-        const scoreA = a.rating ?? -1;
-        const scoreB = b.rating ?? -1;
-        return scoreB - scoreA || b.created_at - a.created_at;
-      });
-    case "lowest_rated":
-      return sorted.sort((a, b) => {
-        const scoreA = a.rating ?? 6;
-        const scoreB = b.rating ?? 6;
-        return scoreA - scoreB || b.created_at - a.created_at;
-      });
+    case "oldest":
+      return sorted.sort((a, b) => a.created_at - b.created_at);
     default:
       return sorted;
   }
 }
 
-function StarRating({
-  value,
-  onChange,
-}: {
-  readonly value: number | null;
-  readonly onChange: (rating: number | null) => void;
-}) {
-  const [hover, setHover] = useState<number | null>(null);
-  const display = hover ?? value ?? 0;
-
-  return (
-    <div
-      className="flex gap-0.5"
-      onMouseLeave={() => setHover(null)}
-    >
-      {[1, 2, 3, 4, 5].map((star) => (
-        <button
-          key={star}
-          className={cn(
-            "w-7 h-7 rounded-md border-none bg-transparent text-[1.1rem] cursor-pointer flex items-center justify-center transition-colors p-0 leading-none",
-            star <= display ? "text-warning" : "text-faint opacity-40",
-            hover != null && star <= hover && "text-warning opacity-100",
-          )}
-          onClick={() => onChange(value === star ? null : star)}
-          onMouseEnter={() => setHover(star)}
-          title={value === star ? "Clear rating" : `Rate ${star}/5`}
-        >
-          &#9733;
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ratingBorderClass(rating: number | null): string {
-  if (rating == null) return "border-border hover:border-border-2";
-  if (rating >= 4) return "border-success hover:border-success";
-  if (rating >= 2) return "border-warning hover:border-warning";
-  return "border-danger hover:border-danger";
-}
-
-function ratingBarColor(rating: number | null): string {
-  if (rating == null) return "";
-  if (rating >= 4) return "bg-success";
-  if (rating >= 2) return "bg-warning";
-  return "bg-danger";
-}
-
 function IdeaCard({
   idea,
-  onRate,
   onStageChange,
 }: {
   readonly idea: GeneratedIdea;
-  readonly onRate: (id: string, rating: number | null) => void;
   readonly onStageChange: (id: string, stage: string) => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -221,28 +140,16 @@ function IdeaCard({
 
   return (
     <div
-      className={cn(
-        "relative p-[1.25rem_1.5rem] bg-bg-1 rounded-lg border transition-colors hover:bg-bg-2",
-        ratingBorderClass(idea.rating),
-      )}
+      className="relative p-[1.25rem_1.5rem] bg-bg-1 rounded-lg border border-border transition-colors hover:bg-bg-2 hover:border-border-2"
     >
-      {idea.rating != null && (
-        <div className={cn("absolute top-0 left-3 right-3 h-0.5 rounded-b-sm", ratingBarColor(idea.rating))} />
-      )}
 
       <div className="flex items-start justify-between gap-3 max-md:flex-col max-md:gap-1">
         <h3 className="font-heading text-[1.05rem] font-semibold text-strong leading-[1.4] m-0">
           {idea.title}
         </h3>
-        <div className="flex items-center gap-2 shrink-0 max-md:order-[-1] max-md:self-end">
-          <StarRating
-            value={idea.rating}
-            onChange={(r) => onRate(idea.id, r)}
-          />
-          <span className="text-sm text-faint whitespace-nowrap shrink-0 font-mono">
-            {relativeTime(idea.created_at)}
-          </span>
-        </div>
+        <span className="text-sm text-faint whitespace-nowrap shrink-0 font-mono">
+          {relativeTime(idea.created_at)}
+        </span>
       </div>
 
       <div className="text-base text-muted leading-[1.7] mt-2.5 whitespace-pre-wrap">
@@ -363,7 +270,6 @@ export default function Ideas() {
   const [stats, setStats] = useState<readonly IdeaStat[]>([]);
   const [categoryFilter, setCategoryFilter] = useLocalStorage<CategoryFilter>("ideas:categoryFilter", "all");
   const [sortMode, setSortMode] = useLocalStorage<SortMode>("ideas:sortMode", "newest");
-  const [ratingFilter, setRatingFilter] = useLocalStorage<RatingFilter>("ideas:ratingFilter", "all");
   const [viewMode, setViewMode] = useLocalStorage<ViewMode>("ideas:viewMode", "list");
   const [searchQuery, setSearchQuery] = useState("");
   const [stageFilter, setStageFilter] = useLocalStorage<string>("ideas:stageFilter", "all");
@@ -403,29 +309,6 @@ export default function Ideas() {
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  const handleRate = useCallback(
-    async (id: string, rating: number | null) => {
-      try {
-        const res = await apiFetch<{ success: boolean; data: GeneratedIdea }>(
-          `/api/ideas/${id}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rating }),
-          },
-        );
-        if (res.success) {
-          setIdeas((prev) =>
-            prev.map((idea) => (idea.id === id ? res.data : idea)),
-          );
-        }
-      } catch {
-        toast.error("Failed to save rating");
-      }
-    },
-    [],
-  );
-
   const handleStageChange = useCallback(
     async (id: string, stage: string) => {
       try {
@@ -457,8 +340,6 @@ export default function Ideas() {
     [ideas],
   );
 
-  const ratingCounts = useMemo(() => computeRatingCounts(ideas), [ideas]);
-
   const filteredIdeas = useMemo(() => {
     let result = [...ideas];
 
@@ -466,15 +347,6 @@ export default function Ideas() {
       result = result.filter(
         (idea) => (idea.pipeline_stage || "idea") === stageFilter,
       );
-    }
-
-    if (ratingFilter !== "all") {
-      result = result.filter((idea) => {
-        if (ratingFilter === "high") return idea.rating != null && idea.rating >= 4;
-        if (ratingFilter === "mid") return idea.rating != null && idea.rating >= 2 && idea.rating <= 3;
-        if (ratingFilter === "low") return idea.rating != null && idea.rating <= 1;
-        return idea.rating == null;
-      });
     }
 
     if (searchQuery.trim()) {
@@ -487,7 +359,7 @@ export default function Ideas() {
     }
 
     return result;
-  }, [ideas, stageFilter, ratingFilter, searchQuery]);
+  }, [ideas, stageFilter, searchQuery]);
 
   const sortedIdeas = useMemo(
     () => sortIdeas(filteredIdeas, sortMode),
@@ -549,8 +421,7 @@ export default function Ideas() {
               onChange={(e) => setSortMode(e.target.value as SortMode)}
             >
               <option value="newest">Newest</option>
-              <option value="top_rated">Top Rated</option>
-              <option value="lowest_rated">Lowest Rated</option>
+              <option value="oldest">Oldest</option>
             </select>
             <div className="flex bg-bg-1 border border-border rounded-md overflow-hidden">
               <button
@@ -577,121 +448,6 @@ export default function Ideas() {
           </div>
         }
       />
-
-      {/* Stat Cards */}
-      <div className="grid grid-cols-4 gap-3 mb-6 max-md:grid-cols-2 max-sm:grid-cols-2 max-sm:gap-2.5">
-        {(
-          [
-            {
-              key: "all" as const,
-              label: "Total",
-              icon: "\u2731",
-              color: "accent",
-              value: String(ratingCounts.total),
-            },
-            {
-              key: "avg" as const,
-              label: "Average",
-              icon: "\u2605",
-              color: "yellow",
-              value: ratingCounts.average != null ? ratingCounts.average.toFixed(1) : "\u2014",
-            },
-            {
-              key: "rated" as const,
-              label: "Rated",
-              icon: "\u2714",
-              color: "green",
-              value: String(ratingCounts.rated),
-            },
-            {
-              key: "unrated" as const,
-              label: "Unrated",
-              icon: "?",
-              color: "gray",
-              value: String(ratingCounts.unrated),
-            },
-          ] as const
-        ).map((stat) => (
-          <button
-            key={stat.key}
-            className={cn(
-              "relative bg-bg-1 border border-border rounded-lg p-5 cursor-pointer text-left font-inherit transition-colors overflow-hidden hover:bg-bg-2 hover:border-border-2",
-              stat.key === "unrated" && ratingFilter === "unrated" && "bg-bg-2 border-faint",
-              stat.key === "all" && ratingFilter === "all" && "bg-bg-2 border-accent",
-              "max-sm:p-4",
-            )}
-            onClick={() => {
-              if (stat.key === "all") setRatingFilter("all");
-              else if (stat.key === "unrated") setRatingFilter(ratingFilter === "unrated" ? "all" : "unrated");
-            }}
-          >
-            <div
-              className={cn(
-                "absolute top-0 left-0 right-0 h-0.5 rounded-t-lg transition-opacity",
-                (stat.key === "all" && ratingFilter === "all") || (stat.key === "unrated" && ratingFilter === "unrated")
-                  ? "opacity-100"
-                  : "opacity-0",
-                stat.color === "accent" && "bg-accent",
-                stat.color === "green" && "bg-success",
-                stat.color === "yellow" && "bg-warning",
-                stat.color === "gray" && "bg-faint",
-              )}
-            />
-            <div className="flex items-center justify-between">
-              <div className="text-xs font-medium uppercase tracking-wide text-faint">
-                {stat.label}
-              </div>
-              <div
-                className={cn(
-                  "w-8 h-8 rounded-md flex items-center justify-center text-sm shrink-0",
-                  stat.color === "accent" && "bg-accent-subtle",
-                  stat.color === "green" && "bg-success-subtle",
-                  stat.color === "yellow" && "bg-warning-subtle",
-                  stat.color === "gray" && "bg-bg-3",
-                )}
-              >
-                {stat.icon}
-              </div>
-            </div>
-            <div
-              className={cn(
-                "font-heading text-[1.75rem] font-bold leading-none tracking-tight mt-2 max-sm:text-[1.35rem]",
-                stat.color === "accent" && "text-accent",
-                stat.color === "green" && "text-success",
-                stat.color === "yellow" && "text-warning",
-                stat.color === "gray" && "text-faint",
-              )}
-            >
-              {stat.value}
-            </div>
-          </button>
-        ))}
-      </div>
-
-      {/* Rating Filter Pills */}
-      <div className="flex gap-1.5 flex-wrap mb-3">
-        {(
-          [
-            { key: "all" as const, label: "All Ratings" },
-            { key: "high" as const, label: "4-5 Stars" },
-            { key: "mid" as const, label: "2-3 Stars" },
-            { key: "low" as const, label: "0-1 Stars" },
-            { key: "unrated" as const, label: "Unrated" },
-          ] as const
-        ).map((f) => (
-          <button
-            key={f.key}
-            className={cn(
-              "px-3 py-1.5 rounded-full bg-bg-1 border border-border text-faint font-sans text-xs font-medium cursor-pointer transition-colors hover:bg-bg-2 hover:text-strong",
-              ratingFilter === f.key &&
-                "bg-accent-subtle border-accent text-accent font-semibold",
-            )}
-            onClick={() => setRatingFilter(f.key)}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
 
       {/* Pipeline Funnel */}
       {stageCounts.length > 0 && (
@@ -788,14 +544,14 @@ export default function Ideas() {
       </div>
 
       {/* Results Bar */}
-      {(searchQuery || ratingFilter !== "all") && (
+      {searchQuery && (
         <div className="flex items-center justify-between mb-3 px-0.5">
           <span className="text-sm text-faint">
             Showing{" "}
             <strong className="text-muted font-semibold">
               {sortedIdeas.length}
             </strong>{" "}
-            of {ratingCounts.total} ideas
+            of {totalCount} ideas
             {searchQuery && <> matching &ldquo;{searchQuery}&rdquo;</>}
           </span>
         </div>
@@ -821,7 +577,7 @@ export default function Ideas() {
           )}
         >
           {sortedIdeas.map((idea) => (
-            <IdeaCard key={idea.id} idea={idea} onRate={handleRate} onStageChange={handleStageChange} />
+            <IdeaCard key={idea.id} idea={idea} onStageChange={handleStageChange} />
           ))}
         </div>
       )}
