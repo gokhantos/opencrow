@@ -2,6 +2,9 @@ import { Hono } from "hono";
 import { exec } from "child_process";
 import { promisify } from "util";
 import * as os from "os";
+import { createLogger } from "../../logger";
+
+const logger = createLogger("web");
 
 const execAsync = promisify(exec);
 
@@ -126,7 +129,7 @@ async function getDetailedMemoryInfo(): Promise<{
       cached,
     };
   } catch (error) {
-    console.error("Error reading meminfo:", error);
+    logger.warn("Error reading meminfo", { error: error instanceof Error ? error.message : String(error) });
     // Fallback to OS methods
     const total = os.totalmem();
     const free = os.freemem();
@@ -169,7 +172,7 @@ async function getTopProcesses(): Promise<ProcessInfo[]> {
 
     return processes;
   } catch (error) {
-    console.error("Error getting processes:", error);
+    logger.warn("Error getting processes", { error: error instanceof Error ? error.message : String(error) });
     return [];
   }
 }
@@ -218,7 +221,7 @@ systemRoutes.get("/metrics", async (c) => {
     const metrics = await getSystemMetrics();
     return c.json(metrics);
   } catch (error) {
-    console.error("Error fetching system metrics:", error);
+    logger.error("Error fetching system metrics", { error: error instanceof Error ? error.message : String(error) });
     return c.json({ error: "Failed to fetch system metrics" }, 500);
   }
 });

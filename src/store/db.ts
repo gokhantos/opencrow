@@ -1,5 +1,8 @@
 import { SQL } from "bun";
 import { MIGRATIONS } from "./migrations/index";
+import { createLogger } from "../logger";
+
+const logger = createLogger("db");
 
 let db: InstanceType<typeof SQL> | null = null;
 
@@ -40,13 +43,14 @@ async function runMigrations(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       failures.push({ index: i, error: msg });
-      console.error(`[db] Migration ${i} failed (non-fatal): ${msg}`);
+      logger.warn("Migration failed (non-fatal)", { migration: i, error: msg });
     }
   }
 
   if (failures.length > 0) {
-    console.warn(
-      `[db] ${failures.length} migration(s) failed (non-fatal), service continuing`,
+    logger.warn(
+      "Migration(s) failed (non-fatal), service continuing",
+      { failures: failures.length },
     );
   }
 }
