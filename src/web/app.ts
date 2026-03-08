@@ -21,7 +21,6 @@ import { createRedditAccountRoutes } from "./routes/reddit-accounts";
 import { createRedditRoutes } from "./routes/reddit";
 import { createGithubRoutes } from "./routes/github";
 import { createArxivRoutes } from "./routes/arxiv";
-import { createScholarRoutes } from "./routes/scholar";
 import { createPHProductRoutes } from "./routes/ph-products";
 import { createNewsRoutes } from "./routes/news";
 import { createIdeasRoutes } from "./routes/ideas";
@@ -35,7 +34,6 @@ import { createGoogleTrendsRoutes } from "./routes/google-trends";
 import { createAppStoreRoutes } from "./routes/appstore";
 import { createPlayStoreRoutes } from "./routes/playstore";
 import { createDefiLlamaRoutes } from "./routes/defillama";
-import { createDexScreenerRoutes } from "./routes/dexscreener";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
 import type { AutofollowProcessor } from "../sources/x/follow/processor";
@@ -45,7 +43,6 @@ import type { HFScraper } from "../sources/huggingface/scraper";
 import type { RedditScraper } from "../sources/reddit/scraper";
 import type { GithubScraper } from "../sources/github/scraper";
 import type { ArxivScraper } from "../sources/arxiv/scraper";
-import type { ScholarScraper } from "../sources/scholar/scraper";
 import type { PHScraper } from "../sources/producthunt/scraper";
 import type { NewsProcessor } from "../sources/news/processor";
 import type { MarketPipeline } from "../sources/markets/pipeline";
@@ -94,7 +91,6 @@ export interface WebAppDeps {
   readonly redditScraper?: RedditScraper;
   readonly githubScraper?: GithubScraper;
   readonly arxivScraper?: ArxivScraper;
-  readonly scholarScraper?: ScholarScraper;
   readonly phScraper?: PHScraper;
   readonly newsProcessor?: NewsProcessor;
   readonly coreClient?: CoreClient;
@@ -327,14 +323,6 @@ export function createWebApp(deps: WebAppDeps): Hono {
     app.route("/api", arxiv);
   }
 
-  if (deps.scholarScraper || cc) {
-    const scholar = createScholarRoutes({
-      scraper: deps.scholarScraper,
-      coreClient: cc,
-    });
-    app.route("/api", scholar);
-  }
-
   if (deps.newsProcessor || cc) {
     const news = createNewsRoutes({
       processor: deps.newsProcessor,
@@ -361,8 +349,6 @@ export function createWebApp(deps: WebAppDeps): Hono {
   const defiLlama = createDefiLlamaRoutes();
   app.route("/api", defiLlama);
 
-  const dexScreener = createDexScreenerRoutes();
-  app.route("/api", dexScreener);
 
   const skills = createSkillRoutes();
   app.route("/api", skills);

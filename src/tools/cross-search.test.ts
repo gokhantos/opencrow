@@ -108,14 +108,13 @@ describe("createCrossSourceSearchTool", () => {
     expect(sourceItems.enum).toContain("product");
     expect(sourceItems.enum).toContain("github_repo");
     expect(sourceItems.enum).toContain("arxiv_paper");
-    expect(sourceItems.enum).toContain("scholar_paper");
     expect(sourceItems.enum).toContain("hf_model");
     expect(sourceItems.enum).toContain("app_review");
     expect(sourceItems.enum).toContain("app_ranking");
     expect(sourceItems.enum).toContain("trend");
     expect(sourceItems.enum).toContain("defi_protocol");
     expect(sourceItems.enum).toContain("dex_token");
-    expect(sourceItems.enum).toHaveLength(14);
+    expect(sourceItems.enum).toHaveLength(13);
   });
 
   // -- Execute: input validation --------------------------------------------

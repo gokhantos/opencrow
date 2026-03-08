@@ -32,7 +32,6 @@ import News from "./views/News";
 import Ideas from "./views/Ideas";
 import GitHub from "./views/GitHub";
 import Arxiv from "./views/Arxiv";
-import Scholar from "./views/Scholar";
 import Processes from "./views/Processes";
 import Skills from "./views/Skills";
 import Tools from "./views/Tools";
@@ -45,7 +44,6 @@ import GoogleTrends from "./views/GoogleTrends";
 import AppStore from "./views/AppStore";
 import PlayStore from "./views/PlayStore";
 import DefiLlama from "./views/DefiLlama";
-import DexScreener from "./views/DexScreener";
 
 interface StatusResponse {
   uptime: number;
@@ -256,12 +254,10 @@ function App() {
             {tab === "huggingface" && <HuggingFace />}
             {tab === "github" && <GitHub />}
             {tab === "arxiv" && <Arxiv />}
-            {tab === "scholar" && <Scholar />}
             {tab === "google-trends" && <GoogleTrends />}
             {tab === "appstore" && <AppStore />}
             {tab === "playstore" && <PlayStore />}
             {tab === "defillama" && <DefiLlama />}
-            {tab === "dexscreener" && <DexScreener />}
             {tab === "news" && <News />}
             {tab === "ideas" && <Ideas />}
             {tab === "memory" && <Memory />}

@@ -19,10 +19,8 @@ import type { HFScraper } from "../sources/huggingface/scraper";
 import type { RedditScraper } from "../sources/reddit/scraper";
 import type { GithubScraper } from "../sources/github/scraper";
 import type { ArxivScraper } from "../sources/arxiv/scraper";
-import type { ScholarScraper } from "../sources/scholar/scraper";
 import type { PHScraper } from "../sources/producthunt/scraper";
 import type { NewsProcessor } from "../sources/news/processor";
-import type { DexScreenerProcessor } from "../sources/dexscreener/processor";
 import type { ObservationHook } from "../memory/observation-hook";
 import type { Orchestrator } from "../process/orchestrator";
 
@@ -51,10 +49,8 @@ export interface InternalApiDeps {
   readonly redditScraper?: RedditScraper;
   readonly githubScraper?: GithubScraper;
   readonly arxivScraper?: ArxivScraper;
-  readonly scholarScraper?: ScholarScraper;
   readonly phScraper?: PHScraper;
   readonly newsProcessor?: NewsProcessor;
-  readonly dexScreenerProcessor?: DexScreenerProcessor;
   readonly observationHook?: ObservationHook;
 }
 

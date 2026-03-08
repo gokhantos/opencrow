@@ -75,7 +75,6 @@ const KIND_COLORS: Record<string, string> = {
   github_repo: "bg-[#6e5494]/10 text-[#6e5494]",
   hf_model: "bg-[#ffcc00]/10 text-[#d4a900]",
   arxiv_paper: "bg-[#b31b1b]/10 text-[#b31b1b]",
-  scholar_paper: "bg-[#4285f4]/10 text-[#4285f4]",
   product: "bg-[#da552f]/10 text-[#da552f]",
 };
 

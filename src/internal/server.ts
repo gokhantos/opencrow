@@ -469,15 +469,6 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
             return c.json({ data: await deps.arxivScraper.backfillRag() });
           break;
         }
-        case "scholar": {
-          if (!deps.scholarScraper)
-            return c.json({ error: "Scholar scraper not running" }, 503);
-          if (action === "scrape-now")
-            return c.json({ data: await deps.scholarScraper.scrapeNow() });
-          if (action === "backfill-rag")
-            return c.json({ data: await deps.scholarScraper.backfillRag() });
-          break;
-        }
         case "google-trends": {
           if (action === "backfill-rag" && deps.memoryManager) {
             const { getUnindexedTrends, markTrendsIndexed } =
