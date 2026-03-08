@@ -7,8 +7,6 @@ import {
   markPapersIndexed,
   type ScholarPaperRow,
 } from "./store";
-
-import { getErrorMessage } from "../../lib/error-serialization";
 import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("scholar-scraper");
 

@@ -6,7 +6,7 @@ import type { ProjectContext } from "./project-context";
 import { runShell, truncateOutput, VALIDATE_MAX_BYTES } from "./shell-runner";
 import { createLogger } from "../logger";
 
-import { getErrorMessage } from "../../lib/error-serialization";
+import { getErrorMessage } from "../lib/error-serialization";
 const log = createLogger("tool:validate-code");
 
 type StepName = "typecheck" | "lint" | "test";

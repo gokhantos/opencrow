@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "./types";
 import type { MemoryManager } from "../memory/types";
-import { getErrorMessage } from "../../lib/error-serialization";
+import { getErrorMessage } from "../lib/error-serialization";
 import { createDefiLlamaExtendedTools } from "./defillama-extended";
 import {
   getProtocols,

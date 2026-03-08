@@ -1,8 +1,6 @@
 import { Sender } from "@questdb/nodejs-client";
 import type { Logger as QDBLogger } from "@questdb/nodejs-client";
 import { createLogger } from "../../logger";
-
-import { getErrorMessage } from "../../lib/error-serialization";
 import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("market:questdb");
 

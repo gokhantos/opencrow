@@ -12,7 +12,7 @@ import type { MessageContent, InlineButton } from "../channels/types";
 import { getQuestionBus } from "../agent/question-bus";
 import { createLogger } from "../logger";
 
-import { getErrorMessage } from "../../lib/error-serialization";
+import { getErrorMessage } from "../lib/error-serialization";
 const log = createLogger("tool:ask-user");
 
 export interface AskUserToolConfig {

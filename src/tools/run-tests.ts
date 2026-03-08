@@ -5,7 +5,7 @@ import { detectProjectContext } from "./project-context";
 import { runShell, truncateOutput, TEST_MAX_BYTES } from "./shell-runner";
 import { createLogger } from "../logger";
 
-import { getErrorMessage } from "../../lib/error-serialization";
+import { getErrorMessage } from "../lib/error-serialization";
 const log = createLogger("tool:run-tests");
 
 interface TestResults {

@@ -1,6 +1,5 @@
 import { createLogger } from "../../logger";
 import type { MemoryManager, RedditPostForIndex } from "../../memory/types";
-import { getErrorMessage } from "../../lib/error-serialization";
 import {
   getActiveAccounts,
   upsertPosts,
@@ -11,7 +10,6 @@ import {
   type RedditPostRow,
 } from "./store";
 import { scrapeRedditFeed, type RawRedditPost } from "./reddit-scraper";
-
 import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("reddit-scraper");
 

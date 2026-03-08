@@ -2,7 +2,7 @@ import { getDb } from "../store/db";
 import { createLogger } from "../logger";
 import { computeAgentScores, computeToolScores, computeMcpScores } from "../agent/scoring-engine";
 
-import { getErrorMessage } from "../../lib/error-serialization";
+import { getErrorMessage } from "../lib/error-serialization";
 const log = createLogger("scoring-cron");
 
 /**

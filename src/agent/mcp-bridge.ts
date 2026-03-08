@@ -7,7 +7,7 @@ import type { ToolRegistry } from "../tools/registry";
 import type { ToolDefinition } from "../tools/types";
 import { createLogger } from "../logger";
 
-import { getErrorMessage } from "../../lib/error-serialization";
+import { getErrorMessage } from "../lib/error-serialization";
 const log = createLogger("mcp-bridge");
 
 /**

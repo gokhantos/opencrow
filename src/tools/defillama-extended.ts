@@ -29,7 +29,7 @@ import type {
 } from "../sources/defillama/types";
 import { createLogger } from "../logger";
 
-import { getErrorMessage } from "../../lib/error-serialization";
+import { getErrorMessage } from "../lib/error-serialization";
 const log = createLogger("tool:defillama-extended");
 
 

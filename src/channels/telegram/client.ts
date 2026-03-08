@@ -9,6 +9,7 @@ import { createTelegramHandler } from "./handler";
 import { markdownToTelegramHtml } from "./format";
 import { createLogger } from "../../logger";
 import { createSendQueue } from "./send-queue";
+import { getErrorMessage } from "../../lib/error-serialization";
 
 function tokenTag(token: string): string {
   const parts = token.split(":");
@@ -23,7 +24,6 @@ function isGetUpdatesConflict(err: unknown): boolean {
 }
 
 export function createTelegramChannel(botToken: string): Channel {
-import { getErrorMessage } from "../../../lib/error-serialization";
   const log = createLogger(`tg:${tokenTag(botToken)}`);
   const bot = new Bot(botToken);
   const sendQ = createSendQueue();
