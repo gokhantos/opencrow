@@ -541,18 +541,41 @@ export function AgentFormModal({
                 />
               </div>
               <div className="mb-5">
-                <Input
-                  label="Model"
-                  type="text"
-                  placeholder={
-                    provider === "openrouter"
-                      ? "e.g. arcee-ai/trinity-large-preview:free"
-                      : provider === "alibaba"
-                        ? "e.g. qwen3-coder-plus"
-                        : "e.g. claude-sonnet-4-6"
-                  }
-                  {...register("model")}
-                />
+                <label className="block text-xs font-semibold text-muted uppercase tracking-wide mb-2">
+                  Model
+                </label>
+                {provider === "agent-sdk" ? (
+                  <select className={selectCls} {...register("model")}>
+                    <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+                    <option value="claude-opus-4-6">claude-opus-4-6</option>
+                    <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+                  </select>
+                ) : provider === "alibaba" ? (
+                  <select className={selectCls} {...register("model")}>
+                    <optgroup label="Qwen">
+                      <option value="qwen3.5-plus">qwen3.5-plus</option>
+                      <option value="qwen3-max-2026-01-23">qwen3-max-2026-01-23</option>
+                      <option value="qwen3-coder-next">qwen3-coder-next</option>
+                      <option value="qwen3-coder-plus">qwen3-coder-plus</option>
+                    </optgroup>
+                    <optgroup label="Zhipu">
+                      <option value="glm-5">glm-5</option>
+                      <option value="glm-4.7">glm-4.7</option>
+                    </optgroup>
+                    <optgroup label="Kimi">
+                      <option value="kimi-k2.5">kimi-k2.5</option>
+                    </optgroup>
+                    <optgroup label="MiniMax">
+                      <option value="MiniMax-M2.5">MiniMax-M2.5</option>
+                    </optgroup>
+                  </select>
+                ) : (
+                  <Input
+                    type="text"
+                    placeholder="e.g. stepfun/step-3.5-flash:free"
+                    {...register("model")}
+                  />
+                )}
               </div>
               <div className="mb-5">
                 <Input
