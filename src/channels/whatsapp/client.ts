@@ -93,7 +93,7 @@ export function createWhatsAppChannel(botName: string): WhatsAppChannel {
       } catch (err) {
         log.debug("Failed to fetch group metadata", {
           chatId,
-          error: err instanceof Error ? err.message : String(err),
+          error: err,
         });
       }
     }

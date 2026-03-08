@@ -148,14 +148,14 @@ export function startMessageBusPolling(intervalMs = 5_000): void {
             log.error("Message handler failed", {
               messageId: msg.id,
               agentId,
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             });
           }
         }
       } catch (err) {
         log.error("Message bus poll failed", {
           agentId,
-          error: err instanceof Error ? err.message : String(err),
+          error: err,
         });
       }
     }

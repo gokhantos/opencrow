@@ -90,7 +90,7 @@ export async function generateHandoff(
     log.error("Failed to generate handoff summary", {
       channel,
       chatId,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
   }
 }

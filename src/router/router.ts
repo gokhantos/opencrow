@@ -397,7 +397,7 @@ export function createRouter(routerConfig: RouterConfig) {
       generateHandoff(channelName, chatId, prevAgentId, agentId).catch(
         (err) =>
           log.error("Handoff generation failed", {
-            error: err instanceof Error ? err.message : String(err),
+            error: err,
           }),
       );
     }

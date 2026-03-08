@@ -67,7 +67,7 @@ export async function runDbRetention(): Promise<RetentionResult> {
     } catch (err) {
       log.warn("Retention cleanup failed for table", {
         table: rule.table,
-        error: err instanceof Error ? err.message : String(err),
+        error: err,
       });
     }
   }
@@ -88,7 +88,7 @@ export async function runDbRetention(): Promise<RetentionResult> {
   } catch (err) {
     log.warn("Retention cleanup failed for table", {
       table: "task_queue",
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
   }
 
@@ -107,7 +107,7 @@ export async function runDbRetention(): Promise<RetentionResult> {
   } catch (err) {
     log.warn("Retention cleanup failed for table", {
       table: "memory_sources (empty)",
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
   }
 
@@ -125,7 +125,7 @@ export async function runDbRetention(): Promise<RetentionResult> {
   } catch (err) {
     log.warn("Retention cleanup failed for table", {
       table: "memory_chunks (tiny)",
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
   }
 
@@ -143,7 +143,7 @@ export async function runDbRetention(): Promise<RetentionResult> {
   } catch (err) {
     log.warn("Retention cleanup failed for table", {
       table: "memory_chunks (oversized)",
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
   }
 

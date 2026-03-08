@@ -25,7 +25,7 @@ export async function runScoringEngine(): Promise<void> {
     const durationMs = Date.now() - startMs;
     log.info("Scoring engine completed", { durationMs });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = (err instanceof Error ? err.message : String(err));
     log.error("Scoring engine failed", { error: msg });
     throw err;
   }

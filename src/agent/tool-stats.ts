@@ -82,7 +82,7 @@ export async function flushToolStats(): Promise<void> {
     }
   } catch (err) {
     log.error("Failed to flush tool stats", {
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
   }
 }

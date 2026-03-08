@@ -76,7 +76,7 @@ export function createTelegramChannel(botToken: string): Channel {
           } catch (err) {
             log.error("Error handling update", {
               updateId: update.update_id,
-              error: err instanceof Error ? err.message : String(err),
+              error: err,
             });
           }
         }

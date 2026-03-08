@@ -121,7 +121,7 @@ export function createSubsystemRegistry(opts: {
         } catch (err) {
           failed.push(name);
           log.error(`${name} failed to start`, {
-            error: err instanceof Error ? err.message : String(err),
+            error: err,
           });
           return false;
         }

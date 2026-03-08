@@ -70,7 +70,7 @@ export function createSendMessageTool(agentId: string): ToolDefinition {
         log.error("Failed to send agent message", {
           from: agentId,
           to: toAgentId,
-          error: err instanceof Error ? err.message : String(err),
+          error: err,
         });
         return {
           output: `Error sending message: ${err instanceof Error ? err.message : String(err)}`,

@@ -158,7 +158,7 @@ export function createMarketRoutes(
 
   app.onError((err, c) => {
     log.error("Market route error", {
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
       stack: err instanceof Error ? err.stack : undefined,
     });
     return c.json({ success: false, error: "Internal server error" }, 500);
