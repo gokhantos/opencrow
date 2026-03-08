@@ -56,7 +56,7 @@ export function createDefiLlamaScraper(config?: {
       await markProtocolsIndexed(ids);
     } catch (err) {
       log.error("Failed to index protocols to memory", {
-        error: err instanceof Error ? err.message : String(err),
+        error: err,
       });
     }
   }
@@ -126,7 +126,7 @@ export function createDefiLlamaScraper(config?: {
       await scrape();
     } catch (err) {
       log.error("DeFi Llama scrape error", {
-        error: err instanceof Error ? err.message : String(err),
+        error: err,
       });
     } finally {
       running = false;

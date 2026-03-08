@@ -1,6 +1,7 @@
 import { SQL } from "bun";
 import { MIGRATIONS } from "./migrations/index";
 import { createLogger } from "../logger";
+import { getErrorMessage } from "../lib/error-serialization";
 
 const logger = createLogger("db");
 
@@ -41,7 +42,7 @@ async function runMigrations(
     try {
       await database.unsafe(MIGRATIONS[i]!);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       failures.push({ index: i, error: msg });
       logger.warn("Migration failed (non-fatal)", { migration: i, error: msg });
     }

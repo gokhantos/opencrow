@@ -1,5 +1,6 @@
 import { getDb } from "../store/db";
 import { createLogger } from "../logger";
+import { getErrorMessage } from "../lib/error-serialization";
 
 const log = createLogger("fts");
 
@@ -50,7 +51,7 @@ export async function ftsSearch(
     // FTS column not yet populated or query malformed — return empty
     log.debug("FTS search failed (non-critical)", {
       ftsQuery,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
     return [];
   }
@@ -71,7 +72,7 @@ export async function updateChunkFts(
     // Non-critical: FTS update failure does not break indexing
     log.debug("FTS index update failed (non-critical)", {
       chunkId,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
   }
 }

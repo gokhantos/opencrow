@@ -234,7 +234,7 @@ async function main(): Promise<void> {
     } catch (err) {
       log.error("Failed to process inter-agent message", {
         messageId: msg.id,
-        error: err instanceof Error ? err.message : String(err),
+        error: err,
       });
     }
   });

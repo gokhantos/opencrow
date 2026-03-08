@@ -60,7 +60,7 @@ async function main(): Promise<void> {
     log.info("QuestDB initialized for market queries (read-only)");
   } catch (err) {
     log.warn("QuestDB unavailable — market charts will be empty", {
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
   }
 

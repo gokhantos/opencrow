@@ -1,5 +1,6 @@
 import { createLogger } from "../../logger";
 import type { MemoryManager, RedditPostForIndex } from "../../memory/types";
+import { getErrorMessage } from "../../lib/error-serialization";
 import {
   getActiveAccounts,
   upsertPosts,

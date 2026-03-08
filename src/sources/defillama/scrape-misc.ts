@@ -148,28 +148,28 @@ export async function scrapeMiscData(): Promise<{
   try {
     hacks = await scrapeHacks();
   } catch (err) {
-    log.error("Failed to scrape hacks", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape hacks", { error: err });
   }
   await delay(REQUEST_DELAY_MS);
 
   try {
     stablecoins = await scrapeStablecoins();
   } catch (err) {
-    log.error("Failed to scrape stablecoins", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape stablecoins", { error: err });
   }
   await delay(REQUEST_DELAY_MS);
 
   try {
     emissions = await scrapeEmissions();
   } catch (err) {
-    log.error("Failed to scrape emissions", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape emissions", { error: err });
   }
   await delay(REQUEST_DELAY_MS);
 
   try {
     treasury = await scrapeTreasury();
   } catch (err) {
-    log.error("Failed to scrape treasury", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape treasury", { error: err });
   }
   await delay(REQUEST_DELAY_MS);
 

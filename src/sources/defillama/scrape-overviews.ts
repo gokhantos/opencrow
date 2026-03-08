@@ -320,42 +320,42 @@ export async function scrapeOverviews(): Promise<{ protocolDetails: number; cate
   try {
     protocolDetails = await scrapeProtocolDetails();
   } catch (err) {
-    log.error("Failed to scrape protocol details", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape protocol details", { error: err });
   }
   await delay(REQUEST_DELAY_MS);
 
   try {
     categories = await scrapeCategories();
   } catch (err) {
-    log.error("Failed to scrape categories", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape categories", { error: err });
   }
   await delay(REQUEST_DELAY_MS);
 
   try {
     await scrapeGlobalFees();
   } catch (err) {
-    log.error("Failed to scrape global fees", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape global fees", { error: err });
   }
   await delay(REQUEST_DELAY_MS);
 
   try {
     await scrapeGlobalDexVolumes();
   } catch (err) {
-    log.error("Failed to scrape global DEX volumes", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape global DEX volumes", { error: err });
   }
   await delay(REQUEST_DELAY_MS);
 
   try {
     await scrapeOptions();
   } catch (err) {
-    log.error("Failed to scrape options", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape options", { error: err });
   }
   await delay(REQUEST_DELAY_MS);
 
   try {
     await scrapeDerivatives();
   } catch (err) {
-    log.error("Failed to scrape derivatives", { error: err instanceof Error ? err.message : String(err) });
+    log.error("Failed to scrape derivatives", { error: err });
   }
 
   log.info("Overviews scrape complete", { protocolDetails, categories });

@@ -53,11 +53,11 @@ export async function fetchJson<T>(url: string, maxRetries = 3): Promise<T | nul
     } catch (err) {
       if (attempt < maxRetries) {
         const backoff = 10_000 * Math.pow(2, attempt) + Math.random() * 3000;
-        log.warn("Fetch error, retrying", { url, error: err instanceof Error ? err.message : String(err), attempt: attempt + 1 });
+        log.warn("Fetch error, retrying", { url, error: err, attempt: attempt + 1 });
         await delay(backoff);
         continue;
       }
-      log.error("Fetch failed after retries", { url, error: err instanceof Error ? err.message : String(err) });
+      log.error("Fetch failed after retries", { url, error: err });
       return null;
     }
   }

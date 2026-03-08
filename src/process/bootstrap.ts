@@ -237,7 +237,7 @@ export async function bootstrap(
         );
       } catch (err) {
         log.warn("Semantic tool index init failed — using keyword routing", {
-          error: String(err),
+          error: err,
         });
       }
     } else {
@@ -599,7 +599,7 @@ export async function bootstrap(
       } catch (err) {
         log.warn("Failed to load recent observations", {
           agentId: agent.id,
-          error: err instanceof Error ? err.message : String(err),
+          error: err,
         });
       }
     }
@@ -638,12 +638,12 @@ export async function bootstrap(
         await refresh();
       } catch (err) {
         log.warn("Prediction engine domain stats refresh failed", {
-          error: err instanceof Error ? err.message : String(err),
+          error: err,
         });
       }
     }, 5 * 60 * 1000);
   } catch (err) {
-    log.warn("Failed to load prediction domain stats (non-fatal)", { error: String(err) });
+    log.warn("Failed to load prediction domain stats (non-fatal)", { error: err });
   }
 
   return {

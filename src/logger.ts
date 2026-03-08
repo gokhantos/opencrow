@@ -1,3 +1,5 @@
+import { getErrorMessage } from "./lib/error-serialization";
+
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 const LOG_LEVELS: Record<LogLevel, number> = {
@@ -195,7 +197,7 @@ async function flushLogs(): Promise<void> {
     consecutiveFlushFailures++;
 
     // Always log to stderr - this is critical visibility
-    const errorMsg = `[LOGGER] Database flush failed: ${err instanceof Error ? err.message : String(err)}`;
+    const errorMsg = `[LOGGER] Database flush failed: ${getErrorMessage(err)}`;
     process.stderr.write(`${new Date().toISOString()} [error] [logger] ${errorMsg}\n`);
 
     // Alert if failures exceed threshold and cooldown has passed
@@ -226,7 +228,7 @@ async function cleanupOldLogs(): Promise<void> {
     );
   } catch (err) {
     // Log cleanup failures to stderr - non-fatal but should be visible
-    process.stderr.write(`${new Date().toISOString()} [warn] [logger] Cleanup failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`${new Date().toISOString()} [warn] [logger] Cleanup failed: ${getErrorMessage(err)}\n`);
   }
 }
 
@@ -242,12 +244,12 @@ export function startLogPersistence(
   flushTimer = setInterval(() => {
     flushLogs().catch((err) => {
       // This should never happen since flushLogs catches errors, but guard anyway
-      process.stderr.write(`${new Date().toISOString()} [error] [logger] Unexpected flush error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(`${new Date().toISOString()} [error] [logger] Unexpected flush error: ${getErrorMessage(err)}\n`);
     });
   }, FLUSH_INTERVAL_MS);
   cleanupTimer = setInterval(() => {
     cleanupOldLogs().catch((err) => {
-      process.stderr.write(`${new Date().toISOString()} [error] [logger] Unexpected cleanup error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(`${new Date().toISOString()} [error] [logger] Unexpected cleanup error: ${getErrorMessage(err)}\n`);
     });
   }, CLEANUP_INTERVAL_MS);
 }
@@ -263,7 +265,7 @@ export function stopLogPersistence(): void {
   }
   // Final flush attempt with error logging
   flushLogs().catch((err) => {
-    process.stderr.write(`${new Date().toISOString()} [error] [logger] Final flush failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(`${new Date().toISOString()} [error] [logger] Final flush failed: ${getErrorMessage(err)}\n`);
   });
   dbRef = null;
 }
