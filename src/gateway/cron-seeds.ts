@@ -16,7 +16,6 @@ export async function seedDefaultCronJobs(opts: {
 
   await seedDailyNewsBriefing({ cronStore, existingJobs, primaryTelegramUser });
   await seedIdeaGenJobs({ cronStore, config, existingJobs, primaryTelegramUser, agentBotChannels });
-  await seedIdeaValidation({ cronStore, existingJobs });
   await seedSignalArchival({ cronStore, existingJobs });
   await seedIdeaArchival({ cronStore, existingJobs });
 }
@@ -126,29 +125,6 @@ async function seedIdeaGenJobs(opts: {
       channel: delivery.mode === "announce" ? (delivery as { channel: string }).channel : "none",
     });
   }
-}
-
-async function seedIdeaValidation(opts: {
-  cronStore: CronStore;
-  existingJobs: Awaited<ReturnType<CronStore["listJobs"]>>;
-}): Promise<void> {
-  const { cronStore, existingJobs } = opts;
-
-  const existing = existingJobs.find((j) => j.name === "idea-validation");
-  if (existing) return;
-
-  await cronStore.addJob({
-    name: "idea-validation",
-    enabled: true,
-    schedule: { kind: "cron", expr: "0 7,15,23 * * *" },
-    payload: {
-      kind: "agentTurn",
-      agentId: "idea-validator",
-      message: "Validate unvalidated ideas. Process up to 10 ideas in the 'idea' stage.",
-    },
-    delivery: { mode: "none" },
-  });
-  log.info("Registered idea-validation cron job (3x/day, 1h after pipeline)");
 }
 
 async function seedSignalArchival(opts: {

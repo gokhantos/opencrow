@@ -320,36 +320,6 @@ export async function executeCronJob(
         deliveryText = formatIdeasMessage(job.name, ideas);
         preformatted = true;
 
-        // Chain validator: validate freshly generated ideas immediately
-        try {
-          log.info("Chaining idea-validator after pipeline", {
-            agentId,
-            ideaCount: ideas.length,
-          });
-          const validatorResult = await runAgentIsolated({
-            agentRegistry: deps.agentRegistry,
-            baseToolRegistry: deps.baseToolRegistry,
-            agentId: "idea-validator",
-            task: "Validate unvalidated ideas. Process up to 10 ideas in the 'idea' stage.",
-            buildRegistryForAgent: deps.buildRegistryForAgent,
-            buildSystemPrompt: deps.buildSystemPrompt,
-            usageContext: {
-              channel: "cron",
-              chatId: job.id,
-              source: "cron" as const,
-            },
-          });
-          log.info("Idea-validator completed", {
-            agentId,
-            summary: validatorResult.text.slice(0, 200),
-          });
-
-          // Append validator summary to delivery
-          deliveryText += "\n\n─── Validation ───\n" + validatorResult.text.slice(0, 1500);
-        } catch (validatorErr) {
-          const msg = validatorErr instanceof Error ? validatorErr.message : String(validatorErr);
-          log.error("Idea-validator failed (non-fatal)", { agentId, error: msg });
-        }
       }
     }
 

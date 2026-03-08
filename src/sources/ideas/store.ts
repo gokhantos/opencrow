@@ -1,5 +1,4 @@
 import { getDb } from "../../store/db";
-
 export interface GeneratedIdea {
   readonly id: string;
   readonly agent_id: string;
@@ -166,6 +165,7 @@ export async function getRecentIdeaTitles(
     SELECT title, category
     FROM generated_ideas
     WHERE agent_id = ${agentId}
+      AND COALESCE(pipeline_stage, 'idea') = 'idea'
     ORDER BY created_at DESC
     LIMIT ${limit}
   ` as Promise<RecentIdeaTitle[]>;

@@ -25,7 +25,6 @@ import { createDefiLlamaTools } from "./defillama";
 import { createGoogleTrendsTools } from "./google-trends";
 import { createIdeaTools } from "./ideas";
 import { createSignalTools } from "./signals";
-import { createValidationTools } from "./validation";
 import { createGetScraperStatusTool } from "./scraper-status";
 import { createGetSubagentRunsTool } from "./subagent-runs";
 import { createAnalyticsTools } from "./analytics";
@@ -205,11 +204,6 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
   get_signal_themes: "signals",
   get_cross_domain_signals: "signals",
 
-  // Validation
-  get_unvalidated_ideas: "validation",
-  validate_idea: "validation",
-  get_idea_detail: "validation",
-
   // Observability
   get_scraper_status: "observability",
   get_subagent_runs: "observability",
@@ -304,7 +298,6 @@ export const CATEGORY_LABELS: Record<string, string> = {
   market: "Markets & Trading",
   ideas: "Ideas",
   signals: "Signals",
-  validation: "Validation",
   observability: "Observability",
   analytics: "Analytics",
   routing: "Routing",
@@ -406,8 +399,6 @@ export function buildToolCatalog(): readonly ToolCatalogEntry[] {
   // Ideas, signals, validation
   tools.push(...createIdeaTools("_catalog", mm));
   tools.push(...createSignalTools("_catalog"));
-  tools.push(...createValidationTools());
-
   // Observability
   tools.push(createGetScraperStatusTool());
   tools.push(createGetSubagentRunsTool());
@@ -485,7 +476,6 @@ const CATEGORY_ORDER = [
   "market",
   "ideas",
   "signals",
-  "validation",
   "observability",
   "analytics",
   "routing",

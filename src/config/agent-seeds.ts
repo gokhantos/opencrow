@@ -353,52 +353,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   },
 
   // -------------------------------------------------------------------------
-  // Idea Validator
-  // -------------------------------------------------------------------------
-  {
-    id: "idea-validator",
-    name: "Idea Validator",
-    description:
-      "Rigorous quality gate for the idea pipeline. Reviews unvalidated ideas against competitive landscape, timing, feasibility, and demand evidence. Archives ~80%, validates ~20%.",
-    model: "claude-sonnet-4-6",
-    maxIterations: 30,
-    stateless: true,
-    reasoning: true,
-    toolFilter: {
-      mode: "allowlist",
-      tools: [
-        "get_unvalidated_ideas",
-        "get_idea_detail",
-        "validate_idea",
-        "query_ideas",
-        "search_similar_ideas",
-        "search_reddit",
-        "get_reddit_digest",
-        "search_hn",
-        "get_hn_digest",
-        "search_x_timeline",
-        "get_timeline_digest",
-        "search_appstore_reviews",
-        "search_playstore_reviews",
-        "get_appstore_complaints",
-        "get_playstore_complaints",
-        "search_news",
-        "get_news_digest",
-        "search_products",
-        "get_product_digest",
-        "cross_source_search",
-        "web_fetch",
-        "search_memory",
-      ],
-    },
-    modelParams: HIGH_ADAPTIVE_PARAMS,
-    subagents: { allowAgents: [], maxChildren: 1 },
-    mcpServers: {},
-    hooks: { auditLog: true, notifications: false },
-    skills: [],
-  },
-
-  // -------------------------------------------------------------------------
   // Mobile Idea Generator
   // -------------------------------------------------------------------------
   {
