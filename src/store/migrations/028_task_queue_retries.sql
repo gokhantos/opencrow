@@ -1,5 +1,9 @@
-ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
-ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS max_retries INT NOT NULL DEFAULT 3;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'task_queue') THEN
+    ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
+    ALTER TABLE task_queue ADD COLUMN IF NOT EXISTS max_retries INT NOT NULL DEFAULT 3;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS dead_tasks (
   queue_id       TEXT PRIMARY KEY,

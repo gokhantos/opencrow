@@ -119,19 +119,17 @@ CREATE TABLE IF NOT EXISTS pending_surveys (
 
 CREATE INDEX IF NOT EXISTS idx_pending_surveys_status ON pending_surveys(status, created_at);
 
-ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS message_id INTEGER;
-
-ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS chat_id TEXT;
-
-ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN DEFAULT FALSE;
-
-ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
-
-ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
-
-ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
-
-ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS answered_at TIMESTAMPTZ;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'survey_responses') THEN
+    ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS message_id INTEGER;
+    ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS chat_id TEXT;
+    ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN DEFAULT FALSE;
+    ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+    ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
+    ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+    ALTER TABLE survey_responses ADD COLUMN IF NOT EXISTS answered_at TIMESTAMPTZ;
+  END IF;
+END $$;
 
 ALTER TABLE task_outcomes ADD COLUMN IF NOT EXISTS quality_score REAL;
 
