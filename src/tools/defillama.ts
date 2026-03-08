@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "./types";
 import type { MemoryManager } from "../memory/types";
+import { getErrorMessage } from "../../lib/error-serialization";
 import { createDefiLlamaExtendedTools } from "./defillama-extended";
 import {
   getProtocols,
@@ -255,7 +256,7 @@ export function createDefiLlamaTools(
 
           return { output: formatTvlHistory(rows), isError: false };
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = getErrorMessage(err);
           return {
             output: `Error retrieving TVL history: ${msg}`,
             isError: true,

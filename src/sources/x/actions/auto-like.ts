@@ -19,6 +19,7 @@ import {
 } from "../shared";
 import { createLogger } from "../../../logger";
 
+import { getErrorMessage } from "../../../lib/error-serialization";
 const log = createLogger("x-auto-like");
 
 function tweetToScraped(t: ParsedTweet): ScrapedTweetFromPython {
@@ -183,7 +184,7 @@ export async function autoLike(
       await page.close();
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     return { ok: false, reason: "error", detail: msg };
   } finally {
     await session.cleanup();

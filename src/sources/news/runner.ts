@@ -4,6 +4,7 @@ import { createLogger } from "../../logger";
 import type { NewsSource, RawArticle, RawCalendarEvent } from "./types";
 import { getArticleScraper, getCalendarScraper } from "./scrapers";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("news-runner");
 
 interface RunResult {
@@ -27,7 +28,7 @@ export async function runNewsScraper(source: NewsSource): Promise<RunResult> {
     const articles = await scraper();
     return { ok: true, articles };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     log.warn("Scraper failed", { source, error: msg });
     return { ok: false, error: msg };
   }

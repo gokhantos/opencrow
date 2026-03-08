@@ -10,6 +10,7 @@ import {
   stopJob,
 } from "./store";
 
+import { getErrorMessage } from "../../../lib/error-serialization";
 const log = createLogger("x-bookmarks");
 
 const TICK_INTERVAL_MS = 30_000;
@@ -96,7 +97,7 @@ export function createBookmarkProcessor(): BookmarkProcessor {
         await updateJobAfterError(accountId, detail, now + nextIn);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("Bookmark processor error", { accountId, error: msg });
       try {
         const now = Math.floor(Date.now() / 1000);

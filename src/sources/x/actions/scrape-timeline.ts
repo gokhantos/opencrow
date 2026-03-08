@@ -16,6 +16,7 @@ import {
 } from "../shared";
 import { createLogger } from "../../../logger";
 
+import { getErrorMessage } from "../../../lib/error-serialization";
 const log = createLogger("x-scrape-timeline");
 
 function tweetToDict(tweet: ParsedTweet, source: string): TimelineTweetFromPython {
@@ -143,7 +144,7 @@ export async function scrapeTimeline(
     log.info("Scrape complete", { total: allTweets.length });
     return { ok: true, tweets: allTweets };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     return { ok: false, reason: "error", detail: msg };
   } finally {
     await session.cleanup();

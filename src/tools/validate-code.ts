@@ -6,6 +6,7 @@ import type { ProjectContext } from "./project-context";
 import { runShell, truncateOutput, VALIDATE_MAX_BYTES } from "./shell-runner";
 import { createLogger } from "../logger";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("tool:validate-code");
 
 type StepName = "typecheck" | "lint" | "test";
@@ -164,7 +165,7 @@ export function createValidateCodeTool(config: ToolsConfig): ToolDefinition {
       try {
         ctx = await detectProjectContext(resolvedPath);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         return { output: `Error detecting project: ${msg}`, isError: true };
       }
 
@@ -232,7 +233,7 @@ export function createValidateCodeTool(config: ToolsConfig): ToolDefinition {
           timedOut = result.timedOut;
           durationMs = result.durationMs;
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = getErrorMessage(err);
           execError = msg;
           exitCode = 1;
         }

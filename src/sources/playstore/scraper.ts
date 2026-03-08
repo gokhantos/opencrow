@@ -11,6 +11,7 @@ import {
   type PlayReviewRow,
 } from "./store";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("playstore-scraper");
 
 const TICK_INTERVAL_MS = 3_600_000; // 60 minutes
@@ -192,7 +193,7 @@ export function createPlayStoreScraper(config?: {
       const apps = await gplay.list(opts);
       return apps.map((app, index) => mapAppToRanking(app, index + 1, listType));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.warn("Failed to fetch Play Store list", { listType, error: msg });
       return [];
     }
@@ -206,7 +207,7 @@ export function createPlayStoreScraper(config?: {
 
       return await gplay.app({ appId, country: "us", lang: "en" });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.warn("Failed to fetch app detail", { appId, error: msg });
       return null;
     }
@@ -245,7 +246,7 @@ export function createPlayStoreScraper(config?: {
         indexed_at: null,
       }));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.warn("Failed to fetch Play Store reviews", { appId, appName, error: msg });
       return [];
     }
@@ -326,7 +327,7 @@ export function createPlayStoreScraper(config?: {
             count: apps.length,
           });
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = getErrorMessage(err);
           log.warn("Play Store category fetch failed", { category: cat.name, error: msg });
         }
       }
@@ -384,7 +385,7 @@ export function createPlayStoreScraper(config?: {
             enrichedCount++;
           }
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = getErrorMessage(err);
           log.warn("Play Store detail fetch failed", { appId: app.id, error: msg });
         }
 
@@ -397,7 +398,7 @@ export function createPlayStoreScraper(config?: {
             totalReviews += count;
           }
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = getErrorMessage(err);
           log.warn("Play Store review fetch failed", { appId: app.id, error: msg });
         }
       }
@@ -413,7 +414,7 @@ export function createPlayStoreScraper(config?: {
 
       return { ok: true, rankings: rankingsCount, reviews: totalReviews };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("Play Store scrape failed", { error: msg });
       return { ok: false, error: msg };
     }
@@ -429,7 +430,7 @@ export function createPlayStoreScraper(config?: {
     try {
       await scrape();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("Play Store scrape error", { error: msg });
     } finally {
       running = false;

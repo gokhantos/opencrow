@@ -9,6 +9,7 @@ import {
 } from "./scraper";
 import { upsertTokens } from "./store";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("dexscreener-processor");
 
 const DEFAULT_INTERVALS = {
@@ -100,7 +101,7 @@ export function createDexScreenerProcessor(config?: {
 
       return { ok: true, found, inserted };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("Trending fetch failed", { error: msg });
       return { ok: false, found: 0, inserted: 0, error: msg };
     } finally {
@@ -150,7 +151,7 @@ export function createDexScreenerProcessor(config?: {
 
       return { ok: true, found, inserted };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("New tokens fetch failed", { error: msg });
       return { ok: false, found: 0, inserted: 0, error: msg };
     } finally {

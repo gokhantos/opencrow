@@ -7,6 +7,7 @@ import {
   type TrendRow,
 } from "./store";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("google-trends-scraper");
 
 const TICK_INTERVAL_MS = 1_800_000; // 30 minutes
@@ -156,7 +157,7 @@ function parseItem(
       indexed_at: null,
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     log.warn("Failed to parse trend item", { error: msg });
     return null;
   }
@@ -240,7 +241,7 @@ export function createGoogleTrendsScraper(config?: {
           count: rows.length,
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.warn("Failed to fetch Google Trends feed", {
           category: feed.category,
           error: msg,
@@ -271,7 +272,7 @@ export function createGoogleTrendsScraper(config?: {
           }
         }
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("Failed to get unindexed trends", { error: msg });
       }
     }
@@ -290,7 +291,7 @@ export function createGoogleTrendsScraper(config?: {
     try {
       await scrape();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("Google Trends scrape error", { error: msg });
     } finally {
       running = false;
@@ -356,7 +357,7 @@ export function createGoogleTrendsScraper(config?: {
         log.info("Google Trends RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("Google Trends RAG backfill failed", { error: msg, totalIndexed });
         return { indexed: totalIndexed, error: msg };
       }

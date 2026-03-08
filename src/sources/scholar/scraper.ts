@@ -8,6 +8,7 @@ import {
   type ScholarPaperRow,
 } from "./store";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("scholar-scraper");
 
 const TICK_INTERVAL_MS = 21_600_000; // 6 hours
@@ -278,7 +279,7 @@ export function createScholarScraper(config?: {
     try {
       await scrape();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("Scholar scrape error", { error: msg });
     } finally {
       running = false;
@@ -352,7 +353,7 @@ export function createScholarScraper(config?: {
         log.info("Scholar RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("Scholar RAG backfill failed", { error: msg, totalIndexed });
         return { indexed: totalIndexed, error: msg };
       }

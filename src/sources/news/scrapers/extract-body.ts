@@ -62,7 +62,7 @@ export async function extractBodies(
       } catch (err) {
         log.debug("Failed to extract body", {
           url,
-          error: err instanceof Error ? err.message : String(err),
+          error: err,
         });
       }
     }

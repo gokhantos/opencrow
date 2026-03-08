@@ -9,6 +9,7 @@ import {
 } from "./store";
 import { scrapeHNFrontPage, type RawStory } from "./hn-scraper";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("hn-scraper");
 
 const TICK_INTERVAL_MS = 600_000; // 10 minutes
@@ -112,7 +113,7 @@ export function createHNScraper(config?: {
       const stories = await scrapeHNFrontPage();
       return { ok: true, stories: stories as RawStory[] };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       return { ok: false, error: msg };
     }
   }
@@ -159,7 +160,7 @@ export function createHNScraper(config?: {
     try {
       await scrape();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("HN scrape error", { error: msg });
     } finally {
       running = false;
@@ -226,7 +227,7 @@ export function createHNScraper(config?: {
         log.info("HN RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("HN RAG backfill failed", { error: msg, totalIndexed });
         return { indexed: totalIndexed, error: msg };
       }

@@ -2,6 +2,7 @@ import { Sender } from "@questdb/nodejs-client";
 import type { Logger as QDBLogger } from "@questdb/nodejs-client";
 import { createLogger } from "../../logger";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("market:questdb");
 
 /** Only forward errors/warnings from the QuestDB client; suppress info/debug chatter */
@@ -100,7 +101,7 @@ export async function initQuestDB(
   } catch (err) {
     await sender.close();
     throw new Error(
-      `QuestDB REST API unreachable at ${http}: ${err instanceof Error ? err.message : String(err)}`,
+      `QuestDB REST API unreachable at ${http}: ${getErrorMessage(err)}`,
     );
   }
 

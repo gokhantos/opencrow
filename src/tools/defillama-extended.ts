@@ -29,6 +29,7 @@ import type {
 } from "../sources/defillama/types";
 import { createLogger } from "../logger";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("tool:defillama-extended");
 
 
@@ -296,7 +297,7 @@ export function createDefiLlamaExtendedTools(): readonly ToolDefinition[] {
 
           return { output: lines.filter(Boolean).join("\n"), isError: false };
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = getErrorMessage(err);
           log.error("get_protocol_detail failed", { error: msg });
           return { output: `Error retrieving protocol detail: ${msg}`, isError: true };
         }
@@ -358,7 +359,7 @@ export function createDefiLlamaExtendedTools(): readonly ToolDefinition[] {
 
           return { output: lines.join("\n"), isError: false };
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = getErrorMessage(err);
           log.error("get_global_defi_metrics failed", { error: msg });
           return { output: `Error retrieving global metrics: ${msg}`, isError: true };
         }

@@ -8,6 +8,7 @@ import {
   type ArxivPaperRow,
 } from "./store";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("arxiv-scraper");
 
 const TICK_INTERVAL_MS = 3_600_000; // 60 minutes
@@ -196,7 +197,7 @@ async function fetchCategory(
     const papers = parseAtomXml(xml);
     return { ok: true, papers };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     return { ok: false, error: `arXiv fetch error (${category}): ${msg}` };
   }
 }
@@ -271,7 +272,7 @@ export function createArxivScraper(config?: {
     try {
       await scrape();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("arXiv scrape error", { error: msg });
     } finally {
       running = false;
@@ -344,7 +345,7 @@ export function createArxivScraper(config?: {
         log.info("arXiv RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("arXiv RAG backfill failed", { error: msg, totalIndexed });
         return { indexed: totalIndexed, error: msg };
       }

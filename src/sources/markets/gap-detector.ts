@@ -180,7 +180,7 @@ export async function findKlineGapWindows(
     log.error("findKlineGapWindows failed", {
       symbol,
       marketType,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
     return [];
   }
@@ -220,7 +220,7 @@ export async function findKlineGaps(
     log.error("findKlineGaps failed", {
       symbol,
       marketType,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
     return [];
   }
@@ -250,7 +250,7 @@ export async function findMetricsGaps(
   } catch (err) {
     log.error("findMetricsGaps failed", {
       symbol,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
     return [];
   }
@@ -293,7 +293,7 @@ export async function findFundingRateGaps(
   } catch (err) {
     log.error("findFundingRateGaps failed", {
       symbol,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
     return [];
   }
@@ -329,7 +329,7 @@ export async function findMarkPriceGaps(
   } catch (err) {
     log.error("findMarkPriceGaps failed", {
       symbol,
-      error: err instanceof Error ? err.message : String(err),
+      error: err,
     });
     return [];
   }

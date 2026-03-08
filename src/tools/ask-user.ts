@@ -12,6 +12,7 @@ import type { MessageContent, InlineButton } from "../channels/types";
 import { getQuestionBus } from "../agent/question-bus";
 import { createLogger } from "../logger";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("tool:ask-user");
 
 export interface AskUserToolConfig {
@@ -117,7 +118,7 @@ export function createAskUserTool(config: AskUserToolConfig): ToolDefinition {
           isError: false,
         };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.warn("ask_user failed", { chatId, error: msg });
         return {
           output: `Failed to get user response: ${msg}`,

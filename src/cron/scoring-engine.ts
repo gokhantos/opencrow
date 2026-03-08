@@ -2,6 +2,7 @@ import { getDb } from "../store/db";
 import { createLogger } from "../logger";
 import { computeAgentScores, computeToolScores, computeMcpScores } from "../agent/scoring-engine";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("scoring-cron");
 
 /**
@@ -25,7 +26,7 @@ export async function runScoringEngine(): Promise<void> {
     const durationMs = Date.now() - startMs;
     log.info("Scoring engine completed", { durationMs });
   } catch (err) {
-    const msg = (err instanceof Error ? err.message : String(err));
+    const msg = getErrorMessage(err);
     log.error("Scoring engine failed", { error: msg });
     throw err;
   }

@@ -8,6 +8,7 @@ import {
   type HFModelRow,
 } from "./store";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("hf-scraper");
 
 const TICK_INTERVAL_MS = 1_800_000; // 30 minutes
@@ -138,7 +139,7 @@ async function fetchFeed(
     const data = (await resp.json()) as RawHFModel[];
     return { ok: true, models: data };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     return { ok: false, error: `HF fetch error (${source}): ${msg}` };
   }
 }
@@ -199,7 +200,7 @@ export function createHFScraper(config?: {
     try {
       await scrape();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("HF scrape error", { error: msg });
     } finally {
       running = false;
@@ -271,7 +272,7 @@ export function createHFScraper(config?: {
         log.info("HF RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("HF RAG backfill failed", { error: msg, totalIndexed });
         return { indexed: totalIndexed, error: msg };
       }

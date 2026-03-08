@@ -8,6 +8,7 @@ import {
   type GithubRepoRow,
 } from "./store";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("github-scraper");
 
 const TICK_INTERVAL_MS = 43_200_000; // 12 hours
@@ -210,7 +211,7 @@ async function fetchTrending(
     const repos = parseTrendingHtml(html);
     return { ok: true, repos };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     return { ok: false, error: `GitHub fetch error (${period}): ${msg}` };
   }
 }
@@ -271,7 +272,7 @@ export function createGithubScraper(config?: {
     try {
       await scrape();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("GitHub scrape error", { error: msg });
     } finally {
       running = false;
@@ -346,7 +347,7 @@ export function createGithubScraper(config?: {
         log.info("GitHub RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("GitHub RAG backfill failed", { error: msg, totalIndexed });
         return { indexed: totalIndexed, error: msg };
       }

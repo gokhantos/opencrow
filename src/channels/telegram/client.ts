@@ -23,6 +23,7 @@ function isGetUpdatesConflict(err: unknown): boolean {
 }
 
 export function createTelegramChannel(botToken: string): Channel {
+import { getErrorMessage } from "../../../lib/error-serialization";
   const log = createLogger(`tg:${tokenTag(botToken)}`);
   const bot = new Bot(botToken);
   const sendQ = createSendQueue();
@@ -99,7 +100,7 @@ export function createTelegramChannel(botToken: string): Channel {
         }
 
         // Network or other transient error — short backoff
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("getUpdates error", { error: msg });
         connected = false;
         await new Promise((r) => setTimeout(r, 3_000));
@@ -128,7 +129,7 @@ export function createTelegramChannel(botToken: string): Channel {
         abortController = new AbortController();
         // Run poll loop in background — don't await it (it runs until disconnect)
         pollLoop(abortController.signal).catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = getErrorMessage(err);
           log.error("Poll loop exited with error", { error: msg });
           connected = false;
         });

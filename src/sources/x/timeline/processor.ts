@@ -14,6 +14,7 @@ import {
 } from "./store";
 import { getAccountCredentials } from "../interactions/store";
 
+import { getErrorMessage } from "../../../lib/error-serialization";
 const log = createLogger("x-timeline");
 
 const TICK_INTERVAL_MS = 30_000;
@@ -139,7 +140,7 @@ export function createTimelineScrapeProcessor(config?: {
         await updateTimelineJobAfterError(accountId, detail, now + nextIn);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("Timeline scrape processor error", { accountId, error: msg });
       try {
         const now = Math.floor(Date.now() / 1000);
@@ -293,7 +294,7 @@ export function createTimelineScrapeProcessor(config?: {
         log.info("Timeline RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("Timeline RAG backfill failed", {
           error: msg,
           totalIndexed,

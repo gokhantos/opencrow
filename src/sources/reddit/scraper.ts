@@ -12,6 +12,7 @@ import {
 } from "./store";
 import { scrapeRedditFeed, type RawRedditPost } from "./reddit-scraper";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("reddit-scraper");
 
 const TICK_INTERVAL_MS = 1_800_000; // 30 minutes
@@ -94,7 +95,7 @@ export function createRedditScraper(config?: {
       const posts = await scrapeRedditFeed(cookiesJson);
       return { ok: true, posts: posts as RawPost[] };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       return { ok: false, error: msg };
     }
   }
@@ -153,7 +154,7 @@ export function createRedditScraper(config?: {
         running.add(account.id);
         scrapeAccount(account.id, account.cookies_json)
           .catch((err) => {
-            const msg = err instanceof Error ? err.message : String(err);
+            const msg = getErrorMessage(err);
             log.error("Reddit scrape error", {
               accountId: account.id,
               error: msg,
@@ -239,7 +240,7 @@ export function createRedditScraper(config?: {
         log.info("Reddit RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("Reddit RAG backfill failed", { error: msg, totalIndexed });
         return { indexed: totalIndexed, error: msg };
       }

@@ -2,6 +2,7 @@ import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import { sendAgentMessage, getPendingCount } from "../agent/message-bus";
 import { createLogger } from "../logger";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("tool:send-message");
 
 export function createSendMessageTool(agentId: string): ToolDefinition {
@@ -73,7 +74,7 @@ export function createSendMessageTool(agentId: string): ToolDefinition {
           error: err,
         });
         return {
-          output: `Error sending message: ${err instanceof Error ? err.message : String(err)}`,
+          output: `Error sending message: ${getErrorMessage(err)}`,
           isError: true,
         };
       }

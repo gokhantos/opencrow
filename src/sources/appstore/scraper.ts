@@ -12,6 +12,7 @@ import {
   type AppReviewRow,
 } from "./store";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("appstore-scraper");
 
 const TICK_INTERVAL_MS = 3_600_000; // 60 minutes
@@ -293,7 +294,7 @@ export function createAppStoreScraper(config?: {
       const data = await fetchJson(url);
       return parseTopAppsV2(data, listType);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.warn("Failed to fetch top apps", { listType, error: msg });
       return [];
     }
@@ -307,7 +308,7 @@ export function createAppStoreScraper(config?: {
       const data = await fetchJson(reviewsUrl(appId));
       return parseReviews(data, appId, appName);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.warn("Failed to fetch reviews", { appId, appName, error: msg });
       return [];
     }
@@ -385,7 +386,7 @@ export function createAppStoreScraper(config?: {
             count: apps.length,
           });
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
+          const msg = getErrorMessage(err);
           log.warn("Failed to fetch iTunes category rankings", {
             category: cat.name,
             error: msg,
@@ -449,7 +450,7 @@ export function createAppStoreScraper(config?: {
 
       return { ok: true, rankings: rankingsCount, reviews: totalReviews };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("App Store scrape failed", { error: msg });
       return { ok: false, error: msg };
     }
@@ -465,7 +466,7 @@ export function createAppStoreScraper(config?: {
     try {
       await scrape();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       log.error("App Store scrape error", { error: msg });
     } finally {
       running = false;

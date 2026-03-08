@@ -9,6 +9,7 @@ import {
   getArticles,
 } from "./store";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("news-processor");
 
 const DEFAULT_INTERVALS: Record<NewsSource, number> = {
@@ -152,7 +153,7 @@ export function createNewsProcessor(config?: {
 
       return { ok: true, found, inserted };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       const durationMs = Date.now() - t0;
       log.error("Scraper error", { source, error: msg });
 
@@ -248,7 +249,7 @@ export function createNewsProcessor(config?: {
         log.info("RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("RAG backfill failed", { error: msg, totalIndexed });
         return { indexed: totalIndexed, error: msg };
       }

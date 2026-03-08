@@ -9,6 +9,7 @@ import {
 } from "./store";
 import { scrapePHDaily, type RawPHProduct } from "./ph-scraper";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("ph-scraper");
 
 const TICK_INTERVAL_MS = 600_000; // 10 minutes
@@ -104,7 +105,7 @@ export function createPHScraper(config?: {
       const products = await scrapePHDaily(apiKey, apiSecret);
       return { ok: true, products };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = getErrorMessage(err);
       return { ok: false, error: msg };
     }
   }
@@ -151,7 +152,7 @@ export function createPHScraper(config?: {
     isRunning = true;
     doScrape()
       .catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("PH scrape error", { error: msg });
       })
       .finally(() => {
@@ -221,7 +222,7 @@ export function createPHScraper(config?: {
         log.info("PH RAG backfill complete", { totalIndexed });
         return { indexed: totalIndexed };
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         log.error("PH RAG backfill failed", { error: msg, totalIndexed });
         return { indexed: totalIndexed, error: msg };
       }

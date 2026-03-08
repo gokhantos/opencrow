@@ -5,6 +5,7 @@ import { detectProjectContext } from "./project-context";
 import { runShell, truncateOutput, TEST_MAX_BYTES } from "./shell-runner";
 import { createLogger } from "../logger";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("tool:run-tests");
 
 interface TestResults {
@@ -304,7 +305,7 @@ export function createRunTestsTool(config: ToolsConfig): ToolDefinition {
       try {
         context = await detectProjectContext(path);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = getErrorMessage(err);
         return { output: `Error detecting project: ${msg}`, isError: true };
       }
 

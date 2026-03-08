@@ -7,6 +7,7 @@ import type { ToolRegistry } from "../tools/registry";
 import type { ToolDefinition } from "../tools/types";
 import { createLogger } from "../logger";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("mcp-bridge");
 
 /**
@@ -142,7 +143,7 @@ function opencrowToolToSdkTool(
         };
       } catch (err) {
         const message =
-          err instanceof Error ? err.message : String(err);
+          getErrorMessage(err);
         log.error("MCP tool execution error", {
           tool: toolDef.name,
           error: message,

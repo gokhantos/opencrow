@@ -2,6 +2,7 @@
 
 import { createLogger } from "../../logger";
 
+import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("scraper-dexscreener");
 
 const BASE = "https://api.dexscreener.com";
@@ -379,7 +380,7 @@ export async function fetchTrendingTokens(limit: number = 50): Promise<
 
     return trending;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     log.error("Trending fetch failed", { error: msg });
     return [];
   }
@@ -437,7 +438,7 @@ export async function fetchNewTokens(hours: number = 24): Promise<
 
     return newTokens;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = getErrorMessage(err);
     log.error("New tokens fetch failed", { error: msg });
     return [];
   }
