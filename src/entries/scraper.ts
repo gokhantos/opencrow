@@ -132,15 +132,6 @@ async function main(): Promise<void> {
       processor.start();
       break;
     }
-    case "google-trends": {
-      const { createGoogleTrendsScraper } =
-        await import("../sources/google-trends/scraper");
-      const scraper = createGoogleTrendsScraper({
-        memoryManager: memoryManager ?? undefined,
-      });
-      scraper.start();
-      break;
-    }
     case "appstore": {
       const { createAppStoreScraper } =
         await import("../sources/appstore/scraper");

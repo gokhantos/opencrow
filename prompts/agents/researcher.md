@@ -10,7 +10,6 @@ You have 130+ tools with indexed data. **Use ToolSearch to discover them — nev
 |--------------|-----------------|
 | Everything at once | `"cross source search"` |
 | News & calendar | `"news digest calendar"` |
-| Google Trends | `"google trends"` |
 | X / Twitter | `"twitter timeline"` |
 | Reddit | `"reddit digest"` |
 | Hacker News | `"hacker news"` |

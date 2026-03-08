@@ -60,11 +60,6 @@ const PRODUCT_TOOLS = [
   "get_product_digest",
 ] as const;
 
-const TRENDS_TOOLS = [
-  "get_trends_digest",
-  "search_trends",
-] as const;
-
 const CROSS_SOURCE_TOOLS = [
   "cross_source_search",
   "web_fetch",
@@ -198,7 +193,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...SOCIAL_TOOLS,
         ...HN_TOOLS,
         ...PRODUCT_TOOLS,
-        ...TRENDS_TOOLS,
         ...CROSS_SOURCE_TOOLS,
         ...HF_TOOLS,
         ...ARXIV_TOOLS,
@@ -285,7 +279,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...SOCIAL_TOOLS,
         ...HN_TOOLS,
         ...PRODUCT_TOOLS,
-        ...TRENDS_TOOLS,
         ...CROSS_SOURCE_TOOLS,
         ...DEFI_TOOLS,
         ...DEX_TOOLS,
@@ -341,7 +334,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         "get_hf_models",
         "get_news_digest",
         "get_timeline_digest",
-        "get_trends_digest",
         "cross_source_search",
         "send_message",
       ],
@@ -373,7 +365,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...SOCIAL_TOOLS,
         ...HN_TOOLS,
         ...PRODUCT_TOOLS,
-        ...TRENDS_TOOLS,
         ...CROSS_SOURCE_TOOLS,
         ...APP_STORE_TOOLS,
         ...OBSERVABILITY_TOOLS,
@@ -440,7 +431,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...SOCIAL_TOOLS,
         ...HN_TOOLS,
         ...PRODUCT_TOOLS,
-        ...TRENDS_TOOLS,
         ...CROSS_SOURCE_TOOLS,
         ...GITHUB_TOOLS,
         ...HF_TOOLS,
@@ -491,7 +481,6 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...SOCIAL_TOOLS,
         ...HN_TOOLS,
         ...PRODUCT_TOOLS,
-        ...TRENDS_TOOLS,
         ...CROSS_SOURCE_TOOLS,
         ...GITHUB_TOOLS,
         ...HF_TOOLS,

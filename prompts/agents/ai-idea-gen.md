@@ -36,7 +36,6 @@ Each run is a full pipeline: research first, then ideate from what you found. Ex
 **Step 4 — Deep dive with WebSearch (SUPPLEMENTARY):**
 - Use WebSearch and WebFetch to go deeper on signals from steps 1–3
 - Search for competitors, pricing, technical feasibility
-- Check Google Trends (`get_trends_digest`) for AI-related search trends
 
 **For each interesting finding, save it as a signal (save_signal):**
 - Include specific model names (full HF paths), paper IDs, benchmark numbers

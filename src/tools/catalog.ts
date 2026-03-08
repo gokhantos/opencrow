@@ -19,7 +19,6 @@ import { createXTimelineTools } from "./x-timeline";
 import { createAppStoreTools } from "./appstore";
 import { createPlayStoreTools } from "./playstore";
 import { createCrossSourceSearchTool } from "./cross-search";
-import { createGoogleTrendsTools } from "./google-trends";
 import { createIdeaTools } from "./ideas";
 import { createSignalTools } from "./signals";
 import { createGetScraperStatusTool } from "./scraper-status";
@@ -135,10 +134,6 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
   get_playstore_complaints: "playstore",
   search_playstore_reviews: "playstore",
 
-  // Google Trends
-  get_trends_digest: "google_trends",
-  search_trends: "google_trends",
-
   // Cross-source
   cross_source_search: "search",
 
@@ -252,7 +247,6 @@ export const CATEGORY_LABELS: Record<string, string> = {
   x_timeline: "X / Twitter",
   appstore: "App Store",
   playstore: "Play Store",
-  google_trends: "Google Trends",
   search: "Cross-Source",
   market: "Markets & Trading",
   ideas: "Ideas",
@@ -347,7 +341,6 @@ export function buildToolCatalog(): readonly ToolCatalogEntry[] {
   tools.push(...createAppStoreTools(mm));
   tools.push(...createPlayStoreTools(mm));
   tools.push(createCrossSourceSearchTool(mm));
-  tools.push(...createGoogleTrendsTools(mm));
 
   // Market tools
   tools.push(...createMarketTools(["BTCUSDT"], ["spot"]));
@@ -420,7 +413,6 @@ const CATEGORY_ORDER = [
   "x_timeline",
   "appstore",
   "playstore",
-  "google_trends",
   "search",
   "market",
   "ideas",

@@ -25,7 +25,6 @@ import {
   GitBranch,
   Brain,
   AlertTriangle,
-  Search,
   Smartphone,
 } from "lucide-react";
 
@@ -42,7 +41,6 @@ export type Tab =
   | "huggingface"
   | "github"
   | "arxiv"
-  | "google-trends"
   | "appstore"
   | "playstore"
   | "news"
@@ -74,7 +72,7 @@ export interface NavSection {
 export const VALID_TABS = new Set<Tab>([
   "overview", "agents", "skills", "sessions", "channels",
   "x-accounts", "producthunt", "hackernews", "reddit", "huggingface",
-  "github", "arxiv", "google-trends", "appstore", "playstore",
+  "github", "arxiv", "appstore", "playstore",
   "news", "markets", "ideas", "cron",
   "processes", "system", "tools", "usage", "agent-metrics", "routing",
   "memory", "failures", "logs",
@@ -110,7 +108,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       { id: "huggingface", label: "HuggingFace", Icon: Cpu },
       { id: "github", label: "GitHub", Icon: Github },
       { id: "arxiv", label: "arXiv", Icon: BookOpen },
-      { id: "google-trends", label: "Google Trends", Icon: Search },
       { id: "appstore", label: "App Store", Icon: Smartphone },
       { id: "playstore", label: "Play Store", Icon: Smartphone },
     ],

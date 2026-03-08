@@ -30,7 +30,6 @@ import { createUsageRoutes } from "./routes/usage";
 import { createToolsRoutes } from "./routes/tools";
 import { createRoutingRulesRoutes } from "./routes/routing-rules";
 import { createFailureRoutes } from "./routes/failures";
-import { createGoogleTrendsRoutes } from "./routes/google-trends";
 import { createAppStoreRoutes } from "./routes/appstore";
 import { createPlayStoreRoutes } from "./routes/playstore";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
@@ -335,9 +334,6 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
   const signals = createSignalsRoutes();
   app.route("/api", signals);
-
-  const googleTrends = createGoogleTrendsRoutes({ coreClient: cc });
-  app.route("/api", googleTrends);
 
   const appStore = createAppStoreRoutes({ coreClient: cc });
   app.route("/api", appStore);

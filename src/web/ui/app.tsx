@@ -40,7 +40,6 @@ import AgentMetrics from "./views/AgentMetrics";
 import RoutingRules from "./views/RoutingRules";
 import Memory from "./views/Memory";
 import Failures from "./views/Failures";
-import GoogleTrends from "./views/GoogleTrends";
 import AppStore from "./views/AppStore";
 import PlayStore from "./views/PlayStore";
 
@@ -253,7 +252,6 @@ function App() {
             {tab === "huggingface" && <HuggingFace />}
             {tab === "github" && <GitHub />}
             {tab === "arxiv" && <Arxiv />}
-            {tab === "google-trends" && <GoogleTrends />}
             {tab === "appstore" && <AppStore />}
             {tab === "playstore" && <PlayStore />}
             {tab === "news" && <News />}

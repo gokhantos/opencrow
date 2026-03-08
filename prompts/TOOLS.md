@@ -32,7 +32,6 @@ Web search (`WebSearch`) is a **last resort** — only use it when:
 | GitHub repos | `"github trending"` |
 | arXiv papers | `"arxiv papers"` |
 | HuggingFace models | `"huggingface models"` |
-| Google Trends | `"google trends"` |
 | Product Hunt | `"product hunt"` |
 | App Store / Play Store | `"appstore playstore rankings"` |
 | X / Twitter | `"twitter timeline tweets"` |
