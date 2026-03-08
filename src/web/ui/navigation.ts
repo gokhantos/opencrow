@@ -18,7 +18,6 @@ import {
   Activity,
   FileText,
   Server,
-  Coins,
   BarChart3,
   GitBranch,
   Brain,
@@ -46,7 +45,6 @@ export type Tab =
   | "processes"
   | "system"
   | "tools"
-  | "usage"
   | "agent-metrics"
   | "routing"
   | "memory"
@@ -70,7 +68,7 @@ export const VALID_TABS = new Set<Tab>([
   "x-accounts", "producthunt", "hackernews", "reddit",
   "github", "appstore", "playstore",
   "news", "markets", "ideas", "cron",
-  "processes", "system", "tools", "usage", "agent-metrics", "routing",
+  "processes", "system", "tools", "agent-metrics", "routing",
   "memory", "failures", "logs",
 ]);
 
@@ -122,7 +120,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     items: [
       { id: "cron", label: "Cron", Icon: Clock },
       { id: "processes", label: "Processes", Icon: Server },
-      { id: "usage", label: "Usage", Icon: Coins },
       { id: "failures", label: "Failures", Icon: AlertTriangle },
       { id: "system", label: "Metrics", Icon: Activity },
       { id: "logs", label: "Logs", Icon: FileText },

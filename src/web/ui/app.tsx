@@ -33,7 +33,6 @@ import GitHub from "./views/GitHub";
 import Processes from "./views/Processes";
 import Skills from "./views/Skills";
 import Tools from "./views/Tools";
-import Usage from "./views/Usage";
 import AgentMetrics from "./views/AgentMetrics";
 import RoutingRules from "./views/RoutingRules";
 import Memory from "./views/Memory";
@@ -255,7 +254,6 @@ function App() {
             {tab === "memory" && <Memory />}
             {tab === "processes" && <Processes />}
             {tab === "routing" && <RoutingRules />}
-            {tab === "usage" && <Usage />}
             {tab === "failures" && <Failures />}
             {tab === "agent-metrics" && <AgentMetrics />}
             {tab === "system" && <SystemMetrics />}
