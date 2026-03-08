@@ -1,9 +1,8 @@
 /**
  * Prompt building and context enrichment utilities for the Agent SDK.
- * Handles conversation history injection, cross-session memory, and user preferences.
+ * Handles conversation history injection and user preferences.
  */
 import { createLogger } from "../logger";
-import { searchRelatedSessions } from "../memory/cross-session-memory";
 import {
   getActivePreferences,
   formatPreferencesForPrompt,
@@ -55,70 +54,14 @@ export function buildPromptWithHistory(
   return `<conversation_history>\n${history}\n</conversation_history>\n\n[user]: ${lastMsg}`;
 }
 
-export function extractTopicsFromMessage(message: string): string[] {
-  const topics: string[] = [];
-  const topicPatterns = [
-    { pattern: /database|db|sql|query|table|schema/i, topic: "database" },
-    { pattern: /api|endpoint|route|rest|graphql/i, topic: "api" },
-    { pattern: /react|component|ui|frontend|css|style/i, topic: "frontend" },
-    { pattern: /server|backend|node|express|hono/i, topic: "backend" },
-    { pattern: /test|spec|jest|vitest|coverage/i, topic: "testing" },
-    { pattern: /deploy|docker|kubernetes|ci|cd|pipeline/i, topic: "devops" },
-    { pattern: /security|auth|owasp|xss|injection/i, topic: "security" },
-    { pattern: /performance|optimize|slow|benchmark/i, topic: "performance" },
-    { pattern: /refactor|migrate|upgrade|modernize/i, topic: "refactoring" },
-    { pattern: /bug|fix|error|issue|debug/i, topic: "bugfix" },
-    {
-      pattern: /feature|create|build|implement/i,
-      topic: "feature-development",
-    },
-  ];
-
-  for (const { pattern, topic } of topicPatterns) {
-    if (pattern.test(message)) {
-      topics.push(topic);
-    }
-  }
-
-  return topics;
-}
-
-export function lastUserMessageFromPrompt(prompt: string): string {
-  const match = prompt.match(/\[user\]:\s*(.+)$/s);
-  return match ? match[1]!.trim() : prompt;
-}
-
 /**
- * Inject cross-session memory and user preferences into the prompt.
- * Phase 5: Advanced Intelligence
+ * Inject user preferences into the prompt.
  */
 export async function enrichPromptWithContext(
   basePrompt: string,
-  sessionId?: string,
+  _sessionId?: string,
 ): Promise<string> {
   let enrichedPrompt = basePrompt;
-
-  // Add cross-session context if sessionId provided
-  if (sessionId) {
-    try {
-      const lastMsg = lastUserMessageFromPrompt(basePrompt);
-      const topics = extractTopicsFromMessage(lastMsg);
-      const relatedMemories = await searchRelatedSessions(topics, 2);
-
-      if (relatedMemories.length > 0) {
-        enrichedPrompt += "\n\n<cross_session_context>\n";
-        for (const memory of relatedMemories) {
-          enrichedPrompt += `- Previous session (${memory.context.sessionId}): ${memory.context.summary}\n`;
-          if (memory.matchedTopics.length > 0) {
-            enrichedPrompt += `  Related topics: ${memory.matchedTopics.join(", ")}\n`;
-          }
-        }
-        enrichedPrompt += "</cross_session_context>\n";
-      }
-    } catch (err) {
-      log.debug("Cross-session memory lookup failed", { error: String(err) });
-    }
-  }
 
   // Add user preferences
   try {
