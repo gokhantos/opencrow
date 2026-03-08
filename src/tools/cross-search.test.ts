@@ -94,7 +94,7 @@ describe("createCrossSourceSearchTool", () => {
     expect(props).toHaveProperty("limit");
   });
 
-  it("should list all 14 searchable kinds in sources enum", () => {
+  it("should list all searchable kinds in sources enum", () => {
     const tool = createCrossSourceSearchTool(mockMemoryManager());
     const props = tool.inputSchema.properties as Record<string, any>;
     const sourceItems = props.sources.items;
@@ -104,13 +104,9 @@ describe("createCrossSourceSearchTool", () => {
     expect(sourceItems.enum).toContain("tweet");
     expect(sourceItems.enum).toContain("product");
     expect(sourceItems.enum).toContain("github_repo");
-    expect(sourceItems.enum).toContain("arxiv_paper");
     expect(sourceItems.enum).toContain("app_review");
     expect(sourceItems.enum).toContain("app_ranking");
-    expect(sourceItems.enum).toContain("trend");
-    expect(sourceItems.enum).toContain("defi_protocol");
-    expect(sourceItems.enum).toContain("dex_token");
-    expect(sourceItems.enum).toHaveLength(12);
+    expect(sourceItems.enum).toHaveLength(8);
   });
 
   // -- Execute: input validation --------------------------------------------

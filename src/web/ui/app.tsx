@@ -248,7 +248,6 @@ function App() {
             {tab === "hackernews" && <HackerNews />}
             {tab === "reddit" && <Reddit />}
             {tab === "github" && <GitHub />}
-            {tab === "google-trends" && <GoogleTrends />}
             {tab === "appstore" && <AppStore />}
             {tab === "playstore" && <PlayStore />}
             {tab === "news" && <News />}

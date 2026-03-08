@@ -9,12 +9,8 @@ const SEARCHABLE_KINDS: readonly MemorySourceKind[] = [
   "tweet",
   "product",
   "github_repo",
-  "arxiv_paper",
   "app_review",
   "app_ranking",
-  "trend",
-  "defi_protocol",
-  "dex_token",
 ];
 
 const KIND_LABELS: Record<string, string> = {
@@ -24,12 +20,8 @@ const KIND_LABELS: Record<string, string> = {
   tweet: "X/Twitter",
   product: "Product Hunt",
   github_repo: "GitHub",
-  arxiv_paper: "arXiv",
   app_review: "App Reviews",
   app_ranking: "App Rankings",
-  trend: "Google Trends",
-  defi_protocol: "DeFi Protocols",
-  dex_token: "DEX Tokens",
 };
 
 function formatResult(r: {
@@ -67,7 +59,7 @@ export function createCrossSourceSearchTool(
             enum: [...SEARCHABLE_KINDS],
           },
           description:
-            "Optional: limit to specific sources. Omit to search all. Values: article, story, reddit_post, tweet, product, github_repo, arxiv_paper.",
+            "Optional: limit to specific sources. Omit to search all. Values: article, story, reddit_post, tweet, product, github_repo, app_review, app_ranking.",
         },
         limit: {
           type: "number",
