@@ -88,6 +88,7 @@ export function AgentCard({
               className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-bg-2 hover:text-foreground hover:border-border-2"
               onClick={onEdit}
               title="Edit agent"
+              aria-label="Edit agent"
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
@@ -98,6 +99,7 @@ export function AgentCard({
               className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-danger-subtle hover:text-danger hover:border-danger/30"
               onClick={onDelete}
               title="Delete agent"
+              aria-label="Delete agent"
             >
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M3 6h18" />

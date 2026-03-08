@@ -78,6 +78,8 @@ export default function IndicatorToggles({
                     active && "text-strong bg-bg-3",
                   )}
                   onClick={() => onToggleOverlay(ind.key)}
+                  role="checkbox"
+                  aria-checked={active}
                 >
                   <span
                     className="w-1.5 h-1.5 rounded-full shrink-0"
@@ -103,6 +105,8 @@ export default function IndicatorToggles({
                     active && "text-strong bg-bg-3",
                   )}
                   onClick={() => onToggleOscillator(grp.id)}
+                  role="checkbox"
+                  aria-checked={active}
                 >
                   <span
                     className="w-1.5 h-1.5 rounded-full shrink-0"

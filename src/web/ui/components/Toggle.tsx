@@ -19,6 +19,8 @@ export function Toggle({ checked, onChange, label, disabled }: ToggleProps) {
       onClick={() => onChange(!checked)}
       disabled={disabled}
       type="button"
+      aria-pressed={checked}
+      aria-label={label ?? (checked ? "On" : "Off")}
     >
       <span
         className={cn(

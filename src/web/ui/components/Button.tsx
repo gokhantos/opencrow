@@ -44,10 +44,11 @@ export function Button({
         className,
       )}
       disabled={disabled || loading}
+      aria-busy={loading ? "true" : undefined}
       {...props}
     >
       {loading ? (
-        <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+        <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" aria-hidden="true" />
       ) : (
         children
       )}

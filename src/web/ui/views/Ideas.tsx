@@ -524,6 +524,8 @@ export default function Ideas() {
                 )}
                 onClick={() => setViewMode("list")}
                 title="List view"
+                aria-label="List view"
+                aria-pressed={viewMode === "list"}
               >
                 &#9776;
               </button>
@@ -534,11 +536,14 @@ export default function Ideas() {
                 )}
                 onClick={() => setViewMode("grid")}
                 title="Grid view"
+                aria-label="Grid view"
+                aria-pressed={viewMode === "grid"}
               >
                 &#9638;
               </button>
             </div>
             <select
+              aria-label="Sort ideas"
               className="py-2 px-4 rounded-lg border border-border bg-bg-1 text-muted font-sans text-sm cursor-pointer outline-none transition-colors h-[36px] focus:border-accent"
               value={sortMode}
               onChange={(e) => setSortMode(e.target.value as SortMode)}

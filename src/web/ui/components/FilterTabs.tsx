@@ -15,12 +15,14 @@ interface FilterTabsProps {
 
 export function FilterTabs({ tabs, active, onChange }: FilterTabsProps) {
   return (
-    <div className="flex gap-1.5 flex-wrap mb-5">
+    <div className="flex gap-1.5 flex-wrap mb-5" role="tablist">
       {tabs.map((tab) => {
         const isActive = tab.id === active;
         return (
           <button
             key={tab.id}
+            role="tab"
+            aria-selected={isActive}
             className={cn(
               "px-4 py-2 rounded-lg text-sm font-medium cursor-pointer transition-colors duration-150 border",
               isActive
