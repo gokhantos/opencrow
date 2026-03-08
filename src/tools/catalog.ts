@@ -35,7 +35,7 @@ import { createProcessMonitorTools } from "./process-monitor";
 import { createLogCheckerTools } from "./log-checker";
 import { createMemoryStatsTools } from "./memory-stats";
 import { createEconomicCalendarTool } from "./economic-calendar";
-import { createMcpWrapperTools } from "./mcp-wrappers";
+
 import { createProjectContextTool } from "./project-context";
 import { createValidateCodeTool } from "./validate-code";
 import { createRunTestsTool } from "./run-tests";
@@ -432,9 +432,6 @@ export function buildToolCatalog(): readonly ToolCatalogEntry[] {
 
   // Economic calendar
   tools.push(...createEconomicCalendarTool());
-
-  // MCP wrappers
-  tools.push(...createMcpWrapperTools());
 
   // Development
   tools.push(createProjectContextTool(defaultConfig));

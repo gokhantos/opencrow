@@ -199,6 +199,21 @@ export function createSpawnAgentTool(
       }
 
       const sessionKey = `${config.currentAgentId}`;
+
+      // Check queue depth before spawning
+      try {
+        const { getSessionQueueStatus } = await import("../agent/queue-manager");
+        const queueStatus = await getSessionQueueStatus(config.sessionId);
+        if (queueStatus.pendingTasks + queueStatus.runningTasks >= 10) {
+          return {
+            output: `Error: too many queued tasks (${queueStatus.pendingTasks} pending, ${queueStatus.runningTasks} running). Wait for some to complete.`,
+            isError: true,
+          };
+        }
+      } catch {
+        // queue check is non-fatal
+      }
+
       const activeCount = config.tracker.countActiveForSession(sessionKey);
       if (activeCount >= currentAgent.subagents.maxChildren) {
         return {
@@ -267,6 +282,23 @@ async function executeSingleAgent(
     task,
     abortController,
   });
+
+  // Log agent's current performance score for observability
+  try {
+    const { getAgentScore } = await import("../agent/scoring-engine");
+    const score = await getAgentScore(targetAgentId, routedDomain || null);
+    if (score) {
+      log.info("Agent score at spawn time", {
+        agentId: targetAgentId,
+        domain: routedDomain,
+        score: score.score.toFixed(3),
+        successRate: (score.successRate * 100).toFixed(0) + "%",
+        totalTasks: score.totalTasks,
+      });
+    }
+  } catch {
+    // score lookup is non-fatal
+  }
 
   log.info("Spawning sub-agent", {
     runId,

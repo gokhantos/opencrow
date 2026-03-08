@@ -76,7 +76,7 @@ import { createProcessMonitorTools } from "../tools/process-monitor";
 import { createLogCheckerTools } from "../tools/log-checker";
 import { createMemoryStatsTools } from "../tools/memory-stats";
 import { createEconomicCalendarTool } from "../tools/economic-calendar";
-import { createMcpWrapperTools } from "../tools/mcp-wrappers";
+
 import { createDbTools } from "../tools/db-query";
 import { createSendMessageTool } from "../tools/send-message";
 
@@ -562,14 +562,6 @@ export async function bootstrap(
         allowsTool(t.name),
       );
       if (calendarTools.length > 0) registry = registry.withTools(calendarTools);
-    }
-
-    // MCP wrapper tools
-    {
-      const mcpTools = createMcpWrapperTools().filter((t) =>
-        allowsTool(t.name),
-      );
-      if (mcpTools.length > 0) registry = registry.withTools(mcpTools);
     }
 
     // Inter-agent messaging

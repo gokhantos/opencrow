@@ -414,7 +414,7 @@ function createSubagentStopHook(agentId: string): HookCallback {
 
         if (status === "timeout") {
           import("./self-reflection")
-            .then(async ({ checkTimeout }) => {
+            .then(async ({ checkTimeout, shouldEscalate, getEscalationTarget }) => {
               const db = getDb();
               const startRow = await withDbTimeout(
                 db`
@@ -429,7 +429,16 @@ function createSubagentStopHook(agentId: string): HookCallback {
               const startTime: Date =
                 (startRow?.[0]?.created_at as Date | undefined) ??
                 new Date(Date.now() - 60_000);
-              await checkTimeout(sessionId, startTime, subagentId);
+              const reflection = await checkTimeout(sessionId, startTime, subagentId);
+              if (reflection && shouldEscalate(reflection)) {
+                const target = getEscalationTarget(reflection);
+                log.warn("Self-reflection recommends escalation", {
+                  sessionId,
+                  triggerType: reflection.triggerType,
+                  escalationTarget: target,
+                  actionTaken: reflection.actionTaken,
+                });
+              }
             })
             .catch((err: unknown) =>
               log.warn("Self-reflection timeout check failed", {
@@ -440,7 +449,7 @@ function createSubagentStopHook(agentId: string): HookCallback {
 
         if (status === "error" || status === "timeout") {
           import("./self-reflection")
-            .then(async ({ checkRepeatedFailures }) => {
+            .then(async ({ checkRepeatedFailures, shouldEscalate, getEscalationTarget }) => {
               const db = getDb();
               const failureRows = await withDbTimeout(
                 db<{ result: string }[]>`
@@ -455,15 +464,75 @@ function createSubagentStopHook(agentId: string): HookCallback {
               const recentErrors = (failureRows ?? []).map((r) =>
                 String(r.result ?? "").slice(0, 200),
               );
-              await checkRepeatedFailures(
+              const reflection = await checkRepeatedFailures(
                 sessionId,
                 recentErrors.length,
                 recentErrors,
                 [],
               );
+              if (reflection && shouldEscalate(reflection)) {
+                const target = getEscalationTarget(reflection);
+                log.warn("Self-reflection recommends escalation", {
+                  sessionId,
+                  triggerType: reflection.triggerType,
+                  escalationTarget: target,
+                  actionTaken: reflection.actionTaken,
+                });
+              }
             })
             .catch((err: unknown) =>
               log.warn("Self-reflection failure check failed", {
+                error: String(err),
+              }),
+            );
+        }
+
+        // Generate post-mortem reflection for failed/partial tasks
+        if (status !== "completed") {
+          import("./reflection/postmortem")
+            .then(async ({ generatePostMortem }) => {
+              const db = getDb();
+              const task = String(input.task ?? "");
+              const { classifyTask } = await import("./task-classifier");
+              const { taskHash } = await classifyTask(task, sessionId);
+
+              // Get start time for duration calculation
+              const startRow = await withDbTimeout(
+                db`
+                SELECT created_at FROM subagent_audit_log
+                WHERE parent_agent_id = ${agentId}
+                  AND session_id = ${sessionId}
+                  AND subagent_id = ${subagentId}
+                ORDER BY created_at DESC
+                LIMIT 1
+              `,
+              );
+              const startTime: Date =
+                (startRow?.[0]?.created_at as Date | undefined) ??
+                new Date(Date.now() - 60_000);
+              const durationSec = (Date.now() - startTime.getTime()) / 1000;
+
+              // Count revisions for this task
+              const revisionRows = await withDbTimeout(
+                db<{ count: number }[]>`
+                SELECT COUNT(*) as count FROM subagent_audit_log
+                WHERE session_id = ${sessionId}
+                  AND subagent_id = ${subagentId}
+                  AND status IN ('error', 'timeout')
+              `,
+              );
+              const revisions = Number(revisionRows?.[0]?.count ?? 0);
+
+              await generatePostMortem(sessionId, subagentId, taskHash, {
+                status: status === "timeout" ? "failure" : "failure",
+                result: result.slice(0, 1000),
+                errorMessage: result.slice(0, 500),
+                revisions,
+                durationSec,
+              });
+            })
+            .catch((err: unknown) =>
+              log.warn("Post-mortem generation failed", {
                 error: String(err),
               }),
             );
