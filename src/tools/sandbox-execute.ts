@@ -98,44 +98,68 @@ async function executeInSandbox(
   command: string,
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; errorInfo: string }> {
-  const res = await fetch(
-    `${baseUrl}/sandboxes/${sandboxId}/proxy/44772/command`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ command }),
-      signal: AbortSignal.timeout(timeoutMs),
-    },
-  );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Command execution failed: ${res.status} ${body}`);
-  }
+  try {
+    const res = await fetch(
+      `${baseUrl}/sandboxes/${sandboxId}/proxy/44772/command`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command }),
+        signal: controller.signal,
+      },
+    );
 
-  const text = await res.text();
-  const lines = text.split("\n").filter((l) => l.trim());
-
-  let stdout = "";
-  let stderr = "";
-  let errorInfo = "";
-
-  for (const line of lines) {
-    try {
-      const event = JSON.parse(line) as SandboxEvent;
-      if (event.type === "stdout" && event.text) {
-        stdout += (stdout ? "\n" : "") + event.text;
-      } else if (event.type === "stderr" && event.text) {
-        stderr += (stderr ? "\n" : "") + event.text;
-      } else if (event.type === "error" && event.error) {
-        errorInfo = `${event.error.ename}: ${event.error.evalue}\n${event.error.traceback.join("\n")}`;
-      }
-    } catch {
-      // skip unparseable lines
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Command execution failed: ${res.status} ${body}`);
     }
-  }
 
-  return { stdout, stderr, errorInfo };
+    let stdout = "";
+    let stderr = "";
+    let errorInfo = "";
+
+    // Stream response line-by-line; stop on execution_complete/error
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    outer: for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const event = JSON.parse(trimmed) as SandboxEvent;
+          if (event.type === "stdout" && event.text) {
+            stdout += (stdout ? "\n" : "") + event.text;
+          } else if (event.type === "stderr" && event.text) {
+            stderr += (stderr ? "\n" : "") + event.text;
+          } else if (event.type === "error" && event.error) {
+            errorInfo = `${event.error.ename}: ${event.error.evalue}\n${event.error.traceback.join("\n")}`;
+            break outer;
+          } else if (event.type === "execution_complete") {
+            break outer;
+          }
+        } catch {
+          // skip unparseable lines
+        }
+      }
+    }
+
+    reader.cancel();
+    return { stdout, stderr, errorInfo };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function deleteSandbox(baseUrl: string, sandboxId: string): Promise<void> {
