@@ -332,6 +332,36 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   },
 
   // -------------------------------------------------------------------------
+  // Signal Hunter Moat (defensibility-focused research)
+  // -------------------------------------------------------------------------
+  {
+    id: "signal-hunter-moat",
+    name: "Signal Hunter (Moat)",
+    description:
+      "Technical opportunity scout that finds new APIs, hardware capabilities, regulatory shifts, and data advantages. Never generates ideas — only saves moat-carrying signals.",
+    provider: "alibaba",
+    model: "qwen3.5-plus",
+    maxIterations: 30,
+    stateless: true,
+    reasoning: false,
+    toolFilter: {
+      mode: "allowlist",
+      tools: [
+        ...MEMORY_TOOLS,
+        ...SIGNAL_TOOLS,
+        ...NEWS_TOOLS,
+        ...CROSS_SOURCE_TOOLS,
+        ...OBSERVABILITY_TOOLS,
+      ],
+    },
+    modelParams: { effort: "high", thinkingMode: "disabled", thinkingBudget: 128_000, extendedContext: false },
+    subagents: { allowAgents: [], maxChildren: 1 },
+    mcpServers: {},
+    hooks: { auditLog: true, notifications: true },
+    skills: [],
+  },
+
+  // -------------------------------------------------------------------------
   // Idea Smith (synthesis only, signal-fed)
   // -------------------------------------------------------------------------
   {
