@@ -930,385 +930,385 @@ CREATE TABLE IF NOT EXISTS x_timeline_scrape_jobs (
 DO $$ BEGIN
 ALTER TABLE ONLY agent_memory
     ADD CONSTRAINT agent_memory_pkey PRIMARY KEY (agent_id, key);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY agent_messages
     ADD CONSTRAINT agent_messages_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY appstore_rankings
     ADD CONSTRAINT appstore_rankings_pkey PRIMARY KEY (id, list_type);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY appstore_reviews
     ADD CONSTRAINT appstore_reviews_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY config_overrides
     ADD CONSTRAINT config_overrides_pkey PRIMARY KEY (namespace, key);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY conversation_observations
     ADD CONSTRAINT conversation_observations_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY conversation_summaries
     ADD CONSTRAINT conversation_summaries_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY cost_tracking
     ADD CONSTRAINT cost_tracking_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY cron_deliveries
     ADD CONSTRAINT cron_deliveries_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY cron_jobs
     ADD CONSTRAINT cron_jobs_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY cron_runs
     ADD CONSTRAINT cron_runs_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY economic_calendar_events
     ADD CONSTRAINT economic_calendar_events_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY generated_ideas
     ADD CONSTRAINT generated_ideas_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY github_repos
     ADD CONSTRAINT github_repos_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY hn_stories
     ADD CONSTRAINT hn_stories_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY memory_chunks
     ADD CONSTRAINT memory_chunks_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY memory_sources
     ADD CONSTRAINT memory_sources_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY messages
     ADD CONSTRAINT messages_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY monitor_alerts
     ADD CONSTRAINT monitor_alerts_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY news_articles
     ADD CONSTRAINT news_articles_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY news_scraper_runs
     ADD CONSTRAINT news_scraper_runs_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY ph_accounts
     ADD CONSTRAINT ph_accounts_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY ph_products
     ADD CONSTRAINT ph_products_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY playstore_rankings
     ADD CONSTRAINT playstore_rankings_pkey PRIMARY KEY (id, list_type);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY playstore_reviews
     ADD CONSTRAINT playstore_reviews_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY prewarm_cache
     ADD CONSTRAINT prewarm_cache_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY process_commands
     ADD CONSTRAINT process_commands_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY process_logs
     ADD CONSTRAINT process_logs_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY process_registry
     ADD CONSTRAINT process_registry_pkey PRIMARY KEY (name);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY reddit_accounts
     ADD CONSTRAINT reddit_accounts_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY reddit_posts
     ADD CONSTRAINT reddit_posts_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY research_signals
     ADD CONSTRAINT research_signals_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY routing_decisions
     ADD CONSTRAINT routing_decisions_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY routing_rules
     ADD CONSTRAINT routing_rules_channel_match_type_match_value_key UNIQUE (channel, match_type, match_value);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY routing_rules
     ADD CONSTRAINT routing_rules_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY sdk_sessions
     ADD CONSTRAINT sdk_sessions_pkey PRIMARY KEY (channel, chat_id, agent_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY session_history
     ADD CONSTRAINT session_history_agent_id_session_id_key UNIQUE (agent_id, session_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY session_history
     ADD CONSTRAINT session_history_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY sessions
     ADD CONSTRAINT sessions_channel_chat_id_key UNIQUE (channel, chat_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY sessions
     ADD CONSTRAINT sessions_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY subagent_audit_log
     ADD CONSTRAINT subagent_audit_log_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY subagent_runs
     ADD CONSTRAINT subagent_runs_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY task_classification
     ADD CONSTRAINT task_classification_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY task_embeddings
     ADD CONSTRAINT task_embeddings_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY task_embeddings
     ADD CONSTRAINT task_embeddings_task_hash_key UNIQUE (task_hash);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY token_usage
     ADD CONSTRAINT token_usage_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY tool_audit_log
     ADD CONSTRAINT tool_audit_log_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY tool_stats
     ADD CONSTRAINT tool_stats_pkey PRIMARY KEY (agent_id, tool_name);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY user_preferences
     ADD CONSTRAINT user_preferences_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY user_prompt_log
     ADD CONSTRAINT user_prompt_log_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY workload_history
     ADD CONSTRAINT workload_history_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_accounts
     ADD CONSTRAINT x_accounts_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_autofollow_jobs
     ADD CONSTRAINT x_autofollow_jobs_account_id_key UNIQUE (account_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_autofollow_jobs
     ADD CONSTRAINT x_autofollow_jobs_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_autolike_jobs
     ADD CONSTRAINT x_autolike_jobs_account_id_key UNIQUE (account_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_autolike_jobs
     ADD CONSTRAINT x_autolike_jobs_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_bookmark_jobs
     ADD CONSTRAINT x_bookmark_jobs_account_id_key UNIQUE (account_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_bookmark_jobs
     ADD CONSTRAINT x_bookmark_jobs_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_followed_users
     ADD CONSTRAINT x_followed_users_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_liked_tweets
     ADD CONSTRAINT x_liked_tweets_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_scraped_tweets
     ADD CONSTRAINT x_scraped_tweets_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_shared_videos
     ADD CONSTRAINT x_shared_videos_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_timeline_scrape_jobs
     ADD CONSTRAINT x_timeline_scrape_jobs_account_id_key UNIQUE (account_id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_timeline_scrape_jobs
     ADD CONSTRAINT x_timeline_scrape_jobs_pkey PRIMARY KEY (id);
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_agent_messages_pending ON agent_messages USING btree (to_agent_id, status, created_at) WHERE (status = 'pending'::text);
@@ -1462,61 +1462,59 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_x_shared_videos_dedup ON x_shared_videos U
 DO $$ BEGIN
 ALTER TABLE ONLY cron_runs
     ADD CONSTRAINT cron_runs_job_id_fkey FOREIGN KEY (job_id) REFERENCES cron_jobs(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY memory_chunks
     ADD CONSTRAINT memory_chunks_source_id_fkey FOREIGN KEY (source_id) REFERENCES memory_sources(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_autofollow_jobs
     ADD CONSTRAINT x_autofollow_jobs_account_id_fkey FOREIGN KEY (account_id) REFERENCES x_accounts(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_autolike_jobs
     ADD CONSTRAINT x_autolike_jobs_account_id_fkey FOREIGN KEY (account_id) REFERENCES x_accounts(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_bookmark_jobs
     ADD CONSTRAINT x_bookmark_jobs_account_id_fkey FOREIGN KEY (account_id) REFERENCES x_accounts(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_followed_users
     ADD CONSTRAINT x_followed_users_account_id_fkey FOREIGN KEY (account_id) REFERENCES x_accounts(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_liked_tweets
     ADD CONSTRAINT x_liked_tweets_account_id_fkey FOREIGN KEY (account_id) REFERENCES x_accounts(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_scraped_tweets
     ADD CONSTRAINT x_scraped_tweets_account_id_fkey FOREIGN KEY (account_id) REFERENCES x_accounts(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_shared_videos
     ADD CONSTRAINT x_shared_videos_account_id_fkey FOREIGN KEY (account_id) REFERENCES x_accounts(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
 
 DO $$ BEGIN
 ALTER TABLE ONLY x_timeline_scrape_jobs
     ADD CONSTRAINT x_timeline_scrape_jobs_account_id_fkey FOREIGN KEY (account_id) REFERENCES x_accounts(id) ON DELETE CASCADE;
-EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL;
+EXCEPTION WHEN others THEN NULL;
 END $$;
-
-\unrestrict bAxAWKD4su5hRzA8kPTM9iPFIadhmPIoW6ICUHD2pbdFJWdcjfARGzDkhSdQhy3
