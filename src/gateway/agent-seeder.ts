@@ -13,7 +13,7 @@ import { createLogger } from "../logger";
 
 const log = createLogger("gateway:agent-seeder");
 
-export async function seedDefaultAgents(): Promise<void> {
+export async function seedDefaultAgents(): Promise<number> {
   const existing = await getAgentOverrides();
   const existingIds = new Set(existing.map((o) => o.id));
 
@@ -37,4 +37,6 @@ export async function seedDefaultAgents(): Promise<void> {
       total: AGENT_SEEDS.length,
     });
   }
+
+  return seeded;
 }
