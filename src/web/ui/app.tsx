@@ -36,7 +36,6 @@ import Tools from "./views/Tools";
 import AgentMetrics from "./views/AgentMetrics";
 import RoutingRules from "./views/RoutingRules";
 import Memory from "./views/Memory";
-import Failures from "./views/Failures";
 import AppStore from "./views/AppStore";
 import PlayStore from "./views/PlayStore";
 import Settings from "./views/Settings";
@@ -255,7 +254,6 @@ function App() {
             {tab === "memory" && <Memory />}
             {tab === "processes" && <Processes />}
             {tab === "routing" && <RoutingRules />}
-            {tab === "failures" && <Failures />}
             {tab === "agent-metrics" && <AgentMetrics />}
             {tab === "system" && <SystemMetrics />}
             {tab === "logs" && <Logs />}

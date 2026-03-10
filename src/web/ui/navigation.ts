@@ -21,7 +21,6 @@ import {
   BarChart3,
   GitBranch,
   Brain,
-  AlertTriangle,
   Smartphone,
   Settings,
 } from "lucide-react";
@@ -49,7 +48,6 @@ export type Tab =
   | "agent-metrics"
   | "routing"
   | "memory"
-  | "failures"
   | "logs"
   | "settings";
 
@@ -71,7 +69,7 @@ export const VALID_TABS = new Set<Tab>([
   "github", "appstore", "playstore",
   "news", "markets", "ideas", "cron",
   "processes", "system", "tools", "agent-metrics", "routing",
-  "memory", "failures", "logs", "settings",
+  "memory", "logs", "settings",
 ]);
 
 export const NAV_SECTIONS: readonly NavSection[] = [
@@ -122,7 +120,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     items: [
       { id: "cron", label: "Cron", Icon: Clock },
       { id: "processes", label: "Processes", Icon: Server },
-      { id: "failures", label: "Failures", Icon: AlertTriangle },
       { id: "system", label: "Metrics", Icon: Activity },
       { id: "logs", label: "Logs", Icon: FileText },
       { id: "settings", label: "Settings", Icon: Settings },

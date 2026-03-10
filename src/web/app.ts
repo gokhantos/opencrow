@@ -29,7 +29,6 @@ import { createToolsRoutes } from "./routes/tools";
 import { createFeaturesRoutes } from "./routes/features";
 import { createSecretsRoutes } from "./routes/secrets";
 import { createRoutingRulesRoutes } from "./routes/routing-rules";
-import { createFailureRoutes } from "./routes/failures";
 import { createAppStoreRoutes } from "./routes/appstore";
 import { createPlayStoreRoutes } from "./routes/playstore";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
@@ -341,9 +340,6 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
   const usage = createUsageRoutes();
   app.route("/api", usage);
-
-  const failures = createFailureRoutes();
-  app.route("/api", failures);
 
   const tools = createToolsRoutes();
   app.route("/api", tools);
