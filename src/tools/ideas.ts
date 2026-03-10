@@ -10,10 +10,6 @@ import {
   getIdeas,
   getIdeasByStage,
   getStageTransitions,
-  getUnscoredIdeas,
-  updateIdeaRating,
-  getIdeasByRating,
-  getRatingInsights,
 } from "../sources/ideas/store";
 import { createLogger } from "../logger";
 
@@ -51,6 +47,10 @@ export function createSaveIdeaTool(agentId: string, memoryManager?: MemoryManage
           enum: ["mobile_app", "crypto_project", "ai_app", "open_source", "general"],
           description: "Category for the idea.",
         },
+        quality_score: {
+          type: "number",
+          description: "Self-assessed quality score: average of your scoring dimensions (1.0-5.0).",
+        },
       },
       required: ["title", "summary", "reasoning", "category"],
     },
@@ -65,8 +65,10 @@ export function createSaveIdeaTool(agentId: string, memoryManager?: MemoryManage
       const category = requireString(input, "category");
       if (isToolError(category)) return category;
       const sourcesUsed = getString(input, "sources_used", { allowEmpty: true }) ?? "";
-      // quality_score is always null on save — only set by idea-critic via rate_idea
-      const qualityScore = null;
+      const rawScore = input.quality_score != null ? Number(input.quality_score) : undefined;
+      const qualityScore = rawScore != null && !isNaN(rawScore)
+        ? Math.min(Math.max(rawScore, 1), 5)
+        : 1;
 
       try {
         const idea = await insertIdea({
@@ -432,207 +434,6 @@ function createGetIdeasTrendsTool(): ToolDefinition {
   };
 }
 
-// ============================================================================
-// Critic Pipeline Tools
-// ============================================================================
-
-function createGetUnscoredIdeasTool(): ToolDefinition {
-  return {
-    name: "get_unscored_ideas",
-    description:
-      "Get ideas that haven't been scored by a critic yet. Returns ideas in 'idea' stage with null quality_score from the last 7 days.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: {
-          type: "number",
-          description: "Max ideas to return (default 10, max 20).",
-        },
-        max_age_days: {
-          type: "number",
-          description: "Only return ideas from the last N days (default 7).",
-        },
-      },
-      required: [],
-    },
-    categories: ["ideas"] as readonly ToolCategory[],
-    async execute(input): Promise<{ output: string; isError: boolean }> {
-      const limit = getNumber(input, "limit", { defaultVal: 10, min: 1, max: 20 });
-      const maxAgeDays = getNumber(input, "max_age_days", { defaultVal: 7, min: 1, max: 30 });
-
-      try {
-        const ideas = await getUnscoredIdeas(limit, maxAgeDays);
-
-        if (ideas.length === 0) {
-          return { output: "No unscored ideas found.", isError: false };
-        }
-
-        const lines = ideas.map((idea, i) => [
-          `${i + 1}. ${idea.title}`,
-          `   ID: ${idea.id}`,
-          `   Agent: ${idea.agent_id} | Category: ${idea.category}`,
-          `   Summary: ${idea.summary}`,
-          `   Reasoning: ${idea.reasoning.slice(0, 500)}${idea.reasoning.length > 500 ? "..." : ""}`,
-          `   Sources: ${idea.sources_used || "none"}`,
-        ].join("\n"));
-
-        return {
-          output: `${ideas.length} unscored ideas:\n\n${lines.join("\n\n")}`,
-          isError: false,
-        };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Error fetching unscored ideas: ${msg}`, isError: true };
-      }
-    },
-  };
-}
-
-function createRateIdeaTool(): ToolDefinition {
-  return {
-    name: "rate_idea",
-    description:
-      "Rate an idea as a critic. Sets the quality_score, writes critic notes, and moves to validated (PROMOTE) or archived (KILL).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        id: {
-          type: "string",
-          description: "The idea ID to rate.",
-        },
-        quality_score: {
-          type: "number",
-          description: "Quality score (1.0-5.0). Average of your scoring dimensions.",
-        },
-        critic_notes: {
-          type: "string",
-          description: "Your critic assessment: dimension scores, kill/save arguments, verdict reasoning.",
-        },
-        verdict: {
-          type: "string",
-          enum: ["promote", "kill"],
-          description: "PROMOTE moves to validated stage. KILL archives the idea.",
-        },
-      },
-      required: ["id", "quality_score", "critic_notes", "verdict"],
-    },
-    categories: ["ideas"] as readonly ToolCategory[],
-    async execute(input): Promise<{ output: string; isError: boolean }> {
-      const id = requireString(input, "id");
-      if (isToolError(id)) return id;
-      const criticNotes = requireString(input, "critic_notes");
-      if (isToolError(criticNotes)) return criticNotes;
-      const verdict = getEnum(input, "verdict", ["promote", "kill"] as const);
-      if (!verdict) {
-        return { output: "Invalid verdict. Must be 'promote' or 'kill'.", isError: true };
-      }
-
-      const rawScore = Number(input.quality_score);
-      if (isNaN(rawScore) || rawScore < 1 || rawScore > 5) {
-        return { output: "quality_score must be between 1.0 and 5.0.", isError: true };
-      }
-      const qualityScore = Math.round(rawScore * 10) / 10;
-      const stage = verdict === "promote" ? "validated" : "archived";
-
-      try {
-        const updated = await updateIdeaRating(id, qualityScore, criticNotes, stage);
-        if (!updated) {
-          return { output: `Idea not found: ${id}`, isError: true };
-        }
-        const action = verdict === "promote" ? "PROMOTED to validated" : "KILLED (archived)";
-        return {
-          output: `Idea "${updated.title}" ${action} with score ${qualityScore}/5.`,
-          isError: false,
-        };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Error rating idea: ${msg}`, isError: true };
-      }
-    },
-  };
-}
-
-function createGetIdeasByRatingTool(): ToolDefinition {
-  return {
-    name: "get_ideas_by_rating",
-    description:
-      "Get ideas ranked by quality score. Filterable by category and pipeline stage.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: { type: "number", description: "Max results (default 20)." },
-        category: {
-          type: "string",
-          enum: ["mobile_app", "crypto_project", "ai_app", "open_source", "general"],
-        },
-        stage: {
-          type: "string",
-          enum: [...PIPELINE_STAGES],
-        },
-      },
-      required: [],
-    },
-    categories: ["ideas"] as readonly ToolCategory[],
-    async execute(input): Promise<{ output: string; isError: boolean }> {
-      const limit = getNumber(input, "limit", { defaultVal: 20, min: 1, max: 50 });
-      const category = getEnum(input, "category", ["mobile_app", "crypto_project", "ai_app", "open_source", "general"] as const);
-      const stage = getEnum(input, "stage", PIPELINE_STAGES);
-
-      try {
-        const ideas = await getIdeasByRating(limit, {
-          category: category ?? undefined,
-          stage: stage ?? undefined,
-        });
-
-        if (ideas.length === 0) {
-          return { output: "No rated ideas found.", isError: false };
-        }
-
-        const lines = ideas.map((idea, i) =>
-          `${i + 1}. [${idea.quality_score?.toFixed(1)}] ${idea.title} (${idea.category}) [${idea.pipeline_stage}] — ${idea.agent_id}`,
-        );
-
-        return { output: lines.join("\n"), isError: false };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Error: ${msg}`, isError: true };
-      }
-    },
-  };
-}
-
-function createGetRatingInsightsTool(): ToolDefinition {
-  return {
-    name: "get_rating_insights",
-    description:
-      "Get aggregate rating insights: average score by agent, kill rate, validated vs archived counts.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    categories: ["ideas"] as readonly ToolCategory[],
-    async execute(): Promise<{ output: string; isError: boolean }> {
-      try {
-        const insights = await getRatingInsights();
-
-        if (insights.length === 0) {
-          return { output: "No rating data available.", isError: false };
-        }
-
-        const lines = insights.map((i) =>
-          `${i.agent_id}: avg=${i.avg_score}/5, total=${i.total}, validated=${i.validated}, archived=${i.archived}, kill_rate=${i.kill_rate}%`,
-        );
-
-        return { output: `Rating insights:\n${lines.join("\n")}`, isError: false };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Error: ${msg}`, isError: true };
-      }
-    },
-  };
-}
-
 export function createIdeaTools(agentId: string, memoryManager?: MemoryManager | null): readonly ToolDefinition[] {
   const tools: ToolDefinition[] = [
     createSaveIdeaTool(agentId, memoryManager),
@@ -641,10 +442,6 @@ export function createIdeaTools(agentId: string, memoryManager?: MemoryManager |
     createUpdateIdeaStageTool(),
     createQueryIdeasTool(),
     createGetIdeasTrendsTool(),
-    createGetUnscoredIdeasTool(),
-    createRateIdeaTool(),
-    createGetIdeasByRatingTool(),
-    createGetRatingInsightsTool(),
   ];
 
   if (memoryManager) {

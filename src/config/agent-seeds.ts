@@ -28,8 +28,6 @@ const IDEA_TOOLS = [
   "get_ideas_by_rating",
   "get_ideas_trends",
   "get_rating_insights",
-  "get_unscored_ideas",
-  "rate_idea",
 ] as const;
 
 const SIGNAL_TOOLS = [
@@ -298,22 +296,22 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   },
 
   // -------------------------------------------------------------------------
-  // Signal Hunter (research only, no ideation)
+  // Mobile Idea Generator
   // -------------------------------------------------------------------------
   {
-    id: "signal-hunter",
-    name: "Signal Hunter",
+    id: "mobile-idea-gen",
+    name: "Mobile Idea Generator",
     description:
-      "Research scout that finds specific, non-obvious signals from niche communities. Never generates ideas — only saves signals.",
-    provider: "alibaba",
-    model: "qwen3.5-plus",
-    maxIterations: 30,
+      "Generates mobile app ideas by analyzing App Store/Play Store rankings, reviews, trends, and cross-referencing with community signals.",
+    model: "claude-sonnet-4-6",
+    maxIterations: 40,
     stateless: true,
-    reasoning: false,
+    reasoning: true,
     toolFilter: {
       mode: "allowlist",
       tools: [
         ...MEMORY_TOOLS,
+        ...IDEA_TOOLS,
         ...SIGNAL_TOOLS,
         ...NEWS_TOOLS,
         ...SOCIAL_TOOLS,
@@ -324,105 +322,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
         ...OBSERVABILITY_TOOLS,
       ],
     },
-    modelParams: { effort: "high", thinkingMode: "disabled", thinkingBudget: 128_000, extendedContext: false },
-    subagents: { allowAgents: [], maxChildren: 1 },
-    mcpServers: {},
-    hooks: { auditLog: true, notifications: true },
-    skills: [],
-  },
-
-  // -------------------------------------------------------------------------
-  // Signal Hunter Moat (defensibility-focused research)
-  // -------------------------------------------------------------------------
-  {
-    id: "signal-hunter-moat",
-    name: "Signal Hunter (Moat)",
-    description:
-      "Technical opportunity scout that finds new APIs, hardware capabilities, regulatory shifts, and data advantages. Never generates ideas — only saves moat-carrying signals.",
-    provider: "alibaba",
-    model: "qwen3.5-plus",
-    maxIterations: 30,
-    stateless: true,
-    reasoning: false,
-    toolFilter: {
-      mode: "allowlist",
-      tools: [
-        ...MEMORY_TOOLS,
-        ...SIGNAL_TOOLS,
-        ...NEWS_TOOLS,
-        ...CROSS_SOURCE_TOOLS,
-        ...OBSERVABILITY_TOOLS,
-      ],
-    },
-    modelParams: { effort: "high", thinkingMode: "disabled", thinkingBudget: 128_000, extendedContext: false },
-    subagents: { allowAgents: [], maxChildren: 1 },
-    mcpServers: {},
-    hooks: { auditLog: true, notifications: true },
-    skills: [],
-  },
-
-  // -------------------------------------------------------------------------
-  // Idea Smith (synthesis only, signal-fed)
-  // -------------------------------------------------------------------------
-  {
-    id: "idea-smith",
-    name: "Idea Smith",
-    description:
-      "Synthesizes accumulated signals into 0-2 high-quality mobile app ideas per run. Does not research — reads signals only.",
-    provider: "alibaba",
-    model: "qwen3.5-plus",
-    maxIterations: 25,
-    stateless: true,
-    reasoning: false,
-    toolFilter: {
-      mode: "allowlist",
-      tools: [
-        ...MEMORY_TOOLS,
-        "get_signals",
-        "get_cross_domain_signals",
-        "get_signal_themes",
-        "save_idea",
-        "search_similar_ideas",
-        "get_previous_ideas",
-        "consume_signals",
-        "web_fetch",
-        "cross_source_search",
-      ],
-    },
-    modelParams: { effort: "high", thinkingMode: "disabled", thinkingBudget: 128_000, extendedContext: false },
-    subagents: { allowAgents: [], maxChildren: 1 },
-    mcpServers: {},
-    hooks: { auditLog: true, notifications: true },
-    skills: [],
-  },
-
-  // -------------------------------------------------------------------------
-  // Idea Critic (adversarial scorer)
-  // -------------------------------------------------------------------------
-  {
-    id: "idea-critic",
-    name: "Idea Critic",
-    description:
-      "Adversarial critic that independently evaluates and scores ideas. Kills 70-80% of ideas, promotes only genuinely interesting ones.",
-    provider: "alibaba",
-    model: "qwen3.5-plus",
-    maxIterations: 20,
-    stateless: true,
-    reasoning: false,
-    toolFilter: {
-      mode: "allowlist",
-      tools: [
-        "get_unscored_ideas",
-        "rate_idea",
-        "update_idea_stage",
-        "search_similar_ideas",
-        "get_ideas_by_rating",
-        "get_rating_insights",
-        "cross_source_search",
-        "web_fetch",
-      ],
-    },
-    modelParams: { effort: "high", thinkingMode: "disabled", thinkingBudget: 128_000, extendedContext: false },
+    modelParams: HIGH_ADAPTIVE_PARAMS,
     subagents: { allowAgents: [], maxChildren: 1 },
     mcpServers: {},
     hooks: { auditLog: true, notifications: true },

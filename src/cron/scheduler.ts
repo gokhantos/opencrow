@@ -98,17 +98,12 @@ export function createCronScheduler(deps: CronSchedulerDeps): CronScheduler {
       const dueJobs = await deps.cronStore.getDueJobs(now);
 
       // Update cache: find the earliest next_run_at among non-due jobs
-      // Cap at 60s to discover newly-created jobs from other processes
-      const MAX_CACHE_MS = 60_000;
       if (dueJobs.length === 0) {
         const allJobs = await deps.cronStore.listJobs();
         const futureRuns = allJobs
           .filter((j) => j.enabled && j.nextRunAt !== null)
           .map((j) => j.nextRunAt! * 1000);
-        const earliest = futureRuns.length > 0 ? Math.min(...futureRuns) : null;
-        nextDueAtMs = earliest !== null
-          ? Math.min(earliest, now + MAX_CACHE_MS)
-          : now + MAX_CACHE_MS;
+        nextDueAtMs = futureRuns.length > 0 ? Math.min(...futureRuns) : null;
       } else {
         // Jobs were due — recheck next tick
         nextDueAtMs = null;

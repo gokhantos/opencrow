@@ -39,12 +39,7 @@ async function main(): Promise<void> {
   });
 
   // Seed default agent definitions (idempotent — skips existing DB records)
-  const seeded = await seedDefaultAgents();
-  if (seeded > 0) {
-    const fresh = await loadConfigWithOverrides();
-    ctx.agentRegistry.reload(fresh.agents, fresh.agent);
-    log.info("Agent registry reloaded after seeding", { seeded });
-  }
+  await seedDefaultAgents();
 
   // No local channels — all delivery goes through cron_deliveries table
   const emptyChannels = new Map();
