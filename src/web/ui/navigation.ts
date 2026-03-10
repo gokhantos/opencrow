@@ -72,6 +72,33 @@ export const VALID_TABS = new Set<Tab>([
   "memory", "logs", "settings",
 ]);
 
+export const TAB_TITLES: Record<Tab, string> = {
+  overview: "Overview",
+  agents: "Agents",
+  skills: "Skills",
+  sessions: "Sessions",
+  channels: "Channels",
+  "x-accounts": "X / Twitter",
+  producthunt: "Product Hunt",
+  hackernews: "Hacker News",
+  reddit: "Reddit",
+  github: "GitHub",
+  appstore: "App Store",
+  playstore: "Play Store",
+  news: "News Feed",
+  markets: "Markets",
+  ideas: "Ideas",
+  cron: "Cron",
+  processes: "Processes",
+  system: "Metrics",
+  tools: "Tools",
+  "agent-metrics": "Agent Metrics",
+  routing: "Routing",
+  memory: "Memory",
+  logs: "Logs",
+  settings: "Settings",
+};
+
 export const NAV_SECTIONS: readonly NavSection[] = [
   {
     title: "Dashboard",

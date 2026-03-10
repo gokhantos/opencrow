@@ -13,7 +13,7 @@ import {
   initTokenFromUrl,
 } from "./api";
 import type { Tab } from "./navigation";
-import { VALID_TABS } from "./navigation";
+import { VALID_TABS, TAB_TITLES } from "./navigation";
 import Sidebar from "./components/Sidebar";
 import Overview from "./views/Overview";
 import Channels from "./views/Channels";
@@ -189,6 +189,10 @@ function App() {
     document.documentElement.setAttribute("data-theme", theme);
     localStorage.setItem("opencrow-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    document.title = `${TAB_TITLES[tab]} — OpenCrow`;
+  }, [tab]);
 
   useEffect(() => {
     initTokenFromUrl();

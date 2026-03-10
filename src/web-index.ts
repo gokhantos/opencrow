@@ -23,6 +23,8 @@ import { initQuestDBReadOnly } from "./sources/markets/questdb";
 import uiHtml from "./web/ui/index.html";
 // @ts-ignore — Bun file import
 import logoFile from "./web/opencrow.png" with { type: "file" };
+// @ts-ignore — Bun file import
+import faviconFile from "./web/favicon.ico" with { type: "file" };
 import type { AgentOptions } from "./agent/types";
 import type { MemoryManager } from "./memory/types";
 
@@ -186,6 +188,12 @@ async function main(): Promise<void> {
       "/logo.png": new Response(Bun.file(logoFile), {
         headers: {
           "Content-Type": "image/png",
+          "Cache-Control": "public, max-age=86400",
+        },
+      }),
+      "/favicon.ico": new Response(Bun.file(faviconFile), {
+        headers: {
+          "Content-Type": "image/x-icon",
           "Cache-Control": "public, max-age=86400",
         },
       }),
