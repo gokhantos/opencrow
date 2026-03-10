@@ -312,13 +312,14 @@ function printResult(result: CheckResult): void {
 export async function runDoctor(): Promise<void> {
   p.intro(`OpenCrow v${getVersion()} — Health Check`);
 
+  const env = readEnvVars();
+  const hasQdrant = Boolean(env.QDRANT_URL);
+
   const checks = await Promise.all([
     checkBun(),
-    checkDocker(),
-    checkContainers(),
     checkEnvFile(),
     checkPostgres(),
-    checkQdrant(),
+    ...(hasQdrant ? [checkQdrant()] : []),
     checkService(),
     checkDiskSpace(),
   ]);
