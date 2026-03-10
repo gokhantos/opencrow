@@ -269,6 +269,7 @@ export default function Settings() {
         body: JSON.stringify({ enabled: [...enabledScrapers] }),
       });
       setScrapersDirty(false);
+      window.dispatchEvent(new Event("features-changed"));
       success("Scraper settings saved.");
     } catch {
       toastError("Failed to save scraper settings.");
@@ -288,6 +289,7 @@ export default function Settings() {
       setFeatures((prev) =>
         prev ? { ...prev, qdrant: { enabled: checked } } : prev,
       );
+      window.dispatchEvent(new Event("features-changed"));
       success(`Qdrant ${checked ? "enabled" : "disabled"}.`);
     } catch {
       toastError("Failed to update Qdrant setting.");
@@ -307,6 +309,7 @@ export default function Settings() {
       setFeatures((prev) =>
         prev ? { ...prev, market: { enabled: checked } } : prev,
       );
+      window.dispatchEvent(new Event("features-changed"));
       success(`Market data ${checked ? "enabled" : "disabled"}.`);
     } catch {
       toastError("Failed to update market data setting.");

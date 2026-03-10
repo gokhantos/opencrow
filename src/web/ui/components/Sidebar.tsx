@@ -14,6 +14,7 @@ interface SidebarProps {
   readonly onMobileClose: () => void;
   readonly theme: Theme;
   readonly onThemeToggle: () => void;
+  readonly hiddenTabs?: ReadonlySet<Tab>;
 }
 
 export default function Sidebar({
@@ -25,6 +26,7 @@ export default function Sidebar({
   onMobileClose,
   theme,
   onThemeToggle,
+  hiddenTabs,
 }: SidebarProps) {
   function handleSelect(tab: Tab) {
     onSelect(tab);
@@ -77,6 +79,7 @@ export default function Sidebar({
               section={section}
               activeTab={activeTab}
               onSelect={handleSelect}
+              hiddenTabs={hiddenTabs}
             />
           ))}
         </nav>
