@@ -8,25 +8,25 @@ import { cn } from "../lib/cn";
 interface SidebarProps {
   readonly activeTab: Tab;
   readonly onSelect: (tab: Tab) => void;
+  readonly hiddenTabs?: ReadonlySet<Tab>;
   readonly showSignOut: boolean;
   readonly onSignOut: () => void;
   readonly mobileOpen: boolean;
   readonly onMobileClose: () => void;
   readonly theme: Theme;
   readonly onThemeToggle: () => void;
-  readonly hiddenTabs?: ReadonlySet<Tab>;
 }
 
 export default function Sidebar({
   activeTab,
   onSelect,
+  hiddenTabs,
   showSignOut,
   onSignOut,
   mobileOpen,
   onMobileClose,
   theme,
   onThemeToggle,
-  hiddenTabs,
 }: SidebarProps) {
   function handleSelect(tab: Tab) {
     onSelect(tab);
@@ -73,15 +73,20 @@ export default function Sidebar({
 
         {/* Nav */}
         <nav className="flex-1 py-2.5 px-2.5 overflow-y-auto" aria-label="Main navigation">
-          {NAV_SECTIONS.map((section) => (
-            <SidebarSection
-              key={section.title}
-              section={section}
-              activeTab={activeTab}
-              onSelect={handleSelect}
-              hiddenTabs={hiddenTabs}
-            />
-          ))}
+          {NAV_SECTIONS.map((section) => {
+            const filtered = hiddenTabs?.size
+              ? { ...section, items: section.items.filter((item) => !hiddenTabs.has(item.id)) }
+              : section;
+            if (filtered.items.length === 0) return null;
+            return (
+              <SidebarSection
+                key={section.title}
+                section={filtered}
+                activeTab={activeTab}
+                onSelect={handleSelect}
+              />
+            );
+          })}
         </nav>
 
         {/* Footer */}

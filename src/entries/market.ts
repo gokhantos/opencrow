@@ -7,6 +7,7 @@
 import { loadConfig, loadConfigWithOverrides } from "../config/loader";
 import { bootstrap } from "../process/bootstrap";
 import { createProcessSupervisor } from "../process/supervisor";
+import { getOverride } from "../store/config-overrides";
 import {
   createMarketPipeline,
   type MarketPipeline,
@@ -34,6 +35,12 @@ async function main(): Promise<void> {
 
   // Reload with DB overrides now that DB is initialized
   const config = await loadConfigWithOverrides();
+
+  const marketOverride = await getOverride("features", "marketEnabled");
+  if (marketOverride === false) {
+    log.info("Market feature disabled via DB toggle, exiting");
+    process.exit(0);
+  }
 
   if (config.market === undefined) {
     log.warn("Market pipeline not configured, exiting");
