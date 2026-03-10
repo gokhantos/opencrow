@@ -11,7 +11,6 @@ import { createCronStore } from "../cron/store";
 import { createCronScheduler } from "../cron/scheduler";
 import { createDeliveryStore } from "../cron/delivery-store";
 import { createLogger } from "../logger";
-import { seedDefaultCronJobs } from "../gateway/cron-seeds";
 import { seedDefaultAgents } from "../gateway/agent-seeder";
 
 const log = createLogger("cron-entry");
@@ -30,12 +29,6 @@ async function main(): Promise<void> {
 
   const cronStore = createCronStore();
   const deliveryStore = createDeliveryStore();
-
-  // Seed default cron jobs (idempotent — skips existing)
-  await seedDefaultCronJobs({
-    cronStore,
-    config,
-  });
 
   // Seed default agent definitions (idempotent — skips existing DB records)
   await seedDefaultAgents();
@@ -92,10 +85,6 @@ async function main(): Promise<void> {
       log.warn("No primary Telegram user configured, monitor disabled");
     }
   }
-
-  // --- DB retention job ---
-  const { ensureDbRetentionJob } = await import("../cron/db-retention");
-  await ensureDbRetentionJob(cronStore);
 
   const supervisor = createProcessSupervisor("cron", {
     type: "cron",

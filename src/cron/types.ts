@@ -5,11 +5,10 @@ export type CronSchedule =
 
 
 export interface CronPayload {
-  readonly kind: "agentTurn" | "internal";
+  readonly kind: "agentTurn";
   readonly message?: string;
   readonly agentId?: string;
   readonly timeoutSeconds?: number;
-  readonly handler?: string; // For internal handlers (e.g., "signal-archival", "db-retention")
 }
 
 export interface CronDelivery {
