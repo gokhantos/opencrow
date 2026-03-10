@@ -251,7 +251,8 @@ export async function runSetup(): Promise<void> {
     try {
       const { runServiceCommand } = await import("./service.ts");
       await runServiceCommand("install", "core");
-      p.log.success("Service installed and started");
+      await runServiceCommand("install", "web");
+      p.log.success("Services installed and started (core + web)");
     } catch (svcErr) {
       p.log.warn(
         `Service install failed: ${svcErr instanceof Error ? svcErr.message : String(svcErr)}`,
