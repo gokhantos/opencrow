@@ -8,8 +8,6 @@ import type { DeliveryStore } from "./delivery-store";
 import type { ProgressEvent } from "../agent/types";
 import { runAgentIsolated } from "../agents/runner";
 import { computeNextRunAt } from "./schedule";
-import { archiveStaleSignals } from "../sources/ideas/signals-store";
-
 import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
 
@@ -33,100 +31,6 @@ export interface ExecutorDeps {
 
 const PROGRESS_FLUSH_INTERVAL_MS = 2000;
 const MAX_PROGRESS_TEXT_LENGTH = 200;
-
-/**
- * Execute internal handlers (e.g., signal-archival, db-retention) without spawning an agent
- */
-async function executeInternalHandler(
-  job: CronJob,
-  handler: string,
-  runId: string,
-  startedAt: number,
-  startMs: number,
-  deps: ExecutorDeps,
-): Promise<CronRunRecord> {
-  const runningRecord: CronRunRecord = {
-    id: runId,
-    jobId: job.id,
-    status: "running",
-    resultSummary: null,
-    error: null,
-    durationMs: null,
-    startedAt,
-    endedAt: null,
-    progress: null,
-  };
-  await deps.cronStore.addRun(runningRecord);
-
-  let status: CronRunRecord["status"] = "ok";
-  let resultSummary: string | null = null;
-  let error: string | null = null;
-
-  try {
-    switch (handler) {
-      case "signal-archival":
-        const archivedCount = await archiveStaleSignals(14);
-        resultSummary = `Signal archival: ${archivedCount} stale signals archived`;
-        break;
-      case "idea-archival": {
-        const { archiveStaleIdeas } = await import("../sources/ideas/store");
-        const archivedIdeaCount = await archiveStaleIdeas(14);
-        resultSummary = `Idea archival: ${archivedIdeaCount} stale ideas archived`;
-        break;
-      }
-      case "db-retention": {
-        const { runDbRetention } = await import("./db-retention");
-        const retentionResult = await runDbRetention();
-        resultSummary = `DB retention: ${retentionResult.totalDeleted} rows deleted across ${retentionResult.details.length} tables`;
-        break;
-      }
-      default:
-        throw new Error(`Unknown internal handler: ${handler}`);
-    }
-  } catch (err) {
-    const msg = getErrorMessage(err);
-    status = "error";
-    error = msg;
-    log.error("Internal cron handler failed", {
-      jobId: job.id,
-      handler,
-      error: msg,
-    });
-  }
-
-  const endedAt = Math.floor(Date.now() / 1000);
-  const durationMs = Date.now() - startMs;
-
-  await deps.cronStore.updateRunStatus(
-    runId,
-    status,
-    resultSummary,
-    error,
-    durationMs,
-    endedAt,
-  );
-  await deps.cronStore.setJobLastRun(job.id, status, error);
-
-  if (job.deleteAfterRun) {
-    await deps.cronStore.removeJob(job.id);
-    log.info("Internal cron job deleted after run", { jobId: job.id });
-  } else {
-    const nextRunAt = computeNextRunAt(job.schedule, Date.now());
-    await deps.cronStore.setJobNextRun(job.id, nextRunAt ?? null);
-  }
-
-  return {
-    id: runId,
-    jobId: job.id,
-    status,
-    resultSummary,
-    error,
-    durationMs,
-    startedAt,
-    endedAt,
-    progress: null,
-  };
-}
 
 function progressEntryFromEvent(
   event: ProgressEvent,
@@ -186,18 +90,6 @@ export async function executeCronJob(
   const runId = crypto.randomUUID();
 
   log.info("Executing cron job", { jobId: job.id, name: job.name, runId });
-
-  // Check if this is an internal handler
-  if (job.payload.kind === "internal" && job.payload.handler) {
-    return await executeInternalHandler(
-      job,
-      job.payload.handler,
-      runId,
-      startedAt,
-      startMs,
-      deps,
-    );
-  }
 
   const agentId = job.payload.agentId ?? deps.agentRegistry.getDefault().id;
 

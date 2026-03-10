@@ -93,10 +93,7 @@ async function listJobs(): Promise<{ output: string; isError: boolean }> {
         scheduleStr = `at: ${schedule.at}`;
       }
 
-      const type =
-        payload.kind === "internal"
-          ? `handler:${payload.handler}`
-          : `agent:${(payload.agentId as string) || "default"}`;
+      const type = `agent:${(payload.agentId as string) || "default"}`;
 
       const lastRun = lastRunAt
         ? new Date(lastRunAt * 1000).toLocaleString()
