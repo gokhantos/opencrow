@@ -150,6 +150,7 @@ function resolveAgent(
     hooks: def.hooks,
     telegramBotToken: def.telegramBotToken,
     skills: def.skills ?? [],
+    category: def.category ?? "research",
   };
 }
 
@@ -173,5 +174,6 @@ function synthesizeDefaultAgent(defaults: AgentConfig): ResolvedAgent {
     },
     telegramBotToken: undefined,
     skills: [],
+    category: "orchestrator",
   };
 }

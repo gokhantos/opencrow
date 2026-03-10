@@ -31,6 +31,8 @@ export interface HooksConfig {
 import type { AiProvider } from "../agent/types";
 import type { ModelParams } from "../config/schema";
 
+export type AgentCategory = "research" | "coding" | "orchestrator";
+
 export interface AgentDefinition {
   readonly id: string;
   readonly name: string;
@@ -53,6 +55,7 @@ export interface AgentDefinition {
   readonly hooks?: HooksConfig;
   readonly telegramBotToken?: string;
   readonly skills?: readonly string[];
+  readonly category?: AgentCategory;
 }
 
 export interface ResolvedAgent {
@@ -77,4 +80,5 @@ export interface ResolvedAgent {
   readonly hooks?: HooksConfig;
   readonly telegramBotToken?: string;
   readonly skills: readonly string[];
+  readonly category: AgentCategory;
 }

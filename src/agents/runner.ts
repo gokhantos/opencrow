@@ -85,7 +85,7 @@ export async function runAgentIsolated(
   }
 
   // Build system prompt: prompt file (if exists) or inline prompt + memories + context
-  const loadedPrompt = await buildSubAgentPrompt(input.agentId);
+  const loadedPrompt = await buildSubAgentPrompt(input.agentId, agent.category);
   const agentPrompt = loadedPrompt ?? agent.systemPrompt;
   const basePrompt = [agentPrompt, memoryBlock, contextBlock]
     .filter(Boolean)

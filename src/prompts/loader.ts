@@ -57,12 +57,14 @@ export async function buildMainAgentPrompt(): Promise<string> {
 
 /**
  * Build the system prompt for a sub-agent.
- * Concatenates: TECH.md + agents/{agentId}.md
+ * - coding/orchestrator agents: TECH.md + TOOLS.md + agents/{agentId}.md
+ * - research agents: TOOLS.md + agents/{agentId}.md
  * Returns null if no agent-specific prompt file exists (caller should fall
  * back to the agent's inline systemPrompt).
  */
 export async function buildSubAgentPrompt(
   agentId: string,
+  category: "research" | "coding" | "orchestrator" = "research",
 ): Promise<string | null> {
   const agentContent = await loadOptionalPromptFile(`agents/${agentId}.md`);
   if (!agentContent) {
@@ -70,15 +72,21 @@ export async function buildSubAgentPrompt(
     return null;
   }
 
-  const techContent = await loadPromptFile("TECH.md");
-  const toolsContent = await loadOptionalPromptFile("TOOLS.md");
+  const includesTech = category === "coding" || category === "orchestrator";
+  const [techContent, toolsContent] = await Promise.all([
+    includesTech ? loadPromptFile("TECH.md") : Promise.resolve(""),
+    loadOptionalPromptFile("TOOLS.md"),
+  ]);
+
   const prompt = [techContent, toolsContent, agentContent]
     .filter(Boolean)
     .join("\n\n---\n\n");
 
   log.info("Built sub-agent prompt", {
     agentId,
+    category,
     length: prompt.length,
+    includesTech,
   });
 
   return prompt;

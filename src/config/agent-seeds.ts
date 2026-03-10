@@ -136,6 +136,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "ai-idea-gen",
+    category: "research",
     name: "AI Idea Generator",
     description:
       "Deep-research agent that synthesizes signals from X, HN, Product Hunt, Reddit, GitHub, and news to generate AI-powered app ideas.",
@@ -170,6 +171,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "build-error-resolver",
+    category: "coding",
     name: "Build Error Resolver",
     description:
       "Fix build and type errors with minimal diffs. No refactoring, no architecture changes.",
@@ -187,6 +189,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "crypto-analyst",
+    category: "research",
     name: "Crypto Analyst",
     description:
       "Crypto market analyst that researches trends, finds opportunities, and tracks signals via news, social media, market data, and web research.",
@@ -218,6 +221,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "crypto-idea-gen",
+    category: "research",
     name: "Crypto Idea Generator",
     description:
       "Generates crypto/web3 project ideas by cross-referencing market data, news, community signals, and web research.",
@@ -252,6 +256,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "debugger",
+    category: "coding",
     name: "Debugger",
     description:
       "Root cause analysis, error tracing, log reading, hypothesis-driven debugging.",
@@ -270,6 +275,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "digest",
+    category: "research",
     name: "Digest",
     description: "Compiles research digests from all data sources and delivers summaries.",
     model: "claude-haiku-4-5",
@@ -300,6 +306,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "mobile-idea-gen",
+    category: "research",
     name: "Mobile Idea Generator",
     description:
       "Generates mobile app ideas by analyzing App Store/Play Store rankings, reviews, trends, and cross-referencing with community signals.",
@@ -334,6 +341,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "opencrow",
+    category: "orchestrator",
     name: "OpenCrow",
     description: "",
     default: true,
@@ -366,6 +374,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "oss-idea-gen",
+    category: "research",
     name: "OSS Idea Generator",
     description:
       "Generates open-source project ideas by analyzing GitHub trends, HN, Reddit, and community signals.",
@@ -400,6 +409,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "planner",
+    category: "coding",
     name: "Planner",
     description:
       "Expert planning specialist for complex features and refactoring. Creates detailed implementation plans.",
@@ -417,6 +427,7 @@ export const AGENT_SEEDS: readonly AgentDefinition[] = [
   // -------------------------------------------------------------------------
   {
     id: "researcher",
+    category: "research",
     name: "Researcher",
     description: "Research agent with access to all data sources, web search, and memory.",
     model: "claude-sonnet-4-6",

@@ -60,9 +60,10 @@ async function resolvePrompt(
   agentId: string,
   isDefault: boolean,
   inlinePrompt: string,
+  category: "research" | "coding" | "orchestrator" = "research",
 ): Promise<string> {
   if (isDefault) return buildMainAgentPrompt();
-  const loaded = await buildSubAgentPrompt(agentId);
+  const loaded = await buildSubAgentPrompt(agentId, category);
   return loaded ?? inlinePrompt;
 }
 
@@ -229,6 +230,7 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
       agentId,
       agent.default,
       agent.systemPrompt,
+      agent.category,
     );
 
     return c.json({

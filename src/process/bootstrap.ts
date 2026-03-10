@@ -530,7 +530,7 @@ export async function bootstrap(
     if (agent.default) {
       agentPrompt = await buildMainAgentPrompt();
     } else {
-      const loaded = await buildSubAgentPrompt(agent.id);
+      const loaded = await buildSubAgentPrompt(agent.id, agent.category);
       agentPrompt = loaded ?? agent.systemPrompt;
     }
 

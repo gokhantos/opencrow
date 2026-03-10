@@ -66,6 +66,7 @@ function makeAgent(overrides: Partial<ResolvedAgent> = {}): ResolvedAgent {
     subagents: { allowAgents: [], maxChildren: 5 },
     mcpServers: {},
     skills: [],
+    category: "coding" as const,
     ...overrides,
   };
 }
