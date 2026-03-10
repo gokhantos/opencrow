@@ -6,14 +6,23 @@ interface SidebarSectionProps {
   readonly section: NavSection;
   readonly activeTab: Tab;
   readonly onSelect: (tab: Tab) => void;
+  readonly hiddenTabs?: ReadonlySet<Tab>;
 }
 
 export default function SidebarSection({
   section,
   activeTab,
   onSelect,
+  hiddenTabs,
 }: SidebarSectionProps) {
   const [collapsed, setCollapsed] = useState(false);
+
+  const visibleItems = hiddenTabs
+    ? section.items.filter((item) => !hiddenTabs.has(item.id))
+    : section.items;
+
+  // Hide entire section if all items are hidden
+  if (visibleItems.length === 0) return null;
 
   return (
     <div className="mb-2">
@@ -45,7 +54,7 @@ export default function SidebarSection({
       {/* Items */}
       {!collapsed && (
         <div className="flex flex-col gap-0.5 max-lg:px-0.5 max-md:px-0">
-          {section.items.map((item) => {
+          {visibleItems.map((item) => {
             const Icon = item.Icon;
             const active = activeTab === item.id;
             return (

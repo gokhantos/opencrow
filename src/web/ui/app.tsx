@@ -131,6 +131,43 @@ function tabFromHash(): Tab {
   return VALID_TABS.has(hash as Tab) ? (hash as Tab) : "overview";
 }
 
+/** Map scraper IDs to their corresponding nav tab IDs */
+const SCRAPER_TO_TAB: Record<string, Tab> = {
+  hackernews: "hackernews",
+  reddit: "reddit",
+  github: "github",
+  producthunt: "producthunt",
+  appstore: "appstore",
+  playstore: "playstore",
+  news: "news",
+  x: "x-accounts",
+  ideas: "ideas",
+};
+
+interface FeaturesState {
+  readonly enabledScrapers: ReadonlySet<string>;
+  readonly marketEnabled: boolean;
+}
+
+function computeHiddenTabs(features: FeaturesState | null): ReadonlySet<Tab> {
+  if (!features) return new Set();
+  const hidden = new Set<Tab>();
+
+  // Hide scraper tabs when that scraper is disabled
+  for (const [scraperId, tabId] of Object.entries(SCRAPER_TO_TAB)) {
+    if (!features.enabledScrapers.has(scraperId)) {
+      hidden.add(tabId);
+    }
+  }
+
+  // Hide markets tab when market feature is disabled
+  if (!features.marketEnabled) {
+    hidden.add("markets");
+  }
+
+  return hidden;
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>(tabFromHash);
   const [authState, setAuthState] = useState<"loading" | "ok" | "needed">(
@@ -140,6 +177,7 @@ function App() {
   const [theme, setTheme] = useState<Theme>(() => {
     return (localStorage.getItem("opencrow-theme") as Theme) || "dark";
   });
+  const [features, setFeatures] = useState<FeaturesState | null>(null);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -159,6 +197,15 @@ function App() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
+  // Re-fetch features when settings change
+  useEffect(() => {
+    function onFeaturesChanged() {
+      fetchFeatures();
+    }
+    window.addEventListener("features-changed", onFeaturesChanged);
+    return () => window.removeEventListener("features-changed", onFeaturesChanged);
+  }, []);
+
   function navigateTo(newTab: Tab) {
     location.hash = newTab;
     setTab(newTab);
@@ -168,16 +215,36 @@ function App() {
     setTheme((t) => (t === "dark" ? "light" : "dark"));
   }
 
+  async function fetchFeatures() {
+    try {
+      const res = await apiFetch<{
+        data: {
+          scrapers: { enabled: string[] };
+          qdrant: { enabled: boolean };
+          market: { enabled: boolean };
+        };
+      }>("/api/features");
+      setFeatures({
+        enabledScrapers: new Set(res.data.scrapers.enabled),
+        marketEnabled: res.data.market.enabled,
+      });
+    } catch {
+      // Non-critical — show all tabs if features can't be loaded
+    }
+  }
+
   async function checkAuth() {
     try {
       await apiFetch<StatusResponse>("/api/status");
       setAuthState("ok");
+      fetchFeatures();
     } catch (err: unknown) {
       const apiErr = err as { status?: number };
       if (apiErr?.status === 401) {
         setAuthState("needed");
       } else {
         setAuthState("ok");
+        fetchFeatures();
       }
     }
   }
@@ -200,6 +267,7 @@ function App() {
   }
 
   const hasToken = Boolean(getToken());
+  const hiddenTabs = computeHiddenTabs(features);
 
   return (
     <div className="grid grid-cols-[230px_minmax(0,1fr)] max-lg:grid-cols-[56px_minmax(0,1fr)] max-md:grid-cols-[1fr] h-screen overflow-hidden bg-bg">
@@ -227,6 +295,7 @@ function App() {
         onMobileClose={() => setMobileNavOpen(false)}
         theme={theme}
         onThemeToggle={toggleTheme}
+        hiddenTabs={hiddenTabs}
       />
 
       <main className="overflow-y-auto max-md:pt-[52px]">
