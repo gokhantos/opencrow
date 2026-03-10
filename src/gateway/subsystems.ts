@@ -70,6 +70,7 @@ export function createSubsystemRegistry(opts: {
 }): SubsystemRegistry {
   const { config, memoryManager } = opts;
   const mm = memoryManager ?? undefined;
+  const enabled = new Set(config.processes.scraperProcesses.scraperIds);
 
   let liveHub: LiveKlineHub | undefined;
   let marketPipeline: MarketPipeline | undefined;
@@ -113,50 +114,68 @@ export function createSubsystemRegistry(opts: {
         });
       }
 
-      await tryStart("bookmark-processor", () => {
-        bookmarkProcessor = createBookmarkProcessor();
-        bookmarkProcessor.start();
-      });
+      if (enabled.has("x-bookmarks")) {
+        await tryStart("bookmark-processor", () => {
+          bookmarkProcessor = createBookmarkProcessor();
+          bookmarkProcessor.start();
+        });
+      }
 
-      await tryStart("autolike-processor", () => {
-        autolikeProcessor = createAutolikeProcessor();
-        autolikeProcessor.start();
-      });
+      if (enabled.has("x-autolike")) {
+        await tryStart("autolike-processor", () => {
+          autolikeProcessor = createAutolikeProcessor();
+          autolikeProcessor.start();
+        });
+      }
 
-      await tryStart("autofollow-processor", () => {
-        autofollowProcessor = createAutofollowProcessor();
-        autofollowProcessor.start();
-      });
+      if (enabled.has("x-autofollow")) {
+        await tryStart("autofollow-processor", () => {
+          autofollowProcessor = createAutofollowProcessor();
+          autofollowProcessor.start();
+        });
+      }
 
-      await tryStart("timeline-processor", () => {
-        timelineScrapeProcessor = createTimelineScrapeProcessor({ memoryManager: mm });
-        timelineScrapeProcessor.start();
-      });
+      if (enabled.has("x-timeline")) {
+        await tryStart("timeline-processor", () => {
+          timelineScrapeProcessor = createTimelineScrapeProcessor({ memoryManager: mm });
+          timelineScrapeProcessor.start();
+        });
+      }
 
-      await tryStart("ph-scraper", () => {
-        phScraper = createPHScraper({ memoryManager: mm });
-        phScraper.start();
-      });
+      if (enabled.has("producthunt")) {
+        await tryStart("ph-scraper", () => {
+          phScraper = createPHScraper({ memoryManager: mm });
+          phScraper.start();
+        });
+      }
 
-      await tryStart("hn-scraper", () => {
-        hnScraper = createHNScraper({ memoryManager: mm });
-        hnScraper.start();
-      });
+      if (enabled.has("hackernews")) {
+        await tryStart("hn-scraper", () => {
+          hnScraper = createHNScraper({ memoryManager: mm });
+          hnScraper.start();
+        });
+      }
 
-      await tryStart("reddit-scraper", () => {
-        redditScraper = createRedditScraper({ memoryManager: mm });
-        redditScraper.start();
-      });
+      if (enabled.has("reddit")) {
+        await tryStart("reddit-scraper", () => {
+          redditScraper = createRedditScraper({ memoryManager: mm });
+          redditScraper.start();
+        });
+      }
 
-      await tryStart("github-scraper", () => {
-        githubScraper = createGithubScraper({ memoryManager: mm });
-        githubScraper.start();
-      });
+      if (enabled.has("github")) {
+        await tryStart("github-scraper", () => {
+          githubScraper = createGithubScraper({ memoryManager: mm });
+          githubScraper.start();
+        });
+      }
 
-      await tryStart("news-processor", () => {
-        newsProcessor = createNewsProcessor({ memoryManager: mm });
-        newsProcessor.start();
-      });
+      if (enabled.has("news")) {
+        await tryStart("news-processor", () => {
+          newsProcessor = createNewsProcessor({ memoryManager: mm });
+          newsProcessor.start();
+        });
+      }
 
       // Log aggregate result
       if (failed.length > 0) {
