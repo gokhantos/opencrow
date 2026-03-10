@@ -306,19 +306,10 @@ export const opencrowConfigSchema = z.object({
       telegram: telegramConfigSchema.default({
         allowedUserIds: [],
       }),
-      whatsapp: whatsappConfigSchema.default({
-        allowedNumbers: [],
-        allowedGroups: [],
-        defaultAgent: "opencrow",
-      }),
+      whatsapp: whatsappConfigSchema.optional(),
     })
     .default({
       telegram: { allowedUserIds: [] },
-      whatsapp: {
-        allowedNumbers: [],
-        allowedGroups: [],
-        defaultAgent: "opencrow",
-      },
     }),
   web: webConfigSchema.default({
     port: 48080,

@@ -128,7 +128,7 @@ async function main(): Promise<void> {
     ((isDefault && waDefaultAgentId === resolvedAgent.id) ||
       waDefaultAgentId === agentId);
 
-  if (ownsWhatsApp) {
+  if (ownsWhatsApp && waConfig) {
     try {
       const waChannel = createWhatsAppChannel(resolvedAgent.name ?? agentId!);
 
