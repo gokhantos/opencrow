@@ -109,12 +109,6 @@ export function createCronTool(config: CronToolConfig): ToolDefinition {
           type: "boolean",
           description: "Delete job after first run.",
         },
-        mode: {
-          type: "string",
-          enum: ["pipeline", "full"],
-          description:
-            "For idea-gen agents only. pipeline = research + ideation in one run (default), full = same as pipeline.",
-        },
       },
       required: ["action"],
     },
@@ -233,15 +227,11 @@ async function handleAdd(
     return { output: "Error: could not compute next run time", isError: true };
   }
 
-  const mode = input.mode as string | undefined;
   const payload: CronPayload = {
     kind: "agentTurn",
     message,
     agentId: (input.agent_id as string) ?? config.currentAgentId,
     timeoutSeconds: (input.timeout_seconds as number) ?? undefined,
-    mode: mode === "pipeline" || mode === "full"
-      ? mode
-      : undefined,
   };
 
   const delivery: CronDelivery = input.deliver_channel
@@ -298,15 +288,12 @@ async function handleUpdate(
     schedule: input.schedule_kind
       ? (buildSchedule(input) ?? undefined)
       : undefined,
-    payload: (input.message || input.agent_id || input.timeout_seconds || input.mode)
+    payload: (input.message || input.agent_id || input.timeout_seconds)
       ? {
           kind: "agentTurn",
           message: (input.message as string | undefined) ?? existingPayload?.message ?? "",
           agentId: (input.agent_id as string | undefined) ?? existingPayload?.agentId,
           timeoutSeconds: (input.timeout_seconds as number | undefined) ?? existingPayload?.timeoutSeconds,
-          mode: (input.mode === "pipeline" || input.mode === "full")
-            ? input.mode as CronPayload["mode"]
-            : existingPayload?.mode,
         }
       : undefined,
   };

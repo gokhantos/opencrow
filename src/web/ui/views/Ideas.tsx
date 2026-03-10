@@ -55,13 +55,7 @@ const CATEGORY_TABS: readonly {
   { id: "general", label: "General" },
 ];
 
-const AGENT_COLORS: Record<string, string> = {
-  "mobile-idea-gen": "#0070f3",
-  "crypto-idea-gen": "#f5a623",
-  "ai-idea-gen": "#7928ca",
-  "oss-idea-gen": "#22c55e",
-  "idea-validator": "#ef4444",
-};
+const AGENT_COLORS: Record<string, string> = {};
 
 const CATEGORY_STYLES: Record<string, string> = {
   mobile_app: "bg-accent-subtle text-accent border border-accent/20",

@@ -41,7 +41,6 @@ import { createMemoryManager } from "../memory/manager";
 import { createEmbeddingProvider } from "../memory/embeddings";
 import { createQdrantClient } from "../memory/qdrant";
 import { createMarketTools } from "../sources/markets/tools";
-import { buildMarketContext } from "../sources/markets/context";
 import { initQuestDBReadOnly } from "../sources/markets/questdb";
 import { createNewsTools } from "../tools/news";
 import { createPHTools } from "../tools/ph";
@@ -283,20 +282,6 @@ export async function bootstrap(
     basePrompt: string,
   ): Promise<string> {
     let prompt = basePrompt;
-
-    if (agent.id === "crypto-analyst" && config.market !== undefined) {
-      try {
-        const marketContext = await buildMarketContext({
-          symbols: config.market!.symbols,
-          marketTypes: config.market!.marketTypes,
-          timeframes: ["5m", "15m", "1h", "4h", "1d"],
-          includeFunding: true,
-        });
-        prompt = `${prompt}\n\n${marketContext}`;
-      } catch (err) {
-        log.warn("Failed to inject market context", { error: err });
-      }
-    }
 
     if (agent.skills.length > 0) {
       const skillBlocks = await loadSkillContents(agent.skills);

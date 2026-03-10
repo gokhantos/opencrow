@@ -35,7 +35,6 @@ async function main(): Promise<void> {
   await seedDefaultCronJobs({
     cronStore,
     config,
-    agentBotChannels: new Map(),
   });
 
   // Seed default agent definitions (idempotent — skips existing DB records)

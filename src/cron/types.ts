@@ -3,7 +3,6 @@ export type CronSchedule =
   | { readonly kind: "every"; readonly everyMs: number }
   | { readonly kind: "cron"; readonly expr: string; readonly tz?: string };
 
-export type IdeaGenMode = "pipeline" | "full";
 
 export interface CronPayload {
   readonly kind: "agentTurn" | "internal";
@@ -11,7 +10,6 @@ export interface CronPayload {
   readonly agentId?: string;
   readonly timeoutSeconds?: number;
   readonly handler?: string; // For internal handlers (e.g., "signal-archival", "db-retention")
-  readonly mode?: IdeaGenMode; // For idea-gen agents: pipeline (default) or full
 }
 
 export interface CronDelivery {

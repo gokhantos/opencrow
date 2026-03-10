@@ -1,4 +1,4 @@
-import type { CronJob, CronRunRecord, CronProgressEntry, IdeaGenMode } from "./types";
+import type { CronJob, CronRunRecord, CronProgressEntry } from "./types";
 import type { CronStore } from "./store";
 import type { AgentRegistry } from "../agents/registry";
 import type { ToolRegistry } from "../tools/registry";
@@ -8,18 +8,10 @@ import type { DeliveryStore } from "./delivery-store";
 import type { ProgressEvent } from "../agent/types";
 import { runAgentIsolated } from "../agents/runner";
 import { computeNextRunAt } from "./schedule";
-import { getIdeasSince } from "../sources/ideas/store";
 import { archiveStaleSignals } from "../sources/ideas/signals-store";
-import { formatIdeasMessage } from "./format-ideas";
 
 import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
-const IDEA_GEN_AGENTS = new Set([
-  "mobile-idea-gen",
-  "crypto-idea-gen",
-  "ai-idea-gen",
-  "oss-idea-gen",
-]);
 
 const log = createLogger("cron:executor");
 
@@ -254,9 +246,7 @@ export async function executeCronJob(
   let resultSummary: string | null = null;
   let error: string | null = null;
 
-  const isIdeaGen = IDEA_GEN_AGENTS.has(agentId);
-  const mode: IdeaGenMode = (isIdeaGen && job.payload.mode) ? job.payload.mode : "pipeline";
-  const task = buildTaskMessage(job.payload.message ?? "", isIdeaGen, mode);
+  const task = job.payload.message ?? "";
 
   try {
     const result = await runAgentIsolated({
@@ -276,19 +266,7 @@ export async function executeCronJob(
 
     resultSummary = result.text.slice(0, 2000);
 
-    // Format idea/signal results from DB instead of raw agent text
-    let deliveryText = result.text;
-    let preformatted = false;
-
-    if (isIdeaGen) {
-      // Pipeline and full mode: report ideas generated
-      const ideas = await getIdeasSince(agentId, startedAt);
-      if (ideas.length > 0) {
-        deliveryText = formatIdeasMessage(job.name, ideas);
-        preformatted = true;
-
-      }
-    }
+    const deliveryText = result.text;
 
     if (
       job.delivery.mode === "announce" &&
@@ -305,7 +283,6 @@ export async function executeCronJob(
           job.name,
           deliveryText,
           deps.channels,
-          preformatted,
         );
       } else if (deps.deliveryStore) {
         await deps.deliveryStore.enqueue({
@@ -313,7 +290,7 @@ export async function executeCronJob(
           chatId: job.delivery.chatId,
           jobName: job.name,
           text: deliveryText,
-          preformatted,
+          preformatted: false,
         });
         log.info("Queued cron delivery for remote channel", {
           channel: job.delivery.channel,
@@ -381,34 +358,12 @@ export async function executeCronJob(
   };
 }
 
-const PIPELINE_MODE_INSTRUCTION =
-  "Run in PIPELINE MODE. Execute all phases: Phase 1 (dedup), Phase 2 (research & save signals), Phase 3 (synthesis), Phase 4 (ideation & self-critique), Phase 5 (save ideas). After saving ideas, consume the signals you used.";
-
-const MODE_INSTRUCTIONS: Record<IdeaGenMode, string> = {
-  pipeline: PIPELINE_MODE_INSTRUCTION,
-  // "full" is kept as an alias for "pipeline" — identical behaviour
-  full: PIPELINE_MODE_INSTRUCTION,
-};
-
-function buildTaskMessage(
-  baseMessage: string,
-  isIdeaGen: boolean,
-  mode: IdeaGenMode,
-): string {
-  if (!isIdeaGen) return baseMessage;
-  const modeInstruction = MODE_INSTRUCTIONS[mode];
-  return baseMessage
-    ? `${modeInstruction}\n\nAdditional context: ${baseMessage}`
-    : modeInstruction;
-}
-
 async function deliverResult(
   channelName: string,
   chatId: string,
   jobName: string,
   text: string,
   channels: ReadonlyMap<string, Channel>,
-  preformatted = false,
 ): Promise<void> {
   const channel = channels.get(channelName);
   if (!channel) {
@@ -423,9 +378,7 @@ async function deliverResult(
 
   const truncated =
     text.length > 3000 ? text.slice(0, 3000) + "\n\n[Truncated]" : text;
-  const message = preformatted
-    ? truncated
-    : `[Cron: ${jobName}]\n\n${truncated}`;
+  const message = `[Cron: ${jobName}]\n\n${truncated}`;
 
   try {
     await channel.sendMessage(chatId, { text: message });

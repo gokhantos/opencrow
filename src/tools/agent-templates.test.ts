@@ -52,10 +52,7 @@ describe("createAgentTemplatesTool", () => {
       const result = await tool.execute({ action: "list" });
       expect(result.isError).toBe(false);
       expect(result.output).toContain("chatbot");
-      expect(result.output).toContain("researcher");
-      expect(result.output).toContain("planner");
-      expect(result.output).toContain("debugger");
-      expect(result.output).toContain("digest");
+      expect(result.output).toContain("opencrow");
       expect(result.output).toContain("custom");
     });
 
@@ -63,7 +60,7 @@ describe("createAgentTemplatesTool", () => {
       const result = await tool.execute({ action: "list" });
       expect(result.isError).toBe(false);
       expect(result.output).toContain("Chatbot");
-      expect(result.output).toContain("Researcher");
+      expect(result.output).toContain("OpenCrow");
       expect(result.output).toContain("Simple conversational bot");
     });
 
@@ -79,19 +76,17 @@ describe("createAgentTemplatesTool", () => {
     it("should return full config for a valid template_id", async () => {
       const result = await tool.execute({
         action: "get",
-        template_id: "researcher",
+        template_id: "opencrow",
       });
       expect(result.isError).toBe(false);
 
       const parsed = JSON.parse(result.output);
-      expect(parsed.templateId).toBe("researcher");
-      expect(parsed.name).toBe("Researcher");
+      expect(parsed.templateId).toBe("opencrow");
+      expect(parsed.name).toBe("OpenCrow");
       expect(parsed.config.provider).toBe("agent-sdk");
       expect(parsed.config.model).toBe("claude-sonnet-4-6");
-      expect(parsed.config.maxIterations).toBe(50);
-      expect(parsed.config.toolFilter.mode).toBe("allowlist");
-      expect(parsed.config.toolFilter.tools).toBeArray();
-      expect(parsed.config.toolFilter.tools.length).toBeGreaterThan(0);
+      expect(parsed.config.maxIterations).toBe(150);
+      expect(parsed.config.toolFilter.mode).toBe("all");
     });
 
     it("should include a hint about manage_agent", async () => {
@@ -102,29 +97,6 @@ describe("createAgentTemplatesTool", () => {
       expect(result.isError).toBe(false);
       const parsed = JSON.parse(result.output);
       expect(parsed.hint).toContain("manage_agent");
-    });
-
-    it("should return full config for planner template", async () => {
-      const result = await tool.execute({
-        action: "get",
-        template_id: "planner",
-      });
-      expect(result.isError).toBe(false);
-      const parsed = JSON.parse(result.output);
-      expect(parsed.config.maxIterations).toBe(30);
-      expect(parsed.config.reasoning).toBe(true);
-      expect(parsed.config.toolFilter.mode).toBe("all");
-    });
-
-    it("should return full config for digest template", async () => {
-      const result = await tool.execute({
-        action: "get",
-        template_id: "digest",
-      });
-      expect(result.isError).toBe(false);
-      const parsed = JSON.parse(result.output);
-      expect(parsed.config.stateless).toBe(true);
-      expect(parsed.config.toolFilter.tools).toContain("send_message");
     });
 
     it("should return error for unknown template_id", async () => {
@@ -158,10 +130,7 @@ describe("createAgentTemplatesTool", () => {
   describe("template data integrity", () => {
     const templateIds = [
       "chatbot",
-      "researcher",
-      "planner",
-      "debugger",
-      "digest",
+      "opencrow",
       "custom",
     ];
 
