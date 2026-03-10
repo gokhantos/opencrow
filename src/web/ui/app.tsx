@@ -137,6 +137,7 @@ function App() {
     "loading",
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [hiddenTabs, setHiddenTabs] = useState<ReadonlySet<Tab>>(new Set());
   const [theme, setTheme] = useState<Theme>(() => {
     return (localStorage.getItem("opencrow-theme") as Theme) || "dark";
   });
@@ -147,17 +148,22 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
+    if (hiddenTabs.has(tab)) navigateTo("overview");
+  }, [hiddenTabs]);
+
+  useEffect(() => {
     initTokenFromUrl();
     checkAuth();
   }, []);
 
   useEffect(() => {
     function onHashChange() {
-      setTab(tabFromHash());
+      const resolved = tabFromHash();
+      setTab(hiddenTabs.has(resolved) ? "overview" : resolved);
     }
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
-  }, []);
+  }, [hiddenTabs]);
 
   function navigateTo(newTab: Tab) {
     location.hash = newTab;
@@ -172,13 +178,26 @@ function App() {
     try {
       await apiFetch<StatusResponse>("/api/status");
       setAuthState("ok");
+      fetchFeatures();
     } catch (err: unknown) {
       const apiErr = err as { status?: number };
       if (apiErr?.status === 401) {
         setAuthState("needed");
       } else {
         setAuthState("ok");
+        fetchFeatures();
       }
+    }
+  }
+
+  async function fetchFeatures() {
+    try {
+      const res = await apiFetch<{ success: boolean; data: { market: { enabled: boolean } } }>("/api/features");
+      const hidden = new Set<Tab>();
+      if (!res.data.market.enabled) hidden.add("markets");
+      setHiddenTabs(hidden);
+    } catch {
+      // On failure, show all tabs (safe fallback)
     }
   }
 
@@ -221,6 +240,7 @@ function App() {
       <Sidebar
         activeTab={tab}
         onSelect={navigateTo}
+        hiddenTabs={hiddenTabs}
         showSignOut={hasToken}
         onSignOut={handleLogout}
         mobileOpen={mobileNavOpen}
