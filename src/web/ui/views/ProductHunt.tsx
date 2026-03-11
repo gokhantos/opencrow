@@ -256,9 +256,6 @@ export default function ProductHunt() {
         }
         actions={
           <div className="flex gap-2">
-            <Button size="sm" onClick={handleScrapeNow} loading={scraping}>
-              Scrape Now
-            </Button>
             <Button
               size="sm"
               variant="secondary"
@@ -266,6 +263,9 @@ export default function ProductHunt() {
               loading={backfilling}
             >
               Backfill RAG
+            </Button>
+            <Button size="sm" onClick={handleScrapeNow} loading={scraping}>
+              Scrape Now
             </Button>
           </div>
         }
