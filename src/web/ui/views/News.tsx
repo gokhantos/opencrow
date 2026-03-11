@@ -3,6 +3,7 @@ import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
 import { PageHeader, LoadingState, Button } from "../components";
+import { Settings2 } from "lucide-react";
 
 interface NewsArticle {
   readonly id: string;
@@ -42,17 +43,6 @@ interface CalendarEvent {
   readonly previous: string;
 }
 
-interface ScraperRun {
-  readonly id: string;
-  readonly source_name: string;
-  readonly status: "ok" | "error" | "timeout";
-  readonly articles_found: number;
-  readonly articles_new: number;
-  readonly duration_ms: number;
-  readonly error: string | null;
-  readonly started_at: number;
-}
-
 interface StatRow {
   readonly source_name: string;
   readonly count: number;
@@ -68,14 +58,14 @@ type SourceFilter =
   | "investing_news"
   | "investing_calendar";
 
-const SOURCE_TABS: { id: SourceFilter; label: string }[] = [
-  { id: "all", label: "All" },
-  { id: "hackernews", label: "Hacker News" },
-  { id: "cryptopanic", label: "CryptoPanic" },
-  { id: "cointelegraph", label: "CoinTelegraph" },
-  { id: "reuters", label: "Reuters" },
-  { id: "investing_news", label: "Investing" },
-  { id: "investing_calendar", label: "Calendar" },
+const ALL_SOURCE_TABS: { id: SourceFilter; label: string; scraperId: string }[] = [
+  { id: "all", label: "All", scraperId: "" },
+  { id: "hackernews", label: "Hacker News", scraperId: "hackernews" },
+  { id: "cryptopanic", label: "CryptoPanic", scraperId: "cryptopanic" },
+  { id: "cointelegraph", label: "CoinTelegraph", scraperId: "cointelegraph" },
+  { id: "reuters", label: "Reuters", scraperId: "reuters" },
+  { id: "investing_news", label: "Investing", scraperId: "investing_news" },
+  { id: "investing_calendar", label: "Calendar", scraperId: "investing_calendar" },
 ];
 
 const SOURCE_COLORS: Record<string, string> = {
@@ -99,11 +89,42 @@ const importanceClasses: Record<string, string> = {
   low: "bg-success-subtle text-success",
 };
 
-const runStatusClasses: Record<string, string> = {
-  ok: "bg-success-subtle text-success",
-  error: "bg-danger-subtle text-danger",
-  timeout: "bg-warning-subtle text-warning",
+interface FieldDef {
+  readonly key: string;
+  readonly label: string;
+  readonly description: string;
+  readonly min: number;
+  readonly max: number;
+  readonly defaultValue: number;
+}
+
+const SOURCE_CONFIG_FIELDS: Record<string, readonly FieldDef[]> = {
+  hackernews: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 1, max: 1440, defaultValue: 10 },
+    { key: "maxStories", label: "Max stories", description: "Number of top stories to fetch", min: 10, max: 200, defaultValue: 60 },
+    { key: "commentLimit", label: "Comments per story", description: "Top comments to fetch per story", min: 0, max: 10, defaultValue: 3 },
+  ],
+  cryptopanic: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 5, max: 1440, defaultValue: 15 },
+  ],
+  cointelegraph: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 30 },
+  ],
+  reuters: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 60 },
+  ],
+  investing_news: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 60 },
+  ],
+  investing_calendar: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 30, max: 1440, defaultValue: 120 },
+  ],
 };
+
+function getDefaults(scraperId: string): Record<string, number> {
+  const fields = SOURCE_CONFIG_FIELDS[scraperId] ?? [];
+  return Object.fromEntries(fields.map((f) => [f.key, f.defaultValue]));
+}
 
 function parseCurrencies(json: string): readonly string[] {
   try {
@@ -114,21 +135,134 @@ function parseCurrencies(json: string): readonly string[] {
   }
 }
 
+/* ── Inline config panel for a source ── */
+function SourceConfigPanel({ scraperId }: { readonly scraperId: string }) {
+  const fields = SOURCE_CONFIG_FIELDS[scraperId];
+  if (!fields) return null;
+
+  const [config, setConfig] = useState<Record<string, number>>(getDefaults(scraperId));
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch<{ data: Record<string, number> }>(
+          `/api/features/scraper-config/${scraperId}`,
+        );
+        if (!cancelled) setConfig(res.data);
+      } catch {
+        // use defaults
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [scraperId]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiFetch(`/api/features/scraper-config/${scraperId}`, {
+        method: "PUT",
+        body: JSON.stringify(config),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) return null;
+
+  return (
+    <div className="flex items-center gap-4 px-4 py-2.5 bg-bg-1 rounded-lg border border-border mb-4">
+      <Settings2 className="w-3.5 h-3.5 text-muted shrink-0" />
+      {fields.map((f) => (
+        <div key={f.key} className="flex items-center gap-2">
+          <label className="text-xs text-muted whitespace-nowrap">{f.label}</label>
+          <input
+            type="number"
+            min={f.min}
+            max={f.max}
+            value={config[f.key] ?? f.defaultValue}
+            onChange={(e) => {
+              const n = parseInt(e.target.value, 10);
+              if (!isNaN(n)) setConfig((prev) => ({ ...prev, [f.key]: n }));
+            }}
+            className="w-16 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
+          />
+        </div>
+      ))}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={handleSave}
+        disabled={saving}
+        loading={saving}
+      >
+        {saved ? "Saved" : "Save"}
+      </Button>
+    </div>
+  );
+}
+
 export default function News() {
   const [articles, setArticles] = useState<readonly NewsArticle[]>([]);
   const [hnStories, setHnStories] = useState<readonly HNStory[]>([]);
-  const [calendarEvents, setCalendarEvents] = useState<
-    readonly CalendarEvent[]
-  >([]);
+  const [calendarEvents, setCalendarEvents] = useState<readonly CalendarEvent[]>([]);
   const [stats, setStats] = useState<readonly StatRow[]>([]);
-  const [runs, setRuns] = useState<readonly ScraperRun[]>([]);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [loading, setLoading] = useState(true);
   const [scrapingSource, setScrapingSource] = useState<string | null>(null);
-  const [showRuns, setShowRuns] = useState(false);
+  const [enabledScrapers, setEnabledScrapers] = useState<ReadonlySet<string>>(new Set());
 
   const isCalendar = sourceFilter === "investing_calendar";
   const isHN = sourceFilter === "hackernews";
+
+  // News-related scraper IDs
+  const NEWS_SCRAPER_IDS = new Set([
+    "hackernews", "cryptopanic", "cointelegraph",
+    "reuters", "investing_news", "investing_calendar",
+  ]);
+
+  // Filter tabs to only show enabled sources (+ "all" always shown)
+  const visibleTabs = ALL_SOURCE_TABS.filter(
+    (t) => t.id === "all" || enabledScrapers.has(t.scraperId),
+  );
+
+  // Fetch enabled scrapers from features API
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch<{
+          data: { scrapers: { enabled: readonly string[] } };
+        }>("/api/features");
+        if (!cancelled) {
+          setEnabledScrapers(new Set(res.data.scrapers.enabled));
+        }
+      } catch {
+        // Show all tabs if features can't be loaded
+        if (!cancelled) setEnabledScrapers(NEWS_SCRAPER_IDS);
+      }
+    })();
+    const handleChange = () => {
+      apiFetch<{ data: { scrapers: { enabled: readonly string[] } } }>("/api/features")
+        .then((res) => { if (!cancelled) setEnabledScrapers(new Set(res.data.scrapers.enabled)); })
+        .catch(() => {});
+    };
+    window.addEventListener("features-changed", handleChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("features-changed", handleChange);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchData = useCallback(async () => {
     try {
@@ -149,27 +283,22 @@ export default function News() {
         apiFetch<{ success: boolean; data: readonly StatRow[] }>(
           "/api/news/stats",
         ),
-        apiFetch<{ success: boolean; data: readonly ScraperRun[] }>(
-          "/api/news/runs?limit=20",
-        ),
         apiFetch<{ success: boolean; data: readonly HNStory[] }>(
           "/api/hn/stories?limit=100",
         ),
       ];
 
-      const [articlesRes, calendarRes, statsRes, runsRes, hnRes] =
+      const [articlesRes, calendarRes, statsRes, hnRes] =
         (await Promise.all(requests)) as [
           { success: boolean; data: readonly NewsArticle[] },
           { success: boolean; data: readonly CalendarEvent[] },
           { success: boolean; data: readonly StatRow[] },
-          { success: boolean; data: readonly ScraperRun[] },
           { success: boolean; data: readonly HNStory[] },
         ];
 
       if (articlesRes.success) setArticles(articlesRes.data);
       if (calendarRes.success) setCalendarEvents(calendarRes.data);
       if (statsRes.success) setStats(statsRes.data);
-      if (runsRes.success) setRuns(runsRes.data);
       if (hnRes.success) setHnStories(hnRes.data);
     } catch {
       // ignore fetch errors
@@ -227,15 +356,15 @@ export default function News() {
               disabled={scrapingSource !== null}
             >
               Scrape{" "}
-              {SOURCE_TABS.find((t) => t.id === sourceFilter)?.label ?? ""}
+              {ALL_SOURCE_TABS.find((t) => t.id === sourceFilter)?.label ?? ""}
             </Button>
           ) : undefined
         }
       />
 
-      {/* Source Filter Tabs */}
+      {/* Source Filter Tabs — only enabled sources */}
       <div className="flex gap-1.5 flex-wrap mb-5">
-        {SOURCE_TABS.map((t) => {
+        {visibleTabs.map((t) => {
           const isActive = sourceFilter === t.id;
           return (
             <button
@@ -268,6 +397,11 @@ export default function News() {
           );
         })}
       </div>
+
+      {/* Inline config for selected source */}
+      {sourceFilter !== "all" && (
+        <SourceConfigPanel scraperId={sourceFilter} />
+      )}
 
       {/* Stats Bar */}
       {stats.length > 0 && (
@@ -531,66 +665,6 @@ export default function News() {
           )}
         </>
       )}
-
-      {/* Runs Panel */}
-      <div className="mt-5 border border-border rounded-lg overflow-hidden">
-        <div
-          className="flex items-center justify-between px-4 py-3 bg-bg-1 cursor-pointer select-none transition-colors hover:bg-bg-2"
-          onClick={() => setShowRuns((prev) => !prev)}
-        >
-          <span className="font-sans text-sm font-semibold text-muted tracking-wide">
-            Scraper Runs ({runs.length})
-          </span>
-          <span
-            className={cn(
-              "text-xs text-faint transition-transform duration-150",
-              showRuns && "rotate-90",
-            )}
-          >
-            &#9654;
-          </span>
-        </div>
-        {showRuns && (
-          <div className="flex flex-col gap-0.5 p-1">
-            {runs.length === 0 ? (
-              <div className="p-5 text-center text-faint text-sm">
-                No runs yet
-              </div>
-            ) : (
-              runs.map((r) => (
-                <div
-                  key={r.id}
-                  className="grid grid-cols-[6rem_5rem_4rem_4rem_5rem_1fr] max-md:grid-cols-[5rem_4rem_3rem_1fr] items-center gap-3 px-4 py-2.5 text-sm bg-bg-1 rounded-md"
-                >
-                  <span className="font-medium text-foreground">
-                    {r.source_name.replace("_", " ")}
-                  </span>
-                  <span
-                    className={cn(
-                      "inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-semibold uppercase",
-                      runStatusClasses[r.status] ?? "bg-bg-2 text-faint",
-                    )}
-                  >
-                    {r.status}
-                  </span>
-                  <span className="font-mono text-muted text-right">
-                    {r.articles_new}/{r.articles_found}
-                  </span>
-                  <span className="font-mono text-faint text-right max-md:hidden">
-                    {(r.duration_ms / 1000).toFixed(1)}s
-                  </span>
-                  <span className="text-faint text-right">
-                    {relativeTime(r.started_at)}
-                  </span>
-                  <span className="text-danger text-xs font-mono whitespace-nowrap overflow-hidden text-ellipsis max-md:hidden">
-                    {r.error ?? ""}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
