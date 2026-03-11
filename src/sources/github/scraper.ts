@@ -9,9 +9,11 @@ import {
 } from "./store";
 
 import { getErrorMessage } from "../../lib/error-serialization";
+import { loadScraperIntervalMs } from "../scraper-config";
+
 const log = createLogger("github-scraper");
 
-const TICK_INTERVAL_MS = 43_200_000; // 12 hours
+const DEFAULT_INTERVAL_MINUTES = 720; // 12 hours
 
 const TRENDING_URL = "https://github.com/trending";
 
@@ -280,10 +282,11 @@ export function createGithubScraper(config?: {
   }
 
   return {
-    start() {
+    async start() {
       if (timer) return;
-      timer = setInterval(tick, TICK_INTERVAL_MS);
-      log.info("GitHub scraper started", { tickMs: TICK_INTERVAL_MS });
+      const intervalMs = await loadScraperIntervalMs("github", DEFAULT_INTERVAL_MINUTES);
+      timer = setInterval(tick, intervalMs);
+      log.info("GitHub scraper started", { tickMs: intervalMs });
       tick().catch((err) =>
         log.error("GitHub scraper first tick error", { error: err }),
       );

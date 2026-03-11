@@ -29,12 +29,14 @@ interface StatsData {
 }
 
 interface GithubSearchConfig {
+  readonly intervalMinutes: number;
   readonly minStars: number;
   readonly pushedWithinDays: number;
   readonly maxPages: number;
 }
 
 const SEARCH_CONFIG_DEFAULTS: GithubSearchConfig = {
+  intervalMinutes: 360,
   minStars: 500,
   pushedWithinDays: 7,
   maxPages: 4,
@@ -153,6 +155,7 @@ function SearchConfigPanel() {
             <p className="text-xs text-muted">Loading...</p>
           ) : (
             <>
+              {field("Scrape interval (min)", "intervalMinutes", 1, 1440, "How often to scrape")}
               {field("Minimum stars", "minStars", 1, 100000, "Only include repos with at least this many stars")}
               {field("Pushed within days", "pushedWithinDays", 1, 90, "Only include repos pushed within this many days")}
               {field("Max pages", "maxPages", 1, 10, "Max pages to fetch per scrape run (30 repos per page)")}

@@ -10,9 +10,41 @@ import {
 import { scrapeHNFrontPage, type RawStory } from "./hn-scraper";
 
 import { getErrorMessage } from "../../lib/error-serialization";
+import { getOverride } from "../../store/config-overrides";
+import { loadScraperIntervalMs } from "../scraper-config";
+
 const log = createLogger("hn-scraper");
 
-const TICK_INTERVAL_MS = 600_000; // 10 minutes
+const DEFAULT_INTERVAL_MINUTES = 10;
+const DEFAULT_MAX_STORIES = 60;
+const DEFAULT_COMMENT_LIMIT = 3;
+
+interface HNScraperConfig {
+  readonly intervalMinutes: number;
+  readonly maxStories: number;
+  readonly commentLimit: number;
+}
+
+const HN_DEFAULTS: HNScraperConfig = {
+  intervalMinutes: DEFAULT_INTERVAL_MINUTES,
+  maxStories: DEFAULT_MAX_STORIES,
+  commentLimit: DEFAULT_COMMENT_LIMIT,
+};
+
+async function loadHNConfig(): Promise<HNScraperConfig> {
+  try {
+    const override = (await getOverride("scraper-config", "hackernews")) as Partial<HNScraperConfig> | null;
+    if (!override) return HN_DEFAULTS;
+    return {
+      intervalMinutes: override.intervalMinutes ?? HN_DEFAULTS.intervalMinutes,
+      maxStories: override.maxStories ?? HN_DEFAULTS.maxStories,
+      commentLimit: override.commentLimit ?? HN_DEFAULTS.commentLimit,
+    };
+  } catch (err) {
+    log.warn("Failed to load HN config, using defaults", { error: getErrorMessage(err) });
+    return HN_DEFAULTS;
+  }
+}
 
 export interface HNScraper {
   start(): void;
@@ -106,11 +138,14 @@ export function createHNScraper(config?: {
   let timer: ReturnType<typeof setInterval> | null = null;
   let running = false;
 
-  async function runScraper(): Promise<
+  async function runScraper(opts?: {
+    maxStories?: number;
+    commentLimit?: number;
+  }): Promise<
     { ok: true; stories: RawStory[] } | { ok: false; error: string }
   > {
     try {
-      const stories = await scrapeHNFrontPage();
+      const stories = await scrapeHNFrontPage(opts);
       return { ok: true, stories: stories as RawStory[] };
     } catch (err) {
       const msg = getErrorMessage(err);
@@ -119,7 +154,11 @@ export function createHNScraper(config?: {
   }
 
   async function scrape(): Promise<ScrapeResult> {
-    const result = await runScraper();
+    const cfg = await loadHNConfig();
+    const result = await runScraper({
+      maxStories: cfg.maxStories,
+      commentLimit: cfg.commentLimit,
+    });
 
     if (!result.ok) {
       log.warn("HN scrape failed", { error: result.error });
@@ -168,10 +207,11 @@ export function createHNScraper(config?: {
   }
 
   return {
-    start() {
+    async start() {
       if (timer) return;
-      timer = setInterval(tick, TICK_INTERVAL_MS);
-      log.info("HN scraper started", { tickMs: TICK_INTERVAL_MS });
+      const intervalMs = await loadScraperIntervalMs("hackernews", DEFAULT_INTERVAL_MINUTES);
+      timer = setInterval(tick, intervalMs);
+      log.info("HN scraper started", { tickMs: intervalMs });
       tick().catch((err) =>
         log.error("HN scraper first tick error", { error: err }),
       );

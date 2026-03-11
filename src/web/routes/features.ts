@@ -14,16 +14,31 @@ const updateScrapersSchema = z.object({
   enabled: z.array(z.string()),
 });
 
+const hackernewsConfigSchema = z.object({
+  intervalMinutes: z.number().int().min(1).max(1440).default(10),
+  maxStories: z.number().int().min(10).max(200).default(60),
+  commentLimit: z.number().int().min(0).max(10).default(3),
+});
+
 const githubSearchConfigSchema = z.object({
+  intervalMinutes: z.number().int().min(1).max(1440).default(360),
   minStars: z.number().int().min(1).max(100000).default(500),
   pushedWithinDays: z.number().int().min(1).max(90).default(7),
   maxPages: z.number().int().min(1).max(10).default(4),
 });
 
-type ScraperConfigSchema = typeof githubSearchConfigSchema;
+const intervalOnlySchema = (defaultMinutes: number) =>
+  z.object({
+    intervalMinutes: z.number().int().min(1).max(1440).default(defaultMinutes),
+  });
 
-const SCRAPER_SCHEMAS: Readonly<Record<string, ScraperConfigSchema>> = {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const SCRAPER_SCHEMAS: Readonly<Record<string, z.ZodObject<any>>> = {
+  hackernews: hackernewsConfigSchema,
   "github-search": githubSearchConfigSchema,
+  github: intervalOnlySchema(720),
+  reddit: intervalOnlySchema(30),
+  producthunt: intervalOnlySchema(10),
 };
 
 const updateBooleanSchema = z.object({

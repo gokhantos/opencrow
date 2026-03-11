@@ -10,9 +10,11 @@ import {
 import { scrapePHDaily, type RawPHProduct } from "./ph-scraper";
 
 import { getErrorMessage } from "../../lib/error-serialization";
+import { loadScraperIntervalMs } from "../scraper-config";
+
 const log = createLogger("ph-scraper");
 
-const TICK_INTERVAL_MS = 600_000; // 10 minutes
+const DEFAULT_INTERVAL_MINUTES = 10;
 
 export interface PHScraper {
   start(): void;
@@ -174,10 +176,11 @@ export function createPHScraper(config?: {
   }
 
   return {
-    start() {
+    async start() {
       if (timer) return;
-      timer = setInterval(tick, TICK_INTERVAL_MS);
-      log.info("PH scraper started", { tickMs: TICK_INTERVAL_MS });
+      const intervalMs = await loadScraperIntervalMs("producthunt", DEFAULT_INTERVAL_MINUTES);
+      timer = setInterval(tick, intervalMs);
+      log.info("PH scraper started", { tickMs: intervalMs });
       tick().catch((err) =>
         log.error("PH scraper first tick error", { error: err }),
       );

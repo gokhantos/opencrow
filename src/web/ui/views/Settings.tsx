@@ -18,20 +18,44 @@ interface ScraperMeta {
   readonly description: string;
 }
 
-interface GithubSearchConfig {
-  readonly minStars: number;
-  readonly pushedWithinDays: number;
-  readonly maxPages: number;
+interface FieldDef {
+  readonly key: string;
+  readonly label: string;
+  readonly description: string;
+  readonly min: number;
+  readonly max: number;
+  readonly defaultValue: number;
 }
 
-/** Scrapers that expose configurable settings */
-const CONFIGURABLE_SCRAPERS = new Set(["github-search"]);
-
-const GITHUB_SEARCH_CONFIG_DEFAULTS: GithubSearchConfig = {
-  minStars: 500,
-  pushedWithinDays: 7,
-  maxPages: 4,
+const SCRAPER_FIELDS: Readonly<Record<string, readonly FieldDef[]>> = {
+  hackernews: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 1, max: 1440, defaultValue: 10 },
+    { key: "maxStories", label: "Max stories", description: "Number of top stories to fetch", min: 10, max: 200, defaultValue: 60 },
+    { key: "commentLimit", label: "Comments per story", description: "Top comments to fetch per story", min: 0, max: 10, defaultValue: 3 },
+  ],
+  "github-search": [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 1, max: 1440, defaultValue: 360 },
+    { key: "minStars", label: "Minimum stars", description: "Only include repos with at least this many stars", min: 1, max: 100000, defaultValue: 500 },
+    { key: "pushedWithinDays", label: "Pushed within days", description: "Only include repos pushed within this many days", min: 1, max: 90, defaultValue: 7 },
+    { key: "maxPages", label: "Max pages", description: "Max pages to fetch (30 repos per page)", min: 1, max: 10, defaultValue: 4 },
+  ],
+  github: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 720 },
+  ],
+  reddit: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 5, max: 1440, defaultValue: 30 },
+  ],
+  producthunt: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 5, max: 1440, defaultValue: 10 },
+  ],
 };
+
+const CONFIGURABLE_SCRAPERS = new Set(Object.keys(SCRAPER_FIELDS));
+
+function getDefaults(scraperId: string): Record<string, number> {
+  const fields = SCRAPER_FIELDS[scraperId] ?? [];
+  return Object.fromEntries(fields.map((f) => [f.key, f.defaultValue]));
+}
 
 interface FeaturesResponse {
   readonly scrapers: {
@@ -152,8 +176,8 @@ function ConfigField({
   );
 }
 
-/* ── Github Search inline config form ── */
-function GithubSearchConfigForm({
+/* ── Generic scraper config form ── */
+function ScraperConfigForm({
   scraperId,
   onClose,
 }: {
@@ -161,7 +185,8 @@ function GithubSearchConfigForm({
   readonly onClose: () => void;
 }) {
   const { success, error: toastError } = useToast();
-  const [config, setConfig] = useState<GithubSearchConfig>(GITHUB_SEARCH_CONFIG_DEFAULTS);
+  const fields = SCRAPER_FIELDS[scraperId] ?? [];
+  const [config, setConfig] = useState<Record<string, number>>(getDefaults(scraperId));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -169,7 +194,7 @@ function GithubSearchConfigForm({
     let cancelled = false;
     (async () => {
       try {
-        const res = await apiFetch<{ data: GithubSearchConfig }>(
+        const res = await apiFetch<{ data: Record<string, number> }>(
           `/api/features/scraper-config/${scraperId}`,
         );
         if (!cancelled) setConfig(res.data);
@@ -179,9 +204,7 @@ function GithubSearchConfigForm({
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [scraperId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSave() {
@@ -206,30 +229,17 @@ function GithubSearchConfigForm({
         <p className="text-xs text-muted py-1">Loading config…</p>
       ) : (
         <div className="flex flex-col gap-3">
-          <ConfigField
-            label="Minimum stars"
-            description="Only include repos with at least this many stars"
-            value={config.minStars}
-            min={1}
-            max={100000}
-            onChange={(v) => setConfig((prev) => ({ ...prev, minStars: v }))}
-          />
-          <ConfigField
-            label="Pushed within days"
-            description="Only include repos pushed within this many days"
-            value={config.pushedWithinDays}
-            min={1}
-            max={90}
-            onChange={(v) => setConfig((prev) => ({ ...prev, pushedWithinDays: v }))}
-          />
-          <ConfigField
-            label="Max pages"
-            description="Max pages to fetch per scrape run (30 repos per page)"
-            value={config.maxPages}
-            min={1}
-            max={10}
-            onChange={(v) => setConfig((prev) => ({ ...prev, maxPages: v }))}
-          />
+          {fields.map((f) => (
+            <ConfigField
+              key={f.key}
+              label={f.label}
+              description={f.description}
+              value={config[f.key] ?? f.defaultValue}
+              min={f.min}
+              max={f.max}
+              onChange={(v) => setConfig((prev) => ({ ...prev, [f.key]: v }))}
+            />
+          ))}
           <div className="flex justify-end gap-2 pt-1">
             <Button variant="ghost" size="sm" onClick={onClose} disabled={saving}>
               Cancel
@@ -366,7 +376,7 @@ function ScrapersSection({
                       </div>
                     </div>
                     {isConfigOpen && (
-                      <GithubSearchConfigForm
+                      <ScraperConfigForm
                         scraperId={scraper.id}
                         onClose={() => setOpenConfigId(null)}
                       />

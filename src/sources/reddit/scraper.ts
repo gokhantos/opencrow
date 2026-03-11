@@ -11,9 +11,11 @@ import {
 } from "./store";
 import { scrapeRedditFeed, type RawRedditPost } from "./reddit-scraper";
 import { getErrorMessage } from "../../lib/error-serialization";
+import { loadScraperIntervalMs } from "../scraper-config";
+
 const log = createLogger("reddit-scraper");
 
-const TICK_INTERVAL_MS = 1_800_000; // 30 minutes
+const DEFAULT_INTERVAL_MINUTES = 30;
 
 export interface RedditScraper {
   start(): void;
@@ -187,10 +189,11 @@ export function createRedditScraper(config?: {
   }
 
   return {
-    start() {
+    async start() {
       if (timer) return;
-      timer = setInterval(tick, TICK_INTERVAL_MS);
-      log.info("Reddit scraper started", { tickMs: TICK_INTERVAL_MS });
+      const intervalMs = await loadScraperIntervalMs("reddit", DEFAULT_INTERVAL_MINUTES);
+      timer = setInterval(tick, intervalMs);
+      log.info("Reddit scraper started", { tickMs: intervalMs });
       tick().catch((err) =>
         log.error("Reddit scraper first tick error", { error: err }),
       );

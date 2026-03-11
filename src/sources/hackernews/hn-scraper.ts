@@ -173,9 +173,14 @@ async function fetchMetaDescription(url: string): Promise<string> {
   }
 }
 
-export async function scrapeHNFrontPage(): Promise<readonly RawStory[]> {
-  log.info("Fetching HN top story IDs", { count: MAX_STORIES });
-  const ids = await fetchTopStoryIds(MAX_STORIES);
+export async function scrapeHNFrontPage(opts?: {
+  maxStories?: number;
+  commentLimit?: number;
+}): Promise<readonly RawStory[]> {
+  const maxStories = opts?.maxStories ?? MAX_STORIES;
+  const commentLimit = opts?.commentLimit ?? COMMENT_LIMIT;
+  log.info("Fetching HN top story IDs", { count: maxStories });
+  const ids = await fetchTopStoryIds(maxStories);
 
   log.info("Fetching story details", { count: ids.length });
   const storyItems = await fetchStoriesInBatches(ids);
@@ -189,7 +194,7 @@ export async function scrapeHNFrontPage(): Promise<readonly RawStory[]> {
       fetchMetaDescription(item.url ?? ""),
     ),
     inBatches(storyItems, CONCURRENCY, (item) =>
-      fetchTopComments(item.kids, COMMENT_LIMIT),
+      fetchTopComments(item.kids, commentLimit),
     ),
   ]);
 
