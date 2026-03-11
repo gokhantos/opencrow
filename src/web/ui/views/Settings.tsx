@@ -536,7 +536,6 @@ export default function Settings() {
         setFeatures(res.data);
         setEnabledScrapers(new Set(res.data.scrapers.enabled));
         setEmbeddingsConfig(res.data.embeddings);
-        setScrapersDirty(false);
       } catch {
         if (!cancelled) toastError("Failed to load feature settings.");
       } finally {
