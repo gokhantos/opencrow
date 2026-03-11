@@ -49,11 +49,28 @@ export function createPHProductRoutes(opts: {
     }
 
     if (opts.coreClient) {
-      const result = await opts.coreClient.scraperAction("ph", "scrape-now", {});
-      return c.json({ success: true, data: result.data });
+      try {
+        const result = await opts.coreClient.scraperAction("ph", "scrape-now", {});
+        if (!result.error) {
+          return c.json({ success: true, data: result.data });
+        }
+        log.warn("Core PH scraper unavailable, falling back to direct scrape", { error: result.error });
+      } catch {
+        log.warn("Core unreachable, falling back to direct scrape");
+      }
     }
 
-    return c.json({ success: false, error: "PH scraper not available" }, 503);
+    // Direct scrape fallback — works even when PH scraper process isn't running
+    try {
+      const { createPHScraper } = await import("../../sources/producthunt/scraper");
+      const scraper = createPHScraper();
+      const result = await scraper.scrapeNow();
+      return c.json({ success: true, data: result });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Direct scrape failed";
+      log.error("Direct PH scrape failed", { err });
+      return c.json({ success: false, error: message }, 500);
+    }
   });
 
   app.post("/ph/backfill-rag", async (c) => {
