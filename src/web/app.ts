@@ -309,6 +309,7 @@ export function createWebApp(deps: WebAppDeps): Hono {
     const github = createGithubRoutes({
       scraper: deps.githubScraper,
       coreClient: cc,
+      memoryManager: deps.memoryManager,
     });
     app.route("/api", github);
   }

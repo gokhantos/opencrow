@@ -2,13 +2,15 @@ import { Hono } from "hono";
 import { createLogger } from "../../logger";
 import type { GithubScraper } from "../../sources/github/scraper";
 import type { CoreClient } from "../core-client";
-import { getRepos, getRepoStats } from "../../sources/github/store";
+import type { MemoryManager, GithubRepoForIndex } from "../../memory/types";
+import { getRepos, type GithubRepoRow, getRepoStats } from "../../sources/github/store";
 
 const log = createLogger("github-api");
 
 export function createGithubRoutes(opts: {
   scraper?: GithubScraper;
   coreClient?: CoreClient;
+  memoryManager?: MemoryManager;
 }): Hono {
   const app = new Hono();
 
@@ -46,6 +48,10 @@ export function createGithubRoutes(opts: {
       const result = await opts.scraper.backfillRag();
       return c.json({ success: true, data: result });
     }
+    if (opts.memoryManager) {
+      const result = await backfillRagDirect(opts.memoryManager);
+      return c.json({ success: true, data: result });
+    }
     if (opts.coreClient) {
       const result = await opts.coreClient.scraperAction("github", "backfill-rag");
       return c.json({ success: true, data: result.data });
@@ -54,4 +60,61 @@ export function createGithubRoutes(opts: {
   });
 
   return app;
+}
+
+const GITHUB_AGENT_ID = "github";
+
+function rowToRepoForIndex(r: GithubRepoRow): GithubRepoForIndex {
+  let builtBy: readonly string[] = [];
+  try {
+    builtBy = JSON.parse(r.built_by_json);
+  } catch {
+    // ignore
+  }
+  return {
+    id: r.full_name,
+    owner: r.owner,
+    name: r.name,
+    description: r.description,
+    language: r.language,
+    stars: r.stars,
+    forks: r.forks,
+    starsToday: r.stars_today,
+    builtBy,
+    url: r.url,
+    period: r.period,
+  };
+}
+
+async function backfillRagDirect(
+  memoryManager: MemoryManager,
+): Promise<{ indexed: number; error?: string }> {
+  const BATCH_SIZE = 50;
+  let totalIndexed = 0;
+  let offset = 0;
+
+  try {
+    while (true) {
+      const repos = await getRepos(undefined, undefined, BATCH_SIZE, offset);
+      if (repos.length === 0) break;
+
+      const forIndex = repos.map(rowToRepoForIndex);
+      await memoryManager.indexGithubRepos(GITHUB_AGENT_ID, forIndex);
+      totalIndexed += forIndex.length;
+      offset += BATCH_SIZE;
+
+      log.info("GitHub RAG backfill batch", {
+        batch: Math.ceil(offset / BATCH_SIZE),
+        batchSize: forIndex.length,
+        totalSoFar: totalIndexed,
+      });
+    }
+
+    log.info("GitHub RAG backfill complete", { totalIndexed });
+    return { indexed: totalIndexed };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error("GitHub RAG backfill failed", { error: msg, totalIndexed });
+    return { indexed: totalIndexed, error: msg };
+  }
 }
