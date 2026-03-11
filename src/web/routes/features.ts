@@ -39,6 +39,8 @@ const SCRAPER_SCHEMAS: Readonly<Record<string, z.ZodObject<any>>> = {
   github: intervalOnlySchema(720),
   reddit: intervalOnlySchema(30),
   producthunt: intervalOnlySchema(10),
+  appstore: intervalOnlySchema(60),
+  playstore: intervalOnlySchema(60),
 };
 
 const updateBooleanSchema = z.object({

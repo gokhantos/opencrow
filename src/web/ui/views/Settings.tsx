@@ -47,6 +47,12 @@ const SCRAPER_FIELDS: Readonly<Record<string, readonly FieldDef[]>> = {
   producthunt: [
     { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 5, max: 1440, defaultValue: 10 },
   ],
+  appstore: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 60 },
+  ],
+  playstore: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 60 },
+  ],
 };
 
 const CONFIGURABLE_SCRAPERS = new Set(Object.keys(SCRAPER_FIELDS));

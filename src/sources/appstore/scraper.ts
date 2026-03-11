@@ -13,9 +13,11 @@ import {
 } from "./store";
 
 import { getErrorMessage } from "../../lib/error-serialization";
+import { loadScraperIntervalMs } from "../scraper-config";
+
 const log = createLogger("appstore-scraper");
 
-const TICK_INTERVAL_MS = 3_600_000; // 60 minutes
+const DEFAULT_INTERVAL_MINUTES = 60;
 const REQUEST_DELAY_MS = 2_000; // 2 seconds between API calls
 const TOP_APPS_PER_LIST = 5; // fetch reviews for top N from each list/category
 
@@ -474,10 +476,11 @@ export function createAppStoreScraper(config?: {
   }
 
   return {
-    start() {
+    async start() {
       if (timer) return;
-      timer = setInterval(tick, TICK_INTERVAL_MS);
-      log.info("App Store scraper started", { tickMs: TICK_INTERVAL_MS });
+      const intervalMs = await loadScraperIntervalMs("appstore", DEFAULT_INTERVAL_MINUTES);
+      timer = setInterval(tick, intervalMs);
+      log.info("App Store scraper started", { tickMs: intervalMs });
       tick().catch((err) =>
         log.error("App Store scraper first tick error", { error: err }),
       );
