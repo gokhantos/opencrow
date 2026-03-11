@@ -17,20 +17,6 @@ interface NewsArticle {
   readonly scraped_at: number;
 }
 
-interface HNStory {
-  readonly id: string;
-  readonly rank: number;
-  readonly title: string;
-  readonly url: string;
-  readonly site_label: string;
-  readonly points: number;
-  readonly author: string;
-  readonly age: string;
-  readonly comment_count: number;
-  readonly hn_url: string;
-  readonly updated_at: number;
-}
-
 interface CalendarEvent {
   readonly id: string;
   readonly event_name: string;
@@ -61,7 +47,6 @@ interface StatRow {
 
 type SourceFilter =
   | "all"
-  | "hackernews"
   | "cryptopanic"
   | "cointelegraph"
   | "reuters"
@@ -70,7 +55,6 @@ type SourceFilter =
 
 const SOURCE_TABS: { id: SourceFilter; label: string }[] = [
   { id: "all", label: "All" },
-  { id: "hackernews", label: "Hacker News" },
   { id: "cryptopanic", label: "CryptoPanic" },
   { id: "cointelegraph", label: "CoinTelegraph" },
   { id: "reuters", label: "Reuters" },
@@ -79,7 +63,6 @@ const SOURCE_TABS: { id: SourceFilter; label: string }[] = [
 ];
 
 const SOURCE_COLORS: Record<string, string> = {
-  hackernews: "#ff6600",
   cryptopanic: "#f59e0b",
   cointelegraph: "#0070f3",
   reuters: "#f97316",
@@ -116,7 +99,6 @@ function parseCurrencies(json: string): readonly string[] {
 
 export default function News() {
   const [articles, setArticles] = useState<readonly NewsArticle[]>([]);
-  const [hnStories, setHnStories] = useState<readonly HNStory[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<
     readonly CalendarEvent[]
   >([]);
@@ -128,49 +110,35 @@ export default function News() {
   const [showRuns, setShowRuns] = useState(false);
 
   const isCalendar = sourceFilter === "investing_calendar";
-  const isHN = sourceFilter === "hackernews";
 
   const fetchData = useCallback(async () => {
     try {
       const sourceParam =
         sourceFilter !== "all" &&
-        sourceFilter !== "investing_calendar" &&
-        sourceFilter !== "hackernews"
+        sourceFilter !== "investing_calendar"
           ? `?source=${sourceFilter}&limit=100`
           : "?limit=100";
 
-      const requests: Promise<unknown>[] = [
-        apiFetch<{ success: boolean; data: readonly NewsArticle[] }>(
-          `/api/news/articles${sourceParam}`,
-        ),
-        apiFetch<{ success: boolean; data: readonly CalendarEvent[] }>(
-          "/api/news/calendar?limit=100",
-        ),
-        apiFetch<{ success: boolean; data: readonly StatRow[] }>(
-          "/api/news/stats",
-        ),
-        apiFetch<{ success: boolean; data: readonly ScraperRun[] }>(
-          "/api/news/runs?limit=20",
-        ),
-        apiFetch<{ success: boolean; data: readonly HNStory[] }>(
-          "/api/hn/stories?limit=100",
-        ),
-      ];
-
-      const [articlesRes, calendarRes, statsRes, runsRes, hnRes] =
-        (await Promise.all(requests)) as [
-          { success: boolean; data: readonly NewsArticle[] },
-          { success: boolean; data: readonly CalendarEvent[] },
-          { success: boolean; data: readonly StatRow[] },
-          { success: boolean; data: readonly ScraperRun[] },
-          { success: boolean; data: readonly HNStory[] },
-        ];
+      const [articlesRes, calendarRes, statsRes, runsRes] =
+        await Promise.all([
+          apiFetch<{ success: boolean; data: readonly NewsArticle[] }>(
+            `/api/news/articles${sourceParam}`,
+          ),
+          apiFetch<{ success: boolean; data: readonly CalendarEvent[] }>(
+            "/api/news/calendar?limit=100",
+          ),
+          apiFetch<{ success: boolean; data: readonly StatRow[] }>(
+            "/api/news/stats",
+          ),
+          apiFetch<{ success: boolean; data: readonly ScraperRun[] }>(
+            "/api/news/runs?limit=20",
+          ),
+        ]);
 
       if (articlesRes.success) setArticles(articlesRes.data);
       if (calendarRes.success) setCalendarEvents(calendarRes.data);
       if (statsRes.success) setStats(statsRes.data);
       if (runsRes.success) setRuns(runsRes.data);
-      if (hnRes.success) setHnStories(hnRes.data);
     } catch {
       // ignore fetch errors
     } finally {
@@ -188,14 +156,10 @@ export default function News() {
     if (source === "all") return;
     setScrapingSource(source);
     try {
-      if (source === "hackernews") {
-        await apiFetch("/api/hn/scrape-now", { method: "POST" });
-      } else {
-        await apiFetch("/api/news/scrape-now", {
-          method: "POST",
-          body: JSON.stringify({ source }),
-        });
-      }
+      await apiFetch("/api/news/scrape-now", {
+        method: "POST",
+        body: JSON.stringify({ source }),
+      });
       await fetchData();
     } catch {
       // ignore
@@ -205,7 +169,7 @@ export default function News() {
   }
 
   function totalArticles(): number {
-    return stats.reduce((sum, s) => sum + s.count, 0) + hnStories.length;
+    return stats.reduce((sum, s) => sum + s.count, 0);
   }
 
   if (loading) {
@@ -298,81 +262,8 @@ export default function News() {
         </div>
       )}
 
-      {/* HN Stories View */}
-      {isHN ? (
-        hnStories.length === 0 ? (
-          <div className="text-center text-faint p-12 text-base">
-            No stories yet. Click "Scrape Hacker News" to fetch.
-          </div>
-        ) : (
-          <div className="flex flex-col gap-0.5">
-            {hnStories.map((s) => {
-              const color = SOURCE_COLORS.hackernews;
-              return (
-                <div
-                  key={s.id}
-                  className="grid grid-cols-[1fr_auto] items-start gap-4 px-4 py-3 bg-bg-1 rounded-lg text-sm transition-colors hover:bg-bg-2"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-baseline gap-2 flex-wrap">
-                      <span
-                        className="font-mono font-semibold text-base"
-                        style={{ color, minWidth: "1.5rem" }}
-                      >
-                        {s.rank}.
-                      </span>
-                      <a
-                        href={s.url || s.hn_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-strong no-underline font-medium leading-snug hover:underline"
-                      >
-                        {s.title}
-                      </a>
-                      {s.site_label && (
-                        <span className="text-xs text-faint shrink-0">
-                          ({s.site_label})
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      <span
-                        className="inline-flex items-center px-2 py-0.5 rounded-full font-mono text-xs font-semibold uppercase tracking-wide shrink-0"
-                        style={{
-                          background: `${color}18`,
-                          color,
-                          border: `1px solid ${color}40`,
-                        }}
-                      >
-                        {s.points} pts
-                      </span>
-                      {s.author && (
-                        <span className="text-xs text-faint">
-                          by {s.author}
-                        </span>
-                      )}
-                      {s.hn_url && (
-                        <a
-                          href={s.hn_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-xs text-faint no-underline"
-                        >
-                          {s.comment_count} comments
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                  <span className="text-xs text-faint whitespace-nowrap shrink-0 self-center">
-                    {s.age || relativeTime(s.updated_at)}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        )
-      ) : /* Calendar View */
-      isCalendar ? (
+      {/* Calendar View */}
+      {isCalendar ? (
         calendarEvents.length === 0 ? (
           <div className="text-center text-faint p-12 text-base">
             No calendar events yet. Click "Scrape" to fetch.
