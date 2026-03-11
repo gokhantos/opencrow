@@ -3,6 +3,8 @@ import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../..
 import {
   upsertRankings,
   upsertReviews,
+  getRankings,
+  getAllKnownAppIds,
   getUnindexedReviews,
   markReviewsIndexed,
   getUnindexedRankings,
@@ -12,11 +14,14 @@ import {
 } from "./store";
 
 import { getErrorMessage } from "../../lib/error-serialization";
+import { loadScraperIntervalMs } from "../scraper-config";
+
 const log = createLogger("playstore-scraper");
 
-const TICK_INTERVAL_MS = 3_600_000; // 60 minutes
+const DEFAULT_INTERVAL_MINUTES = 60;
 const REQUEST_DELAY_MS = 4_000; // 4 seconds between API calls
 const TOP_APPS_PER_LIST = 5; // fetch reviews for top N from each list/category
+const DISCOVERY_LOOKUPS_PER_CYCLE = 3; // discover similar apps for N random seeds per cycle
 
 const PLAYSTORE_AGENT_ID = "playstore";
 
@@ -252,6 +257,37 @@ export function createPlayStoreScraper(config?: {
     }
   }
 
+  async function fetchSimilarApps(appId: string): Promise<readonly PlayRankingRow[]> {
+    try {
+      const gplay = ((await import("google-play-scraper")) as unknown as { default: {
+        similar: (opts: Record<string, unknown>) => Promise<readonly GPlayApp[]>;
+      } }).default;
+
+      const apps = await gplay.similar({ appId, num: 20, country: "us", lang: "en" });
+      const now = Math.floor(Date.now() / 1000);
+      return apps.map((app) => ({
+        id: app.appId ?? "",
+        name: app.title ?? "",
+        developer: app.developer ?? "",
+        category: app.genre ?? "",
+        rank: 0,
+        list_type: "discovered",
+        icon_url: app.icon ?? "",
+        store_url: app.url ?? "",
+        description: app.description ?? app.summary ?? "",
+        price: app.free || app.price === 0 ? "Free" : `$${app.price}`,
+        rating: app.score ?? parseRating(app.scoreText),
+        installs: app.installs ?? "",
+        updated_at: now,
+        indexed_at: null,
+      }));
+    } catch (err) {
+      const msg = getErrorMessage(err);
+      log.warn("Failed to fetch similar apps", { appId, error: msg });
+      return [];
+    }
+  }
+
   async function indexUnindexedReviews(): Promise<void> {
     if (!config?.memoryManager) return;
 
@@ -361,6 +397,15 @@ export function createPlayStoreScraper(config?: {
         }
       }
 
+      // Also include discovered apps in review fetching
+      const discoveredApps = await getRankings("discovered", TOP_APPS_PER_LIST);
+      for (const app of discoveredApps) {
+        if (!seenIds.has(app.id)) {
+          seenIds.add(app.id);
+          appsToReview.push(app);
+        }
+      }
+
       let totalReviews = 0;
       let enrichedCount = 0;
 
@@ -409,6 +454,32 @@ export function createPlayStoreScraper(config?: {
         reviews: totalReviews,
       });
 
+      // Discovery: find similar apps to expand the database
+      try {
+        const knownIds = await getAllKnownAppIds();
+        const allRanked = [...overallRankings, ...categoryRankings].filter((a) => a.id);
+        const seeds = allRanked.sort(() => Math.random() - 0.5).slice(0, DISCOVERY_LOOKUPS_PER_CYCLE);
+        let discoveredCount = 0;
+
+        for (const seed of seeds) {
+          await delay(REQUEST_DELAY_MS);
+          const similar = await fetchSimilarApps(seed.id);
+          const newApps = similar.filter((a) => a.id && !knownIds.has(a.id));
+
+          if (newApps.length > 0) {
+            await upsertRankings(newApps);
+            discoveredCount += newApps.length;
+            for (const a of newApps) knownIds.add(a.id);
+          }
+        }
+
+        if (discoveredCount > 0) {
+          log.info("Discovered new Play Store apps", { count: discoveredCount, seeds: seeds.length });
+        }
+      } catch (err) {
+        log.warn("Play Store discovery phase failed", { error: getErrorMessage(err) });
+      }
+
       await indexUnindexedReviews();
       await indexUnindexedRankings();
 
@@ -438,10 +509,11 @@ export function createPlayStoreScraper(config?: {
   }
 
   return {
-    start() {
+    async start() {
       if (timer) return;
-      timer = setInterval(tick, TICK_INTERVAL_MS);
-      log.info("Play Store scraper started", { tickMs: TICK_INTERVAL_MS });
+      const intervalMs = await loadScraperIntervalMs("playstore", DEFAULT_INTERVAL_MINUTES);
+      timer = setInterval(tick, intervalMs);
+      log.info("Play Store scraper started", { tickMs: intervalMs });
       tick().catch((err) =>
         log.error("Play Store scraper first tick error", { error: err }),
       );

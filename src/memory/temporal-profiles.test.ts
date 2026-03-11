@@ -1,18 +1,19 @@
 import { test, expect, describe } from "bun:test";
 import { getTemporalHalfLife } from "./temporal-profiles";
-import type { MemorySourceKind } from "./types";
+import { MEMORY_SOURCE_KINDS } from "./types";
 
 describe("getTemporalHalfLife", () => {
-  test("tweets have short half-life (7 days)", () => {
-    expect(getTemporalHalfLife("tweet")).toBe(7);
+  test("x_post has short half-life (7 days)", () => {
+    expect(getTemporalHalfLife("x_post")).toBe(7);
   });
 
   test("conversations have 14-day half-life", () => {
     expect(getTemporalHalfLife("conversation")).toBe(14);
   });
 
-  test("articles have 60-day half-life", () => {
-    expect(getTemporalHalfLife("article")).toBe(60);
+  test("news has 60-day half-life", () => {
+    expect(getTemporalHalfLife("reuters_news")).toBe(60);
+    expect(getTemporalHalfLife("cointelegraph_news")).toBe(60);
   });
 
   test("documents have long half-life (180 days)", () => {
@@ -28,19 +29,14 @@ describe("getTemporalHalfLife", () => {
   });
 
   test("all memory source kinds have profiles", () => {
-    const kinds: MemorySourceKind[] = [
-      "conversation", "note", "document", "tweet", "article",
-      "product", "story", "reddit_post", "github_repo",
-      "observation", "idea",
-    ];
-    for (const kind of kinds) {
+    for (const kind of MEMORY_SOURCE_KINDS) {
       const hl = getTemporalHalfLife(kind);
       expect(hl).toBeGreaterThan(0);
     }
   });
 
   test("ephemeral content decays faster than reference content", () => {
-    expect(getTemporalHalfLife("tweet")).toBeLessThan(
+    expect(getTemporalHalfLife("x_post")).toBeLessThan(
       getTemporalHalfLife("document"),
     );
     expect(getTemporalHalfLife("reddit_post")).toBeLessThan(

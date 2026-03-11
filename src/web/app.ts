@@ -6,7 +6,7 @@ import { createStatusRoutes } from "./routes/status";
 import { createAgentRoutes } from "./routes/agents";
 import { createCronRoutes } from "./routes/cron";
 import { createChannelRoutes } from "./routes/channels";
-import { createMemoryRoutes } from "./routes/memory";
+import { createMemoryRoutes, createMemoryDebugRoutes } from "./routes/memory";
 import { createMarketRoutes } from "./routes/market";
 import { systemRoutes } from "./routes/system";
 import { createXAccountRoutes } from "./routes/x-accounts";
@@ -279,6 +279,10 @@ export function createWebApp(deps: WebAppDeps): Hono {
     app.route("/api/x", timeline);
   }
 
+  // Debug routes (stats, chunks, agent-memory) always available — they only need PostgreSQL
+  const memoryDebug = createMemoryDebugRoutes();
+  app.route("/api", memoryDebug);
+
   if (deps.memoryManager) {
     const memory = createMemoryRoutes(deps.memoryManager);
     app.route("/api", memory);
@@ -297,10 +301,11 @@ export function createWebApp(deps: WebAppDeps): Hono {
     app.route("/api", hn);
   }
 
-  if (deps.redditScraper || cc) {
+  if (deps.redditScraper || cc || deps.memoryManager) {
     const reddit = createRedditRoutes({
       scraper: deps.redditScraper,
       coreClient: cc,
+      memoryManager: deps.memoryManager,
     });
     app.route("/api", reddit);
   }

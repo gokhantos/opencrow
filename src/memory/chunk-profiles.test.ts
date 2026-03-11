@@ -1,16 +1,16 @@
 import { test, expect, describe } from "bun:test";
 import { getChunkProfile } from "./chunk-profiles";
-import type { MemorySourceKind } from "./types";
+import { MEMORY_SOURCE_KINDS } from "./types";
 
 describe("getChunkProfile", () => {
-  test("returns profile for tweet", () => {
-    const p = getChunkProfile("tweet");
+  test("returns profile for x_post", () => {
+    const p = getChunkProfile("x_post");
     expect(p.maxTokens).toBe(150);
     expect(p.overlap).toBe(0);
   });
 
-  test("returns profile for article", () => {
-    const p = getChunkProfile("article");
+  test("returns profile for reuters_news", () => {
+    const p = getChunkProfile("reuters_news");
     expect(p.maxTokens).toBe(500);
     expect(p.overlap).toBe(100);
   });
@@ -34,20 +34,7 @@ describe("getChunkProfile", () => {
   });
 
   test("all memory source kinds have profiles", () => {
-    const kinds: MemorySourceKind[] = [
-      "conversation",
-      "note",
-      "document",
-      "tweet",
-      "article",
-      "product",
-      "story",
-      "reddit_post",
-      "github_repo",
-      "observation",
-      "idea",
-    ];
-    for (const kind of kinds) {
+    for (const kind of MEMORY_SOURCE_KINDS) {
       const p = getChunkProfile(kind);
       expect(p).toBeDefined();
       expect(p.maxTokens).toBeGreaterThan(0);
@@ -56,13 +43,13 @@ describe("getChunkProfile", () => {
   });
 
   test("short-content types have no overlap", () => {
-    expect(getChunkProfile("tweet").overlap).toBe(0);
-    expect(getChunkProfile("product").overlap).toBe(0);
+    expect(getChunkProfile("x_post").overlap).toBe(0);
+    expect(getChunkProfile("producthunt_product").overlap).toBe(0);
     expect(getChunkProfile("github_repo").overlap).toBe(0);
   });
 
   test("long-content types have overlap", () => {
-    expect(getChunkProfile("article").overlap).toBeGreaterThan(0);
+    expect(getChunkProfile("reuters_news").overlap).toBeGreaterThan(0);
     expect(getChunkProfile("document").overlap).toBeGreaterThan(0);
   });
 });

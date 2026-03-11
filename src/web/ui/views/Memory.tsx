@@ -68,12 +68,19 @@ const KIND_COLORS: Record<string, string> = {
   observation: "bg-warning-subtle text-warning",
   note: "bg-success-subtle text-success",
   idea: "bg-[#7928ca]/10 text-[#7928ca]",
-  story: "bg-[#f97316]/10 text-[#f97316]",
-  article: "bg-[#0ea5e9]/10 text-[#0ea5e9]",
-  tweet: "bg-[#1da1f2]/10 text-[#1da1f2]",
+  hackernews_story: "bg-[#f97316]/10 text-[#f97316]",
+  reuters_news: "bg-[#0ea5e9]/10 text-[#0ea5e9]",
+  cointelegraph_news: "bg-[#0ea5e9]/10 text-[#0ea5e9]",
+  cryptopanic_news: "bg-[#0ea5e9]/10 text-[#0ea5e9]",
+  investingnews_news: "bg-[#0ea5e9]/10 text-[#0ea5e9]",
+  x_post: "bg-[#1da1f2]/10 text-[#1da1f2]",
   reddit_post: "bg-[#ff4500]/10 text-[#ff4500]",
   github_repo: "bg-[#6e5494]/10 text-[#6e5494]",
-  product: "bg-[#da552f]/10 text-[#da552f]",
+  producthunt_product: "bg-[#da552f]/10 text-[#da552f]",
+  appstore_review: "bg-[#007aff]/10 text-[#007aff]",
+  appstore_ranking: "bg-[#007aff]/10 text-[#007aff]",
+  playstore_review: "bg-[#34a853]/10 text-[#34a853]",
+  playstore_ranking: "bg-[#34a853]/10 text-[#34a853]",
 };
 
 function KindBadge({ kind }: { readonly kind: string }) {

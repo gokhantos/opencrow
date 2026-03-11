@@ -25,7 +25,7 @@ function mockMemoryManager(
         score: r.score,
         source: {
           id: "s1",
-          kind: "article" as const,
+          kind: "reuters_news" as const,
           agentId: "test",
           channel: null,
           chatId: null,
@@ -55,7 +55,7 @@ function makeConfig(
     name: "test_search",
     description: "A test search tool.",
     agentId: "agent-1",
-    kinds: ["article"],
+    kinds: ["reuters_news"],
     memoryManager: mockMemoryManager(),
     ...overrides,
   };

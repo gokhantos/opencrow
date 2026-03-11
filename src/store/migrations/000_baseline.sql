@@ -243,7 +243,7 @@ CREATE TABLE IF NOT EXISTS memory_sources (
     chat_id text,
     metadata_json text DEFAULT '{}'::text NOT NULL,
     created_at integer DEFAULT (EXTRACT(epoch FROM now()))::integer NOT NULL,
-    CONSTRAINT memory_sources_kind_check CHECK ((kind = ANY (ARRAY['conversation'::text, 'note'::text, 'document'::text, 'tweet'::text, 'article'::text, 'product'::text, 'story'::text, 'reddit_post'::text, 'github_repo'::text, 'observation'::text, 'idea'::text, 'app_review'::text, 'app_ranking'::text])))
+    CONSTRAINT memory_sources_kind_check CHECK ((kind = ANY (ARRAY['conversation'::text, 'note'::text, 'document'::text, 'x_post'::text, 'reuters_news'::text, 'cointelegraph_news'::text, 'cryptopanic_news'::text, 'investingnews_news'::text, 'producthunt_product'::text, 'hackernews_story'::text, 'reddit_post'::text, 'github_repo'::text, 'observation'::text, 'idea'::text, 'appstore_review'::text, 'appstore_ranking'::text, 'playstore_review'::text, 'playstore_ranking'::text])))
 );
 
 CREATE TABLE IF NOT EXISTS messages (

@@ -212,8 +212,18 @@ export default function ProductHunt() {
     setError(null);
     try {
       await apiFetch("/api/ph/backfill-rag", { method: "POST" });
-    } catch {
-      setError("RAG backfill failed.");
+    } catch (err) {
+      let message = "Unknown error";
+      if (err && typeof err === "object" && "message" in err) {
+        const raw = String((err as { message: string }).message);
+        try {
+          const parsed = JSON.parse(raw) as { error?: string };
+          message = parsed.error ?? raw;
+        } catch {
+          message = raw;
+        }
+      }
+      setError(`RAG backfill failed: ${message}`);
     } finally {
       setBackfilling(false);
     }

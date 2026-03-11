@@ -162,7 +162,7 @@ export function createNewsTools(
         description:
           "Semantic search over indexed news articles. Returns the most relevant articles ranked by meaning similarity to your query. Use natural language queries like 'Bitcoin ETF approval' or 'Fed interest rate decision'.",
         agentId: "shared",
-        kinds: ["article"],
+        kinds: ["reuters_news", "cointelegraph_news", "cryptopanic_news", "investingnews_news"],
         memoryManager,
         extraInputFields: {
           source: {

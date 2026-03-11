@@ -3,6 +3,8 @@ import { apiFetch } from "../api";
 import { formatTime, formatAge } from "../lib/format";
 import { cn } from "../lib/cn";
 import { PageHeader, LoadingState, EmptyState, Button } from "../components";
+import { useToast } from "../components/Toast";
+import { Settings2, ChevronDown } from "lucide-react";
 
 interface RedditPost {
   id: string;
@@ -242,6 +244,88 @@ function AccountCard({
   );
 }
 
+function IntervalConfigPanel({ scraperId, defaultMinutes }: { readonly scraperId: string; readonly defaultMinutes: number }) {
+  const { success, error: toastError } = useToast();
+  const [open, setOpen] = useState(false);
+  const [interval, setInterval_] = useState(defaultMinutes);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open || loaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch<{ data: { intervalMinutes: number } }>(
+          `/api/features/scraper-config/${scraperId}`,
+        );
+        if (!cancelled) { setInterval_(res.data.intervalMinutes); setLoaded(true); }
+      } catch {
+        if (!cancelled) { setLoaded(true); toastError("Failed to load config."); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiFetch(`/api/features/scraper-config/${scraperId}`, {
+        method: "PUT",
+        body: JSON.stringify({ intervalMinutes: interval }),
+      });
+      success("Config saved.");
+    } catch {
+      toastError("Failed to save config.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bg-bg-1 border border-border rounded-lg mb-5">
+      <button
+        type="button"
+        onClick={() => setOpen((p) => !p)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-transparent border-none cursor-pointer text-left"
+      >
+        <div className="flex items-center gap-2 text-xs text-muted">
+          <Settings2 className="w-3.5 h-3.5" />
+          <span className="font-medium">Scraper Config</span>
+        </div>
+        <ChevronDown className={`w-3.5 h-3.5 text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="border-t border-border px-4 py-3 flex flex-col gap-3">
+          {!loaded ? (
+            <p className="text-xs text-muted">Loading...</p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-foreground">Scrape interval (min)</div>
+                  <div className="text-xs text-muted mt-0.5">How often to scrape</div>
+                </div>
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={interval}
+                  onChange={(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n)) setInterval_(n); }}
+                  className="w-20 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
+                />
+              </div>
+              <div className="flex justify-end">
+                <Button variant="primary" size="sm" onClick={handleSave} disabled={saving} loading={saving}>Save</Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Reddit() {
   const [posts, setPosts] = useState<RedditPost[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
@@ -251,6 +335,8 @@ export default function Reddit() {
   const [filterSub, setFilterSub] = useState<string>("");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAll();
@@ -312,6 +398,34 @@ export default function Reddit() {
     }
   }
 
+  async function handleBackfillRag() {
+    setBackfilling(true);
+    setBackfillResult(null);
+    try {
+      const res = await apiFetch<{ success: boolean; data: { indexed: number } }>(
+        "/api/reddit/backfill-rag",
+        { method: "POST" },
+      );
+      if (res.success) {
+        setBackfillResult(`Indexed ${res.data.indexed} posts`);
+      }
+    } catch (err) {
+      let message = "Unknown error";
+      if (err && typeof err === "object" && "message" in err) {
+        const raw = String((err as { message: string }).message);
+        try {
+          const parsed = JSON.parse(raw) as { error?: string };
+          message = parsed.error ?? raw;
+        } catch {
+          message = raw;
+        }
+      }
+      setBackfillResult(`Backfill failed: ${message}`);
+    } finally {
+      setBackfilling(false);
+    }
+  }
+
   async function handleVerify(id: string) {
     setVerifyingId(id);
     try {
@@ -348,13 +462,24 @@ export default function Reddit() {
           `${stats.total_posts} posts | ${stats.subreddit_count} subreddits | Last updated: ${formatTime(stats.last_updated_at)}`
         }
         actions={
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {backfillResult && (
+              <span className="text-xs text-muted">{backfillResult}</span>
+            )}
             <Button
               size="sm"
               variant="secondary"
               onClick={() => setShowCreateForm((v) => !v)}
             >
               {showCreateForm ? "Cancel" : "Add Account"}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={handleBackfillRag}
+              loading={backfilling}
+            >
+              Backfill RAG
             </Button>
             <Button
               size="sm"
@@ -393,6 +518,8 @@ export default function Reddit() {
           ))}
         </div>
       )}
+
+      <IntervalConfigPanel scraperId="reddit" defaultMinutes={30} />
 
       {/* Subreddit filter chips */}
       {subreddits.length > 0 && (

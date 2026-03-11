@@ -1,27 +1,35 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import type { MemoryManager, MemorySourceKind } from "../memory/types";
+import { NEWS_KINDS } from "../memory/types";
 import { requireString, getNumber, isToolError } from "./input-helpers";
 
 const SEARCHABLE_KINDS: readonly MemorySourceKind[] = [
-  "article",
-  "story",
+  ...NEWS_KINDS,
+  "hackernews_story",
   "reddit_post",
-  "tweet",
-  "product",
+  "x_post",
+  "producthunt_product",
   "github_repo",
-  "app_review",
-  "app_ranking",
+  "appstore_review",
+  "appstore_ranking",
+  "playstore_review",
+  "playstore_ranking",
 ];
 
 const KIND_LABELS: Record<string, string> = {
-  article: "News",
-  story: "Hacker News",
+  reuters_news: "Reuters",
+  cointelegraph_news: "CoinTelegraph",
+  cryptopanic_news: "CryptoPanic",
+  investingnews_news: "Investing News",
+  hackernews_story: "Hacker News",
   reddit_post: "Reddit",
-  tweet: "X/Twitter",
-  product: "Product Hunt",
+  x_post: "X/Twitter",
+  producthunt_product: "Product Hunt",
   github_repo: "GitHub",
-  app_review: "App Reviews",
-  app_ranking: "App Rankings",
+  appstore_review: "App Store Reviews",
+  appstore_ranking: "App Store Rankings",
+  playstore_review: "Play Store Reviews",
+  playstore_ranking: "Play Store Rankings",
 };
 
 function formatResult(r: {
@@ -59,7 +67,7 @@ export function createCrossSourceSearchTool(
             enum: [...SEARCHABLE_KINDS],
           },
           description:
-            "Optional: limit to specific sources. Omit to search all. Values: article, story, reddit_post, tweet, product, github_repo, app_review, app_ranking.",
+            "Optional: limit to specific sources. Omit to search all.",
         },
         limit: {
           type: "number",

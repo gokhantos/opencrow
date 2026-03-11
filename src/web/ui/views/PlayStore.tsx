@@ -7,7 +7,9 @@ import {
   FilterTabs,
   Button,
 } from "../components";
+import { useToast } from "../components/Toast";
 import { cn } from "../lib/cn";
+import { Settings2, ChevronDown } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,7 +51,7 @@ interface StatsData {
   readonly last_updated_at: number | null;
 }
 
-type MainTab = "rankings" | "reviews";
+type MainTab = "rankings" | "discovered" | "reviews";
 type OverallFilter = "all" | "top-free" | "top-paid";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -294,9 +296,92 @@ const OVERALL_CHIPS = [
 ] as const;
 
 const MAIN_TABS = [
-  { id: "rankings", label: "Rankings" },
+  { id: "rankings", label: "Top Apps" },
+  { id: "discovered", label: "Discovered" },
   { id: "reviews", label: "Reviews" },
 ] as const;
+
+function IntervalConfigPanel({ scraperId, defaultMinutes }: { readonly scraperId: string; readonly defaultMinutes: number }) {
+  const { success, error: toastError } = useToast();
+  const [open, setOpen] = useState(false);
+  const [interval, setInterval_] = useState(defaultMinutes);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open || loaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch<{ data: { intervalMinutes: number } }>(
+          `/api/features/scraper-config/${scraperId}`,
+        );
+        if (!cancelled) { setInterval_(res.data.intervalMinutes); setLoaded(true); }
+      } catch {
+        if (!cancelled) { setLoaded(true); toastError("Failed to load config."); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiFetch(`/api/features/scraper-config/${scraperId}`, {
+        method: "PUT",
+        body: JSON.stringify({ intervalMinutes: interval }),
+      });
+      success("Config saved.");
+    } catch {
+      toastError("Failed to save config.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bg-bg-1 border border-border rounded-lg mb-5">
+      <button
+        type="button"
+        onClick={() => setOpen((p) => !p)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-transparent border-none cursor-pointer text-left"
+      >
+        <div className="flex items-center gap-2 text-xs text-muted">
+          <Settings2 className="w-3.5 h-3.5" />
+          <span className="font-medium">Scraper Config</span>
+        </div>
+        <ChevronDown className={`w-3.5 h-3.5 text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="border-t border-border px-4 py-3 flex flex-col gap-3">
+          {!loaded ? (
+            <p className="text-xs text-muted">Loading...</p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-foreground">Scrape interval (min)</div>
+                  <div className="text-xs text-muted mt-0.5">How often to scrape</div>
+                </div>
+                <input
+                  type="number"
+                  min={10}
+                  max={1440}
+                  value={interval}
+                  onChange={(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n)) setInterval_(n); }}
+                  className="w-20 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
+                />
+              </div>
+              <div className="flex justify-end">
+                <Button variant="primary" size="sm" onClick={handleSave} disabled={saving} loading={saving}>Save</Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function PlayStore() {
   const [mainTab, setMainTab] = useState<MainTab>("rankings");
@@ -354,8 +439,11 @@ export default function PlayStore() {
     }
   }
 
+  const topApps = rankings.filter((r) => r.list_type !== "discovered");
+  const discoveredApps = rankings.filter((r) => r.list_type === "discovered");
+
   const availableCategories: string[] = Array.from(
-    new Set(rankings.map((r) => r.category).filter(Boolean)),
+    new Set(topApps.map((r) => r.category).filter(Boolean)),
   ).sort();
 
   const categoryChips = [
@@ -365,7 +453,7 @@ export default function PlayStore() {
 
   const tabsWithCounts = MAIN_TABS.map((t) => ({
     ...t,
-    count: t.id === "rankings" ? rankings.length : reviews.length,
+    count: t.id === "rankings" ? topApps.length : t.id === "discovered" ? discoveredApps.length : reviews.length,
   }));
 
   if (loading) return <LoadingState message="Loading Play Store data…" />;
@@ -381,7 +469,6 @@ export default function PlayStore() {
         subtitle={subtitle}
         actions={
           <Button
-            variant="secondary"
             size="sm"
             onClick={handleScrapeNow}
             disabled={scraping}
@@ -390,6 +477,8 @@ export default function PlayStore() {
           </Button>
         }
       />
+
+      <IntervalConfigPanel scraperId="playstore" defaultMinutes={60} />
 
       <FilterTabs
         tabs={tabsWithCounts}
@@ -443,9 +532,26 @@ export default function PlayStore() {
           )}
 
           {overallFilter === "all" ? (
-            <GroupedRankings rankings={rankings} />
+            <GroupedRankings rankings={topApps} />
           ) : (
-            <FlatRankings rankings={rankings} />
+            <FlatRankings rankings={topApps} />
+          )}
+        </>
+      )}
+
+      {mainTab === "discovered" && (
+        <>
+          {discoveredApps.length === 0 ? (
+            <EmptyState
+              title="No discovered apps"
+              description="Discovered apps will appear here after the next scrape cycle."
+            />
+          ) : (
+            <div className="grid gap-2 grid-cols-1 lg:grid-cols-2">
+              {discoveredApps.map((app) => (
+                <PlayCard key={`${app.id}-${app.list_type}`} app={app} />
+              ))}
+            </div>
           )}
         </>
       )}

@@ -102,7 +102,7 @@ export function createAppStoreTools(
         description:
           "Semantic search over indexed App Store reviews. Find user complaints and feedback about specific topics. Query like 'slow performance' or 'subscription pricing'.",
         agentId: "appstore",
-        kinds: ["article"],
+        kinds: ["appstore_review"],
         memoryManager,
         emptyMessage: "No matching reviews found.",
         errorPrefix: "Error searching App Store reviews",

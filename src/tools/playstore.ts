@@ -102,7 +102,7 @@ export function createPlayStoreTools(
         description:
           "Semantic search over indexed Google Play Store reviews. Find user complaints and feedback about specific topics. Query like 'slow performance' or 'subscription pricing'.",
         agentId: "playstore",
-        kinds: ["article"],
+        kinds: ["playstore_review"],
         memoryManager,
         emptyMessage: "No matching Play Store reviews found.",
         errorPrefix: "Error searching Play Store reviews",
