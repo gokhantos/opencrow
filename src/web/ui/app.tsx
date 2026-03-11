@@ -19,6 +19,7 @@ import Overview from "./views/Overview";
 import Channels from "./views/Channels";
 import Sessions from "./views/Sessions";
 import Logs from "./views/Logs";
+import Chat from "./views/Chat";
 import Agents from "./views/agents/Agents";
 import Cron from "./views/Cron";
 import Markets from "./views/Markets";
@@ -309,6 +310,7 @@ function App() {
             {tab === "overview" && <Overview />}
             {tab === "channels" && <Channels />}
             {tab === "sessions" && <Sessions />}
+            {tab === "chat" && <Chat />}
             {tab === "agents" && <Agents />}
             {tab === "skills" && <Skills />}
             {tab === "tools" && <Tools />}
