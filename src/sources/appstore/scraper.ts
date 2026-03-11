@@ -4,6 +4,7 @@ import {
   upsertRankings,
   upsertReviews,
   getRankings,
+  getAllKnownAppIds,
   getUnindexedReviews,
   markReviewsIndexed,
   getUnindexedRankings,
@@ -20,6 +21,7 @@ const log = createLogger("appstore-scraper");
 const DEFAULT_INTERVAL_MINUTES = 60;
 const REQUEST_DELAY_MS = 2_000; // 2 seconds between API calls
 const TOP_APPS_PER_LIST = 5; // fetch reviews for top N from each list/category
+const DISCOVERY_LOOKUPS_PER_CYCLE = 3; // discover related apps for N random seeds per cycle
 
 const APPSTORE_AGENT_ID = "appstore";
 
@@ -316,6 +318,42 @@ export function createAppStoreScraper(config?: {
     }
   }
 
+  async function fetchRelatedApps(appId: string): Promise<readonly AppRankingRow[]> {
+    try {
+      const data = await fetchJson(
+        `https://itunes.apple.com/lookup?id=${appId}&entity=software&limit=25`,
+      ) as { results?: readonly Record<string, unknown>[] };
+
+      const results = data.results ?? [];
+      // First result is the app itself, rest are related
+      const related = results.slice(1);
+      const now = Math.floor(Date.now() / 1000);
+
+      return related
+        .filter((r) => r.trackId)
+        .map((r) => ({
+          id: String(r.trackId ?? ""),
+          name: String(r.trackName ?? ""),
+          artist: String(r.artistName ?? ""),
+          category: String(r.primaryGenreName ?? ""),
+          rank: 0,
+          list_type: "discovered",
+          icon_url: String(r.artworkUrl100 ?? ""),
+          store_url: String(r.trackViewUrl ?? ""),
+          description: String(r.description ?? "").slice(0, 2000),
+          price: r.price === 0 ? "Free" : `$${r.price ?? 0}`,
+          bundle_id: String(r.bundleId ?? ""),
+          release_date: String(r.releaseDate ?? ""),
+          updated_at: now,
+          indexed_at: null,
+        }));
+    } catch (err) {
+      const msg = getErrorMessage(err);
+      log.warn("Failed to fetch related apps", { appId, error: msg });
+      return [];
+    }
+  }
+
   async function indexUnindexedReviews(): Promise<void> {
     if (!config?.memoryManager) return;
 
@@ -427,6 +465,15 @@ export function createAppStoreScraper(config?: {
         }
       }
 
+      // Also include discovered apps in review fetching
+      const discoveredApps = await getRankings("discovered", TOP_APPS_PER_LIST);
+      for (const app of discoveredApps) {
+        if (!seenIds.has(app.id)) {
+          seenIds.add(app.id);
+          appsToReview.push(app);
+        }
+      }
+
       let totalReviews = 0;
 
       for (const app of appsToReview) {
@@ -445,6 +492,32 @@ export function createAppStoreScraper(config?: {
         appsChecked: appsToReview.length,
         reviews: totalReviews,
       });
+
+      // Discovery: find related apps to expand the database
+      try {
+        const knownIds = await getAllKnownAppIds();
+        const allRanked = [...freeApps, ...paidApps, ...categoryRankings].filter((a) => a.id);
+        const seeds = allRanked.sort(() => Math.random() - 0.5).slice(0, DISCOVERY_LOOKUPS_PER_CYCLE);
+        let discoveredCount = 0;
+
+        for (const seed of seeds) {
+          await delay(REQUEST_DELAY_MS);
+          const related = await fetchRelatedApps(seed.id);
+          const newApps = related.filter((a) => a.id && !knownIds.has(a.id));
+
+          if (newApps.length > 0) {
+            await upsertRankings(newApps);
+            discoveredCount += newApps.length;
+            for (const a of newApps) knownIds.add(a.id);
+          }
+        }
+
+        if (discoveredCount > 0) {
+          log.info("Discovered new App Store apps", { count: discoveredCount, seeds: seeds.length });
+        }
+      } catch (err) {
+        log.warn("App Store discovery phase failed", { error: getErrorMessage(err) });
+      }
 
       // Index unindexed content into memory
       await indexUnindexedReviews();
