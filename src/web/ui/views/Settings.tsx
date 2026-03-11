@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Circle,
   Settings as SettingsIcon,
+  Settings2,
 } from "lucide-react";
 
 interface ScraperMeta {
@@ -16,6 +17,21 @@ interface ScraperMeta {
   readonly name: string;
   readonly description: string;
 }
+
+interface GithubSearchConfig {
+  readonly minStars: number;
+  readonly pushedWithinDays: number;
+  readonly maxPages: number;
+}
+
+/** Scrapers that expose configurable settings */
+const CONFIGURABLE_SCRAPERS = new Set(["github-search"]);
+
+const GITHUB_SEARCH_CONFIG_DEFAULTS: GithubSearchConfig = {
+  minStars: 500,
+  pushedWithinDays: 7,
+  maxPages: 4,
+};
 
 interface FeaturesResponse {
   readonly scrapers: {
@@ -99,6 +115,141 @@ function FeatureCard({
   );
 }
 
+/* ── Config field ── */
+function ConfigField({
+  label,
+  description,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  readonly label: string;
+  readonly description: string;
+  readonly value: number;
+  readonly min: number;
+  readonly max: number;
+  readonly onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-foreground">{label}</div>
+        <div className="text-xs text-muted mt-0.5">{description}</div>
+      </div>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(e) => {
+          const n = parseInt(e.target.value, 10);
+          if (!isNaN(n)) onChange(n);
+        }}
+        className="w-20 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
+      />
+    </div>
+  );
+}
+
+/* ── Github Search inline config form ── */
+function GithubSearchConfigForm({
+  scraperId,
+  onClose,
+}: {
+  readonly scraperId: string;
+  readonly onClose: () => void;
+}) {
+  const { success, error: toastError } = useToast();
+  const [config, setConfig] = useState<GithubSearchConfig>(GITHUB_SEARCH_CONFIG_DEFAULTS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch<{ data: GithubSearchConfig }>(
+          `/api/features/scraper-config/${scraperId}`,
+        );
+        if (!cancelled) setConfig(res.data);
+      } catch {
+        if (!cancelled) toastError("Failed to load scraper config.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [scraperId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiFetch(`/api/features/scraper-config/${scraperId}`, {
+        method: "PUT",
+        body: JSON.stringify(config),
+      });
+      success("Scraper config saved.");
+      onClose();
+    } catch {
+      toastError("Failed to save scraper config.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 mx-0 bg-bg-2 border border-border rounded-lg p-3">
+      {loading ? (
+        <p className="text-xs text-muted py-1">Loading config…</p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <ConfigField
+            label="Minimum stars"
+            description="Only include repos with at least this many stars"
+            value={config.minStars}
+            min={1}
+            max={100000}
+            onChange={(v) => setConfig((prev) => ({ ...prev, minStars: v }))}
+          />
+          <ConfigField
+            label="Pushed within days"
+            description="Only include repos pushed within this many days"
+            value={config.pushedWithinDays}
+            min={1}
+            max={90}
+            onChange={(v) => setConfig((prev) => ({ ...prev, pushedWithinDays: v }))}
+          />
+          <ConfigField
+            label="Max pages"
+            description="Max pages to fetch per scrape run (30 repos per page)"
+            value={config.maxPages}
+            min={1}
+            max={10}
+            onChange={(v) => setConfig((prev) => ({ ...prev, maxPages: v }))}
+          />
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" size="sm" onClick={onClose} disabled={saving}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleSave}
+              disabled={saving}
+              loading={saving}
+            >
+              Save
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Scrapers section (expandable) ── */
 function ScrapersSection({
   scrapers,
@@ -116,8 +267,14 @@ function ScrapersSection({
   readonly onSave: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [openConfigId, setOpenConfigId] = useState<string | null>(null);
   const enabledCount = enabledScrapers.size;
   const totalCount = scrapers.length;
+
+  function handleGearClick(e: React.MouseEvent, scraperId: string) {
+    e.stopPropagation();
+    setOpenConfigId((prev) => (prev === scraperId ? null : scraperId));
+  }
 
   return (
     <div className="bg-bg-1 border border-border rounded-xl transition-all duration-200 hover:border-border-hover">
@@ -166,31 +323,57 @@ function ScrapersSection({
             </p>
           ) : (
             <div className="flex flex-col">
-              {scrapers.map((scraper, i) => (
-                <div
-                  key={scraper.id}
-                  className={`flex items-center justify-between py-3 ${
-                    i < scrapers.length - 1
-                      ? "border-b border-border"
-                      : ""
-                  }`}
-                >
-                  <div className="min-w-0 pr-4">
-                    <div className="text-sm font-medium text-foreground">
-                      {scraper.name}
-                    </div>
-                    {scraper.description && (
-                      <div className="text-xs text-muted mt-0.5">
-                        {scraper.description}
+              {scrapers.map((scraper, i) => {
+                const isConfigurable = CONFIGURABLE_SCRAPERS.has(scraper.id);
+                const isConfigOpen = openConfigId === scraper.id;
+                const isLast = i === scrapers.length - 1;
+                return (
+                  <div key={scraper.id}>
+                    <div
+                      className={`flex items-center justify-between py-3 ${
+                        !isLast || isConfigOpen ? "border-b border-border" : ""
+                      }`}
+                    >
+                      <div className="min-w-0 pr-4">
+                        <div className="text-sm font-medium text-foreground">
+                          {scraper.name}
+                        </div>
+                        {scraper.description && (
+                          <div className="text-xs text-muted mt-0.5">
+                            {scraper.description}
+                          </div>
+                        )}
                       </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {isConfigurable && (
+                          <button
+                            type="button"
+                            title="Configure"
+                            onClick={(e) => handleGearClick(e, scraper.id)}
+                            className={`p-1 rounded-md transition-colors ${
+                              isConfigOpen
+                                ? "text-accent bg-accent-subtle"
+                                : "text-muted hover:text-foreground hover:bg-bg-2"
+                            }`}
+                          >
+                            <Settings2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        <Toggle
+                          checked={enabledScrapers.has(scraper.id)}
+                          onChange={(checked) => onToggle(scraper.id, checked)}
+                        />
+                      </div>
+                    </div>
+                    {isConfigOpen && (
+                      <GithubSearchConfigForm
+                        scraperId={scraper.id}
+                        onClose={() => setOpenConfigId(null)}
+                      />
                     )}
                   </div>
-                  <Toggle
-                    checked={enabledScrapers.has(scraper.id)}
-                    onChange={(checked) => onToggle(scraper.id, checked)}
-                  />
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
