@@ -41,6 +41,52 @@ export interface ToolCatalogEntry {
   readonly category: string;
   readonly description: string;
   readonly params: readonly string[];
+  readonly enabled: boolean;
+}
+
+/** Maps tool display categories to feature flag identifiers */
+export const CATEGORY_TO_FEATURE: Record<string, { type: "scraper"; id: string } | { type: "toggle"; id: "market" | "qdrant" }> = {
+  reddit: { type: "scraper", id: "reddit" },
+  hacker_news: { type: "scraper", id: "hackernews" },
+  product_hunt: { type: "scraper", id: "producthunt" },
+  github: { type: "scraper", id: "github" },
+  x_timeline: { type: "scraper", id: "x" },
+  appstore: { type: "scraper", id: "appstore" },
+  playstore: { type: "scraper", id: "playstore" },
+  news: { type: "scraper", id: "news" },
+  ideas: { type: "scraper", id: "ideas" },
+  signals: { type: "scraper", id: "ideas" },
+  market: { type: "toggle", id: "market" },
+};
+
+export interface EnabledFeatures {
+  readonly enabledScrapers: readonly string[];
+  readonly marketEnabled: boolean;
+  readonly qdrantEnabled: boolean;
+  readonly disabledTools: readonly string[];
+}
+
+function isCategoryEnabled(category: string, features: EnabledFeatures): boolean {
+  const mapping = CATEGORY_TO_FEATURE[category];
+  if (!mapping) return true;
+  if (mapping.type === "scraper") return features.enabledScrapers.includes(mapping.id);
+  if (mapping.id === "market") return features.marketEnabled;
+  if (mapping.id === "qdrant") return features.qdrantEnabled;
+  return true;
+}
+
+export function applyFeatureFilter(
+  catalog: readonly ToolCatalogEntry[],
+  features: EnabledFeatures,
+): readonly ToolCatalogEntry[] {
+  return catalog.map((entry) => {
+    const categoryEnabled = isCategoryEnabled(entry.category, features);
+    const manuallyDisabled = features.disabledTools.includes(entry.name);
+    return {
+      ...entry,
+      enabled: categoryEnabled && !manuallyDisabled,
+    };
+  });
 }
 
 /** Category derived from ToolDefinition.categories or overridden per-tool */
@@ -280,6 +326,7 @@ function toEntry(tool: ToolDefinition): ToolCatalogEntry {
     category: resolveCategory(tool),
     description: tool.description,
     params: extractParams(tool),
+    enabled: true,
   };
 }
 
