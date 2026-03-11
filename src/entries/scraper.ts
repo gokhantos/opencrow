@@ -68,6 +68,14 @@ async function main(): Promise<void> {
       scraper.start();
       break;
     }
+    case "github-search": {
+      const { createGithubSearchScraper } = await import("../sources/github/search-scraper");
+      const scraper = createGithubSearchScraper({
+        memoryManager: memoryManager ?? undefined,
+      });
+      scraper.start();
+      break;
+    }
     case "producthunt": {
       const { createPHScraper } =
         await import("../sources/producthunt/scraper");

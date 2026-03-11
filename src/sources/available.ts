@@ -21,6 +21,11 @@ export const AVAILABLE_SCRAPERS: readonly ScraperMeta[] = [
     description: "Trending repositories and releases",
   },
   {
+    id: "github-search",
+    name: "GitHub Search",
+    description: "Most-starred actively maintained repositories via GitHub API",
+  },
+  {
     id: "producthunt",
     name: "Product Hunt",
     description: "New product launches and upvotes",
