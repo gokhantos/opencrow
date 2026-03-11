@@ -109,6 +109,10 @@ async function fetchSubscribedSubreddits(
   return subs;
 }
 
+/**
+ * Scrape Reddit feeds and return posts immediately (without comments).
+ * Call enrichPostsWithComments() separately to add top comments.
+ */
 export async function scrapeRedditFeed(
   cookiesJson: string,
 ): Promise<readonly RawRedditPost[]> {
@@ -162,17 +166,34 @@ export async function scrapeRedditFeed(
     log.info("Scraped subreddit", { subreddit, count: posts.length });
   }
 
-  log.info("Scrape complete (pre-comments)", {
-    source: "reddit",
-    count: allPosts.length,
-  });
+  log.info("Scrape complete", { source: "reddit", count: allPosts.length });
+  return allPosts;
+}
 
-  // Fetch top comments for posts that have comments, batched with concurrency 5
-  const postsWithComments = allPosts.filter((p) => p.num_comments > 0);
+/**
+ * Enrich posts with top comments. Designed to run as a second pass
+ * after posts are already persisted to DB, so restarts don't lose data.
+ */
+export async function enrichPostsWithComments(
+  cookiesJson: string,
+  posts: readonly RawRedditPost[],
+): Promise<readonly RawRedditPost[]> {
+  const cookieHeader = buildCookieHeader(cookiesJson);
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Accept-Language": "en-US,en;q=0.5",
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  };
+  if (cookieHeader) {
+    headers["Cookie"] = cookieHeader;
+  }
+
+  const postsWithComments = posts.filter((p) => p.num_comments > 0);
   log.info("Fetching top comments", { count: postsWithComments.length });
 
   const enriched = await inBatches(
-    allPosts,
+    [...posts],
     3,
     4000,
     async (post): Promise<RawRedditPost> => {
@@ -182,7 +203,7 @@ export async function scrapeRedditFeed(
     },
   );
 
-  log.info("Scrape complete", { source: "reddit", count: enriched.length });
+  log.info("Comment enrichment complete", { count: enriched.length });
   return enriched;
 }
 

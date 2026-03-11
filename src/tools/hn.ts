@@ -52,7 +52,7 @@ export function createHNTools(
         description:
           "Semantic search over Hacker News stories. Use for finding tech discussions, trending topics, developer sentiment, or specific project mentions. Query with concepts like 'Rust vs Go performance' or 'LLM fine-tuning techniques'.",
         agentId: "hn",
-        kinds: ["story"],
+        kinds: ["hackernews_story"],
         memoryManager,
         emptyMessage: "No matching HN stories found.",
         errorPrefix: "Error searching HN",

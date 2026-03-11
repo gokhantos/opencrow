@@ -96,15 +96,14 @@ describe("createCrossSourceSearchTool", () => {
     const tool = createCrossSourceSearchTool(mockMemoryManager());
     const props = tool.inputSchema.properties as Record<string, any>;
     const sourceItems = props.sources.items;
-    expect(sourceItems.enum).toContain("article");
-    expect(sourceItems.enum).toContain("story");
+    expect(sourceItems.enum).toContain("reuters_news");
+    expect(sourceItems.enum).toContain("hackernews_story");
     expect(sourceItems.enum).toContain("reddit_post");
-    expect(sourceItems.enum).toContain("tweet");
-    expect(sourceItems.enum).toContain("product");
+    expect(sourceItems.enum).toContain("x_post");
+    expect(sourceItems.enum).toContain("producthunt_product");
     expect(sourceItems.enum).toContain("github_repo");
-    expect(sourceItems.enum).toContain("app_review");
-    expect(sourceItems.enum).toContain("app_ranking");
-    expect(sourceItems.enum).toHaveLength(8);
+    expect(sourceItems.enum).toContain("appstore_review");
+    expect(sourceItems.enum).toContain("playstore_ranking");
   });
 
   // -- Execute: input validation --------------------------------------------
@@ -148,10 +147,10 @@ describe("createCrossSourceSearchTool", () => {
     const tool = createCrossSourceSearchTool(spy);
     await tool.execute({
       query: "test",
-      sources: ["article", "bogus", "tweet"],
+      sources: ["reuters_news", "bogus", "x_post"],
     });
-    expect(capturedKinds).toContain("article");
-    expect(capturedKinds).toContain("tweet");
+    expect(capturedKinds).toContain("reuters_news");
+    expect(capturedKinds).toContain("x_post");
     expect(capturedKinds).not.toContain("bogus");
   });
 
@@ -168,25 +167,25 @@ describe("createCrossSourceSearchTool", () => {
 
   it("should return formatted results with source labels and counts", async () => {
     const results = [
-      makeResult("article", "News about BTC", 0.95, "Bitcoin Surges", "https://news.com/btc"),
-      makeResult("story", "HN discussion about BTC", 0.88, "Bitcoin on HN", ""),
-      makeResult("tweet", "BTC tweet", 0.80, "", ""),
+      makeResult("reuters_news", "News about BTC", 0.95, "Bitcoin Surges", "https://news.com/btc"),
+      makeResult("hackernews_story", "HN discussion about BTC", 0.88, "Bitcoin on HN", ""),
+      makeResult("x_post", "BTC tweet", 0.80, "", ""),
     ];
     const tool = createCrossSourceSearchTool(mockMemoryManager(results));
     const result = await tool.execute({ query: "bitcoin" });
     expect(result.isError).toBe(false);
     expect(result.output).toContain("Cross-source search: 3 results");
-    expect(result.output).toContain("News: 1");
+    expect(result.output).toContain("Reuters: 1");
     expect(result.output).toContain("Hacker News: 1");
     expect(result.output).toContain("X/Twitter: 1");
-    expect(result.output).toContain("[News]");
+    expect(result.output).toContain("[Reuters]");
     expect(result.output).toContain("Bitcoin Surges");
     expect(result.output).toContain("URL: https://news.com/btc");
   });
 
   it("should respect limit parameter", async () => {
     const results = Array.from({ length: 10 }, (_, i) =>
-      makeResult("article", `Result ${i}`, 0.9 - i * 0.01, `Title ${i}`),
+      makeResult("reuters_news", `Result ${i}`, 0.9 - i * 0.01, `Title ${i}`),
     );
     const tool = createCrossSourceSearchTool(mockMemoryManager(results));
     const result = await tool.execute({ query: "test", limit: 3 });
@@ -230,12 +229,12 @@ describe("createCrossSourceSearchTool", () => {
 
   it("should use content snippet when title is empty", async () => {
     const results = [
-      makeResult("tweet", "A tweet with no title field set at all", 0.9, "", ""),
+      makeResult("x_post", "A post with no title field set at all", 0.9, "", ""),
     ];
     const tool = createCrossSourceSearchTool(mockMemoryManager(results));
-    const result = await tool.execute({ query: "tweet" });
+    const result = await tool.execute({ query: "post" });
     expect(result.isError).toBe(false);
     // When title is empty, the formatter uses content.slice(0, 80) as header
-    expect(result.output).toContain("A tweet with no title");
+    expect(result.output).toContain("A post with no title");
   });
 });

@@ -25,19 +25,9 @@ interface MemoryChunkRow {
   created_at: number;
 }
 
-const MEMORY_KINDS = [
-  "conversation",
-  "note",
-  "document",
-  "tweet",
-  "article",
-  "product",
-  "story",
-  "reddit_post",
-  "github_repo",
-  "observation",
-  "idea",
-] as const;
+import { MEMORY_SOURCE_KINDS } from "../memory/types";
+
+const MEMORY_KINDS = MEMORY_SOURCE_KINDS;
 
 export function createMemoryStatsTools(): ToolDefinition[] {
   return [

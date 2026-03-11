@@ -8,6 +8,7 @@ import {
   insertScraperRun,
   getArticles,
 } from "./store";
+import { getOverride } from "../../store/config-overrides";
 
 import { getErrorMessage } from "../../lib/error-serialization";
 const log = createLogger("news-processor");
@@ -74,10 +75,25 @@ export function createNewsProcessor(config?: {
     "investing_calendar",
   ];
 
-  const intervals: Record<string, number> = {
+  const baseIntervals: Record<string, number> = {
     ...DEFAULT_INTERVALS,
     ...config?.intervals,
   };
+
+  async function getSourceInterval(source: NewsSource): Promise<number> {
+    try {
+      const override = await getOverride("scraper-config", source);
+      if (override && typeof override === "object" && "intervalMinutes" in override) {
+        const mins = (override as { intervalMinutes: number }).intervalMinutes;
+        if (typeof mins === "number" && mins > 0) {
+          return mins * 60_000;
+        }
+      }
+    } catch {
+      // fall through to default
+    }
+    return baseIntervals[source] ?? DEFAULT_INTERVALS[source] ?? 60 * 60_000;
+  }
 
   async function runSource(source: NewsSource): Promise<{
     ok: boolean;
@@ -178,8 +194,7 @@ export function createNewsProcessor(config?: {
 
     for (const source of enabledSources) {
       const last = lastRun.get(source) ?? 0;
-      const interval =
-        intervals[source] ?? DEFAULT_INTERVALS[source] ?? 60 * 60_000;
+      const interval = await getSourceInterval(source);
 
       if (now - last >= interval) {
         runSource(source).catch((err) =>

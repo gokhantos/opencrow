@@ -67,7 +67,7 @@ export function createPHTools(
         description:
           "Semantic search over Product Hunt products. Use for finding product ideas, competitors, inspiration, or market research. Query with concepts like 'AI writing assistant' or 'developer productivity tools'.",
         agentId: "ph",
-        kinds: ["product"],
+        kinds: ["producthunt_product"],
         memoryManager,
         emptyMessage: "No matching products found.",
         errorPrefix: "Error searching products",

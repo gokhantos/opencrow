@@ -85,9 +85,14 @@ async function main(): Promise<void> {
       scraper.start();
       break;
     }
-    case "news": {
+    case "cryptopanic":
+    case "cointelegraph":
+    case "reuters":
+    case "investing_news":
+    case "investing_calendar": {
       const { createNewsProcessor } = await import("../sources/news/processor");
       const processor = createNewsProcessor({
+        enabledSources: [scraperId as import("../sources/news/types").NewsSource],
         memoryManager: memoryManager ?? undefined,
       });
       processor.start();

@@ -279,7 +279,7 @@ export function createXTimelineTools(
         description:
           "Semantic search over scraped X/Twitter timeline tweets. Use natural language queries to find tweets by topic, sentiment, or content. Good for discovering what people are talking about on Twitter.",
         agentId: "x-timeline",
-        kinds: ["tweet"],
+        kinds: ["x_post"],
         memoryManager,
         formatResult: (r, i) => {
           const meta = r.source.metadata ?? {};

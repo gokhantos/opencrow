@@ -16,6 +16,7 @@ import type {
   MemorySourceKind,
   TweetForIndex,
 } from "./types";
+import { NEWS_SOURCE_KIND_MAP } from "./types";
 import type { QdrantClient, QdrantPoint } from "./qdrant";
 import { updateChunkFts } from "./fts";
 import { getChunkProfile } from "./chunk-profiles";
@@ -246,17 +247,17 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
 
       await db`
         INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'tweet', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
+        VALUES (${sourceId}, 'x_post', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const profile = getChunkProfile("tweet");
+      const profile = getChunkProfile("x_post");
       const chunks = tweets.flatMap((t) => {
         const text = `@${t.authorHandle} (${t.tweetTimestamp}): ${t.text}`;
         const itemChunks = chunkText(text, profile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });
       if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "tweet", chunks);
+        await insertChunks(sourceId, agentId, "x_post", chunks);
       }
 
       log.info("Indexed tweets", {
@@ -273,38 +274,59 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       metadata,
     ) {
       const db = getDb();
-      const sourceId = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
-      const articleIds = articles.map((a) => a.id).join(",");
-      const metadataJson = JSON.stringify({
-        ...(metadata ?? {}),
-        articleIds,
-        articleCount: String(articles.length),
-      });
 
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'article', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
-
-      const profile = getChunkProfile("article");
-      const chunks = articles.flatMap((a) => {
-        const date = new Date(a.publishedAt * 1000).toISOString().slice(0, 16);
-        const snippet = a.content ? ` — ${a.content.slice(0, 200)}` : "";
-        const text = `[${a.category}] ${a.title} (${a.sourceName}, ${date})${snippet}\n${a.url}`;
-        const itemChunks = chunkText(text, profile);
-        return itemChunks.length > 0 ? itemChunks : [text];
-      });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "article", chunks);
+      // Group articles by source so each gets the correct kind
+      const bySource = new Map<string, ArticleForIndex[]>();
+      for (const a of articles) {
+        const group = bySource.get(a.sourceName) ?? [];
+        group.push(a);
+        bySource.set(a.sourceName, group);
       }
 
-      log.info("Indexed articles", {
-        agentId,
-        articleCount: articles.length,
-        chunks: chunks.length,
-      });
-      return sourceId;
+      let firstSourceId = "";
+
+      for (const [sourceName, group] of bySource) {
+        const kind: MemorySourceKind =
+          NEWS_SOURCE_KIND_MAP[sourceName] ?? "reuters_news";
+        const sourceId = crypto.randomUUID();
+        if (!firstSourceId) firstSourceId = sourceId;
+
+        const articleIds = group.map((a) => a.id).join(",");
+        const metadataJson = JSON.stringify({
+          ...(metadata ?? {}),
+          articleIds,
+          articleCount: String(group.length),
+          sourceName,
+        });
+
+        await db`
+          INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
+          VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
+        `;
+
+        const profile = getChunkProfile(kind);
+        const chunks = group.flatMap((a) => {
+          const date = new Date(a.publishedAt * 1000).toISOString().slice(0, 16);
+          const snippet = a.content ? ` — ${a.content.slice(0, 200)}` : "";
+          const text = `[${a.category}] ${a.title} (${a.sourceName}, ${date})${snippet}\n${a.url}`;
+          const itemChunks = chunkText(text, profile);
+          return itemChunks.length > 0 ? itemChunks : [text];
+        });
+        if (chunks.length > 0) {
+          await insertChunks(sourceId, agentId, kind, chunks);
+        }
+
+        log.info("Indexed news", {
+          agentId,
+          sourceName,
+          kind,
+          articleCount: group.length,
+          chunks: chunks.length,
+        });
+      }
+
+      return firstSourceId;
     },
 
     async indexProducts(
@@ -324,10 +346,10 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
 
       await db`
         INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'product', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
+        VALUES (${sourceId}, 'producthunt_product', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const profile = getChunkProfile("product");
+      const profile = getChunkProfile("producthunt_product");
       const chunks = products.flatMap((p) => {
         const rank = p.rank ? `#${p.rank}` : "unranked";
         const topics = p.topics.length > 0 ? p.topics.join(", ") : "none";
@@ -343,7 +365,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         return itemChunks.length > 0 ? itemChunks : [text];
       });
       if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "product", chunks);
+        await insertChunks(sourceId, agentId, "producthunt_product", chunks);
       }
 
       log.info("Indexed products", {
@@ -367,10 +389,10 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
 
       await db`
         INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'story', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
+        VALUES (${sourceId}, 'hackernews_story', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const profile = getChunkProfile("story");
+      const profile = getChunkProfile("hackernews_story");
       const chunks = stories.flatMap((s) => {
         const site = s.siteLabel ? ` (${s.siteLabel})` : "";
         const descLine = s.description ? `\nDescription: ${s.description}` : "";
@@ -383,7 +405,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         return itemChunks.length > 0 ? itemChunks : [text];
       });
       if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "story", chunks);
+        await insertChunks(sourceId, agentId, "hackernews_story", chunks);
       }
 
       log.info("Indexed stories", {
@@ -579,36 +601,56 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       metadata,
     ) {
       const db = getDb();
-      const sourceId = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
-      const reviewIds = reviews.map((r) => r.id).join(",");
-      const metadataJson = JSON.stringify({
-        ...(metadata ?? {}),
-        reviewIds,
-        reviewCount: String(reviews.length),
-      });
 
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'app_review', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
-
-      const profile = getChunkProfile("app_review");
-      const chunks = reviews.flatMap((r) => {
-        const text = `[${r.store}] ${r.appName} Review (${r.rating}/5): ${r.title}\n${r.content}`;
-        const itemChunks = chunkText(text, profile);
-        return itemChunks.length > 0 ? itemChunks : [text];
-      });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "app_review", chunks);
+      // Group by store for separate kinds
+      const byStore = new Map<"appstore" | "playstore", AppReviewForIndex[]>();
+      for (const r of reviews) {
+        const group = byStore.get(r.store) ?? [];
+        group.push(r);
+        byStore.set(r.store, group);
       }
 
-      log.info("Indexed app reviews", {
-        agentId,
-        reviewCount: reviews.length,
-        chunks: chunks.length,
-      });
-      return sourceId;
+      let firstSourceId = "";
+
+      for (const [store, group] of byStore) {
+        const kind: MemorySourceKind = `${store}_review`;
+        const sourceId = crypto.randomUUID();
+        if (!firstSourceId) firstSourceId = sourceId;
+
+        const reviewIds = group.map((r) => r.id).join(",");
+        const metadataJson = JSON.stringify({
+          ...(metadata ?? {}),
+          reviewIds,
+          reviewCount: String(group.length),
+          store,
+        });
+
+        await db`
+          INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
+          VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
+        `;
+
+        const profile = getChunkProfile(kind);
+        const chunks = group.flatMap((r) => {
+          const text = `[${r.store}] ${r.appName} Review (${r.rating}/5): ${r.title}\n${r.content}`;
+          const itemChunks = chunkText(text, profile);
+          return itemChunks.length > 0 ? itemChunks : [text];
+        });
+        if (chunks.length > 0) {
+          await insertChunks(sourceId, agentId, kind, chunks);
+        }
+
+        log.info("Indexed app reviews", {
+          agentId,
+          store,
+          kind,
+          reviewCount: group.length,
+          chunks: chunks.length,
+        });
+      }
+
+      return firstSourceId;
     },
 
     async indexAppRankings(
@@ -617,37 +659,57 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       metadata,
     ) {
       const db = getDb();
-      const sourceId = crypto.randomUUID();
       const now = Math.floor(Date.now() / 1000);
-      const rankingIds = rankings.map((r) => r.id).join(",");
-      const metadataJson = JSON.stringify({
-        ...(metadata ?? {}),
-        rankingIds,
-        rankingCount: String(rankings.length),
-      });
 
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'app_ranking', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
-
-      const profile = getChunkProfile("app_ranking");
-      const chunks = rankings.flatMap((r) => {
-        const installs = r.installs ? ` | Installs: ${r.installs}` : "";
-        const text = `[${r.store}] ${r.name} by ${r.artist} | Category: ${r.category} | Price: ${r.price}${installs}\n${r.description}\n${r.storeUrl}`;
-        const itemChunks = chunkText(text, profile);
-        return itemChunks.length > 0 ? itemChunks : [text];
-      });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "app_ranking", chunks);
+      // Group by store for separate kinds
+      const byStore = new Map<"appstore" | "playstore", AppRankingForIndex[]>();
+      for (const r of rankings) {
+        const group = byStore.get(r.store) ?? [];
+        group.push(r);
+        byStore.set(r.store, group);
       }
 
-      log.info("Indexed app rankings", {
-        agentId,
-        rankingCount: rankings.length,
-        chunks: chunks.length,
-      });
-      return sourceId;
+      let firstSourceId = "";
+
+      for (const [store, group] of byStore) {
+        const kind: MemorySourceKind = `${store}_ranking`;
+        const sourceId = crypto.randomUUID();
+        if (!firstSourceId) firstSourceId = sourceId;
+
+        const rankingIds = group.map((r) => r.id).join(",");
+        const metadataJson = JSON.stringify({
+          ...(metadata ?? {}),
+          rankingIds,
+          rankingCount: String(group.length),
+          store,
+        });
+
+        await db`
+          INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
+          VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
+        `;
+
+        const profile = getChunkProfile(kind);
+        const chunks = group.flatMap((r) => {
+          const installs = r.installs ? ` | Installs: ${r.installs}` : "";
+          const text = `[${r.store}] ${r.name} by ${r.artist} | Category: ${r.category} | Price: ${r.price}${installs}\n${r.description}\n${r.storeUrl}`;
+          const itemChunks = chunkText(text, profile);
+          return itemChunks.length > 0 ? itemChunks : [text];
+        });
+        if (chunks.length > 0) {
+          await insertChunks(sourceId, agentId, kind, chunks);
+        }
+
+        log.info("Indexed app rankings", {
+          agentId,
+          store,
+          kind,
+          rankingCount: group.length,
+          chunks: chunks.length,
+        });
+      }
+
+      return firstSourceId;
     },
 
     async deleteSourceChunks(sourceId) {

@@ -53,6 +53,21 @@ const SCRAPER_FIELDS: Readonly<Record<string, readonly FieldDef[]>> = {
   playstore: [
     { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 60 },
   ],
+  cryptopanic: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 5, max: 1440, defaultValue: 15 },
+  ],
+  cointelegraph: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 30 },
+  ],
+  reuters: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 60 },
+  ],
+  investing_news: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 60 },
+  ],
+  investing_calendar: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 30, max: 1440, defaultValue: 120 },
+  ],
 };
 
 const CONFIGURABLE_SCRAPERS = new Set(Object.keys(SCRAPER_FIELDS));

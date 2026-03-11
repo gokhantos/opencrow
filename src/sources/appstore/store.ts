@@ -171,6 +171,12 @@ export async function getUnindexedRankings(
   return rows as AppRankingRow[];
 }
 
+export async function getAllKnownAppIds(): Promise<Set<string>> {
+  const db = getDb();
+  const rows = await db`SELECT DISTINCT id FROM appstore_rankings`;
+  return new Set((rows as Array<{ id: string }>).map((r) => r.id));
+}
+
 export async function markRankingsIndexed(
   ids: readonly string[],
 ): Promise<void> {

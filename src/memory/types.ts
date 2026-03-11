@@ -21,33 +21,59 @@ export type MemorySourceKind =
   | "conversation"
   | "note"
   | "document"
-  | "tweet"
-  | "article"
-  | "product"
-  | "story"
+  | "x_post"
+  | "reuters_news"
+  | "cointelegraph_news"
+  | "cryptopanic_news"
+  | "investingnews_news"
+  | "producthunt_product"
+  | "hackernews_story"
   | "reddit_post"
   | "github_repo"
   | "observation"
   | "idea"
-  | "app_review"
-  | "app_ranking"
+  | "appstore_review"
+  | "appstore_ranking"
+  | "playstore_review"
+  | "playstore_ranking"
 ;
 
 export const MEMORY_SOURCE_KINDS = [
   "conversation",
   "note",
   "document",
-  "tweet",
-  "article",
-  "product",
-  "story",
+  "x_post",
+  "reuters_news",
+  "cointelegraph_news",
+  "cryptopanic_news",
+  "investingnews_news",
+  "producthunt_product",
+  "hackernews_story",
   "reddit_post",
   "github_repo",
   "observation",
   "idea",
-  "app_review",
-  "app_ranking",
+  "appstore_review",
+  "appstore_ranking",
+  "playstore_review",
+  "playstore_ranking",
 ] as const satisfies readonly MemorySourceKind[];
+
+/** Map news source_name from scrapers to the corresponding memory kind. */
+export const NEWS_SOURCE_KIND_MAP: Readonly<Record<string, MemorySourceKind>> = {
+  reuters: "reuters_news",
+  cointelegraph: "cointelegraph_news",
+  cryptopanic: "cryptopanic_news",
+  investing_news: "investingnews_news",
+};
+
+/** All news-related memory kinds. */
+export const NEWS_KINDS: readonly MemorySourceKind[] = [
+  "reuters_news",
+  "cointelegraph_news",
+  "cryptopanic_news",
+  "investingnews_news",
+];
 
 export interface SearchResult {
   readonly chunk: MemoryChunk;
