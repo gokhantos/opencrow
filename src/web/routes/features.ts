@@ -4,6 +4,7 @@ import { createLogger } from "../../logger";
 import { getOverride, setOverride } from "../../store/config-overrides";
 import { loadConfigWithOverrides } from "../../config/loader";
 import { AVAILABLE_SCRAPERS } from "../../sources/available";
+import { embeddingsConfigSchema } from "../../config/schema";
 
 const log = createLogger("web-features");
 
@@ -78,6 +79,12 @@ export function createFeaturesRoutes(): Hono {
           ? Boolean(marketOverride)
           : config.market !== undefined;
 
+      // Embeddings config: prefer DB override, fall back to file config defaults
+      const embeddingsOverride = await getOverride(NAMESPACE, "embeddings");
+      const embeddingsConfig = embeddingsConfigSchema.parse(
+        embeddingsOverride ?? config.embeddings ?? {},
+      );
+
       return c.json({
         success: true,
         data: {
@@ -87,6 +94,7 @@ export function createFeaturesRoutes(): Hono {
           },
           qdrant: { enabled: qdrantEnabled },
           market: { enabled: marketEnabled },
+          embeddings: embeddingsConfig,
         },
       });
     } catch (err) {
@@ -223,6 +231,48 @@ export function createFeaturesRoutes(): Hono {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error("Failed to save scraper config", { scraperId, err });
+      return c.json({ success: false, error: message }, 500);
+    }
+  });
+
+  app.get("/features/embeddings", async (c) => {
+    try {
+      const override = await getOverride(NAMESPACE, "embeddings");
+      const config = await loadConfigWithOverrides();
+      const embeddingsConfig = embeddingsConfigSchema.parse(
+        override ?? config.embeddings ?? {},
+      );
+      return c.json({ success: true, data: embeddingsConfig });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("Failed to load embeddings config", err);
+      return c.json({ success: false, error: message }, 500);
+    }
+  });
+
+  app.put("/features/embeddings", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ success: false, error: "Invalid JSON body" }, 400);
+    }
+
+    const parsed = embeddingsConfigSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { success: false, error: parsed.error.issues[0]?.message ?? "Invalid body" },
+        400,
+      );
+    }
+
+    try {
+      await setOverride(NAMESPACE, "embeddings", parsed.data);
+      log.info("Updated embeddings config", { config: parsed.data });
+      return c.json({ success: true, data: parsed.data });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("Failed to save embeddings config", err);
       return c.json({ success: false, error: message }, 500);
     }
   });

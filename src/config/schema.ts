@@ -204,6 +204,32 @@ export const qdrantConfigSchema = z.object({
   collection: z.string().default("opencrow_memory"),
 });
 
+export const embeddingsConfigSchema = z
+  .object({
+    provider: z.enum(["local", "openrouter"]).default("local"),
+    /** Model name — used for display and OpenRouter routing */
+    model: z.string().default("Qwen/Qwen3-Embedding-0.6B"),
+    /** Embedding vector dimensions */
+    dimensions: z.number().int().min(32).max(4096).default(512),
+    /** URL of the local embedding server (when provider=local) */
+    localUrl: z
+      .string()
+      .url()
+      .default("http://127.0.0.1:8901"),
+    /** OpenRouter model to use (when provider=openrouter) */
+    openrouterModel: z.string().default("openai/text-embedding-3-small"),
+    /** Max texts per API batch */
+    batchSize: z.number().int().min(1).default(64),
+  })
+  .default({
+    provider: "local",
+    model: "Qwen/Qwen3-Embedding-0.6B",
+    dimensions: 512,
+    localUrl: "http://127.0.0.1:8901",
+    openrouterModel: "openai/text-embedding-3-small",
+    batchSize: 64,
+  });
+
 export const memorySearchConfigSchema = z.object({
   autoIndex: z.boolean().default(true),
   shared: z.boolean().default(true),
@@ -335,6 +361,7 @@ export const opencrowConfigSchema = z.object({
     url: "postgres://opencrow:opencrow@127.0.0.1:5432/opencrow",
     max: 20,
   }),
+  embeddings: embeddingsConfigSchema,
   memorySearch: memorySearchConfigSchema.optional(),
   observations: observationsConfigSchema,
   market: marketPipelineConfigSchema.optional(),
@@ -356,6 +383,7 @@ export type CronConfig = z.infer<typeof cronConfigSchema>;
 export type MemorySearchConfig = z.infer<typeof memorySearchConfigSchema>;
 export type PostgresConfig = z.infer<typeof postgresConfigSchema>;
 export type QdrantConfig = z.infer<typeof qdrantConfigSchema>;
+export type EmbeddingsConfig = z.infer<typeof embeddingsConfigSchema>;
 export type InternalApiConfig = z.infer<typeof internalApiConfigSchema>;
 export type MarketPipelineConfig = z.infer<typeof marketPipelineConfigSchema>;
 export type ObservationsConfig = z.infer<typeof observationsConfigSchema>;

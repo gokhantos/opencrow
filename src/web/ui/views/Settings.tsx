@@ -7,6 +7,7 @@ import {
   TrendingUp,
   Rss,
   ChevronRight,
+  ChevronDown,
   Circle,
   Settings as SettingsIcon,
   Settings2,
@@ -57,6 +58,15 @@ function getDefaults(scraperId: string): Record<string, number> {
   return Object.fromEntries(fields.map((f) => [f.key, f.defaultValue]));
 }
 
+interface EmbeddingsConfig {
+  readonly provider: "local" | "openrouter";
+  readonly model: string;
+  readonly dimensions: number;
+  readonly localUrl: string;
+  readonly openrouterModel: string;
+  readonly batchSize: number;
+}
+
 interface FeaturesResponse {
   readonly scrapers: {
     readonly available: readonly ScraperMeta[];
@@ -64,6 +74,7 @@ interface FeaturesResponse {
   };
   readonly qdrant: { readonly enabled: boolean };
   readonly market: { readonly enabled: boolean };
+  readonly embeddings: EmbeddingsConfig;
 }
 
 /* ── Status pill ── */
@@ -406,6 +417,222 @@ function ScrapersSection({
   );
 }
 
+/* ── Text config field ── */
+function TextConfigField({
+  label,
+  description,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}: {
+  readonly label: string;
+  readonly description: string;
+  readonly value: string;
+  readonly onChange: (v: string) => void;
+  readonly placeholder?: string;
+  readonly type?: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-foreground">{label}</div>
+        <div className="text-xs text-muted mt-0.5">{description}</div>
+      </div>
+      <input
+        type={type}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-56 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground focus:outline-none focus:border-accent"
+      />
+    </div>
+  );
+}
+
+/* ── Select config field ── */
+function SelectConfigField({
+  label,
+  description,
+  value,
+  options,
+  onChange,
+}: {
+  readonly label: string;
+  readonly description: string;
+  readonly value: string;
+  readonly options: readonly { readonly value: string; readonly label: string }[];
+  readonly onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-foreground">{label}</div>
+        <div className="text-xs text-muted mt-0.5">{description}</div>
+      </div>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-40 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground focus:outline-none focus:border-accent"
+      >
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/* ── Embeddings config section (shown under Qdrant card when expanded) ── */
+function EmbeddingsSection({
+  config,
+  onSave,
+}: {
+  readonly config: EmbeddingsConfig;
+  readonly onSave: (config: EmbeddingsConfig) => void;
+}) {
+  const { success, error: toastError } = useToast();
+  const [expanded, setExpanded] = useState(false);
+  const [draft, setDraft] = useState<EmbeddingsConfig>(config);
+  const [saving, setSaving] = useState(false);
+
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(config);
+
+  function update<K extends keyof EmbeddingsConfig>(
+    key: K,
+    value: EmbeddingsConfig[K],
+  ) {
+    setDraft((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiFetch("/api/features/embeddings", {
+        method: "PUT",
+        body: JSON.stringify(draft),
+      });
+      onSave(draft);
+      window.dispatchEvent(new Event("features-changed"));
+      success("Embeddings config saved.");
+    } catch {
+      toastError("Failed to save embeddings config.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 ml-[50px]">
+      <button
+        type="button"
+        className="flex items-center gap-1.5 text-xs text-muted hover:text-foreground bg-transparent border-none cursor-pointer p-0"
+        onClick={() => setExpanded((p) => !p)}
+      >
+        {expanded ? (
+          <ChevronDown className="w-3 h-3" />
+        ) : (
+          <ChevronRight className="w-3 h-3" />
+        )}
+        <span>Embeddings Configuration</span>
+        {isDirty && (
+          <span className="text-xs font-medium text-warning bg-warning-subtle px-1.5 py-0.5 rounded-full ml-1">
+            Unsaved
+          </span>
+        )}
+      </button>
+
+      {expanded && (
+        <div className="mt-2 bg-bg-2 border border-border rounded-lg p-3 flex flex-col gap-3">
+          <SelectConfigField
+            label="Provider"
+            description="Embedding provider to use"
+            value={draft.provider}
+            options={[
+              { value: "local", label: "Local (Self-hosted)" },
+              { value: "openrouter", label: "OpenRouter" },
+            ]}
+            onChange={(v) =>
+              update("provider", v as "local" | "openrouter")
+            }
+          />
+
+          {draft.provider === "local" && (
+            <>
+              <TextConfigField
+                label="Model"
+                description="HuggingFace model ID for local server"
+                value={draft.model}
+                onChange={(v) => update("model", v)}
+                placeholder="Qwen/Qwen3-Embedding-0.6B"
+              />
+              <TextConfigField
+                label="Server URL"
+                description="Local embedding server address"
+                value={draft.localUrl}
+                onChange={(v) => update("localUrl", v)}
+                placeholder="http://127.0.0.1:8901"
+              />
+            </>
+          )}
+
+          {draft.provider === "openrouter" && (
+            <TextConfigField
+              label="OpenRouter Model"
+              description="Model ID on OpenRouter"
+              value={draft.openrouterModel}
+              onChange={(v) => update("openrouterModel", v)}
+              placeholder="openai/text-embedding-3-small"
+            />
+          )}
+
+          <ConfigField
+            label="Dimensions"
+            description="Vector embedding dimensions (must match Qdrant collection)"
+            value={draft.dimensions}
+            min={32}
+            max={4096}
+            onChange={(v) => update("dimensions", v)}
+          />
+
+          <ConfigField
+            label="Batch Size"
+            description="Max texts per API batch"
+            value={draft.batchSize}
+            min={1}
+            max={256}
+            onChange={(v) => update("batchSize", v)}
+          />
+
+          {isDirty && (
+            <div className="flex justify-end gap-2 pt-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setDraft(config)}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleSave}
+                disabled={saving}
+                loading={saving}
+              >
+                Save
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Main ── */
 export default function Settings() {
   const { success, error: toastError } = useToast();
@@ -420,6 +647,8 @@ export default function Settings() {
   const [scrapersSaving, setScrapersSaving] = useState(false);
   const [qdrantSaving, setQdrantSaving] = useState(false);
   const [marketSaving, setMarketSaving] = useState(false);
+  const [embeddingsConfig, setEmbeddingsConfig] =
+    useState<EmbeddingsConfig | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -429,6 +658,7 @@ export default function Settings() {
         if (cancelled) return;
         setFeatures(res.data);
         setEnabledScrapers(new Set(res.data.scrapers.enabled));
+        setEmbeddingsConfig(res.data.embeddings);
         setScrapersDirty(false);
       } catch {
         if (!cancelled) toastError("Failed to load feature settings.");
@@ -537,21 +767,43 @@ export default function Settings() {
       />
 
       <div className="flex flex-col gap-3">
-        {/* Qdrant */}
-        <FeatureCard
-          icon={Database}
-          iconColor="bg-accent-subtle text-accent"
-          title="Qdrant (RAG Memory)"
-          description="Vector database for agent long-term memory and semantic search."
-          detail={
-            features.qdrant.enabled
+        {/* Qdrant + Embeddings */}
+        <div className="bg-bg-1 border border-border rounded-xl p-5 transition-all duration-200 hover:border-border-hover">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-start gap-3.5 min-w-0">
+              <div className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center bg-accent-subtle text-accent">
+                <Database className="w-[18px] h-[18px]" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2.5 mb-1">
+                  <h3 className="text-sm font-semibold text-strong m-0">
+                    Qdrant (RAG Memory)
+                  </h3>
+                  <StatusPill enabled={features.qdrant.enabled} />
+                </div>
+                <p className="text-xs text-muted m-0 leading-relaxed">
+                  Vector database for agent long-term memory and semantic search.
+                </p>
+              </div>
+            </div>
+            <Toggle
+              checked={features.qdrant.enabled}
+              onChange={handleQdrantToggle}
+              disabled={qdrantSaving}
+            />
+          </div>
+          <div className="mt-3 ml-[50px] text-xs text-faint">
+            {features.qdrant.enabled
               ? "Agents can read and write memory via RAG retrieval."
-              : "RAG memory is unavailable for all agents."
-          }
-          enabled={features.qdrant.enabled}
-          saving={qdrantSaving}
-          onToggle={handleQdrantToggle}
-        />
+              : "RAG memory is unavailable for all agents."}
+          </div>
+          {features.qdrant.enabled && embeddingsConfig && (
+            <EmbeddingsSection
+              config={embeddingsConfig}
+              onSave={setEmbeddingsConfig}
+            />
+          )}
+        </div>
 
         {/* Market Data */}
         <FeatureCard

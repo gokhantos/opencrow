@@ -52,6 +52,7 @@ export interface ToolRegistry {
   withSemanticIndex(
     embeddingProvider: EmbeddingProvider,
     qdrantClient: QdrantClient,
+    vectorSize?: number,
   ): Promise<ToolRegistry>;
   recordToolExecution(toolName: string, success: boolean): void;
 }
@@ -181,6 +182,7 @@ function buildRegistry(tools: readonly ToolDefinition[]): ToolRegistry {
     async withSemanticIndex(
       embeddingProvider: EmbeddingProvider,
       qdrantClient: QdrantClient,
+      vectorSize?: number,
     ): Promise<ToolRegistry> {
       if (!router) {
         router = createToolRouter(dedupedTools);
@@ -189,6 +191,7 @@ function buildRegistry(tools: readonly ToolDefinition[]): ToolRegistry {
         const semanticIndex = createSemanticToolIndex(
           embeddingProvider,
           qdrantClient,
+          vectorSize,
         );
         await semanticIndex.init(dedupedTools);
         if (semanticIndex.isAvailable()) {

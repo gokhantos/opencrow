@@ -37,7 +37,7 @@ import {
 } from "../memory/observation-hook";
 import { buildSdkHooks } from "../agent/hooks";
 import { createMemoryManager } from "../memory/manager";
-import { createEmbeddingProvider } from "../memory/embeddings";
+import { createEmbeddingProviderFromConfig } from "../memory/embeddings";
 import { createQdrantClient } from "../memory/qdrant";
 import { createMarketTools } from "../sources/markets/tools";
 import { initQuestDBReadOnly } from "../sources/markets/questdb";
@@ -182,17 +182,18 @@ export async function bootstrap(
   let memoryManager: MemoryManager | null = null;
   if (!opts.skipMemory && mergedConfig.memorySearch !== undefined) {
     const { getSecret } = await import("../config/secrets");
-    const embeddingKey =
-      (await getSecret("OPENROUTER_API_KEY")) ?? (await getSecret("VOYAGE_API_KEY"));
-    const embeddingProvider = embeddingKey
-      ? createEmbeddingProvider(embeddingKey)
-      : null;
-
-    if (!embeddingKey) {
-      log.warn(
-        "OPENROUTER_API_KEY not set — memory search disabled (requires Qdrant + embeddings)",
-      );
+    const { getOverride } = await import("../store/config-overrides");
+    const { embeddingsConfigSchema } = await import("../config/schema");
+    const embeddingsOverride = await getOverride("features", "embeddings");
+    const embeddingsConfig = embeddingsConfigSchema.parse(
+      embeddingsOverride ?? mergedConfig.embeddings ?? {},
+    );
+    let apiKey: string | undefined;
+    if (embeddingsConfig.provider === "openrouter") {
+      apiKey =
+        (await getSecret("OPENROUTER_API_KEY")) ?? (await getSecret("VOYAGE_API_KEY")) ?? undefined;
     }
+    const embeddingProvider = createEmbeddingProviderFromConfig(embeddingsConfig, apiKey);
 
     const memSearch = mergedConfig.memorySearch!;
     const qdrantUrl = (await getSecret("QDRANT_URL")) ?? memSearch.qdrant.url;
@@ -203,7 +204,7 @@ export async function bootstrap(
     });
 
     if (qdrantClient.available) {
-      await qdrantClient.ensureCollection(qdrantCollection, 512);
+      await qdrantClient.ensureCollection(qdrantCollection, embeddingsConfig.dimensions);
     }
 
     memoryManager = createMemoryManager({
@@ -218,7 +219,8 @@ export async function bootstrap(
       mmrLambda: memSearch.mmrLambda,
     });
     log.info("Memory search initialized", {
-      vectorEnabled: Boolean(embeddingKey),
+      provider: embeddingsConfig.provider,
+      vectorEnabled: Boolean(embeddingProvider),
       qdrantAvailable: qdrantClient.available,
       autoIndex: memSearch.autoIndex,
     });
@@ -229,6 +231,7 @@ export async function bootstrap(
         baseToolRegistry = await baseToolRegistry.withSemanticIndex(
           embeddingProvider,
           qdrantClient,
+          embeddingsConfig.dimensions,
         );
       } catch (err) {
         log.warn("Semantic tool index init failed — using keyword routing", {

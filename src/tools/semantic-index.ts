@@ -6,7 +6,7 @@ import { createLogger } from "../logger";
 const log = createLogger("tool:semantic-index");
 
 const COLLECTION = "tool_routing";
-const VECTOR_SIZE = 512;
+const DEFAULT_vectorSize = 512;
 // Stable prefix so we can identify tool routing points from memory points
 const POINT_ID_PREFIX = "tool-";
 
@@ -42,6 +42,7 @@ const SENTINEL_NAME = "__sentinel__";
 export function createSemanticToolIndex(
   embeddingProvider: EmbeddingProvider,
   qdrantClient: QdrantClient,
+  vectorSize: number = DEFAULT_vectorSize,
 ): SemanticToolIndex {
   let ready = false;
 
@@ -56,7 +57,7 @@ export function createSemanticToolIndex(
         return;
       }
 
-      const ok = await qdrantClient.ensureCollection(COLLECTION, VECTOR_SIZE);
+      const ok = await qdrantClient.ensureCollection(COLLECTION, vectorSize);
       if (!ok) {
         log.warn("Failed to ensure tool_routing collection");
         return;
@@ -70,7 +71,7 @@ export function createSemanticToolIndex(
       const sentinelId = await toolPointId(SENTINEL_NAME);
       try {
         // Use a small non-zero vector to avoid cosine edge cases with zero vectors
-        const probeVec = new Array<number>(VECTOR_SIZE).fill(0);
+        const probeVec = new Array<number>(vectorSize).fill(0);
         probeVec[0] = 1;
         const existing = await qdrantClient.searchPoints(
           COLLECTION,
@@ -114,7 +115,7 @@ export function createSemanticToolIndex(
       );
 
       // Upsert sentinel with corpus hash (small non-zero vector for cosine compat)
-      const sentinelVec = new Array<number>(VECTOR_SIZE).fill(0);
+      const sentinelVec = new Array<number>(vectorSize).fill(0);
       sentinelVec[0] = 1;
       const sentinelPoint = {
         id: sentinelId,
