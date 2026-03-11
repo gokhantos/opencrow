@@ -59,6 +59,7 @@ export function createToolsRoutes(): Hono {
       success: true,
       data: filtered,
       categories: CATEGORY_LABELS,
+      disabledTools: features.disabledTools,
     });
   });
 

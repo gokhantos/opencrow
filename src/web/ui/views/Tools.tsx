@@ -15,6 +15,7 @@ interface ToolsResponse {
   success: boolean;
   data: ToolInfo[];
   categories: Record<string, string>;
+  disabledTools: string[];
 }
 
 function ToolCard({
@@ -105,18 +106,13 @@ function DetailPanel({
           <button
             type="button"
             className={cn(
-              "relative w-9 h-[18px] rounded-full transition-colors cursor-pointer border-0",
-              tool.enabled ? "bg-accent" : "bg-bg-3",
+              "flex items-center w-9 h-5 rounded-full transition-colors cursor-pointer border-0 p-0.5",
+              tool.enabled ? "bg-accent justify-end" : "bg-bg-3 justify-start",
             )}
             onClick={onToggle}
             title={tool.enabled ? "Disable tool" : "Enable tool"}
           >
-            <span
-              className={cn(
-                "absolute top-[1px] w-4 h-4 rounded-full bg-white transition-transform",
-                tool.enabled ? "translate-x-[18px]" : "translate-x-[1px]",
-              )}
-            />
+            <span className="block w-4 h-4 rounded-full bg-white shadow-sm" />
           </button>
           <button
             type="button"
@@ -176,12 +172,14 @@ export default function Tools() {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [selectedTool, setSelectedTool] = useState<ToolInfo | null>(null);
   const [showDisabled, setShowDisabled] = useState(true);
+  const [manuallyDisabled, setManuallyDisabled] = useState<Set<string>>(new Set());
 
   const loadTools = useCallback(async () => {
     try {
       const res = await apiFetch<ToolsResponse>("/api/tools");
       setTools(res.data);
       setCategories(res.categories);
+      setManuallyDisabled(new Set(res.disabledTools ?? []));
       setError("");
     } catch {
       setError("Failed to load tools");
@@ -196,35 +194,38 @@ export default function Tools() {
 
   const toggleTool = useCallback(
     async (toolName: string) => {
-      const tool = tools.find((t) => t.name === toolName);
-      if (!tool) return;
+      // Only toggle manually disabled state
+      const wasManuallyDisabled = manuallyDisabled.has(toolName);
+      const newDisabled = new Set(manuallyDisabled);
+      if (wasManuallyDisabled) {
+        newDisabled.delete(toolName);
+      } else {
+        newDisabled.add(toolName);
+      }
+      setManuallyDisabled(newDisabled);
 
-      // Optimistic update
+      // Optimistic update on tool list
       const updated = tools.map((t) =>
-        t.name === toolName ? { ...t, enabled: !t.enabled } : t,
+        t.name === toolName ? { ...t, enabled: wasManuallyDisabled ? true : false } : t,
       );
       setTools(updated);
       setSelectedTool((prev) =>
-        prev?.name === toolName ? { ...prev, enabled: !prev.enabled } : prev,
+        prev?.name === toolName ? { ...prev, enabled: wasManuallyDisabled } : prev,
       );
-
-      // Persist: collect all manually disabled tools
-      const disabledTools = updated
-        .filter((t) => !t.enabled)
-        .map((t) => t.name);
 
       try {
         await apiFetch("/api/tools/disabled", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ disabled: disabledTools }),
+          body: JSON.stringify({ disabled: [...newDisabled] }),
         });
+        // Reload to get accurate feature-based state
+        await loadTools();
       } catch {
-        // Revert on failure
         loadTools();
       }
     },
-    [tools, loadTools],
+    [tools, manuallyDisabled, loadTools],
   );
 
   const enabledCount = tools.filter((t) => t.enabled).length;
