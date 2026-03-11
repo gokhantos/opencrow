@@ -74,6 +74,42 @@ const SCRAPER_FIELDS: Readonly<Record<string, readonly FieldDef[]>> = {
 
 const CONFIGURABLE_SCRAPERS = new Set(Object.keys(SCRAPER_FIELDS));
 
+// Maps scraper ID → the memory source kind(s) for chunk profile config
+// Only include kinds that benefit from content-limit tuning
+const SCRAPER_TO_CHUNK_KINDS: Readonly<Record<string, readonly string[]>> = {
+  hackernews: ["hackernews_story"],
+  "github-search": ["github_repo"],
+  github: ["github_repo"],
+  reddit: ["reddit_post"],
+  producthunt: ["producthunt_product"],
+  appstore: ["appstore_review", "appstore_ranking"],
+  playstore: ["playstore_review", "playstore_ranking"],
+  cryptopanic: ["cryptopanic_news"],
+  cointelegraph: ["cointelegraph_news"],
+  reuters: ["reuters_news"],
+  investing_news: ["investingnews_news"],
+};
+
+// Which kinds have contentMaxChars / commentMaxChars fields
+const KINDS_WITH_CONTENT_MAX = new Set([
+  "hackernews_story",
+  "reddit_post",
+  "github_repo",
+  "reuters_news",
+  "cointelegraph_news",
+  "cryptopanic_news",
+  "investingnews_news",
+  "idea",
+]);
+const KINDS_WITH_COMMENT_MAX = new Set(["hackernews_story", "reddit_post"]);
+
+interface ChunkProfile {
+  readonly maxTokens: number;
+  readonly overlap: number;
+  readonly contentMaxChars?: number;
+  readonly commentMaxChars?: number;
+}
+
 function getDefaults(scraperId: string): Record<string, number> {
   const fields = SCRAPER_FIELDS[scraperId] ?? [];
   return Object.fromEntries(fields.map((f) => [f.key, f.defaultValue]));
@@ -208,6 +244,101 @@ function ConfigField({
   );
 }
 
+/* ── Chunk profile form for a single kind ── */
+function ChunkProfileForm({
+  kind,
+}: {
+  readonly kind: string;
+}) {
+  const { success, error: toastError } = useToast();
+  const [profile, setProfile] = useState<ChunkProfile | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch<{ data: ChunkProfile }>(`/api/features/chunk-profiles/${kind}`)
+      .then((res) => { if (!cancelled) setProfile(res.data); })
+      .catch(() => { if (!cancelled) toastError(`Failed to load chunk profile for ${kind}.`); });
+    return () => { cancelled = true; };
+  }, [kind]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSave() {
+    if (!profile) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/api/features/chunk-profiles/${kind}`, {
+        method: "PUT",
+        body: JSON.stringify(profile),
+      });
+      success("Chunk profile saved.");
+    } catch {
+      toastError("Failed to save chunk profile.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!profile) return <p className="text-xs text-muted py-1">Loading…</p>;
+
+  const hasContent = KINDS_WITH_CONTENT_MAX.has(kind);
+  const hasComment = KINDS_WITH_COMMENT_MAX.has(kind);
+
+  return (
+    <div className="flex flex-col gap-2 pt-1">
+      <div className="text-xs font-medium text-muted uppercase tracking-wide mb-1">
+        {kind.replace(/_/g, " ")} — Embedding Profile
+      </div>
+      <ConfigField
+        label="Chunk size (tokens)"
+        description="Max tokens per text chunk sent to embedder"
+        value={profile.maxTokens}
+        min={50}
+        max={2000}
+        onChange={(v) => setProfile((p) => p ? { ...p, maxTokens: v } : p)}
+      />
+      <ConfigField
+        label="Chunk overlap (tokens)"
+        description="Token overlap between adjacent chunks"
+        value={profile.overlap}
+        min={0}
+        max={Math.floor(profile.maxTokens / 2)}
+        onChange={(v) => setProfile((p) => p ? { ...p, overlap: v } : p)}
+      />
+      {hasContent && (
+        <ConfigField
+          label="Max content length (chars)"
+          description="Truncate content body before chunking"
+          value={profile.contentMaxChars ?? 400}
+          min={100}
+          max={20000}
+          onChange={(v) => setProfile((p) => p ? { ...p, contentMaxChars: v } : p)}
+        />
+      )}
+      {hasComment && (
+        <ConfigField
+          label="Max comment length (chars)"
+          description="Truncate each comment before chunking"
+          value={profile.commentMaxChars ?? 800}
+          min={50}
+          max={5000}
+          onChange={(v) => setProfile((p) => p ? { ...p, commentMaxChars: v } : p)}
+        />
+      )}
+      <div className="flex justify-end pt-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleSave}
+          disabled={saving}
+          loading={saving}
+        >
+          Save profile
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /* ── Generic scraper config form ── */
 function ScraperConfigForm({
   scraperId,
@@ -218,6 +349,7 @@ function ScraperConfigForm({
 }) {
   const { success, error: toastError } = useToast();
   const fields = SCRAPER_FIELDS[scraperId] ?? [];
+  const chunkKinds = SCRAPER_TO_CHUNK_KINDS[scraperId] ?? [];
   const [config, setConfig] = useState<Record<string, number>>(getDefaults(scraperId));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -286,6 +418,14 @@ function ScraperConfigForm({
               Save
             </Button>
           </div>
+
+          {chunkKinds.length > 0 && (
+            <div className="border-t border-border pt-3 flex flex-col gap-4">
+              {chunkKinds.map((kind) => (
+                <ChunkProfileForm key={kind} kind={kind} />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

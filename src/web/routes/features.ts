@@ -3,6 +3,8 @@ import { z } from "zod";
 import { createLogger } from "../../logger";
 import { getOverride, setOverride } from "../../store/config-overrides";
 import { loadConfigWithOverrides } from "../../config/loader";
+import { DEFAULT_CHUNK_PROFILES } from "../../memory/chunk-profiles";
+import type { MemorySourceKind } from "../../memory/types";
 import { AVAILABLE_SCRAPERS } from "../../sources/available";
 import { embeddingsConfigSchema } from "../../config/schema";
 
@@ -10,6 +12,17 @@ const log = createLogger("web-features");
 
 const NAMESPACE = "features";
 const SCRAPER_CONFIG_NAMESPACE = "scraper-config";
+const CHUNK_PROFILES_NAMESPACE = "chunk-profiles";
+
+const chunkProfileOverrideSchema = z.object({
+  maxTokens: z.number().int().min(50).max(2000).optional(),
+  overlap: z.number().int().min(0).max(1000).optional(),
+  contentMaxChars: z.number().int().min(100).max(20000).optional(),
+  commentMaxChars: z.number().int().min(50).max(5000).optional(),
+}).refine(
+  (d) => d.overlap === undefined || d.maxTokens === undefined || d.overlap <= Math.floor(d.maxTokens / 2),
+  { message: "overlap must be at most half of maxTokens" },
+);
 
 const updateScrapersSchema = z.object({
   enabled: z.array(z.string()),
@@ -280,6 +293,58 @@ export function createFeaturesRoutes(): Hono {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error("Failed to save embeddings config", err);
+      return c.json({ success: false, error: message }, 500);
+    }
+  });
+
+  app.get("/features/chunk-profiles/:kind", async (c) => {
+    const kind = c.req.param("kind") as MemorySourceKind;
+    if (!DEFAULT_CHUNK_PROFILES[kind]) {
+      return c.json({ success: false, error: `Unknown chunk profile kind: ${kind}` }, 404);
+    }
+    try {
+      const base = DEFAULT_CHUNK_PROFILES[kind];
+      const dbOverride = await getOverride(CHUNK_PROFILES_NAMESPACE, kind);
+      const merged = dbOverride && typeof dbOverride === "object"
+        ? { ...base, ...(dbOverride as object) }
+        : base;
+      return c.json({ success: true, data: merged });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("Failed to load chunk profile", { kind, err });
+      return c.json({ success: false, error: message }, 500);
+    }
+  });
+
+  app.put("/features/chunk-profiles/:kind", async (c) => {
+    const kind = c.req.param("kind") as MemorySourceKind;
+    if (!DEFAULT_CHUNK_PROFILES[kind]) {
+      return c.json({ success: false, error: `Unknown chunk profile kind: ${kind}` }, 404);
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ success: false, error: "Invalid JSON body" }, 400);
+    }
+
+    const parsed = chunkProfileOverrideSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { success: false, error: parsed.error.issues[0]?.message ?? "Invalid body" },
+        400,
+      );
+    }
+
+    try {
+      await setOverride(CHUNK_PROFILES_NAMESPACE, kind, parsed.data);
+      log.info("Updated chunk profile override", { kind, override: parsed.data });
+      const merged = { ...DEFAULT_CHUNK_PROFILES[kind], ...parsed.data };
+      return c.json({ success: true, data: merged });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error("Failed to save chunk profile override", { kind, err });
       return c.json({ success: false, error: message }, 500);
     }
   });
