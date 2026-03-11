@@ -2,6 +2,8 @@ import React, { useState, useEffect } from "react";
 import { apiFetch } from "../api";
 import { formatTime, formatNumber } from "../lib/format";
 import { PageHeader, LoadingState, EmptyState, Button } from "../components";
+import { useToast } from "../components/Toast";
+import { Settings2, ChevronDown } from "lucide-react";
 
 interface GithubRepo {
   readonly id: string;
@@ -26,8 +28,20 @@ interface StatsData {
   readonly languages: number;
 }
 
+interface GithubSearchConfig {
+  readonly minStars: number;
+  readonly pushedWithinDays: number;
+  readonly maxPages: number;
+}
+
+const SEARCH_CONFIG_DEFAULTS: GithubSearchConfig = {
+  minStars: 500,
+  pushedWithinDays: 7,
+  maxPages: 4,
+};
+
 type SortKey = "stars_today" | "stars" | "forks" | "newest";
-type PeriodFilter = "" | "daily" | "weekly";
+type PeriodFilter = "" | "daily" | "weekly" | "search";
 
 const langColors: Record<string, string> = {
   Python: "#3572A5",
@@ -44,6 +58,122 @@ const langColors: Record<string, string> = {
   Kotlin: "#A97BFF",
   Dart: "#00B4AB",
 };
+
+/* ── Search config panel ── */
+function SearchConfigPanel() {
+  const { success, error: toastError } = useToast();
+  const [open, setOpen] = useState(false);
+  const [config, setConfig] = useState<GithubSearchConfig>(SEARCH_CONFIG_DEFAULTS);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open || loaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch<{ data: GithubSearchConfig }>(
+          "/api/features/scraper-config/github-search",
+        );
+        if (!cancelled) {
+          setConfig(res.data);
+          setLoaded(true);
+        }
+      } catch {
+        if (!cancelled) {
+          setLoaded(true);
+          toastError("Failed to load search config.");
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiFetch("/api/features/scraper-config/github-search", {
+        method: "PUT",
+        body: JSON.stringify(config),
+      });
+      success("Search config saved.");
+    } catch {
+      toastError("Failed to save search config.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function field(
+    label: string,
+    key: keyof GithubSearchConfig,
+    min: number,
+    max: number,
+    desc: string,
+  ) {
+    return (
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-foreground">{label}</div>
+          <div className="text-xs text-muted mt-0.5">{desc}</div>
+        </div>
+        <input
+          type="number"
+          min={min}
+          max={max}
+          value={config[key]}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            if (!isNaN(n)) setConfig((prev) => ({ ...prev, [key]: n }));
+          }}
+          className="w-20 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-bg-1 border border-border rounded-lg mb-5">
+      <button
+        type="button"
+        onClick={() => setOpen((p) => !p)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-transparent border-none cursor-pointer text-left"
+      >
+        <div className="flex items-center gap-2 text-xs text-muted">
+          <Settings2 className="w-3.5 h-3.5" />
+          <span className="font-medium">GitHub Search Config</span>
+        </div>
+        <ChevronDown
+          className={`w-3.5 h-3.5 text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="border-t border-border px-4 py-3 flex flex-col gap-3">
+          {!loaded ? (
+            <p className="text-xs text-muted">Loading...</p>
+          ) : (
+            <>
+              {field("Minimum stars", "minStars", 1, 100000, "Only include repos with at least this many stars")}
+              {field("Pushed within days", "pushedWithinDays", 1, 90, "Only include repos pushed within this many days")}
+              {field("Max pages", "maxPages", 1, 10, "Max pages to fetch per scrape run (30 repos per page)")}
+              <div className="flex justify-end">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={handleSave}
+                  disabled={saving}
+                  loading={saving}
+                >
+                  Save
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function GitHub() {
   const [repos, setRepos] = useState<GithubRepo[]>([]);
@@ -154,6 +284,7 @@ export default function GitHub() {
           <option value="">All periods</option>
           <option value="daily">Today</option>
           <option value="weekly">This week</option>
+          <option value="search">Search API</option>
         </select>
 
         <select
@@ -169,6 +300,8 @@ export default function GitHub() {
           ))}
         </select>
       </div>
+
+      <SearchConfigPanel />
 
       {deduped.length === 0 ? (
         <EmptyState description='No repos yet. Click "Scrape Now" to fetch.' />
@@ -205,7 +338,7 @@ export default function GitHub() {
                     </span>
                   )}
                   <span className="text-xs text-faint bg-bg-2 px-2 py-0.5 rounded-sm shrink-0">
-                    {repo.period === "weekly" ? "week" : "day"}
+                    {repo.period === "weekly" ? "week" : repo.period === "search" ? "search" : "day"}
                   </span>
                 </div>
                 {repo.description && (
