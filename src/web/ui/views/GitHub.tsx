@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { apiFetch } from "../api";
 import { formatTime, formatNumber } from "../lib/format";
-import { PageHeader, LoadingState, EmptyState, Button } from "../components";
+import { PageHeader, LoadingState, EmptyState, Button, Toggle } from "../components";
 import { useToast } from "../components/Toast";
 import { Settings2, ChevronDown } from "lucide-react";
 
@@ -28,19 +28,31 @@ interface StatsData {
   readonly languages: number;
 }
 
-interface GithubSearchConfig {
-  readonly intervalMinutes: number;
-  readonly minStars: number;
-  readonly pushedWithinDays: number;
-  readonly maxPages: number;
+interface FieldDef {
+  readonly key: string;
+  readonly label: string;
+  readonly description: string;
+  readonly min: number;
+  readonly max: number;
+  readonly defaultValue: number;
 }
 
-const SEARCH_CONFIG_DEFAULTS: GithubSearchConfig = {
-  intervalMinutes: 360,
-  minStars: 500,
-  pushedWithinDays: 7,
-  maxPages: 4,
+const SCRAPER_FIELDS: Readonly<Record<string, readonly FieldDef[]>> = {
+  github: [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 10, max: 1440, defaultValue: 720 },
+  ],
+  "github-search": [
+    { key: "intervalMinutes", label: "Scrape interval (min)", description: "How often to scrape", min: 1, max: 1440, defaultValue: 360 },
+    { key: "minStars", label: "Minimum stars", description: "Only include repos with at least this many stars", min: 1, max: 100000, defaultValue: 500 },
+    { key: "pushedWithinDays", label: "Pushed within days", description: "Only include repos pushed within this many days", min: 1, max: 90, defaultValue: 7 },
+    { key: "maxPages", label: "Max pages", description: "Max pages to fetch (30 repos per page)", min: 1, max: 10, defaultValue: 4 },
+  ],
 };
+
+function getDefaults(scraperId: string): Record<string, number> {
+  const fields = SCRAPER_FIELDS[scraperId] ?? [];
+  return Object.fromEntries(fields.map((f) => [f.key, f.defaultValue]));
+}
 
 type SortKey = "stars_today" | "stars" | "forks" | "newest";
 type TrendingPeriod = "" | "daily" | "weekly";
@@ -61,120 +73,134 @@ const langColors: Record<string, string> = {
   Dart: "#00B4AB",
 };
 
-/* ── Search config panel ── */
-function SearchConfigPanel() {
+/* ── Scraper config form (inline, expandable) ── */
+function ScraperConfigForm({
+  scraperId,
+  onClose,
+}: {
+  readonly scraperId: string;
+  readonly onClose: () => void;
+}) {
   const { success, error: toastError } = useToast();
-  const [open, setOpen] = useState(false);
-  const [config, setConfig] = useState<GithubSearchConfig>(SEARCH_CONFIG_DEFAULTS);
-  const [loaded, setLoaded] = useState(false);
+  const fields = SCRAPER_FIELDS[scraperId] ?? [];
+  const [config, setConfig] = useState<Record<string, number>>(getDefaults(scraperId));
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!open || loaded) return;
     let cancelled = false;
     (async () => {
       try {
-        const res = await apiFetch<{ data: GithubSearchConfig }>(
-          "/api/features/scraper-config/github-search",
+        const res = await apiFetch<{ data: Record<string, number> }>(
+          `/api/features/scraper-config/${scraperId}`,
         );
-        if (!cancelled) {
-          setConfig(res.data);
-          setLoaded(true);
-        }
+        if (!cancelled) setConfig(res.data);
       } catch {
-        if (!cancelled) {
-          setLoaded(true);
-          toastError("Failed to load search config.");
-        }
+        if (!cancelled) toastError("Failed to load scraper config.");
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scraperId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleSave() {
     setSaving(true);
     try {
-      await apiFetch("/api/features/scraper-config/github-search", {
+      await apiFetch(`/api/features/scraper-config/${scraperId}`, {
         method: "PUT",
         body: JSON.stringify(config),
       });
-      success("Search config saved.");
+      success("Config saved.");
+      onClose();
     } catch {
-      toastError("Failed to save search config.");
+      toastError("Failed to save config.");
     } finally {
       setSaving(false);
     }
   }
 
-  function field(
-    label: string,
-    key: keyof GithubSearchConfig,
-    min: number,
-    max: number,
-    desc: string,
-  ) {
-    return (
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-xs font-medium text-foreground">{label}</div>
-          <div className="text-xs text-muted mt-0.5">{desc}</div>
-        </div>
-        <input
-          type="number"
-          min={min}
-          max={max}
-          value={config[key]}
-          onChange={(e) => {
-            const n = parseInt(e.target.value, 10);
-            if (!isNaN(n)) setConfig((prev) => ({ ...prev, [key]: n }));
-          }}
-          className="w-20 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
-        />
-      </div>
-    );
-  }
-
   return (
-    <div className="bg-bg-1 border border-border rounded-lg mb-5">
-      <button
-        type="button"
-        onClick={() => setOpen((p) => !p)}
-        className="w-full flex items-center justify-between px-4 py-2.5 bg-transparent border-none cursor-pointer text-left"
-      >
-        <div className="flex items-center gap-2 text-xs text-muted">
-          <Settings2 className="w-3.5 h-3.5" />
-          <span className="font-medium">GitHub Search Config</span>
-        </div>
-        <ChevronDown
-          className={`w-3.5 h-3.5 text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`}
-        />
-      </button>
-      {open && (
-        <div className="border-t border-border px-4 py-3 flex flex-col gap-3">
-          {!loaded ? (
-            <p className="text-xs text-muted">Loading...</p>
-          ) : (
-            <>
-              {field("Scrape interval (min)", "intervalMinutes", 1, 1440, "How often to scrape")}
-              {field("Minimum stars", "minStars", 1, 100000, "Only include repos with at least this many stars")}
-              {field("Pushed within days", "pushedWithinDays", 1, 90, "Only include repos pushed within this many days")}
-              {field("Max pages", "maxPages", 1, 10, "Max pages to fetch per scrape run (30 repos per page)")}
-              <div className="flex justify-end">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={handleSave}
-                  disabled={saving}
-                  loading={saving}
-                >
-                  Save
-                </Button>
+    <div className="bg-bg-2 border border-border rounded-lg p-3 mb-4">
+      {loading ? (
+        <p className="text-xs text-muted py-1">Loading config…</p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {fields.map((f) => (
+            <div key={f.key} className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-foreground">{f.label}</div>
+                <div className="text-xs text-muted mt-0.5">{f.description}</div>
               </div>
-            </>
-          )}
+              <input
+                type="number"
+                min={f.min}
+                max={f.max}
+                value={config[f.key] ?? f.defaultValue}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  if (!isNaN(n)) setConfig((prev) => ({ ...prev, [f.key]: n }));
+                }}
+                className="w-20 shrink-0 bg-bg-1 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
+              />
+            </div>
+          ))}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="ghost" size="sm" onClick={onClose} disabled={saving}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={handleSave}
+              disabled={saving}
+              loading={saving}
+            >
+              Save
+            </Button>
+          </div>
         </div>
       )}
     </div>
+  );
+}
+
+/* ── Scraper toggle + config control ── */
+function ScraperControl({
+  scraperId,
+  enabled,
+  saving,
+  onToggle,
+}: {
+  readonly scraperId: string;
+  readonly enabled: boolean;
+  readonly saving: boolean;
+  readonly onToggle: (checked: boolean) => void;
+}) {
+  const [configOpen, setConfigOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        type="button"
+        title="Configure"
+        onClick={() => setConfigOpen((p) => !p)}
+        className={`p-1 rounded-md transition-colors ${
+          configOpen
+            ? "text-accent bg-accent-subtle"
+            : "text-muted hover:text-foreground hover:bg-bg-2"
+        }`}
+      >
+        <Settings2 className="w-3.5 h-3.5" />
+      </button>
+      <Toggle checked={enabled} onChange={onToggle} disabled={saving} />
+      {configOpen && (
+        <ScraperConfigForm
+          scraperId={scraperId}
+          onClose={() => setConfigOpen(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -250,23 +276,56 @@ function RepoList({ repos }: { readonly repos: readonly GithubRepo[] }) {
   );
 }
 
-/* ── Section header ── */
+/* ── Section header with scraper control ── */
 function SectionHeader({
   title,
   count,
+  scraperId,
+  enabled,
+  saving,
+  onToggle,
   children,
 }: {
   readonly title: string;
   readonly count: number;
+  readonly scraperId: string;
+  readonly enabled: boolean;
+  readonly saving: boolean;
+  readonly onToggle: (checked: boolean) => void;
   readonly children?: React.ReactNode;
 }) {
+  const [configOpen, setConfigOpen] = useState(false);
+
   return (
-    <div className="flex items-center justify-between mb-3 mt-8 first:mt-0">
-      <h2 className="text-base font-semibold text-strong">
-        {title}{" "}
-        <span className="text-sm font-normal text-muted">({count})</span>
-      </h2>
-      {children && <div className="flex gap-3 flex-wrap">{children}</div>}
+    <div className="mt-8 first:mt-0">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-3">
+          <h2 className="text-base font-semibold text-strong">
+            {title}{" "}
+            <span className="text-sm font-normal text-muted">({count})</span>
+          </h2>
+          <button
+            type="button"
+            title="Configure"
+            onClick={() => setConfigOpen((p) => !p)}
+            className={`p-1 rounded-md transition-colors ${
+              configOpen
+                ? "text-accent bg-accent-subtle"
+                : "text-muted hover:text-foreground hover:bg-bg-2"
+            }`}
+          >
+            <Settings2 className="w-3.5 h-3.5" />
+          </button>
+          <Toggle checked={enabled} onChange={onToggle} disabled={saving} />
+        </div>
+        {children && <div className="flex gap-3 flex-wrap">{children}</div>}
+      </div>
+      {configOpen && (
+        <ScraperConfigForm
+          scraperId={scraperId}
+          onClose={() => setConfigOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -298,10 +357,15 @@ function getLanguages(repos: readonly GithubRepo[]): string[] {
 
 /* ── Main page ── */
 export default function GitHub() {
+  const { success, error: toastError } = useToast();
   const [repos, setRepos] = useState<GithubRepo[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
+
+  // Scraper enable/disable state
+  const [enabledScrapers, setEnabledScrapers] = useState<ReadonlySet<string>>(new Set());
+  const [savingScrapers, setSavingScrapers] = useState<ReadonlySet<string>>(new Set());
 
   // Trending filters
   const [trendingSort, setTrendingSort] = useState<SortKey>("stars_today");
@@ -320,14 +384,18 @@ export default function GitHub() {
 
   async function fetchAll() {
     try {
-      const [reposRes, statsRes] = await Promise.all([
+      const [reposRes, statsRes, featuresRes] = await Promise.all([
         apiFetch<{ success: boolean; data: GithubRepo[] }>(
           "/api/github/repos?limit=200",
         ),
         apiFetch<{ success: boolean; data: StatsData }>("/api/github/stats"),
+        apiFetch<{ success: boolean; data: { scrapers: { enabled: readonly string[] } } }>(
+          "/api/features",
+        ),
       ]);
       if (reposRes.success) setRepos(reposRes.data);
       if (statsRes.success) setStats(statsRes.data);
+      if (featuresRes.success) setEnabledScrapers(new Set(featuresRes.data.scrapers.enabled));
     } catch {
       // ignore
     } finally {
@@ -344,6 +412,35 @@ export default function GitHub() {
       // ignore
     } finally {
       setScraping(false);
+    }
+  }
+
+  async function handleScraperToggle(id: string, checked: boolean) {
+    const next = new Set(enabledScrapers);
+    if (checked) {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+    setEnabledScrapers(next);
+    setSavingScrapers((prev) => new Set([...prev, id]));
+
+    try {
+      await apiFetch("/api/features/scrapers", {
+        method: "PUT",
+        body: JSON.stringify({ enabled: [...next] }),
+      });
+      window.dispatchEvent(new Event("features-changed"));
+      success(`${id} ${checked ? "enabled" : "disabled"}.`);
+    } catch {
+      setEnabledScrapers(enabledScrapers);
+      toastError("Failed to save scraper setting.");
+    } finally {
+      setSavingScrapers((prev) => {
+        const s = new Set(prev);
+        s.delete(id);
+        return s;
+      });
     }
   }
 
@@ -394,7 +491,14 @@ export default function GitHub() {
       />
 
       {/* ── Trending Section ── */}
-      <SectionHeader title="Trending" count={trendingFiltered.length}>
+      <SectionHeader
+        title="Trending"
+        count={trendingFiltered.length}
+        scraperId="github"
+        enabled={enabledScrapers.has("github")}
+        saving={savingScrapers.has("github")}
+        onToggle={(checked) => handleScraperToggle("github", checked)}
+      >
         <select
           value={trendingSort}
           onChange={(e) => setTrendingSort(e.target.value as SortKey)}
@@ -431,7 +535,14 @@ export default function GitHub() {
       <RepoList repos={trendingFiltered} />
 
       {/* ── Search Section ── */}
-      <SectionHeader title="Search" count={searchFiltered.length}>
+      <SectionHeader
+        title="Search"
+        count={searchFiltered.length}
+        scraperId="github-search"
+        enabled={enabledScrapers.has("github-search")}
+        saving={savingScrapers.has("github-search")}
+        onToggle={(checked) => handleScraperToggle("github-search", checked)}
+      >
         <select
           value={searchSort}
           onChange={(e) => setSearchSort(e.target.value as SortKey)}
@@ -453,8 +564,6 @@ export default function GitHub() {
           ))}
         </select>
       </SectionHeader>
-
-      <SearchConfigPanel />
 
       <RepoList repos={searchFiltered} />
     </div>
