@@ -465,7 +465,6 @@ export default function PlayStore() {
         subtitle={subtitle}
         actions={
           <Button
-            variant="secondary"
             size="sm"
             onClick={handleScrapeNow}
             disabled={scraping}
