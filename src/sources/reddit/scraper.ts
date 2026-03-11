@@ -139,7 +139,10 @@ export function createRedditScraper(config?: {
   async function tick(): Promise<void> {
     try {
       const accounts = await getActiveAccounts();
-      if (accounts.length === 0) return;
+      if (accounts.length === 0) {
+        log.warn("Reddit scraper tick: no active accounts found, skipping");
+        return;
+      }
 
       log.info("Reddit scraper tick", { accounts: accounts.length });
 
