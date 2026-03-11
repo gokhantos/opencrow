@@ -172,16 +172,26 @@ export async function createQdrantClient(
 
         if (!collectionExists) {
           // Create collection with HNSW indexing always on
-          await request("PUT", `/collections/${name}`, {
-            vectors: {
-              size: vectorSize,
-              distance: "Cosine",
-            },
-            optimizers_config: {
-              indexing_threshold: 0,
-            },
-          });
-          log.info("Qdrant collection created", { name, vectorSize });
+          try {
+            await request("PUT", `/collections/${name}`, {
+              vectors: {
+                size: vectorSize,
+                distance: "Cosine",
+              },
+              optimizers_config: {
+                indexing_threshold: 0,
+              },
+            });
+            log.info("Qdrant collection created", { name, vectorSize });
+          } catch (err) {
+            // 409 = another process created it between our check and create (race condition)
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes("409") || msg.includes("already exists")) {
+              log.debug("Collection already created by another process", { name });
+            } else {
+              throw err;
+            }
+          }
         } else {
           // Ensure HNSW indexing threshold is set (segments < 20k default
           // would otherwise do flat O(n) scans instead of HNSW)
