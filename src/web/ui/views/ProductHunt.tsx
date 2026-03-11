@@ -26,11 +26,6 @@ interface PHProduct {
   readonly updated_at: number;
 }
 
-interface PHMaker {
-  readonly name: string;
-  readonly username: string;
-}
-
 interface PHStats {
   readonly total_products: number;
   readonly last_updated_at: number | null;
@@ -44,23 +39,6 @@ function extractDomain(url: string): string {
   }
 }
 
-function MakerPills({ makersJson }: { readonly makersJson: string }) {
-  const makers = parseJsonArray<PHMaker>(makersJson);
-  if (makers.length === 0) return null;
-  return (
-    <span className="inline-flex gap-1 flex-wrap">
-      {makers.slice(0, 4).map((m) => (
-        <span
-          key={m.username}
-          className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-bg-2 text-muted text-xs font-medium"
-          title={m.name}
-        >
-          @{m.username}
-        </span>
-      ))}
-    </span>
-  );
-}
 
 function TopicPills({ topicsJson }: { readonly topicsJson: string }) {
   const topics = parseJsonArray<string>(topicsJson);
@@ -176,9 +154,8 @@ function ProductCard({ product }: { readonly product: PHProduct }) {
           )}
         </div>
 
-        {/* Makers + topics */}
+        {/* Topics */}
         <div className="flex items-center gap-2 mt-2 flex-wrap">
-          <MakerPills makersJson={product.makers_json} />
           <TopicPills topicsJson={product.topics_json} />
         </div>
       </div>
