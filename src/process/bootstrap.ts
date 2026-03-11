@@ -180,7 +180,7 @@ export async function bootstrap(
   }
 
   let memoryManager: MemoryManager | null = null;
-  if (!opts.skipMemory && config.memorySearch !== undefined) {
+  if (!opts.skipMemory && mergedConfig.memorySearch !== undefined) {
     const { getSecret } = await import("../config/secrets");
     const embeddingKey =
       (await getSecret("OPENROUTER_API_KEY")) ?? (await getSecret("VOYAGE_API_KEY"));
@@ -194,7 +194,7 @@ export async function bootstrap(
       );
     }
 
-    const memSearch = config.memorySearch!;
+    const memSearch = mergedConfig.memorySearch!;
     const qdrantUrl = (await getSecret("QDRANT_URL")) ?? memSearch.qdrant.url;
     const qdrantCollection = memSearch.qdrant.collection;
     const qdrantClient = await createQdrantClient({
