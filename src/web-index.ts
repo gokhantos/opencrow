@@ -201,6 +201,17 @@ async function main(): Promise<void> {
     fetch(req, bunServer) {
       const url = new URL(req.url);
 
+      // Serve CSS files dynamically (tailwind-out.css is a build artifact)
+      if (url.pathname === "/tailwind-out.css" || url.pathname === "/style.css") {
+        const cssPath = import.meta.dir + "/web/ui" + url.pathname;
+        return new Response(Bun.file(cssPath), {
+          headers: {
+            "Content-Type": "text/css",
+            "Cache-Control": "public, max-age=60",
+          },
+        });
+      }
+
       // WebSocket market kline feed — proxy to market process
       if (url.pathname === "/ws/market") {
         const expectedToken = process.env.OPENCROW_WEB_TOKEN;
