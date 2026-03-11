@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { apiFetch } from "../api";
 import { formatTime, formatNumber } from "../lib/format";
-import { PageHeader, LoadingState, EmptyState, Button, Toggle } from "../components";
+import { PageHeader, LoadingState, EmptyState, Button } from "../components";
 import { useToast } from "../components/Toast";
-import { Settings2, ChevronDown } from "lucide-react";
+import { Settings2 } from "lucide-react";
 
 interface GithubRepo {
   readonly id: string;
@@ -165,45 +165,6 @@ function ScraperConfigForm({
   );
 }
 
-/* ── Scraper toggle + config control ── */
-function ScraperControl({
-  scraperId,
-  enabled,
-  saving,
-  onToggle,
-}: {
-  readonly scraperId: string;
-  readonly enabled: boolean;
-  readonly saving: boolean;
-  readonly onToggle: (checked: boolean) => void;
-}) {
-  const [configOpen, setConfigOpen] = useState(false);
-
-  return (
-    <>
-      <button
-        type="button"
-        title="Configure"
-        onClick={() => setConfigOpen((p) => !p)}
-        className={`p-1 rounded-md transition-colors ${
-          configOpen
-            ? "text-accent bg-accent-subtle"
-            : "text-muted hover:text-foreground hover:bg-bg-2"
-        }`}
-      >
-        <Settings2 className="w-3.5 h-3.5" />
-      </button>
-      <Toggle checked={enabled} onChange={onToggle} disabled={saving} />
-      {configOpen && (
-        <ScraperConfigForm
-          scraperId={scraperId}
-          onClose={() => setConfigOpen(false)}
-        />
-      )}
-    </>
-  );
-}
-
 /* ── Shared repo list component ── */
 function RepoList({ repos }: { readonly repos: readonly GithubRepo[] }) {
   if (repos.length === 0) {
@@ -276,22 +237,16 @@ function RepoList({ repos }: { readonly repos: readonly GithubRepo[] }) {
   );
 }
 
-/* ── Section header with scraper control ── */
+/* ── Section header with config gear ── */
 function SectionHeader({
   title,
   count,
   scraperId,
-  enabled,
-  saving,
-  onToggle,
   children,
 }: {
   readonly title: string;
   readonly count: number;
   readonly scraperId: string;
-  readonly enabled: boolean;
-  readonly saving: boolean;
-  readonly onToggle: (checked: boolean) => void;
   readonly children?: React.ReactNode;
 }) {
   const [configOpen, setConfigOpen] = useState(false);
@@ -316,7 +271,6 @@ function SectionHeader({
           >
             <Settings2 className="w-3.5 h-3.5" />
           </button>
-          <Toggle checked={enabled} onChange={onToggle} disabled={saving} />
         </div>
         {children && <div className="flex gap-3 flex-wrap">{children}</div>}
       </div>
@@ -357,15 +311,10 @@ function getLanguages(repos: readonly GithubRepo[]): string[] {
 
 /* ── Main page ── */
 export default function GitHub() {
-  const { success, error: toastError } = useToast();
   const [repos, setRepos] = useState<GithubRepo[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
-
-  // Scraper enable/disable state
-  const [enabledScrapers, setEnabledScrapers] = useState<ReadonlySet<string>>(new Set());
-  const [savingScrapers, setSavingScrapers] = useState<ReadonlySet<string>>(new Set());
 
   // Trending filters
   const [trendingSort, setTrendingSort] = useState<SortKey>("stars_today");
@@ -384,18 +333,14 @@ export default function GitHub() {
 
   async function fetchAll() {
     try {
-      const [reposRes, statsRes, featuresRes] = await Promise.all([
+      const [reposRes, statsRes] = await Promise.all([
         apiFetch<{ success: boolean; data: GithubRepo[] }>(
           "/api/github/repos?limit=200",
         ),
         apiFetch<{ success: boolean; data: StatsData }>("/api/github/stats"),
-        apiFetch<{ success: boolean; data: { scrapers: { enabled: readonly string[] } } }>(
-          "/api/features",
-        ),
       ]);
       if (reposRes.success) setRepos(reposRes.data);
       if (statsRes.success) setStats(statsRes.data);
-      if (featuresRes.success) setEnabledScrapers(new Set(featuresRes.data.scrapers.enabled));
     } catch {
       // ignore
     } finally {
@@ -412,35 +357,6 @@ export default function GitHub() {
       // ignore
     } finally {
       setScraping(false);
-    }
-  }
-
-  async function handleScraperToggle(id: string, checked: boolean) {
-    const next = new Set(enabledScrapers);
-    if (checked) {
-      next.add(id);
-    } else {
-      next.delete(id);
-    }
-    setEnabledScrapers(next);
-    setSavingScrapers((prev) => new Set([...prev, id]));
-
-    try {
-      await apiFetch("/api/features/scrapers", {
-        method: "PUT",
-        body: JSON.stringify({ enabled: [...next] }),
-      });
-      window.dispatchEvent(new Event("features-changed"));
-      success(`${id} ${checked ? "enabled" : "disabled"}.`);
-    } catch {
-      setEnabledScrapers(enabledScrapers);
-      toastError("Failed to save scraper setting.");
-    } finally {
-      setSavingScrapers((prev) => {
-        const s = new Set(prev);
-        s.delete(id);
-        return s;
-      });
     }
   }
 
@@ -495,9 +411,6 @@ export default function GitHub() {
         title="Trending"
         count={trendingFiltered.length}
         scraperId="github"
-        enabled={enabledScrapers.has("github")}
-        saving={savingScrapers.has("github")}
-        onToggle={(checked) => handleScraperToggle("github", checked)}
       >
         <select
           value={trendingSort}
@@ -539,9 +452,6 @@ export default function GitHub() {
         title="Search"
         count={searchFiltered.length}
         scraperId="github-search"
-        enabled={enabledScrapers.has("github-search")}
-        saving={savingScrapers.has("github-search")}
-        onToggle={(checked) => handleScraperToggle("github-search", checked)}
       >
         <select
           value={searchSort}
