@@ -39,19 +39,11 @@ interface AgentCountRow {
   readonly total_tokens: number;
 }
 
-export function createMemoryRoutes(memoryManager: MemoryManager): Hono {
+/**
+ * Debug routes that only need PostgreSQL — always mounted regardless of memoryManager.
+ */
+export function createMemoryDebugRoutes(): Hono {
   const app = new Hono();
-
-  app.get("/memory/stats", async (c) => {
-    const stats = await memoryManager.getStats();
-    return c.json({ success: true, data: stats });
-  });
-
-  app.get("/memory/stats/:agentId", async (c) => {
-    const agentId = c.req.param("agentId");
-    const stats = await memoryManager.getStats(agentId);
-    return c.json({ success: true, data: stats });
-  });
 
   app.get("/memory/debug/stats", async (c) => {
     const db = getDb();
@@ -160,6 +152,55 @@ export function createMemoryRoutes(memoryManager: MemoryManager): Hono {
     return c.json({ success: true, data });
   });
 
+  app.get("/memory/debug/agent-memory", async (c) => {
+    const db = getDb();
+    const agentId = c.req.query("agentId");
+
+    let rows;
+    if (agentId) {
+      rows = await db`
+        SELECT agent_id, key, value, updated_at FROM agent_memory
+        WHERE agent_id = ${agentId}
+        ORDER BY updated_at DESC
+      `;
+    } else {
+      rows = await db`
+        SELECT agent_id, key, value, updated_at FROM agent_memory
+        ORDER BY agent_id, updated_at DESC
+      `;
+    }
+
+    return c.json({
+      success: true,
+      data: (rows as AgentMemoryRow[]).map((r) => ({
+        agentId: r.agent_id,
+        key: r.key,
+        value: r.value,
+        updatedAt: r.updated_at,
+      })),
+    });
+  });
+
+  return app;
+}
+
+/**
+ * Routes that require the full memory manager (search, stats-by-agent, deletion).
+ */
+export function createMemoryRoutes(memoryManager: MemoryManager): Hono {
+  const app = new Hono();
+
+  app.get("/memory/stats", async (c) => {
+    const stats = await memoryManager.getStats();
+    return c.json({ success: true, data: stats });
+  });
+
+  app.get("/memory/stats/:agentId", async (c) => {
+    const agentId = c.req.param("agentId");
+    const stats = await memoryManager.getStats(agentId);
+    return c.json({ success: true, data: stats });
+  });
+
   app.get("/memory/debug/search", async (c) => {
     const query = c.req.query("query");
     const agentId = c.req.query("agentId") ?? "default";
@@ -187,35 +228,6 @@ export function createMemoryRoutes(memoryManager: MemoryManager): Hono {
           channel: r.source.channel,
           createdAt: r.source.createdAt,
         },
-      })),
-    });
-  });
-
-  app.get("/memory/debug/agent-memory", async (c) => {
-    const db = getDb();
-    const agentId = c.req.query("agentId");
-
-    let rows;
-    if (agentId) {
-      rows = await db`
-        SELECT agent_id, key, value, updated_at FROM agent_memory
-        WHERE agent_id = ${agentId}
-        ORDER BY updated_at DESC
-      `;
-    } else {
-      rows = await db`
-        SELECT agent_id, key, value, updated_at FROM agent_memory
-        ORDER BY agent_id, updated_at DESC
-      `;
-    }
-
-    return c.json({
-      success: true,
-      data: (rows as AgentMemoryRow[]).map((r) => ({
-        agentId: r.agent_id,
-        key: r.key,
-        value: r.value,
-        updatedAt: r.updated_at,
       })),
     });
   });
