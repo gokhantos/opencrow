@@ -151,6 +151,13 @@ export async function bootstrap(
   // Merge file config with DB overrides
   const mergedConfig = await loadConfigWithOverrides();
 
+  // Load manually disabled tools from DB
+  const { getOverride } = await import("../store/config-overrides");
+  const disabledToolsRaw = await getOverride("tools", "disabledTools");
+  const disabledTools = new Set<string>(
+    Array.isArray(disabledToolsRaw) ? (disabledToolsRaw as string[]) : [],
+  );
+
   const agentRegistry = createAgentRegistry(mergedConfig.agents, mergedConfig.agent);
 
   const subAgentTracker = createSubAgentTracker();
@@ -301,6 +308,7 @@ export async function bootstrap(
     let registry = baseToolRegistry.withFilter(agent.toolFilter);
 
     const allowsTool = (name: string): boolean => {
+      if (disabledTools.has(name)) return false;
       if (agent.toolFilter.mode === "all") return true;
       if (agent.toolFilter.mode === "allowlist")
         return agent.toolFilter.tools.includes(name);
@@ -345,50 +353,54 @@ export async function bootstrap(
       if (extraTools.length > 0) registry = registry.withTools(extraTools);
     }
 
-    {
+    // Feature-aware tool registration: skip tools for disabled scrapers/features
+    const enabledScrapers = new Set(config.processes.scraperProcesses.scraperIds ?? []);
+    const scraperEnabled = (id: string) => enabledScrapers.has(id);
+
+    if (config.market) {
       const marketTools = createMarketTools(
-        config.market?.symbols ?? [],
-        config.market?.marketTypes ?? [],
+        config.market.symbols ?? [],
+        config.market.marketTypes ?? [],
       ).filter((t) => allowsTool(t.name));
       if (marketTools.length > 0) registry = registry.withTools(marketTools);
     }
 
-    {
+    if (scraperEnabled("news")) {
       const newsTools = createNewsTools(memoryManager).filter((t) =>
         allowsTool(t.name),
       );
       if (newsTools.length > 0) registry = registry.withTools(newsTools);
     }
 
-    {
+    if (scraperEnabled("producthunt")) {
       const phTools = createPHTools(memoryManager).filter((t) =>
         allowsTool(t.name),
       );
       if (phTools.length > 0) registry = registry.withTools(phTools);
     }
 
-    {
+    if (scraperEnabled("hackernews")) {
       const hnTools = createHNTools(memoryManager).filter((t) =>
         allowsTool(t.name),
       );
       if (hnTools.length > 0) registry = registry.withTools(hnTools);
     }
 
-    {
+    if (scraperEnabled("reddit")) {
       const redditTools = createRedditTools(memoryManager).filter((t) =>
         allowsTool(t.name),
       );
       if (redditTools.length > 0) registry = registry.withTools(redditTools);
     }
 
-    {
+    if (scraperEnabled("github")) {
       const githubTools = createGithubTools(memoryManager).filter((t) =>
         allowsTool(t.name),
       );
       if (githubTools.length > 0) registry = registry.withTools(githubTools);
     }
 
-    {
+    if (scraperEnabled("x")) {
       const xTimelineTools = createXTimelineTools(memoryManager).filter((t) =>
         allowsTool(t.name),
       );
@@ -396,16 +408,15 @@ export async function bootstrap(
         registry = registry.withTools(xTimelineTools);
     }
 
-    {
+    if (scraperEnabled("appstore")) {
       const appStoreTools = createAppStoreTools(memoryManager).filter((t) => allowsTool(t.name));
       if (appStoreTools.length > 0) registry = registry.withTools(appStoreTools);
     }
 
-    {
+    if (scraperEnabled("playstore")) {
       const playStoreTools = createPlayStoreTools(memoryManager).filter((t) => allowsTool(t.name));
       if (playStoreTools.length > 0) registry = registry.withTools(playStoreTools);
     }
-
 
     if (memoryManager && allowsTool("cross_source_search")) {
       registry = registry.withTools([
@@ -413,14 +424,12 @@ export async function bootstrap(
       ]);
     }
 
-    {
+    if (scraperEnabled("ideas")) {
       const ideaTools = [...createIdeaTools(agent.id, memoryManager)].filter((t) =>
         allowsTool(t.name),
       );
       if (ideaTools.length > 0) registry = registry.withTools(ideaTools);
-    }
 
-    {
       const signalTools = [...createSignalTools(agent.id)].filter((t) =>
         allowsTool(t.name),
       );

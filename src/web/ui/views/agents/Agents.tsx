@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useLocalStorage } from "../../lib/useLocalStorage";
-import { apiFetch, deleteAgent, setConfigHash } from "../../api";
+import { apiFetch, deleteAgent, updateAgent, setConfigHash } from "../../api";
 import type {
   AgentInfo,
   AgentDetail,
@@ -82,6 +82,22 @@ export default function Agents() {
         toast.error("Failed to delete agent");
       }
       setDeletingAgent(null);
+    }
+  }
+
+  async function handleSetDefault(agentId: string) {
+    try {
+      const res = (await updateAgent(agentId, { default: true })) as MutationResponse;
+      if (res.configHash) setConfigHash(res.configHash);
+      toast.success("Default agent updated");
+      await loadAgents();
+    } catch (err) {
+      const apiErr = err as { status?: number };
+      if (apiErr.status === 409) {
+        await loadAgents();
+      } else {
+        toast.error("Failed to set default agent");
+      }
     }
   }
 
@@ -212,6 +228,7 @@ export default function Agents() {
                 }
                 onEdit={() => handleEditClick(agent)}
                 onDelete={() => setDeletingAgent(agent)}
+                onSetDefault={() => handleSetDefault(agent.id)}
               />
             ))}
           </div>
@@ -224,6 +241,7 @@ export default function Agents() {
             onClose={() => setSelectedId(null)}
             onEdit={() => handleEditClick(selectedAgent)}
             onDelete={() => setDeletingAgent(selectedAgent)}
+            onSetDefault={() => handleSetDefault(selectedAgent.id)}
           />
         )}
       </div>

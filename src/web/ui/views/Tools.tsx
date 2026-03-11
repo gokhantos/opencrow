@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../api";
 import { cn } from "../lib/cn";
 import { LoadingState, EmptyState, PageHeader, SearchBar, FilterTabs } from "../components";
@@ -8,12 +8,14 @@ interface ToolInfo {
   category: string;
   description: string;
   params: string[];
+  enabled: boolean;
 }
 
 interface ToolsResponse {
   success: boolean;
   data: ToolInfo[];
   categories: Record<string, string>;
+  disabledTools: string[];
 }
 
 function ToolCard({
@@ -21,32 +23,42 @@ function ToolCard({
   index,
   isSelected,
   onSelect,
+  onToggle,
 }: {
   tool: ToolInfo;
   index: number;
   isSelected: boolean;
   onSelect: () => void;
+  onToggle: () => void;
 }) {
   return (
-    <button
-      type="button"
+    <div
       className={cn(
-        "group relative bg-bg-1 border rounded-lg overflow-hidden text-left w-full cursor-pointer transition-all duration-200",
+        "group relative bg-bg-1 border rounded-lg overflow-hidden text-left w-full transition-all duration-200",
         "hover:border-border-hover hover:bg-bg-1/80",
         isSelected
           ? "border-accent border-l-[3px] border-l-accent"
           : "border-border border-l-[3px] border-l-transparent",
+        !tool.enabled && "opacity-45",
       )}
       style={{
         animation: `agCardIn 0.3s ease-out ${index * 20}ms both`,
       }}
-      onClick={onSelect}
     >
-      <div className="px-4 py-3">
+      <button
+        type="button"
+        className="w-full text-left px-4 py-3 cursor-pointer bg-transparent border-0"
+        onClick={onSelect}
+      >
         <div className="flex items-center gap-2 mb-1.5">
           <span className="font-mono text-sm font-semibold text-strong truncate">
             {tool.name}
           </span>
+          {!tool.enabled && (
+            <span className="text-[9px] uppercase tracking-wider font-semibold px-1.5 py-0.5 rounded bg-bg-2 text-faint">
+              disabled
+            </span>
+          )}
         </div>
         <p className="text-xs text-muted m-0 leading-relaxed line-clamp-2">
           {tool.description}
@@ -68,8 +80,8 @@ function ToolCard({
             )}
           </div>
         )}
-      </div>
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -77,10 +89,12 @@ function DetailPanel({
   tool,
   categoryLabel,
   onClose,
+  onToggle,
 }: {
   tool: ToolInfo;
   categoryLabel: string;
   onClose: () => void;
+  onToggle: () => void;
 }) {
   return (
     <div className="bg-bg-1 border border-border rounded-xl p-6 sticky top-6">
@@ -88,13 +102,26 @@ function DetailPanel({
         <h3 className="text-lg font-bold text-strong m-0 font-mono">
           {tool.name}
         </h3>
-        <button
-          type="button"
-          className="w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:bg-bg-2 hover:text-strong transition-colors shrink-0"
-          onClick={onClose}
-        >
-          &times;
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            className={cn(
+              "flex items-center w-9 h-5 rounded-full transition-colors cursor-pointer border-0 p-0.5",
+              tool.enabled ? "bg-accent justify-end" : "bg-bg-3 justify-start",
+            )}
+            onClick={onToggle}
+            title={tool.enabled ? "Disable tool" : "Enable tool"}
+          >
+            <span className="block w-4 h-4 rounded-full bg-white shadow-sm" />
+          </button>
+          <button
+            type="button"
+            className="w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:bg-bg-2 hover:text-strong transition-colors"
+            onClick={onClose}
+          >
+            &times;
+          </button>
+        </div>
       </div>
 
       <div className="space-y-4">
@@ -144,35 +171,78 @@ export default function Tools() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [selectedTool, setSelectedTool] = useState<ToolInfo | null>(null);
+  const [showDisabled, setShowDisabled] = useState(true);
+  const [manuallyDisabled, setManuallyDisabled] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    loadTools();
-  }, []);
-
-  async function loadTools() {
+  const loadTools = useCallback(async () => {
     try {
       const res = await apiFetch<ToolsResponse>("/api/tools");
       setTools(res.data);
       setCategories(res.categories);
+      setManuallyDisabled(new Set(res.disabledTools ?? []));
       setError("");
     } catch {
       setError("Failed to load tools");
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    loadTools();
+  }, [loadTools]);
+
+  const toggleTool = useCallback(
+    async (toolName: string) => {
+      // Only toggle manually disabled state
+      const wasManuallyDisabled = manuallyDisabled.has(toolName);
+      const newDisabled = new Set(manuallyDisabled);
+      if (wasManuallyDisabled) {
+        newDisabled.delete(toolName);
+      } else {
+        newDisabled.add(toolName);
+      }
+      setManuallyDisabled(newDisabled);
+
+      // Optimistic update on tool list
+      const updated = tools.map((t) =>
+        t.name === toolName ? { ...t, enabled: wasManuallyDisabled ? true : false } : t,
+      );
+      setTools(updated);
+      setSelectedTool((prev) =>
+        prev?.name === toolName ? { ...prev, enabled: wasManuallyDisabled } : prev,
+      );
+
+      try {
+        await apiFetch("/api/tools/disabled", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ disabled: [...newDisabled] }),
+        });
+        // Reload to get accurate feature-based state
+        await loadTools();
+      } catch {
+        loadTools();
+      }
+    },
+    [tools, manuallyDisabled, loadTools],
+  );
+
+  const enabledCount = tools.filter((t) => t.enabled).length;
+  const disabledCount = tools.length - enabledCount;
 
   const uniqueCategories = [...new Set(tools.map((t) => t.category))];
   const filterTabs = [
-    { id: "all", label: "All", count: tools.length },
+    { id: "all", label: "All", count: showDisabled ? tools.length : enabledCount },
     ...uniqueCategories.map((cat) => ({
       id: cat,
       label: categories[cat] ?? cat,
-      count: tools.filter((t) => t.category === cat).length,
-    })),
+      count: tools.filter((t) => t.category === cat && (showDisabled || t.enabled)).length,
+    })).filter((tab) => tab.count > 0),
   ];
 
   const filtered = tools.filter((t) => {
+    if (!showDisabled && !t.enabled) return false;
     if (categoryFilter !== "all" && t.category !== categoryFilter) return false;
     if (search) {
       const q = search.toLowerCase();
@@ -199,7 +269,7 @@ export default function Tools() {
     <div className="max-w-[1400px]">
       <PageHeader
         title="Tools"
-        subtitle="All tools available to agents"
+        subtitle={`${enabledCount} enabled, ${disabledCount} disabled`}
         count={tools.length}
       />
 
@@ -209,12 +279,23 @@ export default function Tools() {
         </div>
       )}
 
-      <div className="mb-4 max-w-md">
-        <SearchBar
-          value={search}
-          onChange={setSearch}
-          placeholder="Search tools..."
-        />
+      <div className="flex items-center gap-4 mb-4">
+        <div className="flex-1 max-w-md">
+          <SearchBar
+            value={search}
+            onChange={setSearch}
+            placeholder="Search tools..."
+          />
+        </div>
+        <label className="flex items-center gap-2 text-xs text-muted cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={showDisabled}
+            onChange={(e) => setShowDisabled(e.target.checked)}
+            className="accent-accent"
+          />
+          Show disabled
+        </label>
       </div>
 
       <FilterTabs
@@ -256,6 +337,7 @@ export default function Tools() {
                           selectedTool?.name === tool.name ? null : tool,
                         )
                       }
+                      onToggle={() => toggleTool(tool.name)}
                     />
                   ))}
                 </div>
@@ -270,6 +352,7 @@ export default function Tools() {
               tool={selectedTool}
               categoryLabel={categories[selectedTool.category] ?? selectedTool.category}
               onClose={() => setSelectedTool(null)}
+              onToggle={() => toggleTool(selectedTool.name)}
             />
           </div>
         )}

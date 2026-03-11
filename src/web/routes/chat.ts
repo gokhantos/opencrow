@@ -79,14 +79,19 @@ export function createChatRoutes(deps: WebAppDeps): Hono {
           });
           return c.json({ success: true, data: result });
         } catch (err) {
-          log.error("Core proxy chat error", err);
-          return c.json(
-            {
-              success: false,
-              error: "An internal error occurred. Please try again.",
-            },
-            500,
-          );
+          const status = (err as { status?: number }).status;
+          // Fall through to local handling if core doesn't support chat (503)
+          if (status !== 503) {
+            log.error("Core proxy chat error", err);
+            return c.json(
+              {
+                success: false,
+                error: "An internal error occurred. Please try again.",
+              },
+              500,
+            );
+          }
+          log.info("Core does not support chat, falling back to local");
         }
       }
 
