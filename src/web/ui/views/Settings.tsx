@@ -6,7 +6,6 @@ import {
   Database,
   TrendingUp,
   Rss,
-  ChevronRight,
   Circle,
   Settings as SettingsIcon,
   Settings2,
@@ -260,151 +259,6 @@ function ScraperConfigForm({
   );
 }
 
-/* ── Scrapers section (expandable) ── */
-function ScrapersSection({
-  scrapers,
-  enabledScrapers,
-  dirty,
-  saving,
-  onToggle,
-  onSave,
-}: {
-  readonly scrapers: readonly ScraperMeta[];
-  readonly enabledScrapers: ReadonlySet<string>;
-  readonly dirty: boolean;
-  readonly saving: boolean;
-  readonly onToggle: (id: string, checked: boolean) => void;
-  readonly onSave: () => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [openConfigId, setOpenConfigId] = useState<string | null>(null);
-  const enabledCount = enabledScrapers.size;
-  const totalCount = scrapers.length;
-
-  function handleGearClick(e: React.MouseEvent, scraperId: string) {
-    e.stopPropagation();
-    setOpenConfigId((prev) => (prev === scraperId ? null : scraperId));
-  }
-
-  return (
-    <div className="bg-bg-1 border border-border rounded-xl transition-all duration-200 hover:border-border-hover">
-      {/* Header — always visible */}
-      <button
-        type="button"
-        className="w-full flex items-center justify-between gap-4 p-5 bg-transparent border-none cursor-pointer text-left"
-        onClick={() => setExpanded((p) => !p)}
-      >
-        <div className="flex items-center gap-3.5 min-w-0">
-          <div className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center bg-pink-subtle text-pink">
-            <Rss className="w-[18px] h-[18px]" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2.5 mb-1">
-              <h3 className="text-sm font-semibold text-strong m-0">
-                Scrapers
-              </h3>
-              <span className="text-xs font-medium text-muted bg-bg-2 px-2 py-0.5 rounded-md font-mono">
-                {enabledCount}/{totalCount}
-              </span>
-              {dirty && (
-                <span className="text-xs font-medium text-warning bg-warning-subtle px-2 py-0.5 rounded-full">
-                  Unsaved
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-muted m-0">
-              Data scrapers for feeds, social, and market intelligence
-            </p>
-          </div>
-        </div>
-        <ChevronRight
-          className={`w-4 h-4 text-muted shrink-0 transition-transform duration-200 ${
-            expanded ? "rotate-90" : ""
-          }`}
-        />
-      </button>
-
-      {/* Expandable body */}
-      {expanded && (
-        <div className="border-t border-border px-5 pb-5">
-          {scrapers.length === 0 ? (
-            <p className="text-sm text-muted py-4">
-              No scrapers available.
-            </p>
-          ) : (
-            <div className="flex flex-col">
-              {scrapers.map((scraper, i) => {
-                const isConfigurable = CONFIGURABLE_SCRAPERS.has(scraper.id);
-                const isConfigOpen = openConfigId === scraper.id;
-                const isLast = i === scrapers.length - 1;
-                return (
-                  <div key={scraper.id}>
-                    <div
-                      className={`flex items-center justify-between py-3 ${
-                        !isLast || isConfigOpen ? "border-b border-border" : ""
-                      }`}
-                    >
-                      <div className="min-w-0 pr-4">
-                        <div className="text-sm font-medium text-foreground">
-                          {scraper.name}
-                        </div>
-                        {scraper.description && (
-                          <div className="text-xs text-muted mt-0.5">
-                            {scraper.description}
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {isConfigurable && (
-                          <button
-                            type="button"
-                            title="Configure"
-                            onClick={(e) => handleGearClick(e, scraper.id)}
-                            className={`p-1 rounded-md transition-colors ${
-                              isConfigOpen
-                                ? "text-accent bg-accent-subtle"
-                                : "text-muted hover:text-foreground hover:bg-bg-2"
-                            }`}
-                          >
-                            <Settings2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                        <Toggle
-                          checked={enabledScrapers.has(scraper.id)}
-                          onChange={(checked) => onToggle(scraper.id, checked)}
-                        />
-                      </div>
-                    </div>
-                    {isConfigOpen && (
-                      <ScraperConfigForm
-                        scraperId={scraper.id}
-                        onClose={() => setOpenConfigId(null)}
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {dirty && (
-            <div className="mt-4 flex justify-end">
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={onSave}
-                disabled={saving}
-                loading={saving}
-              >
-                Save Changes
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 /* ── Main ── */
 export default function Settings() {
@@ -412,12 +266,13 @@ export default function Settings() {
 
   const [features, setFeatures] = useState<FeaturesResponse | null>(null);
   const [loading, setLoading] = useState(true);
-
   const [enabledScrapers, setEnabledScrapers] = useState<ReadonlySet<string>>(
     new Set(),
   );
-  const [scrapersDirty, setScrapersDirty] = useState(false);
-  const [scrapersSaving, setScrapersSaving] = useState(false);
+  const [savingScrapers, setSavingScrapers] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  const [openConfigId, setOpenConfigId] = useState<string | null>(null);
   const [qdrantSaving, setQdrantSaving] = useState(false);
   const [marketSaving, setMarketSaving] = useState(false);
 
@@ -429,7 +284,6 @@ export default function Settings() {
         if (cancelled) return;
         setFeatures(res.data);
         setEnabledScrapers(new Set(res.data.scrapers.enabled));
-        setScrapersDirty(false);
       } catch {
         if (!cancelled) toastError("Failed to load feature settings.");
       } finally {
@@ -441,33 +295,34 @@ export default function Settings() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function handleScraperToggle(id: string, checked: boolean) {
-    setEnabledScrapers((prev) => {
-      const next = new Set(prev);
-      if (checked) {
-        next.add(id);
-      } else {
-        next.delete(id);
-      }
-      return next;
-    });
-    setScrapersDirty(true);
-  }
+  async function handleScraperToggle(id: string, checked: boolean) {
+    const next = new Set(enabledScrapers);
+    if (checked) {
+      next.add(id);
+    } else {
+      next.delete(id);
+    }
+    setEnabledScrapers(next);
+    setSavingScrapers((prev) => new Set([...prev, id]));
 
-  async function handleSaveScrapers() {
-    setScrapersSaving(true);
     try {
       await apiFetch("/api/features/scrapers", {
         method: "PUT",
-        body: JSON.stringify({ enabled: [...enabledScrapers] }),
+        body: JSON.stringify({ enabled: [...next] }),
       });
-      setScrapersDirty(false);
       window.dispatchEvent(new Event("features-changed"));
-      success("Scraper settings saved.");
+      const scraper = features?.scrapers.available.find((s) => s.id === id);
+      success(`${scraper?.name ?? id} ${checked ? "enabled" : "disabled"}.`);
     } catch {
-      toastError("Failed to save scraper settings.");
+      // Revert on failure
+      setEnabledScrapers(enabledScrapers);
+      toastError("Failed to save scraper setting.");
     } finally {
-      setScrapersSaving(false);
+      setSavingScrapers((prev) => {
+        const s = new Set(prev);
+        s.delete(id);
+        return s;
+      });
     }
   }
 
@@ -570,14 +425,95 @@ export default function Settings() {
         />
 
         {/* Scrapers */}
-        <ScrapersSection
-          scrapers={features.scrapers.available}
-          enabledScrapers={enabledScrapers}
-          dirty={scrapersDirty}
-          saving={scrapersSaving}
-          onToggle={handleScraperToggle}
-          onSave={handleSaveScrapers}
-        />
+        <div className="bg-bg-1 border border-border rounded-xl transition-all duration-200 hover:border-border-hover">
+          <div className="flex items-center gap-3.5 p-5 pb-0">
+            <div className="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center bg-pink-subtle text-pink">
+              <Rss className="w-[18px] h-[18px]" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5 mb-1">
+                <h3 className="text-sm font-semibold text-strong m-0">
+                  Scrapers
+                </h3>
+                <span className="text-xs font-medium text-muted bg-bg-2 px-2 py-0.5 rounded-md font-mono">
+                  {enabledScrapers.size}/{features.scrapers.available.length}
+                </span>
+              </div>
+              <p className="text-xs text-muted m-0">
+                Data scrapers for feeds, social, and market intelligence
+              </p>
+            </div>
+          </div>
+
+          <div className="px-5 pb-5 pt-3">
+            {features.scrapers.available.length === 0 ? (
+              <p className="text-sm text-muted py-4">
+                No scrapers available.
+              </p>
+            ) : (
+              <div className="flex flex-col">
+                {features.scrapers.available.map((scraper, i) => {
+                  const isConfigurable = CONFIGURABLE_SCRAPERS.has(scraper.id);
+                  const isConfigOpen = openConfigId === scraper.id;
+                  const isLast = i === features.scrapers.available.length - 1;
+                  return (
+                    <div key={scraper.id}>
+                      <div
+                        className={`flex items-center justify-between py-3 ${
+                          !isLast || isConfigOpen ? "border-b border-border" : ""
+                        }`}
+                      >
+                        <div className="min-w-0 pr-4">
+                          <div className="text-sm font-medium text-foreground">
+                            {scraper.name}
+                          </div>
+                          {scraper.description && (
+                            <div className="text-xs text-muted mt-0.5">
+                              {scraper.description}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isConfigurable && (
+                            <button
+                              type="button"
+                              title="Configure"
+                              onClick={() =>
+                                setOpenConfigId((prev) =>
+                                  prev === scraper.id ? null : scraper.id,
+                                )
+                              }
+                              className={`p-1 rounded-md transition-colors ${
+                                isConfigOpen
+                                  ? "text-accent bg-accent-subtle"
+                                  : "text-muted hover:text-foreground hover:bg-bg-2"
+                              }`}
+                            >
+                              <Settings2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <Toggle
+                            checked={enabledScrapers.has(scraper.id)}
+                            onChange={(checked) =>
+                              handleScraperToggle(scraper.id, checked)
+                            }
+                            disabled={savingScrapers.has(scraper.id)}
+                          />
+                        </div>
+                      </div>
+                      {isConfigOpen && (
+                        <ScraperConfigForm
+                          scraperId={scraper.id}
+                          onClose={() => setOpenConfigId(null)}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
