@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { apiFetch } from "../api";
 import { PageHeader, LoadingState, EmptyState, FeedRow, Button } from "../components";
 import { useToast } from "../components/Toast";
-import { Settings2, ChevronDown } from "lucide-react";
+import { Settings2, ChevronDown, MessageSquare } from "lucide-react";
 
 interface HNStory {
   id: string;
@@ -19,6 +19,17 @@ interface HNStory {
   first_seen_at: number;
   updated_at: number;
   description: string;
+  top_comments_json: string;
+}
+
+function parseComments(json: string): readonly string[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
 interface StatsData {
@@ -159,6 +170,7 @@ export default function HackerNews() {
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
   const [backfillResult, setBackfillResult] = useState<string | null>(null);
 
@@ -262,43 +274,75 @@ export default function HackerNews() {
         <EmptyState description='No stories yet. Click "Scrape Now" to fetch.' />
       ) : (
         <div className="flex flex-col gap-0.5">
-          {stories.map((story) => (
-            <FeedRow
-              key={story.id}
-              rank={story.rank}
-              title={story.title}
-              url={story.url || story.hn_url}
-              domain={story.site_label || undefined}
-              description={story.description || undefined}
-              meta={
-                <>
-                  {story.author && <span>by {story.author}</span>}
-                  {story.age && <span> | {story.age}</span>}
-                  {story.hn_url && (
+          {stories.map((story) => {
+            const comments = parseComments(story.top_comments_json);
+            const isExpanded = expandedId === story.id;
+            return (
+              <div key={story.id} className="rounded-lg hover:bg-bg-1 transition-colors">
+                <FeedRow
+                  rank={story.rank}
+                  title={story.title}
+                  url={story.url || story.hn_url}
+                  domain={story.site_label || undefined}
+                  description={story.description || undefined}
+                  meta={
                     <>
-                      {" | "}
-                      <a
-                        href={story.hn_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-faint no-underline hover:underline"
-                      >
-                        {story.comment_count} comments
-                      </a>
+                      {story.author && <span>by {story.author}</span>}
+                      {story.age && <span> | {story.age}</span>}
+                      {story.hn_url && (
+                        <>
+                          {" | "}
+                          <a
+                            href={story.hn_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-faint no-underline hover:underline"
+                          >
+                            {story.comment_count} comments
+                          </a>
+                        </>
+                      )}
+                      {comments.length > 0 && (
+                        <>
+                          {" | "}
+                          <button
+                            type="button"
+                            onClick={() => setExpandedId(isExpanded ? null : story.id)}
+                            className={`inline-flex items-center gap-1 bg-transparent border-none cursor-pointer p-0 text-sm transition-colors ${
+                              isExpanded ? "text-accent" : "text-muted hover:text-foreground"
+                            }`}
+                          >
+                            <MessageSquare className="w-3 h-3" />
+                            {comments.length} scraped
+                          </button>
+                        </>
+                      )}
                     </>
-                  )}
-                </>
-              }
-              stats={
-                <>
-                  <span className="text-accent font-semibold font-mono">
-                    {story.points}
-                  </span>
-                  <span className="text-faint">pts</span>
-                </>
-              }
-            />
-          ))}
+                  }
+                  stats={
+                    <>
+                      <span className="text-accent font-semibold font-mono">
+                        {story.points}
+                      </span>
+                      <span className="text-faint">pts</span>
+                    </>
+                  }
+                />
+                {isExpanded && comments.length > 0 && (
+                  <div className="ml-16 mr-4 mb-3 flex flex-col gap-2">
+                    {comments.map((comment, ci) => (
+                      <div
+                        key={ci}
+                        className="text-sm text-muted leading-relaxed bg-bg-2 rounded-md px-3 py-2 border-l-2 border-accent/30"
+                      >
+                        {comment.length > 500 ? `${comment.slice(0, 500)}...` : comment}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
