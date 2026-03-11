@@ -240,5 +240,6 @@ export function buildSessionOptions(): Record<string, unknown> {
   return {
     persistSession: false,
     settingSources: [],
+    executable: process.execPath,
   };
 }
