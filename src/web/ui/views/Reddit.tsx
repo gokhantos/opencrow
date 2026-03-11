@@ -335,6 +335,8 @@ export default function Reddit() {
   const [filterSub, setFilterSub] = useState<string>("");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAll();
@@ -396,6 +398,24 @@ export default function Reddit() {
     }
   }
 
+  async function handleBackfillRag() {
+    setBackfilling(true);
+    setBackfillResult(null);
+    try {
+      const res = await apiFetch<{ success: boolean; data: { indexed: number } }>(
+        "/api/reddit/backfill-rag",
+        { method: "POST" },
+      );
+      if (res.success) {
+        setBackfillResult(`Indexed ${res.data.indexed} posts`);
+      }
+    } catch {
+      setBackfillResult("Backfill failed");
+    } finally {
+      setBackfilling(false);
+    }
+  }
+
   async function handleVerify(id: string) {
     setVerifyingId(id);
     try {
@@ -432,13 +452,24 @@ export default function Reddit() {
           `${stats.total_posts} posts | ${stats.subreddit_count} subreddits | Last updated: ${formatTime(stats.last_updated_at)}`
         }
         actions={
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {backfillResult && (
+              <span className="text-xs text-muted">{backfillResult}</span>
+            )}
             <Button
               size="sm"
               variant="secondary"
               onClick={() => setShowCreateForm((v) => !v)}
             >
               {showCreateForm ? "Cancel" : "Add Account"}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={handleBackfillRag}
+              loading={backfilling}
+            >
+              Backfill RAG
             </Button>
             <Button
               size="sm"
