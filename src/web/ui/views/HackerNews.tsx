@@ -220,8 +220,18 @@ export default function HackerNews() {
       if (res.success) {
         setBackfillResult(`Indexed ${res.data.indexed} stories`);
       }
-    } catch {
-      setBackfillResult("Backfill failed");
+    } catch (err) {
+      let message = "Unknown error";
+      if (err && typeof err === "object" && "message" in err) {
+        const raw = String((err as { message: string }).message);
+        try {
+          const parsed = JSON.parse(raw) as { error?: string };
+          message = parsed.error ?? raw;
+        } catch {
+          message = raw;
+        }
+      }
+      setBackfillResult(`Backfill failed: ${message}`);
     } finally {
       setBackfilling(false);
     }
