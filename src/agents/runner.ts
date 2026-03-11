@@ -10,7 +10,6 @@ import type { ResolvedAgent } from "./types";
 import type { ToolRegistry } from "../tools/registry";
 import { chat } from "../agent/chat";
 import { getAgentMemories, formatMemoryBlock } from "../store/memory";
-import { buildSubAgentPrompt } from "../prompts/loader";
 import { createLogger } from "../logger";
 
 const log = createLogger("agents:runner");
@@ -84,9 +83,8 @@ export async function runAgentIsolated(
     contextBlock = `## Prior Agent Results\n${sections.join("\n\n")}`;
   }
 
-  // Build system prompt: prompt file (if exists) or inline prompt + memories + context
-  const loadedPrompt = await buildSubAgentPrompt(input.agentId, agent.category);
-  const agentPrompt = loadedPrompt ?? agent.systemPrompt;
+  // Build system prompt: inline prompt + memories + context
+  const agentPrompt = agent.systemPrompt;
   const basePrompt = [agentPrompt, memoryBlock, contextBlock]
     .filter(Boolean)
     .join("\n\n");

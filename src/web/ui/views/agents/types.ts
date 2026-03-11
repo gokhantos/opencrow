@@ -68,8 +68,6 @@ export interface AgentInfo {
   hooks?: HooksConfig;
   telegramBotToken?: string;
   skills?: string[];
-  promptSource?: "file" | "inline";
-  promptFiles?: string[];
   source?: "file" | "file+db" | "db" | "ecc";
 }
 

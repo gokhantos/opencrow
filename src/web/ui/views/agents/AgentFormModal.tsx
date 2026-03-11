@@ -696,86 +696,13 @@ export function AgentFormModal({
           <fieldset className="border-none p-0 m-0">
             <legend className="font-heading text-xs font-semibold uppercase tracking-widest text-accent mb-4 pb-2 border-b border-border w-full flex items-center justify-between">
               System Prompt
-              {initial?.promptSource === "file" && (
-                <span className="inline-flex items-center gap-1 ml-auto text-[0.65rem] font-semibold uppercase tracking-wide text-success px-2 py-0.5 rounded-full bg-success-subtle border border-success-subtle">
-                  <svg
-                    width="10"
-                    height="10"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                    <polyline points="14 2 14 8 20 8" />
-                  </svg>
-                  From files
-                </span>
-              )}
             </legend>
-            {initial?.promptSource === "file" ? (
-              <div className="flex flex-col gap-2.5">
-                <div className="flex items-center gap-2 px-4 py-2.5 bg-success-subtle border border-success-subtle rounded-lg text-muted text-sm leading-[1.4]">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="text-success shrink-0"
-                  >
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" y1="16" x2="12" y2="12" />
-                    <line x1="12" y1="8" x2="12.01" y2="8" />
-                  </svg>
-                  <span>
-                    Prompt loaded from markdown files. Edit the files directly
-                    in{" "}
-                    <code className="font-mono text-xs px-1 py-px bg-bg-3 rounded-sm text-foreground">
-                      prompts/
-                    </code>
-                  </span>
-                </div>
-                {initial.promptFiles && initial.promptFiles.length > 0 && (
-                  <div className="flex flex-wrap gap-[5px]">
-                    {initial.promptFiles.map((f) => (
-                      <span
-                        key={f}
-                        className="inline-flex items-center gap-1 px-2.5 py-[3px] rounded-full bg-success-subtle border border-success-subtle font-mono text-xs text-success transition-colors"
-                      >
-                        <svg
-                          width="10"
-                          height="10"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          className="opacity-70 shrink-0"
-                        >
-                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                          <polyline points="14 2 14 8 20 8" />
-                        </svg>
-                        prompts/{f}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : (
               <textarea
                 rows={6}
                 className="w-full px-4 py-3 bg-bg border border-border rounded-lg text-foreground font-mono text-sm leading-relaxed outline-none transition-colors duration-150 resize-y min-h-[120px] focus:border-accent"
                 placeholder="Uses global default if empty"
                 {...register("systemPrompt")}
               />
-            )}
           </fieldset>
 
           </>)}

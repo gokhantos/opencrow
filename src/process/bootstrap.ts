@@ -35,7 +35,6 @@ import {
   createObservationHook,
   type ObservationHook,
 } from "../memory/observation-hook";
-import { buildMainAgentPrompt, buildSubAgentPrompt } from "../prompts/loader";
 import { buildSdkHooks } from "../agent/hooks";
 import { createMemoryManager } from "../memory/manager";
 import { createEmbeddingProvider } from "../memory/embeddings";
@@ -512,13 +511,7 @@ export async function bootstrap(
     onProgress?: (event: ProgressEvent) => void,
     cwd?: string,
   ): Promise<AgentOptions> {
-    let agentPrompt: string;
-    if (agent.default) {
-      agentPrompt = await buildMainAgentPrompt();
-    } else {
-      const loaded = await buildSubAgentPrompt(agent.id, agent.category);
-      agentPrompt = loaded ?? agent.systemPrompt;
-    }
+    const agentPrompt = agent.systemPrompt;
 
     const memories = await getAgentMemories(agent.id);
     const memoryBlock = formatMemoryBlock(memories);

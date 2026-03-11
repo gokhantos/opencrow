@@ -297,53 +297,7 @@ export function DetailPanel({
               <div className="flex flex-col gap-3">
                 <h4 className="flex items-center font-heading text-xs font-semibold uppercase tracking-widest text-accent m-0 pb-1.5 border-b border-border">
                   System Prompt
-                  {detail.promptSource === "file" && (
-                    <span className="inline-flex items-center gap-1 ml-auto text-[0.65rem] font-semibold uppercase tracking-wide text-success px-2 py-0.5 rounded-full bg-success-subtle border border-success-subtle">
-                      <svg
-                        width="10"
-                        height="10"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      >
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                        <polyline points="14 2 14 8 20 8" />
-                      </svg>
-                      From files
-                    </span>
-                  )}
                 </h4>
-                {detail.promptSource === "file" &&
-                  detail.promptFiles &&
-                  detail.promptFiles.length > 0 && (
-                    <div className="flex flex-wrap gap-[5px]">
-                      {detail.promptFiles.map((f) => (
-                        <span
-                          key={f}
-                          className="inline-flex items-center gap-1 px-2.5 py-[3px] rounded-full bg-success-subtle border border-success-subtle font-mono text-xs text-success transition-colors"
-                        >
-                          <svg
-                            width="10"
-                            height="10"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="2"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            className="opacity-70 shrink-0"
-                          >
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                            <polyline points="14 2 14 8 20 8" />
-                          </svg>
-                          prompts/{f}
-                        </span>
-                      ))}
-                    </div>
-                  )}
                 {detail.systemPrompt ? (
                   <div className="p-4 bg-bg-2 border border-border rounded-lg font-mono text-xs text-muted whitespace-pre-wrap break-words max-h-[240px] overflow-y-auto leading-relaxed">
                     {detail.systemPrompt}

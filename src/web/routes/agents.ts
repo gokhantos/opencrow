@@ -15,57 +15,9 @@ import {
   AgentConflictError,
 } from "../../config/agent-mutations";
 
-import { readdir } from "node:fs/promises";
-import {
-  buildMainAgentPrompt,
-  buildSubAgentPrompt,
-} from "../../prompts/loader";
 import { TEMPLATES } from "../../tools/agent-templates";
 
-const PROMPTS_DIR = `${process.cwd()}/prompts`;
 const SAFE_AGENT_ID = /^[a-z0-9][a-z0-9-]*$/;
-
-/** Determine whether an agent's prompt comes from files or inline config */
-async function getAgentPromptFiles(): Promise<ReadonlySet<string>> {
-  try {
-    const entries = await readdir(`${PROMPTS_DIR}/agents`);
-    return new Set(entries.filter((e) => e.endsWith(".md")));
-  } catch {
-    return new Set();
-  }
-}
-
-function getPromptMeta(
-  agentId: string,
-  isDefault: boolean,
-  promptFileSet: ReadonlySet<string>,
-): { promptSource: "file" | "inline"; promptFiles: string[] } {
-  if (isDefault) {
-    return {
-      promptSource: "file",
-      promptFiles: ["SOUL.md", "WORKFLOW.md", "ORCHESTRATION.md", "TECH.md"],
-    };
-  }
-  if (!promptFileSet.has(`${agentId}.md`)) {
-    return { promptSource: "inline", promptFiles: [] };
-  }
-  return {
-    promptSource: "file",
-    promptFiles: ["TECH.md", `agents/${agentId}.md`],
-  };
-}
-
-/** Resolve the effective system prompt (from files or inline config) */
-async function resolvePrompt(
-  agentId: string,
-  isDefault: boolean,
-  inlinePrompt: string,
-  category: "research" | "coding" | "orchestrator" = "research",
-): Promise<string> {
-  if (isDefault) return buildMainAgentPrompt();
-  const loaded = await buildSubAgentPrompt(agentId, category);
-  return loaded ?? inlinePrompt;
-}
 
 const agentCreateSchema = z.object({
   id: z
@@ -149,11 +101,7 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
 
     const mergedWithSource = await getMergedAgentsWithSource();
     const sourceMap = new Map(mergedWithSource.map((a) => [a.id, a._source]));
-    const promptFileSet = await getAgentPromptFiles();
-
-    const agents = deps.agentRegistry.agents.map((a) => {
-        const meta = getPromptMeta(a.id, a.default, promptFileSet);
-        return {
+    const agents = deps.agentRegistry.agents.map((a) => ({
           id: a.id,
           name: a.name,
           description: a.description,
@@ -171,11 +119,8 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
           mcpServers: a.mcpServers,
           hooks: a.hooks,
           skills: a.skills ?? [],
-          promptSource: meta.promptSource,
-          promptFiles: meta.promptFiles,
           source: sourceMap.get(a.id) ?? "file",
-        };
-      });
+        }));
 
     const agentHash = computeMergedAgentHash(mergedWithSource);
 
@@ -224,14 +169,6 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
     const mergedWithSource = await getMergedAgentsWithSource();
     const sourceEntry = mergedWithSource.find((a) => a.id === agentId);
     const agentHash = computeMergedAgentHash(mergedWithSource);
-    const promptFileSet = await getAgentPromptFiles();
-    const meta = getPromptMeta(agentId, agent.default, promptFileSet);
-    const resolvedPrompt = await resolvePrompt(
-      agentId,
-      agent.default,
-      agent.systemPrompt,
-      agent.category,
-    );
 
     return c.json({
       success: true,
@@ -242,7 +179,7 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
         provider: agent.provider,
         model: agent.model,
         isDefault: agent.default,
-        systemPrompt: resolvedPrompt,
+        systemPrompt: agent.systemPrompt,
         maxIterations: agent.maxIterations,
         toolFilter: agent.toolFilter,
         subagents: agent.subagents,
@@ -256,8 +193,6 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
         telegramBotToken: agent.telegramBotToken
           ? REDACTED_SENTINEL
           : undefined,
-        promptSource: meta.promptSource,
-        promptFiles: meta.promptFiles,
         source: sourceEntry?._source ?? "file",
       },
       configHash: agentHash,
