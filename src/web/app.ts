@@ -301,10 +301,11 @@ export function createWebApp(deps: WebAppDeps): Hono {
     app.route("/api", hn);
   }
 
-  if (deps.redditScraper || cc) {
+  if (deps.redditScraper || cc || deps.memoryManager) {
     const reddit = createRedditRoutes({
       scraper: deps.redditScraper,
       coreClient: cc,
+      memoryManager: deps.memoryManager,
     });
     app.route("/api", reddit);
   }
