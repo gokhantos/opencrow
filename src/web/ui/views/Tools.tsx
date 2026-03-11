@@ -101,42 +101,34 @@ function DetailPanel({
         <h3 className="text-lg font-bold text-strong m-0 font-mono">
           {tool.name}
         </h3>
-        <button
-          type="button"
-          className="w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:bg-bg-2 hover:text-strong transition-colors shrink-0"
-          onClick={onClose}
-        >
-          &times;
-        </button>
-      </div>
-
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <span className="text-[10px] text-faint uppercase tracking-widest font-semibold">
-              Status
-            </span>
-            <p className={cn("text-sm m-0 mt-1 font-medium", tool.enabled ? "text-success" : "text-muted")}>
-              {tool.enabled ? "Enabled" : "Disabled"}
-            </p>
-          </div>
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             className={cn(
-              "relative w-10 h-5 rounded-full transition-colors cursor-pointer border-0",
+              "relative w-9 h-[18px] rounded-full transition-colors cursor-pointer border-0",
               tool.enabled ? "bg-accent" : "bg-bg-3",
             )}
             onClick={onToggle}
+            title={tool.enabled ? "Disable tool" : "Enable tool"}
           >
             <span
               className={cn(
-                "absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform",
-                tool.enabled ? "translate-x-5" : "translate-x-0.5",
+                "absolute top-[1px] w-4 h-4 rounded-full bg-white transition-transform",
+                tool.enabled ? "translate-x-[18px]" : "translate-x-[1px]",
               )}
             />
           </button>
+          <button
+            type="button"
+            className="w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:bg-bg-2 hover:text-strong transition-colors"
+            onClick={onClose}
+          >
+            &times;
+          </button>
         </div>
+      </div>
 
+      <div className="space-y-4">
         <div>
           <span className="text-[10px] text-faint uppercase tracking-widest font-semibold">
             Category
