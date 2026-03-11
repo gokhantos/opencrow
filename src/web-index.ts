@@ -1,17 +1,19 @@
 import { loadConfig } from "./config/loader";
-import { loadConfigWithOverrides } from "./config/loader";
-import { initDb, closeDb } from "./store/db";
-import { createAgentRegistry } from "./agents/registry";
-import { createCronStore } from "./cron/store";
-import { createMemoryManager } from "./memory/manager";
-import { createEmbeddingProvider } from "./memory/embeddings";
-import { createQdrantClient } from "./memory/qdrant";
+import { bootstrap } from "./process/bootstrap";
+import { getDb } from "./store/db";
 import { createCoreClient, type CoreClient } from "./web/core-client";
 import { createWebApp } from "./web/app";
 import { createBookmarkProcessor } from "./sources/x/bookmarks/processor";
 import { createAutolikeProcessor } from "./sources/x/interactions/processor";
 import { createAutofollowProcessor } from "./sources/x/follow/processor";
 import { createProcessSupervisor } from "./process/supervisor";
+import { chat } from "./agent/chat";
+import {
+  addUserMessage,
+  addAssistantMessage,
+  getSessionHistory,
+  clearSession,
+} from "./agent/session";
 
 import {
   createLogger,
@@ -19,14 +21,11 @@ import {
   setProcessName,
   startLogPersistence,
 } from "./logger";
-import { initQuestDBReadOnly } from "./sources/markets/questdb";
 import uiHtml from "./web/ui/index.html";
 // @ts-ignore — Bun file import
 import logoFile from "./web/opencrow.png" with { type: "file" };
 // @ts-ignore — Bun file import
 import faviconFile from "./web/favicon.ico" with { type: "file" };
-import type { AgentOptions } from "./agent/types";
-import type { MemoryManager } from "./memory/types";
 
 const log = createLogger("web-main");
 
@@ -36,11 +35,13 @@ async function main(): Promise<void> {
   setLogLevel(config.logLevel);
   log.info("Starting OpenCrow web process...");
 
-  // Init DB (separate connection pool from core)
-  const dbUrl = process.env.DATABASE_URL ?? config.postgres.url;
-  const db = await initDb(dbUrl, { max: 10 });
-  startLogPersistence(db);
-  log.info("Database initialized (PostgreSQL)");
+  // Bootstrap full agent capabilities (handles DB init, agent registry, tool registry, memory)
+  const ctx = await bootstrap({
+    config,
+    processName: "web",
+    dbPoolSize: 5,
+  });
+  startLogPersistence(getDb());
 
   // Create core client pointing to internal API
   const coreUrl = `http://${config.internalApi.host}:${config.internalApi.port}`;
@@ -56,93 +57,27 @@ async function main(): Promise<void> {
     });
   }
 
-  // Init QuestDB for market data queries (read-only from web process)
-  if (config.market !== undefined) {
-    try {
-      await initQuestDBReadOnly();
-      log.info("QuestDB initialized for market queries (read-only)");
-    } catch (err) {
-      log.warn("QuestDB unavailable — market charts will be empty", {
-        error: err,
-      });
-    }
-  }
-
-  // Build agent registry (reads from DB for listing in UI)
-  const mergedConfig = await loadConfigWithOverrides();
-  const agentRegistry = createAgentRegistry(
-    mergedConfig.agents,
-    mergedConfig.agent,
-  );
-  log.info("Agent registry initialized", {
-    count: agentRegistry.agents.length,
-  });
-
   // Cron store for CRUD — always available in web process (scheduler runs in cron process)
+  const { createCronStore } = await import("./cron/store");
   const cronStore = createCronStore();
 
-  // Memory manager for search routes
-  let memoryManager: MemoryManager | undefined;
-  if (config.memorySearch !== undefined) {
-    const embeddingKey =
-      process.env.OPENROUTER_API_KEY ?? process.env.VOYAGE_API_KEY;
-    const embeddingProvider = embeddingKey
-      ? createEmbeddingProvider(embeddingKey)
-      : null;
-
-    const memSearch = config.memorySearch!;
-    const qdrantUrl = process.env.QDRANT_URL ?? memSearch.qdrant.url;
-    const qdrantCollection = memSearch.qdrant.collection;
-    const qdrantClient = await createQdrantClient({
-      url: qdrantUrl,
-      apiKey: memSearch.qdrant.apiKey,
-    });
-
-    if (qdrantClient.available) {
-      await qdrantClient.ensureCollection(qdrantCollection, 512);
-    }
-
-    memoryManager = createMemoryManager({
-      embeddingProvider,
-      qdrantClient,
-      qdrantCollection,
-      shared: memSearch.shared,
-      defaultLimit: memSearch.defaultLimit,
-      minScore: memSearch.minScore,
-      vectorWeight: memSearch.vectorWeight,
-      textWeight: memSearch.textWeight,
-      mmrLambda: memSearch.mmrLambda,
-    });
-    log.info("Memory search initialized");
-  }
-
-  // Stub for getDefaultAgentOptions — web process proxies to core
-  async function getDefaultAgentOptions(): Promise<AgentOptions> {
-    const def = agentRegistry.getDefault();
-    return {
-      systemPrompt: def.systemPrompt,
-      model: def.model,
-      provider: def.provider,
-      toolsEnabled: false,
-      agentId: def.id,
-      maxToolIterations: 0,
-      cwd: process.cwd(),
-    };
-  }
-
-  // Create X processors for direct use (not started — no timer ticks).
-  // shareNow/runNow work standalone via DB, bypassing coreClient→internal API.
+  // X processors for direct use (not started — no timer ticks).
   const bookmarkProcessor = createBookmarkProcessor();
   const autolikeProcessor = createAutolikeProcessor();
   const autofollowProcessor = createAutofollowProcessor();
 
+  const mergedConfig = ctx.config;
+
   const webApp = createWebApp({
     config: mergedConfig,
     channels: new Map(),
-    getDefaultAgentOptions,
-    agentRegistry,
+    getDefaultAgentOptions: async () => {
+      const agent = ctx.agentRegistry.getDefault();
+      return ctx.buildOptionsForAgent(agent);
+    },
+    agentRegistry: ctx.agentRegistry,
     cronStore,
-    memoryManager,
+    memoryManager: ctx.memoryManager ?? undefined,
     coreClient,
     bookmarkProcessor,
     autolikeProcessor,
@@ -155,11 +90,12 @@ async function main(): Promise<void> {
   let lastConfigHash = "";
   setInterval(async () => {
     try {
+      const { loadConfigWithOverrides } = await import("./config/loader");
       const fresh = await loadConfigWithOverrides();
       const hash = Bun.hash(JSON.stringify(fresh)).toString(36);
       if (hash === lastConfigHash) return;
       lastConfigHash = hash;
-      agentRegistry.reload(fresh.agents, fresh.agent);
+      ctx.agentRegistry.reload(fresh.agents, fresh.agent);
       log.info("Config reloaded (changed)", { hash });
     } catch (err) {
       log.error("Web agent reload failed (non-fatal)", { error: err });
@@ -170,7 +106,8 @@ async function main(): Promise<void> {
 
   type WsData =
     | { kind: "market"; upstream: WebSocket | null }
-    | { kind: "system"; id: number };
+    | { kind: "system"; id: number }
+    | { kind: "chat"; chatId: string };
 
   let systemWsNextId = 0;
   const systemWsClients = new Set<import("bun").ServerWebSocket<WsData>>();
@@ -216,8 +153,6 @@ async function main(): Promise<void> {
       if (url.pathname === "/ws/market") {
         const expectedToken = process.env.OPENCROW_WEB_TOKEN;
         if (expectedToken) {
-          // Accept token via Sec-WebSocket-Protocol header (preferred, no URL leak)
-          // or Authorization header (non-browser clients)
           const protocol = req.headers.get("sec-websocket-protocol");
           const authHeader = req.headers.get("authorization");
           const bearerToken = authHeader?.startsWith("Bearer ")
@@ -256,6 +191,27 @@ async function main(): Promise<void> {
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
 
+      // WebSocket chat — local agent execution with progress streaming
+      if (url.pathname === "/ws/chat") {
+        const expectedToken = process.env.OPENCROW_WEB_TOKEN;
+        if (expectedToken) {
+          const protocol = req.headers.get("sec-websocket-protocol");
+          const authHeader = req.headers.get("authorization");
+          const bearerToken = authHeader?.startsWith("Bearer ")
+            ? authHeader.slice(7)
+            : null;
+          const providedToken = protocol ?? bearerToken;
+          if (providedToken !== expectedToken) {
+            return new Response("Unauthorized", { status: 401 });
+          }
+        }
+        const upgraded = bunServer.upgrade(req, {
+          data: { kind: "chat" as const, chatId: "web-default" },
+        });
+        if (upgraded) return undefined as unknown as Response;
+        return new Response("WebSocket upgrade failed", { status: 400 });
+      }
+
       // Internal restart endpoint — web process restarts itself
       if (url.pathname === "/internal/restart" && req.method === "POST") {
         log.info("Restart requested via /internal/restart");
@@ -272,6 +228,10 @@ async function main(): Promise<void> {
         if (ws.data.kind === "system") {
           systemWsClients.add(ws);
           log.debug("System WS client connected", { clients: systemWsClients.size });
+          return;
+        }
+        if (ws.data.kind === "chat") {
+          log.debug("Chat WS client connected");
           return;
         }
         log.debug("Market WS client connected — opening upstream");
@@ -321,6 +281,10 @@ async function main(): Promise<void> {
         if (ws.data.kind === "market") ws.data.upstream = upstream;
       },
       message(ws, msg) {
+        if (ws.data.kind === "chat") {
+          handleChatMessage(ws as import("bun").ServerWebSocket<{ kind: "chat"; chatId: string }>, msg);
+          return;
+        }
         if (ws.data.kind !== "market") return;
         const upstream = ws.data.upstream;
         if (upstream && upstream.readyState === WebSocket.OPEN) {
@@ -331,6 +295,10 @@ async function main(): Promise<void> {
         if (ws.data.kind === "system") {
           systemWsClients.delete(ws);
           log.debug("System WS client disconnected", { clients: systemWsClients.size });
+          return;
+        }
+        if (ws.data.kind === "chat") {
+          log.debug("Chat WS client disconnected");
           return;
         }
         log.debug("Market WS client disconnected — closing upstream");
@@ -347,6 +315,88 @@ async function main(): Promise<void> {
       },
     },
   });
+
+  function safeSend(
+    ws: import("bun").ServerWebSocket<WsData>,
+    payload: unknown,
+  ): void {
+    try {
+      ws.send(JSON.stringify(payload));
+    } catch {
+      // Client already disconnected
+    }
+  }
+
+  function handleChatMessage(
+    ws: import("bun").ServerWebSocket<{ kind: "chat"; chatId: string }>,
+    msg: string | Buffer,
+  ): void {
+    const raw = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      safeSend(ws, { type: "error", message: "Invalid JSON" });
+      return;
+    }
+
+    if (parsed["type"] === "clear") {
+      const chatId = (parsed["chatId"] as string | undefined) ?? ws.data.chatId;
+      clearSession("web", chatId)
+        .then(() => safeSend(ws, { type: "cleared" }))
+        .catch((err) => safeSend(ws, { type: "error", message: String(err) }));
+      return;
+    }
+
+    if (parsed["type"] === "message") {
+      const text = parsed["text"] as string | undefined;
+      if (!text?.trim()) {
+        safeSend(ws, { type: "error", message: "Empty message" });
+        return;
+      }
+
+      const chatId = (parsed["chatId"] as string | undefined) ?? ws.data.chatId;
+      const agentId = parsed["agentId"] as string | undefined;
+
+      processChatMessage(ws, chatId, text, agentId).catch((err) => {
+        log.error("Chat WS message processing failed", { error: err });
+        safeSend(ws, { type: "error", message: String(err) });
+      });
+    }
+  }
+
+  async function processChatMessage(
+    ws: import("bun").ServerWebSocket<WsData>,
+    chatId: string,
+    text: string,
+    agentId: string | undefined,
+  ): Promise<void> {
+    await addUserMessage("web", chatId, "web-user", text);
+    const history = await getSessionHistory("web", chatId);
+
+    const agent = agentId
+      ? (ctx.agentRegistry.getById(agentId) ?? ctx.agentRegistry.getDefault())
+      : ctx.agentRegistry.getDefault();
+
+    const agentOptions = await ctx.buildOptionsForAgent(agent, (event) => {
+      safeSend(ws, event);
+    });
+
+    const response = await chat(history, {
+      ...agentOptions,
+      usageContext: { channel: "web", chatId, source: "web" as const },
+    });
+
+    await addAssistantMessage("web", chatId, response.text);
+
+    safeSend(ws, {
+      type: "response",
+      text: response.text,
+      usage: response.usage,
+      toolUseCount: response.toolUseCount,
+    });
+  }
 
   log.info(`OpenCrow web: http://${config.web.host}:${config.web.port}`);
 

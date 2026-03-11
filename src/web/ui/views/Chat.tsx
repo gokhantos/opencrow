@@ -19,12 +19,37 @@ interface AgentOption {
   readonly isDefault?: boolean;
 }
 
-interface StreamEvent {
-  readonly type: "text_delta" | "tool_use" | "tool_result" | "thinking" | "done" | "error";
-  readonly text?: string;
+/* ───── WebSocket message shapes ───── */
+
+interface WsProgressEvent {
+  readonly type: "tool_start" | "tool_done" | "thinking" | "text_output" | "complete";
   readonly tool?: string;
-  readonly error?: string;
+  readonly summary?: string;
+  readonly preview?: string;
+  readonly durationMs?: number;
+  readonly toolUseCount?: number;
 }
+
+interface WsResponseEvent {
+  readonly type: "response";
+  readonly text: string;
+  readonly usage?: Record<string, unknown>;
+  readonly toolUseCount?: number;
+}
+
+interface WsClearedEvent {
+  readonly type: "cleared";
+}
+
+interface WsErrorEvent {
+  readonly type: "error";
+  readonly message: string;
+}
+
+type WsInboundEvent = WsProgressEvent | WsResponseEvent | WsClearedEvent | WsErrorEvent;
+
+const CHAT_ID = "web-default";
+const WS_RECONNECT_DELAY_MS = 3_000;
 
 /* ───── Chat View ───── */
 
@@ -38,30 +63,120 @@ export default function Chat() {
   const [selectedAgent, setSelectedAgent] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [toolStatus, setToolStatus] = useState<string | null>(null);
+  const [wsConnected, setWsConnected] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
   useEffect(() => {
-    loadMessages();
-    loadAgents();
-  }, []);
-
-  useEffect(() => {
     scrollToBottom();
   }, [messages, streamText, scrollToBottom]);
+
+  /* ── WebSocket lifecycle ── */
+
+  const connectWs = useCallback(() => {
+    if (!isMountedRef.current) return;
+
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${proto}//${location.host}/ws/chat`;
+    const token = getToken();
+
+    const ws = new WebSocket(wsUrl, token ? [token] : undefined);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      if (!isMountedRef.current) { ws.close(); return; }
+      setWsConnected(true);
+      setError(null);
+    };
+
+    ws.onmessage = (evt) => {
+      if (!isMountedRef.current) return;
+      let event: WsInboundEvent;
+      try {
+        event = JSON.parse(evt.data as string) as WsInboundEvent;
+      } catch {
+        return;
+      }
+      handleWsEvent(event);
+    };
+
+    ws.onclose = () => {
+      if (!isMountedRef.current) return;
+      setWsConnected(false);
+      // Schedule reconnect
+      reconnectTimerRef.current = setTimeout(connectWs, WS_RECONNECT_DELAY_MS);
+    };
+
+    ws.onerror = () => {
+      // onclose fires after onerror — let that handle reconnect
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function handleWsEvent(event: WsInboundEvent): void {
+    if (event.type === "tool_start") {
+      setToolStatus(`Using ${event.tool ?? "tool"}...`);
+    } else if (event.type === "tool_done") {
+      setToolStatus(null);
+    } else if (event.type === "thinking") {
+      setToolStatus("Thinking...");
+    } else if (event.type === "text_output" && event.preview) {
+      setStreamText(event.preview);
+    } else if (event.type === "complete") {
+      setToolStatus(null);
+    } else if (event.type === "response") {
+      const assistantMessage: ChatMessage = {
+        role: "assistant",
+        content: event.text,
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      setStreamText("");
+      setToolStatus(null);
+      setSending(false);
+      textareaRef.current?.focus();
+    } else if (event.type === "cleared") {
+      setMessages([]);
+      setStreamText("");
+      setError(null);
+    } else if (event.type === "error") {
+      setError((event as WsErrorEvent).message ?? "An error occurred");
+      setSending(false);
+      setStreamText("");
+      setToolStatus(null);
+    }
+  }
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    connectWs();
+    loadMessages();
+    loadAgents();
+
+    return () => {
+      isMountedRef.current = false;
+      if (reconnectTimerRef.current !== null) {
+        clearTimeout(reconnectTimerRef.current);
+      }
+      wsRef.current?.close();
+    };
+  }, [connectWs]);
+
+  /* ── Data loading ── */
 
   async function loadMessages() {
     try {
       const res = await apiFetch<{
         success: boolean;
         data: ChatMessage[];
-      }>("/api/messages?channel=web&chatId=web-default&limit=100");
+      }>(`/api/messages?channel=web&chatId=${CHAT_ID}&limit=100`);
       if (res.success) {
         setMessages(res.data);
       }
@@ -90,9 +205,16 @@ export default function Chat() {
     }
   }
 
-  async function handleSend() {
+  /* ── Send message ── */
+
+  function handleSend() {
     const text = input.trim();
     if (!text || sending) return;
+
+    if (!wsConnected || wsRef.current?.readyState !== WebSocket.OPEN) {
+      setError("Not connected — please wait and try again.");
+      return;
+    }
 
     setInput("");
     setError(null);
@@ -107,106 +229,41 @@ export default function Chat() {
     };
     setMessages((prev) => [...prev, userMessage]);
 
-    // Reset textarea height
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
     }
 
-    const controller = new AbortController();
-    abortRef.current = controller;
-
     try {
-      const token = getToken();
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
-      }
-
-      const res = await fetch("/api/chat/stream", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          message: text,
-          chatId: "web-default",
+      wsRef.current!.send(
+        JSON.stringify({
+          type: "message",
+          text,
+          chatId: CHAT_ID,
           ...(selectedAgent ? { agentId: selectedAgent } : {}),
         }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => "Unknown error");
-        throw new Error(errText);
-      }
-
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error("No response stream");
-
-      const decoder = new TextDecoder();
-      let accumulated = "";
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const event: StreamEvent = JSON.parse(line.slice(6));
-
-            if (event.type === "text_delta" && event.text) {
-              accumulated += event.text;
-              setStreamText(accumulated);
-            } else if (event.type === "tool_use" && event.tool) {
-              setToolStatus(`Using ${event.tool}...`);
-            } else if (event.type === "tool_result") {
-              setToolStatus(null);
-            } else if (event.type === "error") {
-              setError(event.error ?? "An error occurred");
-            } else if (event.type === "done") {
-              // Stream complete
-            }
-          } catch {
-            // Skip malformed SSE
-          }
-        }
-      }
-
-      if (accumulated) {
-        const assistantMessage: ChatMessage = {
-          role: "assistant",
-          content: accumulated,
-          timestamp: Date.now(),
-        };
-        setMessages((prev) => [...prev, assistantMessage]);
-      }
+      );
     } catch (err) {
-      if ((err as Error).name !== "AbortError") {
-        setError("Failed to send message. Please try again.");
-      }
-    } finally {
+      setError("Failed to send message. Please try again.");
       setSending(false);
-      setStreamText("");
-      setToolStatus(null);
-      abortRef.current = null;
-      textareaRef.current?.focus();
     }
   }
 
-  async function handleClear() {
-    try {
-      await apiFetch("/api/chat/clear?chatId=web-default", { method: "POST" });
-      setMessages([]);
-      setStreamText("");
-      setError(null);
-    } catch {
-      setError("Failed to clear chat");
+  function handleClear() {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({ type: "clear", chatId: CHAT_ID }));
+      } catch {
+        setError("Failed to clear chat");
+      }
+    } else {
+      // Fallback: HTTP clear
+      apiFetch("/api/chat/clear?chatId=web-default", { method: "POST" })
+        .then(() => {
+          setMessages([]);
+          setStreamText("");
+          setError(null);
+        })
+        .catch(() => setError("Failed to clear chat"));
     }
   }
 
@@ -236,9 +293,17 @@ export default function Chat() {
       <div className="flex items-center justify-between pb-4 border-b border-border shrink-0">
         <div>
           <h1 className="text-xl font-bold text-strong">Chat</h1>
-          <p className="text-sm text-muted mt-0.5">Talk to your agent directly</p>
+          <p className="text-sm text-muted mt-0.5">
+            {wsConnected ? "Talk to your agent directly" : "Connecting..."}
+          </p>
         </div>
         <div className="flex items-center gap-3">
+          {/* Connection indicator */}
+          <span
+            className={`w-2 h-2 rounded-full ${wsConnected ? "bg-green-500" : "bg-yellow-500 animate-pulse"}`}
+            title={wsConnected ? "Connected" : "Reconnecting..."}
+          />
+
           {/* Agent selector */}
           <div className="relative">
             <select
@@ -287,7 +352,7 @@ export default function Chat() {
             <MessageBubble key={`${msg.timestamp ?? i}-${msg.role}`} message={msg} />
           ))}
 
-          {/* Streaming response */}
+          {/* Streaming text preview */}
           {streamText && (
             <div className="flex gap-3">
               <div className="w-7 h-7 rounded-lg bg-accent/15 flex items-center justify-center shrink-0 mt-0.5">
@@ -355,7 +420,7 @@ export default function Chat() {
           />
           <button
             onClick={handleSend}
-            disabled={!input.trim() || sending}
+            disabled={!input.trim() || sending || !wsConnected}
             className="flex items-center justify-center w-11 h-11 bg-accent rounded-xl text-white border-none cursor-pointer hover:bg-accent-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0 self-end"
           >
             <Send size={18} />
