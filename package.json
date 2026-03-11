@@ -27,7 +27,7 @@
     "opencrow": "bin/opencrow"
   },
   "scripts": {
-    "postinstall": "bunx playwright install chromium",
+    "postinstall": "npx playwright install chromium || true",
     "start": "bun run src/index.ts",
     "start:web": "bun run src/web-index.ts",
     "dev": "bun run --watch src/index.ts",
