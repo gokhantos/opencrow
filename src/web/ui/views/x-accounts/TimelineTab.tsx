@@ -122,7 +122,7 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
     useJobActions({
       startUrl: "/api/x/timeline/start",
       stopUrl: "/api/x/timeline/stop",
-      runNowUrl: "/api/x/timeline/scrape-now",
+      runNowUrl: "/api/x/timeline/run-now",
       accountId,
       startBody: { interval_minutes: intervalMinutes, ...buildSources() },
       onSuccess: loadData,
