@@ -62,6 +62,17 @@ export async function updateAgentInDb(
   const { _source, ...agentFields } = existing;
   const combined = { ...agentFields, ...partial, id };
   const validated = agentDefinitionSchema.parse(combined);
+
+  // If setting this agent as default, unset default on all others
+  if (validated.default) {
+    for (const agent of merged) {
+      if (agent.id !== id && agent.default) {
+        const { _source: src, ...fields } = agent;
+        await upsertAgentOverride(agent.id, { ...fields, default: false });
+      }
+    }
+  }
+
   await upsertAgentOverride(id, validated);
 
   const updated = await getMergedAgentsWithSource();

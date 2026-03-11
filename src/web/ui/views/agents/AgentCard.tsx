@@ -9,12 +9,14 @@ export function AgentCard({
   onSelect,
   onEdit,
   onDelete,
+  onSetDefault,
 }: {
   agent: AgentInfo;
   isSelected: boolean;
   onSelect: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onSetDefault?: () => void;
 }) {
   const toolsLabel =
     agent.toolFilter.mode === "all"
@@ -84,6 +86,18 @@ export function AgentCard({
             className="flex gap-1 opacity-0 group-hover:opacity-100 max-md:opacity-100 transition-opacity duration-150 shrink-0"
             onClick={(e) => e.stopPropagation()}
           >
+            {!agent.isDefault && onSetDefault && (
+              <button
+                className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-accent-subtle hover:text-accent hover:border-accent/30"
+                onClick={onSetDefault}
+                title="Set as default"
+                aria-label="Set as default"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                </svg>
+              </button>
+            )}
             <button
               className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-bg-2 hover:text-foreground hover:border-border-2"
               onClick={onEdit}
@@ -95,18 +109,20 @@ export function AgentCard({
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
               </svg>
             </button>
-            <button
-              className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-danger-subtle hover:text-danger hover:border-danger/30"
-              onClick={onDelete}
-              title="Delete agent"
-              aria-label="Delete agent"
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 6h18" />
-                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
-                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
-              </svg>
-            </button>
+            {!agent.isDefault && (
+              <button
+                className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-danger-subtle hover:text-danger hover:border-danger/30"
+                onClick={onDelete}
+                title="Delete agent"
+                aria-label="Delete agent"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h18" />
+                  <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+                  <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
 

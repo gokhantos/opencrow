@@ -16,6 +16,7 @@ interface AgentOption {
   readonly id: string;
   readonly name: string;
   readonly model: string;
+  readonly isDefault?: boolean;
 }
 
 interface StreamEvent {
@@ -79,6 +80,10 @@ export default function Chat() {
       }>("/api/agents");
       if (res.success) {
         setAgents(res.data);
+        const defaultAgent = res.data.find((a) => a.isDefault);
+        if (defaultAgent && !selectedAgent) {
+          setSelectedAgent(defaultAgent.id);
+        }
       }
     } catch {
       // Non-critical
@@ -241,10 +246,9 @@ export default function Chat() {
               onChange={(e) => setSelectedAgent(e.target.value)}
               className="appearance-none bg-bg-1 border border-border-2 rounded-lg px-3 py-2 pr-8 text-sm text-foreground outline-none cursor-pointer hover:border-accent/50 transition-colors"
             >
-              <option value="">Default Agent</option>
               {agents.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.name}
+                  {a.name}{a.isDefault ? " (default)" : ""}
                 </option>
               ))}
             </select>
