@@ -50,6 +50,8 @@ export default function GitHub() {
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortKey>("stars_today");
   const [filterLang, setFilterLang] = useState("");
   const [filterPeriod, setFilterPeriod] = useState<PeriodFilter>("");
@@ -89,6 +91,24 @@ export default function GitHub() {
     }
   }
 
+  async function handleBackfillRag() {
+    setBackfilling(true);
+    setBackfillResult(null);
+    try {
+      const res = await apiFetch<{ success: boolean; data: { indexed: number } }>(
+        "/api/github/backfill-rag",
+        { method: "POST" },
+      );
+      if (res.success) {
+        setBackfillResult(`Indexed ${res.data.indexed} repos`);
+      }
+    } catch {
+      setBackfillResult("Backfill failed");
+    } finally {
+      setBackfilling(false);
+    }
+  }
+
   const languages = Array.from(
     new Set(repos.map((r) => r.language).filter(Boolean)),
   ).sort();
@@ -124,13 +144,26 @@ export default function GitHub() {
           `${stats.total_repos} repos | ${stats.languages} languages | Last updated: ${formatTime(stats.last_updated_at)}`
         }
         actions={
-          <Button
-            size="sm"
-            onClick={handleScrapeNow}
-            loading={scraping}
-          >
-            Scrape Now
-          </Button>
+          <div className="flex items-center gap-2">
+            {backfillResult && (
+              <span className="text-xs text-muted">{backfillResult}</span>
+            )}
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={handleBackfillRag}
+              loading={backfilling}
+            >
+              Backfill RAG
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleScrapeNow}
+              loading={scraping}
+            >
+              Scrape Now
+            </Button>
+          </div>
         }
       />
 
