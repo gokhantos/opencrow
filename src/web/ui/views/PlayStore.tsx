@@ -51,7 +51,7 @@ interface StatsData {
   readonly last_updated_at: number | null;
 }
 
-type MainTab = "rankings" | "reviews";
+type MainTab = "rankings" | "discovered" | "reviews";
 type OverallFilter = "all" | "top-free" | "top-paid";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -296,7 +296,8 @@ const OVERALL_CHIPS = [
 ] as const;
 
 const MAIN_TABS = [
-  { id: "rankings", label: "Rankings" },
+  { id: "rankings", label: "Top Apps" },
+  { id: "discovered", label: "Discovered" },
   { id: "reviews", label: "Reviews" },
 ] as const;
 
@@ -438,8 +439,11 @@ export default function PlayStore() {
     }
   }
 
+  const topApps = rankings.filter((r) => r.list_type !== "discovered");
+  const discoveredApps = rankings.filter((r) => r.list_type === "discovered");
+
   const availableCategories: string[] = Array.from(
-    new Set(rankings.map((r) => r.category).filter(Boolean)),
+    new Set(topApps.map((r) => r.category).filter(Boolean)),
   ).sort();
 
   const categoryChips = [
@@ -449,7 +453,7 @@ export default function PlayStore() {
 
   const tabsWithCounts = MAIN_TABS.map((t) => ({
     ...t,
-    count: t.id === "rankings" ? rankings.length : reviews.length,
+    count: t.id === "rankings" ? topApps.length : t.id === "discovered" ? discoveredApps.length : reviews.length,
   }));
 
   if (loading) return <LoadingState message="Loading Play Store data…" />;
@@ -528,9 +532,26 @@ export default function PlayStore() {
           )}
 
           {overallFilter === "all" ? (
-            <GroupedRankings rankings={rankings} />
+            <GroupedRankings rankings={topApps} />
           ) : (
-            <FlatRankings rankings={rankings} />
+            <FlatRankings rankings={topApps} />
+          )}
+        </>
+      )}
+
+      {mainTab === "discovered" && (
+        <>
+          {discoveredApps.length === 0 ? (
+            <EmptyState
+              title="No discovered apps"
+              description="Discovered apps will appear here after the next scrape cycle."
+            />
+          ) : (
+            <div className="grid gap-2 grid-cols-1 lg:grid-cols-2">
+              {discoveredApps.map((app) => (
+                <PlayCard key={`${app.id}-${app.list_type}`} app={app} />
+              ))}
+            </div>
           )}
         </>
       )}
