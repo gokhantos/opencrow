@@ -23,10 +23,12 @@ import {
   Brain,
   Smartphone,
   Settings,
+  MessagesSquare,
 } from "lucide-react";
 
 export type Tab =
   | "overview"
+  | "chat"
   | "agents"
   | "skills"
   | "sessions"
@@ -64,7 +66,7 @@ export interface NavSection {
 }
 
 export const VALID_TABS = new Set<Tab>([
-  "overview", "agents", "skills", "sessions", "channels",
+  "overview", "chat", "agents", "skills", "sessions", "channels",
   "x-accounts", "producthunt", "hackernews", "reddit",
   "github", "appstore", "playstore",
   "news", "markets", "ideas", "cron",
@@ -74,6 +76,7 @@ export const VALID_TABS = new Set<Tab>([
 
 export const TAB_TITLES: Record<Tab, string> = {
   overview: "Overview",
+  chat: "Chat",
   agents: "Agents",
   skills: "Skills",
   sessions: "Sessions",
@@ -109,6 +112,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     title: "Agents",
     collapsible: false,
     items: [
+      { id: "chat", label: "Chat", Icon: MessagesSquare },
       { id: "agents", label: "Agents", Icon: Bot },
       { id: "skills", label: "Skills", Icon: GraduationCap },
       { id: "tools", label: "Tools", Icon: Wrench },
