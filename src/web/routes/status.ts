@@ -7,6 +7,60 @@ import { createLogger } from "../../logger";
 const log = createLogger("web-status");
 const startTime = Date.now();
 
+interface ExternalService {
+  readonly name: string;
+  readonly url: string;
+}
+
+const EXTERNAL_SERVICES: readonly ExternalService[] = [
+  { name: "embedding", url: "http://127.0.0.1:8901/health" },
+];
+
+async function probeExternalServices() {
+  const results = await Promise.all(
+    EXTERNAL_SERVICES.map(async (svc) => {
+      try {
+        const res = await fetch(svc.url, {
+          signal: AbortSignal.timeout(3000),
+        });
+        const ok = res.ok;
+        return {
+          name: svc.name,
+          pid: 0,
+          status: ok ? ("alive" as const) : ("dead" as const),
+          startedAt: 0,
+          lastHeartbeat: ok ? Date.now() : 0,
+          uptimeSeconds: 0,
+          metadata: {},
+          desired: true,
+          syncStatus: ok ? ("synced" as const) : ("stopped" as const),
+          restartCount: 0,
+          backoffMs: 0,
+          nextRetryAt: null,
+          orchestrated: false,
+        };
+      } catch {
+        return {
+          name: svc.name,
+          pid: 0,
+          status: "dead" as const,
+          startedAt: 0,
+          lastHeartbeat: 0,
+          uptimeSeconds: 0,
+          metadata: {},
+          desired: true,
+          syncStatus: "stopped" as const,
+          restartCount: 0,
+          backoffMs: 0,
+          nextRetryAt: null,
+          orchestrated: false,
+        };
+      }
+    }),
+  );
+  return results;
+}
+
 export function createStatusRoutes(deps: WebAppDeps): Hono {
   const app = new Hono();
 
@@ -127,20 +181,26 @@ export function createStatusRoutes(deps: WebAppDeps): Hono {
             }
           }
 
-          return c.json({ data: merged });
+          const external = await probeExternalServices();
+          return c.json({ data: [...merged, ...external] });
         }
 
-        return c.json(heartbeatResult);
+        const external = await probeExternalServices();
+        return c.json({
+          data: [...heartbeatResult.data, ...external],
+        });
       } catch (err) {
         log.warn("Failed to fetch processes from core", { error: err });
-        return c.json({ data: [] });
+        const external = await probeExternalServices();
+        return c.json({ data: external });
       }
     }
 
     // In distributed mode, read directly from DB
     try {
       const statuses = await getProcessStatuses();
-      return c.json({ data: statuses });
+      const external = await probeExternalServices();
+      return c.json({ data: [...statuses, ...external] });
     } catch (err) {
       log.warn("Failed to fetch process statuses", { error: err });
       return c.json({ data: [] });

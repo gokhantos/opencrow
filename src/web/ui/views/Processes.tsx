@@ -39,6 +39,7 @@ function getProcessType(name: string): string {
   if (name === "web") return "web";
   if (name === "market") return "market";
   if (name === "core") return "core";
+  if (name === "embedding") return "embedding";
   return "other";
 }
 
@@ -61,6 +62,7 @@ function displayName(name: string): string {
     cron: "Cron",
     web: "Web",
     market: "Market",
+    embedding: "Embedding",
   };
   return labels[name] ?? name;
 }
@@ -70,13 +72,13 @@ function groupProcesses(
 ): readonly ProcessGroup[] {
   const sorted = [...processes].sort((a, b) => a.name.localeCompare(b.name));
   const infra = sorted.filter((p) =>
-    ["core", "cron", "web", "market"].includes(p.name),
+    ["core", "cron", "web", "market", "embedding"].includes(p.name),
   );
   const agents = sorted.filter((p) => p.name.startsWith("agent:"));
   const scrapers = sorted.filter((p) => p.name.startsWith("scraper:"));
   const other = sorted.filter(
     (p) =>
-      !["core", "cron", "web", "market"].includes(p.name) &&
+      !["core", "cron", "web", "market", "embedding"].includes(p.name) &&
       !p.name.startsWith("agent:") &&
       !p.name.startsWith("scraper:"),
   );
@@ -98,6 +100,7 @@ const TYPE_BADGE: Record<string, { bg: string; text: string }> = {
   cron: { bg: "bg-amber-500/10", text: "text-amber-400" },
   web: { bg: "bg-blue-500/10", text: "text-blue-400" },
   market: { bg: "bg-emerald-500/10", text: "text-emerald-400" },
+  embedding: { bg: "bg-violet-500/10", text: "text-violet-400" },
   agent: { bg: "bg-cyan-500/10", text: "text-cyan-400" },
   scraper: { bg: "bg-orange-500/10", text: "text-orange-400" },
   other: { bg: "bg-bg-3", text: "text-muted" },
