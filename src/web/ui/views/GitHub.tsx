@@ -43,7 +43,7 @@ const SEARCH_CONFIG_DEFAULTS: GithubSearchConfig = {
 };
 
 type SortKey = "stars_today" | "stars" | "forks" | "newest";
-type PeriodFilter = "" | "daily" | "weekly" | "search";
+type TrendingPeriod = "" | "daily" | "weekly";
 
 const langColors: Record<string, string> = {
   Python: "#3572A5",
@@ -178,14 +178,139 @@ function SearchConfigPanel() {
   );
 }
 
+/* ── Shared repo list component ── */
+function RepoList({ repos }: { readonly repos: readonly GithubRepo[] }) {
+  if (repos.length === 0) {
+    return <EmptyState description='No repos yet. Click "Scrape Now" to fetch.' />;
+  }
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      {repos.map((repo, i) => (
+        <div
+          key={repo.id}
+          className="grid grid-cols-[auto_1fr_auto] items-center gap-4 px-4 py-3 bg-bg-1 rounded-lg text-sm hover:bg-bg-2 transition-colors"
+        >
+          <span className="text-sm text-faint font-mono w-6 text-right">
+            {i + 1}
+          </span>
+
+          <div className="min-w-0">
+            <div className="flex items-baseline gap-2">
+              <a
+                href={repo.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-strong no-underline font-medium overflow-hidden text-ellipsis whitespace-nowrap"
+              >
+                {repo.full_name}
+              </a>
+              {repo.language && (
+                <span
+                  className="text-xs bg-bg-2 px-2 py-0.5 rounded-sm shrink-0 font-medium"
+                  style={{
+                    color:
+                      langColors[repo.language] ?? "var(--color-accent)",
+                  }}
+                >
+                  {repo.language}
+                </span>
+              )}
+              {repo.period !== "search" && (
+                <span className="text-xs text-faint bg-bg-2 px-2 py-0.5 rounded-sm shrink-0">
+                  {repo.period === "weekly" ? "week" : "day"}
+                </span>
+              )}
+            </div>
+            {repo.description && (
+              <div className="text-sm text-faint mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap max-w-[650px]">
+                {repo.description.slice(0, 150)}
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-4 text-sm text-faint shrink-0 font-mono">
+            {repo.stars_today > 0 && (
+              <span
+                title={`+${repo.stars_today} stars ${repo.period === "weekly" ? "this week" : "today"}`}
+              >
+                <span className="text-[#f0b429] font-semibold">
+                  +{formatNumber(repo.stars_today)}
+                </span>
+              </span>
+            )}
+            <span title="Total stars">
+              {formatNumber(repo.stars)} stars
+            </span>
+            <span title="Forks">{formatNumber(repo.forks)} forks</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── Section header ── */
+function SectionHeader({
+  title,
+  count,
+  children,
+}: {
+  readonly title: string;
+  readonly count: number;
+  readonly children?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between mb-3 mt-8 first:mt-0">
+      <h2 className="text-base font-semibold text-strong">
+        {title}{" "}
+        <span className="text-sm font-normal text-muted">({count})</span>
+      </h2>
+      {children && <div className="flex gap-3 flex-wrap">{children}</div>}
+    </div>
+  );
+}
+
+/* ── Helpers ── */
+function dedupeByFullName(repos: readonly GithubRepo[]): GithubRepo[] {
+  const seen = new Set<string>();
+  return repos.filter((r) => {
+    if (seen.has(r.full_name)) return false;
+    seen.add(r.full_name);
+    return true;
+  });
+}
+
+function sortRepos(repos: readonly GithubRepo[], sortBy: SortKey): GithubRepo[] {
+  return [...repos].sort((a, b) => {
+    if (sortBy === "stars_today") return b.stars_today - a.stars_today;
+    if (sortBy === "stars") return b.stars - a.stars;
+    if (sortBy === "forks") return b.forks - a.forks;
+    return b.updated_at - a.updated_at;
+  });
+}
+
+function getLanguages(repos: readonly GithubRepo[]): string[] {
+  return Array.from(
+    new Set(repos.map((r) => r.language).filter(Boolean)),
+  ).sort();
+}
+
+/* ── Main page ── */
 export default function GitHub() {
   const [repos, setRepos] = useState<GithubRepo[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
-  const [sortBy, setSortBy] = useState<SortKey>("stars_today");
-  const [filterLang, setFilterLang] = useState("");
-  const [filterPeriod, setFilterPeriod] = useState<PeriodFilter>("");
+
+  // Trending filters
+  const [trendingSort, setTrendingSort] = useState<SortKey>("stars_today");
+  const [trendingLang, setTrendingLang] = useState("");
+  const [trendingPeriod, setTrendingPeriod] = useState<TrendingPeriod>("");
+
+  // Search filters
+  const [searchSort, setSearchSort] = useState<SortKey>("stars");
+  const [searchLang, setSearchLang] = useState("");
 
   useEffect(() => {
     fetchAll();
@@ -222,27 +347,28 @@ export default function GitHub() {
     }
   }
 
-  const languages = Array.from(
-    new Set(repos.map((r) => r.language).filter(Boolean)),
-  ).sort();
+  // Split repos by source
+  const trendingRepos = repos.filter((r) => r.period === "daily" || r.period === "weekly");
+  const searchRepos = repos.filter((r) => r.period === "search");
 
-  const filtered = repos
-    .filter((r) => !filterLang || r.language === filterLang)
-    .filter((r) => !filterPeriod || r.period === filterPeriod)
-    .sort((a, b) => {
-      if (sortBy === "stars_today") return b.stars_today - a.stars_today;
-      if (sortBy === "stars") return b.stars - a.stars;
-      if (sortBy === "forks") return b.forks - a.forks;
-      return b.updated_at - a.updated_at;
-    });
+  // Trending: filter, sort, dedupe
+  const trendingFiltered = dedupeByFullName(
+    sortRepos(
+      trendingRepos
+        .filter((r) => !trendingLang || r.language === trendingLang)
+        .filter((r) => !trendingPeriod || r.period === trendingPeriod),
+      trendingSort,
+    ),
+  );
 
-  // Dedupe by full_name, keeping the entry with higher stars_today
-  const seen = new Set<string>();
-  const deduped = filtered.filter((r) => {
-    if (seen.has(r.full_name)) return false;
-    seen.add(r.full_name);
-    return true;
-  });
+  // Search: filter, sort
+  const searchFiltered = sortRepos(
+    searchRepos.filter((r) => !searchLang || r.language === searchLang),
+    searchSort,
+  );
+
+  const trendingLanguages = getLanguages(trendingRepos);
+  const searchLanguages = getLanguages(searchRepos);
 
   if (loading) {
     return <LoadingState message="Loading..." />;
@@ -251,7 +377,7 @@ export default function GitHub() {
   return (
     <div>
       <PageHeader
-        title="GitHub Trending"
+        title="GitHub"
         subtitle={
           stats &&
           `${stats.total_repos} repos | ${stats.languages} languages | Last updated: ${formatTime(stats.last_updated_at)}`
@@ -267,11 +393,12 @@ export default function GitHub() {
         }
       />
 
-      <div className="flex gap-3 mb-5 flex-wrap">
+      {/* ── Trending Section ── */}
+      <SectionHeader title="Trending" count={trendingFiltered.length}>
         <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as SortKey)}
-          className="px-3 py-2 text-sm bg-bg-1 text-strong border border-border rounded-md outline-none"
+          value={trendingSort}
+          onChange={(e) => setTrendingSort(e.target.value as SortKey)}
+          className="px-3 py-1.5 text-xs bg-bg-1 text-strong border border-border rounded-md outline-none"
         >
           <option value="stars_today">Hottest</option>
           <option value="stars">Most Stars</option>
@@ -280,94 +407,56 @@ export default function GitHub() {
         </select>
 
         <select
-          value={filterPeriod}
-          onChange={(e) => setFilterPeriod(e.target.value as PeriodFilter)}
-          className="px-3 py-2 text-sm bg-bg-1 text-strong border border-border rounded-md outline-none"
+          value={trendingPeriod}
+          onChange={(e) => setTrendingPeriod(e.target.value as TrendingPeriod)}
+          className="px-3 py-1.5 text-xs bg-bg-1 text-strong border border-border rounded-md outline-none"
         >
-          <option value="">All periods</option>
+          <option value="">Daily + Weekly</option>
           <option value="daily">Today</option>
           <option value="weekly">This week</option>
-          <option value="search">Search API</option>
         </select>
 
         <select
-          value={filterLang}
-          onChange={(e) => setFilterLang(e.target.value)}
-          className="px-3 py-2 text-sm bg-bg-1 text-strong border border-border rounded-md outline-none"
+          value={trendingLang}
+          onChange={(e) => setTrendingLang(e.target.value)}
+          className="px-3 py-1.5 text-xs bg-bg-1 text-strong border border-border rounded-md outline-none"
         >
-          <option value="">All languages ({repos.length})</option>
-          {languages.map((lang) => (
-            <option key={lang} value={lang}>
-              {lang} ({repos.filter((r) => r.language === lang).length})
-            </option>
+          <option value="">All languages</option>
+          {trendingLanguages.map((lang) => (
+            <option key={lang} value={lang}>{lang}</option>
           ))}
         </select>
-      </div>
+      </SectionHeader>
+
+      <RepoList repos={trendingFiltered} />
+
+      {/* ── Search Section ── */}
+      <SectionHeader title="Search" count={searchFiltered.length}>
+        <select
+          value={searchSort}
+          onChange={(e) => setSearchSort(e.target.value as SortKey)}
+          className="px-3 py-1.5 text-xs bg-bg-1 text-strong border border-border rounded-md outline-none"
+        >
+          <option value="stars">Most Stars</option>
+          <option value="forks">Most Forks</option>
+          <option value="newest">Newest</option>
+        </select>
+
+        <select
+          value={searchLang}
+          onChange={(e) => setSearchLang(e.target.value)}
+          className="px-3 py-1.5 text-xs bg-bg-1 text-strong border border-border rounded-md outline-none"
+        >
+          <option value="">All languages</option>
+          {searchLanguages.map((lang) => (
+            <option key={lang} value={lang}>{lang}</option>
+          ))}
+        </select>
+      </SectionHeader>
 
       <SearchConfigPanel />
 
-      {deduped.length === 0 ? (
-        <EmptyState description='No repos yet. Click "Scrape Now" to fetch.' />
-      ) : (
-        <div className="flex flex-col gap-0.5">
-          {deduped.map((repo, i) => (
-            <div
-              key={repo.id}
-              className="grid grid-cols-[auto_1fr_auto] items-center gap-4 px-4 py-3 bg-bg-1 rounded-lg text-sm hover:bg-bg-2 transition-colors"
-            >
-              <span className="text-sm text-faint font-mono w-6 text-right">
-                {i + 1}
-              </span>
-
-              <div className="min-w-0">
-                <div className="flex items-baseline gap-2">
-                  <a
-                    href={repo.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-strong no-underline font-medium overflow-hidden text-ellipsis whitespace-nowrap"
-                  >
-                    {repo.full_name}
-                  </a>
-                  {repo.language && (
-                    <span
-                      className="text-xs bg-bg-2 px-2 py-0.5 rounded-sm shrink-0 font-medium"
-                      style={{
-                        color:
-                          langColors[repo.language] ?? "var(--color-accent)",
-                      }}
-                    >
-                      {repo.language}
-                    </span>
-                  )}
-                  <span className="text-xs text-faint bg-bg-2 px-2 py-0.5 rounded-sm shrink-0">
-                    {repo.period === "weekly" ? "week" : repo.period === "search" ? "search" : "day"}
-                  </span>
-                </div>
-                {repo.description && (
-                  <div className="text-sm text-faint mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap max-w-[650px]">
-                    {repo.description.slice(0, 150)}
-                  </div>
-                )}
-              </div>
-
-              <div className="flex items-center gap-4 text-sm text-faint shrink-0 font-mono">
-                <span
-                  title={`+${repo.stars_today} stars ${repo.period === "weekly" ? "this week" : "today"}`}
-                >
-                  <span className="text-[#f0b429] font-semibold">
-                    +{formatNumber(repo.stars_today)}
-                  </span>
-                </span>
-                <span title="Total stars">
-                  {formatNumber(repo.stars)} stars
-                </span>
-                <span title="Forks">{formatNumber(repo.forks)} forks</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      <RepoList repos={searchFiltered} />
     </div>
   );
 }
