@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { apiFetch } from "../api";
 import { PageHeader, LoadingState, EmptyState, Button } from "../components";
 import { formatTime, parseJsonArray } from "../lib/format";
+import { PHCredentials } from "./ph-accounts/PHCredentials";
 
 const PH_COLOR = "#da552f";
 
@@ -25,11 +26,6 @@ interface PHProduct {
   readonly updated_at: number;
 }
 
-interface PHMaker {
-  readonly name: string;
-  readonly username: string;
-}
-
 interface PHStats {
   readonly total_products: number;
   readonly last_updated_at: number | null;
@@ -43,23 +39,6 @@ function extractDomain(url: string): string {
   }
 }
 
-function MakerPills({ makersJson }: { readonly makersJson: string }) {
-  const makers = parseJsonArray<PHMaker>(makersJson);
-  if (makers.length === 0) return null;
-  return (
-    <span className="inline-flex gap-1 flex-wrap">
-      {makers.slice(0, 4).map((m) => (
-        <span
-          key={m.username}
-          className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-bg-2 text-muted text-xs font-medium"
-          title={m.name}
-        >
-          @{m.username}
-        </span>
-      ))}
-    </span>
-  );
-}
 
 function TopicPills({ topicsJson }: { readonly topicsJson: string }) {
   const topics = parseJsonArray<string>(topicsJson);
@@ -175,9 +154,8 @@ function ProductCard({ product }: { readonly product: PHProduct }) {
           )}
         </div>
 
-        {/* Makers + topics */}
+        {/* Topics */}
         <div className="flex items-center gap-2 mt-2 flex-wrap">
-          <MakerPills makersJson={product.makers_json} />
           <TopicPills topicsJson={product.topics_json} />
         </div>
       </div>
@@ -256,9 +234,6 @@ export default function ProductHunt() {
         }
         actions={
           <div className="flex gap-2">
-            <Button size="sm" onClick={handleScrapeNow} loading={scraping}>
-              Scrape Now
-            </Button>
             <Button
               size="sm"
               variant="secondary"
@@ -267,9 +242,14 @@ export default function ProductHunt() {
             >
               Backfill RAG
             </Button>
+            <Button size="sm" onClick={handleScrapeNow} loading={scraping}>
+              Scrape Now
+            </Button>
           </div>
         }
       />
+
+      <PHCredentials />
 
       {error && (
         <div className="mb-4 px-4 py-2 bg-danger-subtle text-danger rounded-lg text-sm">

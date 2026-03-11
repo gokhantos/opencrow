@@ -96,8 +96,9 @@ export function createPHScraper(config?: {
   async function runScraper(): Promise<
     { ok: true; products: readonly RawPHProduct[] } | { ok: false; error: string }
   > {
-    const apiKey = process.env.PH_API_TOKEN;
-    const apiSecret = process.env.PH_API_SECRET;
+    const { getSecret } = await import("../../config/secrets");
+    const apiKey = await getSecret("PH_API_TOKEN");
+    const apiSecret = await getSecret("PH_API_SECRET");
 
     if (!apiKey || !apiSecret) {
       return { ok: false, error: "PH_API_TOKEN or PH_API_SECRET not configured" };

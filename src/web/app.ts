@@ -293,7 +293,7 @@ export function createWebApp(deps: WebAppDeps): Hono {
   }
 
   if (deps.hnScraper || cc) {
-    const hn = createHNRoutes({ scraper: deps.hnScraper, coreClient: cc });
+    const hn = createHNRoutes({ scraper: deps.hnScraper, coreClient: cc, memoryManager: deps.memoryManager });
     app.route("/api", hn);
   }
 
@@ -309,6 +309,7 @@ export function createWebApp(deps: WebAppDeps): Hono {
     const github = createGithubRoutes({
       scraper: deps.githubScraper,
       coreClient: cc,
+      memoryManager: deps.memoryManager,
     });
     app.route("/api", github);
   }

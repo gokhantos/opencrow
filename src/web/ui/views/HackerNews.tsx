@@ -159,6 +159,8 @@ export default function HackerNews() {
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAll();
@@ -195,6 +197,24 @@ export default function HackerNews() {
     }
   }
 
+  async function handleBackfillRag() {
+    setBackfilling(true);
+    setBackfillResult(null);
+    try {
+      const res = await apiFetch<{ success: boolean; data: { indexed: number } }>(
+        "/api/hn/backfill-rag",
+        { method: "POST" },
+      );
+      if (res.success) {
+        setBackfillResult(`Indexed ${res.data.indexed} stories`);
+      }
+    } catch {
+      setBackfillResult("Backfill failed");
+    } finally {
+      setBackfilling(false);
+    }
+  }
+
   function formatTime(epoch: number | null): string {
     if (!epoch) return "Never";
     return new Date(epoch * 1000).toLocaleString();
@@ -213,13 +233,26 @@ export default function HackerNews() {
           `${stats.total_stories} stories | Last updated: ${formatTime(stats.last_updated_at)}`
         }
         actions={
-          <Button
-            size="sm"
-            onClick={handleScrapeNow}
-            loading={scraping}
-          >
-            Scrape Now
-          </Button>
+          <div className="flex items-center gap-2">
+            {backfillResult && (
+              <span className="text-xs text-muted">{backfillResult}</span>
+            )}
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={handleBackfillRag}
+              loading={backfilling}
+            >
+              Backfill RAG
+            </Button>
+            <Button
+              size="sm"
+              onClick={handleScrapeNow}
+              loading={scraping}
+            >
+              Scrape Now
+            </Button>
+          </div>
         }
       />
 
