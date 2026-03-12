@@ -62,6 +62,10 @@ export interface BootstrapContext {
     agent: ResolvedAgent,
     basePrompt: string,
   ) => Promise<string>;
+  /** Invalidate the per-agent tool registry cache. Called automatically on agentRegistry.reload(). */
+  readonly clearRegistryCache: () => void;
+  /** Release background timers (e.g. Qdrant recovery probe). Call on shutdown. */
+  readonly dispose: () => void;
   // Mutable: set by gateway after cron is initialized
   cronToolConfig: CronToolConfig | null;
 }
@@ -148,6 +152,7 @@ export async function bootstrap(
   }
 
   let memoryManager: MemoryManager | null = null;
+  let qdrantClientRef: import("../memory/qdrant").QdrantClient | null = null;
   if (!opts.skipMemory && mergedConfig.memorySearch !== undefined) {
     const { getSecret } = await import("../config/secrets");
     const { getOverride } = await import("../store/config-overrides");
@@ -170,6 +175,7 @@ export async function bootstrap(
       url: qdrantUrl,
       apiKey: memSearch.qdrant.apiKey,
     });
+    qdrantClientRef = qdrantClient;
 
     if (qdrantClient.available) {
       await qdrantClient.ensureCollection(qdrantCollection, embeddingsConfig.dimensions);
@@ -245,6 +251,30 @@ export async function bootstrap(
 
   // Mutable ref for cronToolConfig — set by caller after cron is initialized
   let cronToolConfig: CronToolConfig | null = null;
+
+  // Per-agent tool registry cache — keyed by agent ID, toolFilter, and whether cron is active.
+  // Only populated for calls without an onProgress callback (high-frequency paths: message routing,
+  // cron jobs). Calls with onProgress (streaming UI) bypass the cache because the spawnAgent tool
+  // closes over the callback and must not be shared across callers.
+  const registryCache = new Map<string, ToolRegistry>();
+
+  function registryCacheKey(agent: ResolvedAgent): string {
+    const filterKey = `${agent.toolFilter.mode}:${agent.toolFilter.tools.join(",")}`;
+    const hasCron = cronToolConfig !== null ? "1" : "0";
+    return `${agent.id}|${filterKey}|${hasCron}`;
+  }
+
+  function clearRegistryCache(): void {
+    registryCache.clear();
+    log.debug("Tool registry cache cleared");
+  }
+
+  // Wrap agentRegistry.reload so the cache is always invalidated on config reload.
+  const originalReload = agentRegistry.reload.bind(agentRegistry);
+  agentRegistry.reload = (agentConfigs, globalDefaults) => {
+    originalReload(agentConfigs, globalDefaults);
+    clearRegistryCache();
+  };
 
   async function loadSkillContents(
     skillIds: readonly string[],
@@ -355,11 +385,16 @@ export async function bootstrap(
     buildRegistryForAgent,
     buildOptionsForAgent,
     enrichSystemPrompt,
+    clearRegistryCache,
+    dispose(): void {
+      qdrantClientRef?.dispose();
+    },
     get cronToolConfig() {
       return cronToolConfig;
     },
     set cronToolConfig(value: CronToolConfig | null) {
       cronToolConfig = value;
+      clearRegistryCache();
     },
   };
 }

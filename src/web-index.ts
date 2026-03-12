@@ -460,10 +460,11 @@ async function main(): Promise<void> {
   });
 
   process.on("uncaughtException", (error: Error) => {
-    log.error("Uncaught exception (non-fatal)", {
+    log.error("Uncaught exception — exiting", {
       error: error.message,
       stack: error.stack,
     });
+    process.exit(1);
   });
 }
 
