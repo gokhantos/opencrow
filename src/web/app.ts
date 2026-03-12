@@ -319,10 +319,11 @@ export function createWebApp(deps: WebAppDeps): Hono {
     app.route("/api", github);
   }
 
-  if (deps.newsProcessor || cc) {
+  if (deps.newsProcessor || cc || deps.memoryManager) {
     const news = createNewsRoutes({
       processor: deps.newsProcessor,
       coreClient: cc,
+      memoryManager: deps.memoryManager,
     });
     app.route("/api", news);
   }
