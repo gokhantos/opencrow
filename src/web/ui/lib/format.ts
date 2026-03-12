@@ -112,6 +112,24 @@ export function intervalLabel(minutes: number): string {
   return `Every ${hrs}h ${rem}m`;
 }
 
+/** Format USD cost with appropriate precision. */
+export function formatCost(usd: number): string {
+  if (usd === 0) return "$0.00";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  if (usd < 1) return `$${usd.toFixed(3)}`;
+  return `$${usd.toFixed(2)}`;
+}
+
+/** Format milliseconds as a human-readable duration (e.g. "2.3s", "1m 30s"). */
+export function formatDuration(ms: number): string {
+  if (!ms) return "\u2014";
+  if (ms < 1000) return `${ms}ms`;
+  const sec = ms / 1000;
+  return sec < 60
+    ? `${sec.toFixed(1)}s`
+    : `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+}
+
 /** Parse a JSON array string, returning [] on failure. */
 export function parseJsonArray<T = string>(json: string): readonly T[] {
   try {
