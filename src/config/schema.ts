@@ -313,6 +313,27 @@ export const processesConfigSchema = z
     },
   });
 
+export const memoryEvictionConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  ttlDays: z.number().int().min(1).default(90),
+  intervalMinutes: z.number().int().min(5).default(60),
+  batchSize: z.number().int().min(10).default(500),
+});
+
+export const rateLimitPerSenderSchema = z.object({
+  maxBurst: z.number().int().min(1).max(1000).default(5),
+  sustainedPerMinute: z.number().int().min(1).max(3600).default(10),
+});
+
+export const rateLimitConfigSchema = z
+  .object({
+    perSender: rateLimitPerSenderSchema.default({
+      maxBurst: 5,
+      sustainedPerMinute: 10,
+    }),
+  })
+  .optional();
+
 export const opencrowConfigSchema = z.object({
   agent: agentConfigSchema.default({
     model: "claude-sonnet-4-6",
@@ -367,6 +388,8 @@ export const opencrowConfigSchema = z.object({
   market: marketPipelineConfigSchema.optional(),
   monitor: monitorConfigSchema,
   processes: processesConfigSchema,
+  rateLimit: rateLimitConfigSchema,
+  memoryEviction: memoryEvictionConfigSchema.optional(),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
@@ -396,3 +419,6 @@ export type ScraperProcessesConfig = z.infer<
 export type MonitorConfig = z.infer<typeof monitorConfigSchema>;
 export type MonitorThresholds = z.infer<typeof monitorThresholdsSchema>;
 export type ModelParams = z.infer<typeof modelParamsSchema>;
+export type RateLimitConfig = z.infer<typeof rateLimitConfigSchema>;
+export type RateLimitPerSenderConfig = z.infer<typeof rateLimitPerSenderSchema>;
+export type MemoryEvictionConfig = z.infer<typeof memoryEvictionConfigSchema>;

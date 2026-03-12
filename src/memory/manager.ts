@@ -13,6 +13,7 @@ import type {
   AppReviewForIndex,
   AppRankingForIndex,
   EmbeddingProvider,
+  EvictionResult,
   MemoryManager,
   MemoryStats,
   SearchOptions,
@@ -39,6 +40,11 @@ interface StatsRow {
   source_count: number;
   chunk_count: number;
   total_tokens: number;
+}
+
+interface StaleSourceRow {
+  id: string;
+  chunk_count: number;
 }
 
 export function createMemoryManager(config: ManagerConfig): MemoryManager {
@@ -231,6 +237,66 @@ export function createMemoryManager(config: ManagerConfig): MemoryManager {
         chunkCount: Number(row?.chunk_count ?? 0),
         totalTokens: Number(row?.total_tokens ?? 0),
       };
+    },
+
+    async evict(evictConfig: {
+      readonly ttlDays: number;
+      readonly batchSize: number;
+    }): Promise<EvictionResult> {
+      const db = getDb();
+      const cutoffEpoch =
+        Math.floor(Date.now() / 1000) - evictConfig.ttlDays * 86400;
+
+      let sourcesDeleted = 0;
+      let chunksDeleted = 0;
+
+      try {
+        const staleRows = await db<StaleSourceRow[]>`
+          SELECT ms.id, COUNT(mc.id)::int AS chunk_count
+          FROM memory_sources ms
+          LEFT JOIN memory_chunks mc ON mc.source_id = ms.id
+          WHERE ms.created_at < ${cutoffEpoch}
+          GROUP BY ms.id
+          LIMIT ${evictConfig.batchSize}
+        `;
+
+        if (staleRows.length === 0) {
+          return { sourcesDeleted: 0, chunksDeleted: 0 };
+        }
+
+        const sourceIds = staleRows.map((r) => r.id);
+        chunksDeleted = staleRows.reduce(
+          (sum, r) => sum + Number(r.chunk_count),
+          0,
+        );
+
+        await db`DELETE FROM memory_sources WHERE id IN ${db(sourceIds)}`;
+        sourcesDeleted = sourceIds.length;
+
+        if (config.qdrantClient?.available) {
+          for (const sourceId of sourceIds) {
+            config.qdrantClient
+              .deletePoints(config.qdrantCollection, {
+                must: [{ key: "sourceId", match: { value: sourceId } }],
+              })
+              .catch((err) =>
+                log.error("Qdrant eviction delete failed", { sourceId, err }),
+              );
+          }
+        }
+
+        log.info("Memory eviction completed", {
+          sourcesDeleted,
+          chunksDeleted,
+          ttlDays: evictConfig.ttlDays,
+          cutoffEpoch,
+        });
+      } catch (err) {
+        log.error("Memory eviction failed", { err });
+        throw err;
+      }
+
+      return { sourcesDeleted, chunksDeleted };
     },
   };
 }

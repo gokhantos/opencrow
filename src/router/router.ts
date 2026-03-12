@@ -15,6 +15,7 @@ import type { ResolvedAgent } from "../agents/types";
 import type { MemoryManager } from "../memory/types";
 import type { ObservationHook } from "../memory/observation-hook";
 import { createActivityLog } from "./activity-log";
+import { createRateLimiter, type RateLimiter } from "./rate-limiter";
 import {
   getSdkSessionId,
   saveSdkSessionId,
@@ -71,6 +72,14 @@ export function createRouter(routerConfig: RouterConfig) {
   /** Tracks in-flight chat() calls so /clear can cancel them. */
   const activeChatSessions = new Map<string, AbortController>();
 
+  const rateLimiterCfg = routerConfig.config.rateLimit?.perSender;
+  const rateLimiter: RateLimiter | null = rateLimiterCfg
+    ? createRateLimiter({
+        maxTokens: rateLimiterCfg.maxBurst,
+        refillPerSecond: rateLimiterCfg.sustainedPerMinute / 60,
+      })
+    : null;
+
   async function getAgentOptions(
     channel: string,
     chatId: string,
@@ -119,6 +128,25 @@ export function createRouter(routerConfig: RouterConfig) {
     }
 
     log.info("Message received", { channel: channelName, chatId, senderId });
+
+    // Commands bypass rate limiting so users can always /stop or /clear
+    const isCommand =
+      text === "/stop" ||
+      text.startsWith("/stop@") ||
+      text === "/clear" ||
+      text === "/status" ||
+      text === "/agent" ||
+      text.startsWith("/agent ");
+
+    if (!isCommand && rateLimiter && !rateLimiter.tryConsume(senderId)) {
+      log.warn("Rate limit exceeded", { channel: channelName, senderId });
+      await sendReply(
+        channelName,
+        chatId,
+        "You're sending messages too quickly. Please slow down and try again.",
+      );
+      return;
+    }
 
     if (text === "/stop" || text.startsWith("/stop@")) {
       const key = chatKey(channelName, chatId);
@@ -418,7 +446,11 @@ export function createRouter(routerConfig: RouterConfig) {
     }
   }
 
-  return { handleMessage };
+  function dispose(): void {
+    rateLimiter?.dispose();
+  }
+
+  return { handleMessage, dispose };
 }
 
 function buildStatusMessage(channels: ReadonlyMap<string, Channel>): string {

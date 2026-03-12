@@ -51,8 +51,16 @@ async function main(): Promise<void> {
   // Wire cron tool so agents can manage cron jobs during execution
   ctx.cronToolConfig = {};
 
+  const supervisor = createProcessSupervisor("cron", {
+    type: "cron",
+  });
+
   cronScheduler.start();
   log.info("Cron scheduler started");
+
+  supervisor.onShutdown(async () => {
+    cronScheduler.stop();
+  });
 
   // --- Proactive Monitor ---
   if (config.monitor !== undefined) {
@@ -74,6 +82,10 @@ async function main(): Promise<void> {
       });
       monitorRunner.start();
 
+      supervisor.onShutdown(async () => {
+        monitorRunner.stop();
+      });
+
       await ensureDeepHealthCheckJob(cronStore, telegramChatId);
       await ensureHooksHealthCheckJob(cronStore, telegramChatId);
 
@@ -86,9 +98,19 @@ async function main(): Promise<void> {
     }
   }
 
-  const supervisor = createProcessSupervisor("cron", {
-    type: "cron",
-  });
+  // --- Memory Eviction ---
+  if (config.memoryEviction?.enabled && ctx.memoryManager) {
+    const { createMemoryEvictor } = await import("../memory/evictor");
+    const evictor = createMemoryEvictor(config.memoryEviction, ctx.memoryManager);
+    evictor.start();
+
+    supervisor.onShutdown(async () => {
+      evictor.stop();
+    });
+
+    log.info("Memory evictor started");
+  }
+
   await supervisor.start();
 
   log.info("Cron process started");

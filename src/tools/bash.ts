@@ -8,6 +8,7 @@ import {
 } from "./path-utils";
 import { BASH_MAX_BYTES, BASH_HEAD_BYTES, BASH_TAIL_BYTES } from "./shell-runner";
 import { createLogger } from "../logger";
+import { inputError, permissionError, timeoutError, serviceError } from "./error-helpers";
 
 const log = createLogger("tool:bash");
 
@@ -101,14 +102,11 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
         : home;
 
       if (!command.trim()) {
-        return { output: "Error: empty command", isError: true };
+        return inputError("Error: empty command");
       }
 
       if (isCommandBlocked(command, config.blockedCommands)) {
-        return {
-          output: `Error: command blocked for safety: ${command}`,
-          isError: true,
-        };
+        return permissionError(`Error: command blocked for safety: ${command}`);
       }
 
       {
@@ -120,19 +118,16 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
           GUARDIAN_PATTERNS.some((p) => p.test(normalized)) &&
           DESTRUCTIVE_OPS.test(normalized)
         ) {
-          return {
-            output:
-              "Error: guardian scripts are protected system files and cannot be modified via bash",
-            isError: true,
-          };
+          return permissionError(
+            "Error: guardian scripts are protected system files and cannot be modified via bash",
+          );
         }
       }
 
       if (!isPathAllowedSync(workDir, allowedDirs)) {
-        return {
-          output: `Error: working directory not allowed: ${workDir}`,
-          isError: true,
-        };
+        return permissionError(
+          `Error: working directory not allowed: ${workDir}`,
+        );
       }
 
       log.debug("Executing bash command", { command: command.slice(0, 200) });
@@ -170,10 +165,7 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
         ]);
 
         if (result.timedOut) {
-          return {
-            output: `Error: command timed out after ${timeout}ms`,
-            isError: true,
-          };
+          return timeoutError(`Error: command timed out after ${timeout}ms`);
         }
 
         const output = [
@@ -194,7 +186,7 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         log.error("Bash execution error", error);
-        return { output: `Error executing command: ${message}`, isError: true };
+        return serviceError(`Error executing command: ${message}`);
       }
     },
   };

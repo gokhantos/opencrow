@@ -134,6 +134,14 @@ function buildRegistry(tools: readonly ToolDefinition[]): ToolRegistry {
         router.recordExecution(name, !result.isError);
       }
 
+      // Prepend structured error prefix so the AI model can see the code
+      if (result.isError && result.errorCode) {
+        const parts: string[] = [result.errorCode];
+        if (result.retriable) parts.push("retriable");
+        const prefix = `[${parts.join(", ")}] `;
+        return { ...result, output: `${prefix}${result.output}` };
+      }
+
       return result;
     },
 

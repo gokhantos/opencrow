@@ -91,6 +91,12 @@ async function main(): Promise<void> {
     type: "market",
     port: MARKET_PORT,
   });
+
+  supervisor.onShutdown(() => marketPipeline.stop());
+  supervisor.onShutdown(async () => {
+    server.stop(true);
+  });
+
   await supervisor.start();
 
   log.info("Market process started");
