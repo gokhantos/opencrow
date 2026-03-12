@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "./styles/logs.css";
 @import "./styles/cron.css";
+@import "./styles/overview.css";
 
 @theme {
   --font-sans: 'JetBrains Mono', 'Outfit', ui-monospace, monospace;
