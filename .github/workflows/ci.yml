@@ -73,7 +73,7 @@ jobs:
         run: |
           # Exclude mock.module tests (ran above) and integration tests (need DB)
           ISOLATED="git-operations|spawn-agent|manage-agent|cron\.test|cross-agent-memory|monitor/runner"
-          INTEGRATION="db-query|shell-runner|config/loader|agent/hooks|cron/store|store/token-usage|store/observations|store/messages|store/sessions|store/routing-rules\.test|store/config-overrides|store/agent-overrides|store/workflows\.test|store/sdk-sessions"
+          INTEGRATION="db-query|shell-runner|config/loader|agent/hooks|cron/store|store/token-usage|store/observations|store/messages|store/sessions|store/routing-rules\.test|store/config-overrides|store/agent-overrides|store/workflows\.test|store/sdk-sessions|store/memory\.test|store/summaries"
           find src -name '*.test.ts' \
             | grep -vE "$ISOLATED" \
             | grep -vE "$INTEGRATION" \
@@ -137,6 +137,8 @@ jobs:
             src/store/agent-overrides.test.ts \
             src/store/workflows.test.ts \
             src/store/sdk-sessions.test.ts \
+            src/store/memory.test.ts \
+            src/store/summaries.test.ts \
             --timeout 30000
 
   # ─── Build Check ────────────────────────────────────────────
