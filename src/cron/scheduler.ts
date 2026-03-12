@@ -97,13 +97,10 @@ export function createCronScheduler(deps: CronSchedulerDeps): CronScheduler {
 
       const dueJobs = await deps.cronStore.getDueJobs(now);
 
-      // Update cache: find the earliest next_run_at among non-due jobs
+      // Update cache: find the earliest next_run_at among enabled jobs via a MIN aggregate query
       if (dueJobs.length === 0) {
-        const allJobs = await deps.cronStore.listJobs();
-        const futureRuns = allJobs
-          .filter((j) => j.enabled && j.nextRunAt !== null)
-          .map((j) => j.nextRunAt! * 1000);
-        nextDueAtMs = futureRuns.length > 0 ? Math.min(...futureRuns) : null;
+        const nextRunAtSec = await deps.cronStore.getNextDueAt();
+        nextDueAtMs = nextRunAtSec !== null ? nextRunAtSec * 1000 : null;
       } else {
         // Jobs were due — recheck next tick
         nextDueAtMs = null;
@@ -189,17 +186,15 @@ export function createCronScheduler(deps: CronSchedulerDeps): CronScheduler {
     },
 
     async getStatus(): Promise<CronSchedulerStatus> {
-      const jobs = await deps.cronStore.listJobs();
-      const enabledJobs = jobs.filter((j) => j.enabled && j.nextRunAt !== null);
-      const nextDueAt =
-        enabledJobs.length > 0
-          ? Math.min(...enabledJobs.map((j) => j.nextRunAt!))
-          : null;
+      const [jobs, nextRunAtSec] = await Promise.all([
+        deps.cronStore.listJobs(),
+        deps.cronStore.getNextDueAt(),
+      ]);
 
       return {
         running,
         jobCount: jobs.length,
-        nextDueAt,
+        nextDueAt: nextRunAtSec,
       };
     },
   };

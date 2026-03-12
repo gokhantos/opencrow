@@ -57,7 +57,8 @@ export function createUsageRoutes(): Hono {
   app.get("/usage/recent", async (c) => {
     const limitRaw = Number(c.req.query("limit") ?? "50");
     const limit = Math.max(1, Math.min(Number.isFinite(limitRaw) ? limitRaw : 50, 500));
-    const data = await getRecentUsage(limit);
+    const since = parseSince(c.req.query("since"));
+    const data = await getRecentUsage(limit, since);
     return c.json({ success: true, data });
   });
 

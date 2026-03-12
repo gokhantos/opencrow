@@ -122,3 +122,45 @@ export function deleteAgent(id: string): Promise<unknown> {
     : "";
   return apiFetch(`/api/agents/${id}${qs}`, { method: "DELETE" });
 }
+
+export function createSkillApi(data: {
+  name: string;
+  description: string;
+  content: string;
+}): Promise<{ success: boolean; data?: { id: string }; error?: string }> {
+  return apiFetch("/api/skills", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateSkillApi(
+  id: string,
+  data: { name: string; description: string; content: string },
+): Promise<{ success: boolean; error?: string }> {
+  return apiFetch(`/api/skills/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function deleteSkillApi(
+  id: string,
+): Promise<{ success: boolean; error?: string }> {
+  return apiFetch(`/api/skills/${id}`, { method: "DELETE" });
+}
+
+export function fetchSkillDetail(
+  id: string,
+): Promise<{
+  success: boolean;
+  data: {
+    id: string;
+    name: string;
+    description: string;
+    content: string;
+    body: string;
+  };
+}> {
+  return apiFetch(`/api/skills/${id}`);
+}

@@ -359,7 +359,7 @@ export function createWebApp(deps: WebAppDeps): Hono {
   );
   app.route("/api", workflows);
 
-  const skills = createSkillRoutes();
+  const skills = createSkillRoutes(deps);
   app.route("/api", skills);
 
   const usage = createUsageRoutes();

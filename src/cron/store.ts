@@ -21,6 +21,8 @@ export interface CronStore {
   getJob(id: string): Promise<CronJob | null>;
   listJobs(): Promise<readonly CronJob[]>;
   getDueJobs(nowMs: number): Promise<readonly CronJob[]>;
+  /** Returns the unix-second timestamp of the earliest scheduled enabled job, or null if none. */
+  getNextDueAt(): Promise<number | null>;
   setJobNextRun(id: string, nextRunAt: number | null): Promise<void>;
   setJobLastRun(
     id: string,
@@ -143,6 +145,19 @@ export function createCronStore(): CronStore {
       const db = getDb();
       const rows = await db`SELECT * FROM cron_jobs ORDER BY created_at DESC`;
       return (rows as Record<string, unknown>[]).map(rowToJob);
+    },
+
+    async getNextDueAt(): Promise<number | null> {
+      const db = getDb();
+      const [row] = await db`
+        SELECT MIN(next_run_at) AS next_due
+        FROM cron_jobs
+        WHERE enabled = TRUE AND next_run_at IS NOT NULL
+      `;
+      const value = (row as Record<string, unknown> | undefined)?.next_due;
+      if (value === null || value === undefined) return null;
+      const parsed = typeof value === "string" ? parseInt(value as string, 10) : (value as number);
+      return Number.isFinite(parsed) ? parsed : null;
     },
 
     async getDueJobs(nowMs: number): Promise<readonly CronJob[]> {

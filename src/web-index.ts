@@ -72,13 +72,6 @@ async function main(): Promise<void> {
 
   const mergedConfig = ctx.config;
 
-  // Build the full tool registry (including agent-specific tools like search_x_timeline,
-  // analytics, memory, etc.) so that workflow tool nodes can access all tools,
-  // not just the base 11.
-  const defaultAgent = ctx.agentRegistry.getDefault();
-  const fullToolRegistry =
-    ctx.buildRegistryForAgent(defaultAgent) ?? ctx.baseToolRegistry;
-
   const webApp = createWebApp({
     config: mergedConfig,
     channels: new Map(),
@@ -87,7 +80,7 @@ async function main(): Promise<void> {
       return ctx.buildOptionsForAgent(agent);
     },
     agentRegistry: ctx.agentRegistry,
-    toolRegistry: fullToolRegistry ?? undefined,
+    toolRegistry: ctx.workflowToolRegistry ?? undefined,
     buildAgentOptions: ctx.buildOptionsForAgent,
     cronStore,
     memoryManager: ctx.memoryManager ?? undefined,
@@ -467,10 +460,11 @@ async function main(): Promise<void> {
   });
 
   process.on("uncaughtException", (error: Error) => {
-    log.error("Uncaught exception (non-fatal)", {
+    log.error("Uncaught exception — exiting", {
       error: error.message,
       stack: error.stack,
     });
+    process.exit(1);
   });
 }
 

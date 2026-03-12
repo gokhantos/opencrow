@@ -167,6 +167,10 @@ async function main(): Promise<void> {
 
   log.info("Scraper started", { scraperId });
 
+  // Clean up Qdrant recovery probe on shutdown
+  process.once("SIGTERM", () => ctx.dispose());
+  process.once("SIGINT", () => ctx.dispose());
+
   const supervisor = createProcessSupervisor(processName, {
     type: "scraper",
     scraperId,
@@ -186,10 +190,11 @@ process.on("unhandledRejection", (reason: unknown) => {
 });
 
 process.on("uncaughtException", (error: Error) => {
-  log.error("Uncaught exception (non-fatal)", {
+  log.error("Uncaught exception — exiting", {
     error: error.message,
     stack: error.stack,
   });
+  process.exit(1);
 });
 
 main().catch((err) => {
