@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ── Only gate pushes to master ──────────────────────────────
+REMOTE="$1"
+while read local_ref local_oid remote_ref remote_oid; do
+  if [[ "$remote_ref" == "refs/heads/master" ]]; then
+    PUSHING_TO_MASTER=1
+    break
+  fi
+done
+
+if [[ -z "${PUSHING_TO_MASTER:-}" ]]; then
+  exit 0
+fi
+
+echo "pre-push: pushing to master — running checks..."
+
+BUN=$(command -v bun 2>/dev/null || echo "")
+if [[ -z "$BUN" ]]; then
+  echo "pre-push: bun not found, skipping"
+  exit 0
+fi
+
+# ── 1. TypeScript typecheck ─────────────────────────────────
+echo "  typecheck..."
+$BUN x tsc --noEmit
+
+# ── 2. Unit tests ───────────────────────────────────────────
+echo "  unit tests..."
+ISOLATED="git-operations|spawn-agent|manage-agent|cron\.test|cross-agent-memory|monitor/runner"
+INTEGRATION="db-query|shell-runner|config/loader|agent/hooks|cron/store|store/token-usage|store/observations|store/messages|store/sessions|store/routing-rules\.test|store/config-overrides|store/agent-overrides|store/workflows\.test|store/sdk-sessions|store/memory\.test|store/summaries\.test"
+TEST_FILES=$(find src -name '*.test.ts' | grep -vE "$ISOLATED" | grep -vE "$INTEGRATION" || true)
+if [[ -n "$TEST_FILES" ]]; then
+  echo $TEST_FILES | xargs $BUN test --timeout 30000
+fi
+
+# ── 3. Integration tests (only if Postgres is reachable) ────
+DB_URL="${DATABASE_URL:-postgres://opencrow:opencrow@127.0.0.1:5432/opencrow}"
+if pg_isready -d "$DB_URL" -t 2 >/dev/null 2>&1; then
+  echo "  integration tests..."
+  DATABASE_URL="$DB_URL" $BUN test \
+    src/tools/db-query.test.ts \
+    src/tools/shell-runner.test.ts \
+    src/config/loader.test.ts \
+    src/agent/hooks.test.ts \
+    src/cron/store.test.ts \
+    src/store/token-usage.test.ts \
+    src/store/observations.test.ts \
+    src/store/messages.test.ts \
+    src/store/sessions.test.ts \
+    src/store/routing-rules.test.ts \
+    src/store/config-overrides.test.ts \
+    src/store/agent-overrides.test.ts \
+    src/store/workflows.test.ts \
+    src/store/sdk-sessions.test.ts \
+    src/store/memory.test.ts \
+    src/store/summaries.test.ts \
+    --timeout 30000
+else
+  echo "  skipping integration tests (Postgres not reachable)"
+  echo "  start with: docker compose up -d postgres"
+fi
+
+echo "pre-push: all checks passed"
