@@ -12,7 +12,7 @@ import { interpolate, interpolateObject } from "./interpolation";
 import { evaluateCondition } from "./expression";
 import { runAgentIsolated } from "../agents/runner";
 import { chat } from "../agent/chat";
-import type { ConversationMessage, ProgressEvent } from "../agent/types";
+import type { ConversationMessage } from "../agent/types";
 import { readSkillContent } from "../skills/loader";
 import { createLogger } from "../logger";
 import { executionEvents } from "./events";
@@ -464,6 +464,42 @@ async function executeAgentNode(
 
     // Unreachable — the loop always returns or throws
     throw new Error("Unexpected: retry loop exited without result");
+  }
+
+  // Prefer buildAgentOptions (from bootstrap) which includes sdkHooks, enriched
+  // system prompt, observation blocks, etc.  This matches the working Telegram /
+  // web-chat code path.  Fall back to runAgentIsolated for simpler setups.
+  if (deps.buildAgentOptions) {
+    const agent = deps.agentRegistry.getById(agentId);
+    if (!agent) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+
+    const options = await deps.buildAgentOptions(agent);
+
+    const messages: readonly ConversationMessage[] = [
+      { role: "user", content: task, timestamp: Math.floor(Date.now() / 1000) },
+    ];
+
+    log.info("Running workflow agent via buildAgentOptions", {
+      agentId,
+      provider: agent.provider,
+      nodeId,
+    });
+
+    const response = await chat(messages, {
+      ...options,
+      abortSignal,
+      usageContext: { channel: "workflow" as const, chatId: nodeId, source: "workflow" as const },
+    });
+
+    log.info("Workflow agent completed", {
+      agentId,
+      nodeId,
+      toolUseCount: response.toolUseCount,
+    });
+
+    return response.text;
   }
 
   const result = await runAgentIsolated({
