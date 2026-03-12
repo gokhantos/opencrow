@@ -6,6 +6,7 @@ const log = createLogger("embeddings");
 
 const MAX_RETRIES = 3;
 const BATCH_DELAY_MS = 200;
+const MAX_CONCURRENT_BATCHES = 4;
 
 interface OpenRouterEmbeddingResponse {
   readonly data: readonly { readonly embedding: readonly number[] }[];
@@ -18,6 +19,34 @@ interface LocalEmbeddingResponse {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Process batches concurrently with a concurrency limit.
+ * Returns results in the same order as the input batches.
+ */
+async function processWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const idx = nextIndex;
+      nextIndex += 1;
+      results[idx] = await fn(items[idx]!, idx);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    () => worker(),
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 function createLocalEmbeddingProvider(
@@ -66,14 +95,16 @@ function createLocalEmbeddingProvider(
   return {
     async embed(texts: readonly string[]): Promise<Float32Array[]> {
       if (texts.length === 0) return [];
-      const results: Float32Array[] = [];
+      const batches: (readonly string[])[] = [];
       for (let i = 0; i < texts.length; i += batchSize) {
-        if (i > 0) await delay(BATCH_DELAY_MS);
-        const batch = texts.slice(i, i + batchSize);
-        const embeddings = await embedBatch(batch);
-        results.push(...embeddings);
+        batches.push(texts.slice(i, i + batchSize));
       }
-      return results;
+      const batchResults = await processWithConcurrency(
+        batches,
+        MAX_CONCURRENT_BATCHES,
+        async (batch) => embedBatch(batch),
+      );
+      return batchResults.flat();
     },
   };
 }
@@ -150,39 +181,90 @@ function createOpenRouterEmbeddingProvider(
   return {
     async embed(texts: readonly string[]): Promise<Float32Array[]> {
       if (texts.length === 0) return [];
-      const results: Float32Array[] = [];
+      const batches: (readonly string[])[] = [];
       for (let i = 0; i < texts.length; i += batchSize) {
-        if (i > 0) await delay(BATCH_DELAY_MS);
-        const batch = texts.slice(i, i + batchSize);
-        const embeddings = await embedBatch(batch);
-        results.push(...embeddings);
+        batches.push(texts.slice(i, i + batchSize));
       }
-      return results;
+      const batchResults = await processWithConcurrency(
+        batches,
+        MAX_CONCURRENT_BATCHES,
+        async (batch) => embedBatch(batch),
+      );
+      return batchResults.flat();
+    },
+  };
+}
+
+/**
+ * Creates a provider that tries the primary provider first, falling back
+ * to the secondary if the primary fails after all retries.
+ */
+function createFallbackEmbeddingProvider(
+  primary: EmbeddingProvider,
+  fallback: EmbeddingProvider,
+  primaryName: string,
+  fallbackName: string,
+): EmbeddingProvider {
+  return {
+    async embed(texts: readonly string[]): Promise<Float32Array[]> {
+      if (texts.length === 0) return [];
+      try {
+        return await primary.embed(texts);
+      } catch (err) {
+        log.warn(`${primaryName} embedding failed, falling back to ${fallbackName}`, {
+          error: String(err),
+          textCount: texts.length,
+        });
+        return fallback.embed(texts);
+      }
     },
   };
 }
 
 /**
  * Create an embedding provider from config.
+ * When provider is "local", automatically falls back to OpenRouter if available.
  * For "openrouter" provider, an API key is required.
  */
 export function createEmbeddingProviderFromConfig(
   config: EmbeddingsConfig,
   apiKey?: string,
 ): EmbeddingProvider | null {
+  const localProvider = createLocalEmbeddingProvider(
+    config.localUrl,
+    config.dimensions,
+    config.batchSize,
+  );
+
+  const openRouterProvider = apiKey
+    ? createOpenRouterEmbeddingProvider(
+        apiKey,
+        config.openrouterModel,
+        config.dimensions,
+        config.batchSize,
+      )
+    : null;
+
   if (config.provider === "local") {
     log.info("Using local embedding provider", {
       url: config.localUrl,
       dimensions: config.dimensions,
+      fallback: openRouterProvider ? "openrouter" : "none",
     });
-    return createLocalEmbeddingProvider(
-      config.localUrl,
-      config.dimensions,
-      config.batchSize,
-    );
+
+    if (openRouterProvider) {
+      return createFallbackEmbeddingProvider(
+        localProvider,
+        openRouterProvider,
+        "local",
+        "openrouter",
+      );
+    }
+
+    return localProvider;
   }
 
-  if (!apiKey) {
+  if (!apiKey || !openRouterProvider) {
     log.warn("OpenRouter embedding provider requires API key");
     return null;
   }
@@ -190,12 +272,14 @@ export function createEmbeddingProviderFromConfig(
   log.info("Using OpenRouter embedding provider", {
     model: config.openrouterModel,
     dimensions: config.dimensions,
+    fallback: "local",
   });
-  return createOpenRouterEmbeddingProvider(
-    apiKey,
-    config.openrouterModel,
-    config.dimensions,
-    config.batchSize,
+
+  return createFallbackEmbeddingProvider(
+    openRouterProvider,
+    localProvider,
+    "openrouter",
+    "local",
   );
 }
 
