@@ -260,14 +260,14 @@ export function AgentFormModal({
   useEffect(() => {
     apiFetch<{ success: boolean; data: SkillInfo[] }>("/api/skills")
       .then((res) => { if (res.success) setAvailableSkills(res.data); })
-      .catch(() => {});
+      .catch((err) => console.error("Failed to load skills", err));
     apiFetch<{ success: boolean; data: ToolInfo[] }>("/api/tools")
       .then((res) => { if (res.success) setAvailableTools(res.data); })
-      .catch(() => {});
+      .catch((err) => console.error("Failed to load tools", err));
     if (mode === "create") {
       apiFetch<{ success: boolean; data: readonly AgentTemplate[] }>("/api/agents/templates")
         .then((res) => { if (res.success) setTemplates(res.data); })
-        .catch(() => {});
+        .catch((err) => console.error("Failed to load templates", err));
     }
   }, []);
 

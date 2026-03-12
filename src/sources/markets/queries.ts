@@ -6,7 +6,6 @@ import type {
   MarketType,
   FuturesMetrics,
   FundingRate,
-  MarkPriceKline,
   TakerVolume,
 } from "./types";
 import { fetchBinanceKlines, fetchBinanceTicker24hr } from "./binance-rest";
@@ -19,10 +18,6 @@ export {
   getLatestLongShortRatio,
   type LSRatioTable,
 } from "./queries-derivatives";
-import { createLogger } from "../../logger";
-
-const log = createLogger("market:queries");
-
 /** QuestDB returns timestamps as ISO strings — parse to epoch ms */
 function tsToMs(isoOrNull: unknown): number {
   if (!isoOrNull) return 0;

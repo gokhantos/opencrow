@@ -3,10 +3,7 @@
  * Reuses existing memory/embeddings.ts infrastructure
  */
 
-import { createLogger } from "../logger";
 import { createEmbeddingProvider } from "../memory/embeddings";
-
-const log = createLogger("embedding-generator");
 
 // Cached provider instance
 let embeddingProvider: ReturnType<typeof createEmbeddingProvider> | null = null;

@@ -27,7 +27,7 @@
     "opencrow": "bin/opencrow"
   },
   "scripts": {
-    "postinstall": "npx playwright install chromium || true",
+    "postinstall": "git config core.hooksPath .githooks 2>/dev/null || true; npx playwright install chromium || true",
     "start": "bun run src/index.ts",
     "start:web": "bun run src/web-index.ts",
     "dev": "bun run --watch src/index.ts",
@@ -49,6 +49,9 @@
     "service:web:restart": "bun run src/cli.ts service web restart",
     "service:web:status": "bun run src/cli.ts service web status",
     "setup": "bun install",
+    "test:unit": "bun test --timeout 30000 $(find src -name '*.test.ts' | grep -vE 'git-operations|spawn-agent|manage-agent|cron\\.test|cross-agent-memory|monitor/runner' | grep -vE 'db-query|shell-runner|config/loader|agent/hooks|cron/store|store/token-usage|store/observations|store/messages|store/sessions|store/routing-rules\\.test|store/config-overrides|store/agent-overrides|store/workflows\\.test|store/sdk-sessions|store/memory\\.test|store/summaries\\.test')",
+    "test:integration": "bun test src/tools/db-query.test.ts src/tools/shell-runner.test.ts src/config/loader.test.ts src/agent/hooks.test.ts src/cron/store.test.ts src/store/token-usage.test.ts src/store/observations.test.ts src/store/messages.test.ts src/store/sessions.test.ts src/store/routing-rules.test.ts src/store/config-overrides.test.ts src/store/agent-overrides.test.ts src/store/workflows.test.ts src/store/sdk-sessions.test.ts src/store/memory.test.ts src/store/summaries.test.ts --timeout 30000",
+    "test:all": "bun run test:unit && bun run test:integration",
     "tw": "bunx @tailwindcss/cli -i src/web/ui/tailwind.css -o src/web/ui/tailwind-out.css --watch",
     "tw:build": "bunx @tailwindcss/cli -i src/web/ui/tailwind.css -o src/web/ui/tailwind-out.css --minify"
   },

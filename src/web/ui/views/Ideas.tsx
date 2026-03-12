@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useLocalStorage } from "../lib/useLocalStorage";
 import { ChevronRight, Archive, RotateCcw, Check } from "lucide-react";
 import { apiFetch } from "../api";

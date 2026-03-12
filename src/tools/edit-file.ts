@@ -129,7 +129,7 @@ export function createEditFileTool(config: ToolsConfig): ToolDefinition {
           await Bun.write(tmpPath, updated);
           await rename(tmpPath, filePath);
         } catch (writeErr) {
-          await unlink(tmpPath).catch(() => {});
+          await unlink(tmpPath).catch((err) => log.debug("Failed to clean up temp file", { tmpPath, err }));
           throw writeErr;
         }
         const lineNumber = content.slice(0, editIdx).split("\n").length;

@@ -114,8 +114,8 @@ const PREFERENCE_PATTERNS: PreferencePattern[] = [
 ];
 
 export async function extractPreferencesFromMessage(
-  sessionId: string,
-  messageId: string,
+  _sessionId: string,
+  _messageId: string,
   messageText: string,
 ): Promise<PreferenceCandidate[]> {
   const candidates: PreferenceCandidate[] = [];
@@ -175,7 +175,7 @@ function extractKeyFromValue(value: string): string {
 
 function calculateConfidence(
   messageText: string,
-  matchedPattern: RegExp,
+  _matchedPattern: RegExp,
 ): number {
   let confidence = 0.5;
 

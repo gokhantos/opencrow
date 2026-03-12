@@ -126,7 +126,7 @@ async function readFirstChunk(res: Response): Promise<string> {
       result += decoder.decode(value, { stream: true });
     }
   } finally {
-    reader.cancel().catch(() => {});
+    reader.cancel().catch((err) => log.debug("Reader cancel failed", err));
   }
   return result.slice(0, MAX_META_BYTES);
 }

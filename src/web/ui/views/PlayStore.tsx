@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../api";
 import {
   PageHeader,
@@ -65,14 +65,6 @@ function isFree(price: string | null | undefined): boolean {
   if (!price) return true;
   const lower = price.toLowerCase().trim();
   return lower === "0" || lower === "0.00" || lower === "free";
-}
-
-function listTypeLabel(listType: string): string {
-  if (listType === "top-free") return "Top Free";
-  if (listType === "top-paid") return "Top Paid";
-  if (listType.startsWith("top-free-")) return "Top Free";
-  if (listType.startsWith("top-paid-")) return "Top Paid";
-  return listType;
 }
 
 function formatInstalls(installs: string): string {

@@ -245,7 +245,7 @@ export function createWhatsAppChannel(botName: string): WhatsAppChannel {
           registered = false;
           qrCode = null;
           reconnectAttempts = 0;
-          clearAuth().catch(() => {});
+          clearAuth().catch((err) => log.warn("Failed to clear WhatsApp auth", err));
           sock = null;
           return;
         }
@@ -254,7 +254,7 @@ export function createWhatsAppChannel(botName: string): WhatsAppChannel {
         if (statusCode === 405) {
           log.info("Clearing stale auth (server rejected, 405)");
           registered = false;
-          clearAuth().catch(() => {});
+          clearAuth().catch((err) => log.warn("Failed to clear WhatsApp auth", err));
         }
 
         // 515 = restart required after pairing

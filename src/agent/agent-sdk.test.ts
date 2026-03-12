@@ -12,7 +12,7 @@ import {
   chat,
   agenticChat,
 } from "./agent-sdk";
-import type { AgentOptions, ConversationMessage, ModelParams } from "./types";
+import type { AgentOptions, ConversationMessage } from "./types";
 
 // ============================================================================
 // truncate helper tests

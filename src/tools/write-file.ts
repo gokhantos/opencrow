@@ -70,7 +70,7 @@ export function createWriteFileTool(config: ToolsConfig): ToolDefinition {
             isError: false,
           };
         } catch (writeErr) {
-          await unlink(tmpPath).catch(() => {});
+          await unlink(tmpPath).catch((err) => log.debug("Failed to clean up temp file", { tmpPath, err }));
           throw writeErr;
         }
       } catch (error) {

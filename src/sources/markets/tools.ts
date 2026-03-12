@@ -15,7 +15,7 @@ import {
   generateTechnicalAnalysis,
   generateFundingSummary,
 } from "./context";
-import type { TimeFrame, MarketType } from "./types";
+import type { MarketType } from "./types";
 
 export function createMarketTools(
   symbols: readonly string[],

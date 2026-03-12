@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
@@ -233,7 +233,7 @@ export default function News() {
     const handleChange = () => {
       apiFetch<{ data: { scrapers: { enabled: readonly string[] } } }>("/api/features")
         .then((res) => { if (!cancelled) setEnabledScrapers(new Set(res.data.scrapers.enabled)); })
-        .catch(() => {});
+        .catch((err) => console.error("Failed to load features", err));
     };
     window.addEventListener("features-changed", handleChange);
     return () => {

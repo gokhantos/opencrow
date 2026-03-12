@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import * as echarts from "echarts";
 import { apiFetch } from "../api";
 import { PageHeader, LoadingState, EmptyState, FilterTabs } from "../components";

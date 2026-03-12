@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import type { PipelineStatus as PipelineStatusType } from "./types";
 
 interface Props {

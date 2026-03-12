@@ -128,7 +128,10 @@ export function createXAccountRoutes(): Hono {
   });
 
   app.post("/accounts", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -162,7 +165,10 @@ export function createXAccountRoutes(): Hono {
 
   app.put("/accounts/:id", async (c) => {
     const id = c.req.param("id");
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -234,7 +240,10 @@ export function createXAccountRoutes(): Hono {
 
   app.put("/accounts/:id/capabilities", async (c) => {
     const id = c.req.param("id");
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }

@@ -1,6 +1,5 @@
 import { getDb } from "../store/db";
 import { createLogger } from "../logger";
-import { getErrorMessage } from "../lib/error-serialization";
 
 const log = createLogger("fts");
 

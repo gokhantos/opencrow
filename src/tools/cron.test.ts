@@ -33,7 +33,7 @@ mock.module("../process/commands", () => ({
 
 mock.module("../store/db", () => ({
   getDb: () => {
-    const fn = (strings: TemplateStringsArray, ..._values: unknown[]) => {
+    const fn = (_strings: TemplateStringsArray, ..._values: unknown[]) => {
       return Promise.resolve([]);
     };
     fn.unsafe = () => Promise.resolve([]);

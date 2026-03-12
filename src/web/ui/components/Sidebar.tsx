@@ -1,4 +1,3 @@
-import React from "react";
 import { LogOut, Sun, Moon } from "lucide-react";
 import { NAV_SECTIONS, type Tab } from "../navigation";
 import type { Theme } from "../app";

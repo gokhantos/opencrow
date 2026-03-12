@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { describe, it, expect, mock } from "bun:test";
 import { createSemanticToolIndex } from "./semantic-index";
 import type { EmbeddingProvider } from "../memory/types";
 import type { QdrantClient, QdrantSearchResult } from "../memory/qdrant";

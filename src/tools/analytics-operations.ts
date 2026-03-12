@@ -185,13 +185,6 @@ export function createGetActivityTimelineTool(): ToolDefinition {
   };
 }
 
-interface UserPromptRow {
-  agent_id: string;
-  session_id: string | null;
-  prompt: string;
-  created_at: Date;
-}
-
 export function createGetUserActivityTool(): ToolDefinition {
   return {
     name: "get_user_activity",
@@ -292,17 +285,6 @@ export function createGetUserActivityTool(): ToolDefinition {
       }
     },
   };
-}
-
-interface SubagentActivityRow {
-  parent_agent_id: string;
-  subagent_id: string;
-  task: string | null;
-  status: string;
-  result: string | null;
-  created_at: Date;
-  completed_at: Date | null;
-  duration_seconds: number | null;
 }
 
 export function createGetSubagentActivityTool(): ToolDefinition {

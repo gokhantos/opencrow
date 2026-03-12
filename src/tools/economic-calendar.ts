@@ -1,6 +1,6 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import { getDb } from "../store/db";
-import { getNumber, getString, getEnum, isToolError, requireString } from "./input-helpers";
+import { getNumber, getString, getEnum } from "./input-helpers";
 
 // ============================================================================
 // Economic Calendar Tool

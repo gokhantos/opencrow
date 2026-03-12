@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../../api";
 import { cn } from "../../lib/cn";
 import type { ExecutionRecord, ExecutionStepMap, StepInfo } from "./types";
@@ -19,8 +19,8 @@ interface ExecutionWithSteps extends ExecutionRecord {
 
 const statusPillStyles: Record<string, string> = {
   pending: "bg-bg-3 text-muted",
-  running: "bg-blue-500/15 text-blue-400",
-  completed: "bg-green-500/15 text-green-400",
+  running: "bg-blue-500/10 text-blue-300",
+  completed: "bg-green-500/10 text-green-300",
   failed: "bg-danger-subtle text-danger",
   cancelled: "bg-bg-3 text-muted",
 };

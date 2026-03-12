@@ -118,7 +118,10 @@ export function createWorkflowRoutes(deps?: WorkflowRouteDeps): Hono {
   });
 
   app.post("/workflows", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -154,7 +157,10 @@ export function createWorkflowRoutes(deps?: WorkflowRouteDeps): Hono {
       return c.json({ success: false, error: "Invalid workflow ID" }, 400);
     }
 
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }

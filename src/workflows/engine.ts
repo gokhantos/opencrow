@@ -151,8 +151,11 @@ async function runExecution(
     const sortedNodes = topologicalSort(workflow.nodes, workflow.edges, trigger.id);
     const outputs = new Map<string, unknown>();
 
-    // Seed trigger output with triggerInput
+    // Seed trigger output with triggerInput.
+    // Store under both the real node ID and "trigger" so templates like
+    // {{trigger.output}} resolve correctly.
     outputs.set(trigger.id, triggerInput);
+    outputs.set("trigger", triggerInput);
 
     // Track which nodes are reachable (condition branching)
     const reachable = new Set<string>(sortedNodes.map((n) => n.id));
@@ -355,7 +358,13 @@ async function executeAgentNode(
   }
 
   const promptTemplate = (data.prompt as string | undefined) ?? "{{trigger.output}}";
-  const task = interpolate(promptTemplate, outputs);
+  let task = interpolate(promptTemplate, outputs);
+
+  // Guard against empty prompts — the Anthropic API rejects empty text blocks
+  // with "cache_control cannot be set for empty text blocks" (400).
+  if (!task.trim()) {
+    task = "Execute the task described in your system prompt.";
+  }
 
   // Prefer buildAgentOptions (from bootstrap) which includes sdkHooks, enriched
   // system prompt, observation blocks, etc.  This matches the working Telegram /

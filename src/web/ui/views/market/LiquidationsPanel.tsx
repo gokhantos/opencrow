@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from "react";
+import { useMemo, useRef } from "react";
 import { cn } from "../../lib/cn";
 import type { EChartsOption } from "echarts";
 import { useECharts } from "./useECharts";

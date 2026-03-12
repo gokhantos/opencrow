@@ -1,4 +1,3 @@
-import React from "react";
 import { cn } from "../../lib/cn";
 import type { AgentInfo } from "./types";
 import { providerLabel, getInitials, shortModel } from "./types";

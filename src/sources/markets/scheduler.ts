@@ -1,5 +1,5 @@
 import type { MarketPipelineConfig } from "./config";
-import type { MarketType, TimeFrame } from "./types";
+import type { MarketType } from "./types";
 import {
   findKlineGaps,
   findKlineGapWindows,

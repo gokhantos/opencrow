@@ -69,6 +69,7 @@ export function createDbQueryTool(): ToolDefinition {
         };
       }
 
+
       // Prevent dangerous operations using word-boundary regex (not bypassable with comments/whitespace)
       const DENIED_KEYWORD_PATTERN = /\b(DROP|DELETE|UPDATE|INSERT|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|COPY)\b/i;
       const DENIED_FUNCTION_PATTERN = /\b(PG_READ_FILE|PG_READ_BINARY_FILE|PG_WRITE_FILE|PG_EXECUTE_SERVER_PROGRAM|LO_IMPORT|LO_EXPORT|DBLINK|PG_STAT_ACTIVITY|PG_AUTHID|PG_SHADOW|PG_ROLES|PG_USER)\b/i;
@@ -107,6 +108,7 @@ export function createDbQueryTool(): ToolDefinition {
           isError: true,
         };
       }
+
 
       // Add LIMIT if not present (use regex to handle whitespace/comments around LIMIT)
       let finalQuery = query;

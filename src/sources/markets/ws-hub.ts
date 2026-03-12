@@ -91,7 +91,7 @@ export function createLiveKlineHub(): LiveKlineHub {
       }
     },
 
-    onOpen(ws: ServerWebSocket<WsClientData>): void {
+    onOpen(_ws: ServerWebSocket<WsClientData>): void {
       log.debug("WebSocket client connected");
     },
 

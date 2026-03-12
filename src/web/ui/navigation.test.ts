@@ -1,6 +1,5 @@
 import { test, expect } from "bun:test";
 import { NAV_SECTIONS } from "./navigation";
-import type { Tab } from "./navigation";
 
 test("NAV_SECTIONS has expected section titles", () => {
   const titles = NAV_SECTIONS.map((s) => s.title);

@@ -40,6 +40,175 @@ import { createDbTools } from "../tools/db-query";
 
 const log = createLogger("tool-builder");
 
+export function buildWorkflowToolRegistry(
+  base: ToolRegistry,
+  config: OpenCrowConfig,
+  memoryManager: MemoryManager | null,
+  disabledTools: Set<string>,
+): ToolRegistry {
+  const enabledScrapers = new Set(
+    config.processes.scraperProcesses.scraperIds ?? [],
+  );
+  const scraperEnabled = (id: string) => enabledScrapers.has(id);
+  const allowsTool = (name: string): boolean => !disabledTools.has(name);
+
+  let registry = base;
+
+  if (config.market) {
+    const marketTools = createMarketTools(
+      config.market.symbols ?? [],
+      config.market.marketTypes ?? [],
+    ).filter((t) => allowsTool(t.name));
+    if (marketTools.length > 0) registry = registry.withTools(marketTools);
+  }
+
+  if (scraperEnabled("news")) {
+    const newsTools = createNewsTools(memoryManager).filter((t) =>
+      allowsTool(t.name),
+    );
+    if (newsTools.length > 0) registry = registry.withTools(newsTools);
+  }
+
+  if (scraperEnabled("producthunt")) {
+    const phTools = createPHTools(memoryManager).filter((t) =>
+      allowsTool(t.name),
+    );
+    if (phTools.length > 0) registry = registry.withTools(phTools);
+  }
+
+  if (scraperEnabled("hackernews")) {
+    const hnTools = createHNTools(memoryManager).filter((t) =>
+      allowsTool(t.name),
+    );
+    if (hnTools.length > 0) registry = registry.withTools(hnTools);
+  }
+
+  if (scraperEnabled("reddit")) {
+    const redditTools = createRedditTools(memoryManager).filter((t) =>
+      allowsTool(t.name),
+    );
+    if (redditTools.length > 0) registry = registry.withTools(redditTools);
+  }
+
+  if (scraperEnabled("github")) {
+    const githubTools = createGithubTools(memoryManager).filter((t) =>
+      allowsTool(t.name),
+    );
+    if (githubTools.length > 0) registry = registry.withTools(githubTools);
+  }
+
+  if (scraperEnabled("x")) {
+    const xTimelineTools = createXTimelineTools(memoryManager).filter((t) =>
+      allowsTool(t.name),
+    );
+    if (xTimelineTools.length > 0)
+      registry = registry.withTools(xTimelineTools);
+  }
+
+  if (scraperEnabled("appstore")) {
+    const appStoreTools = createAppStoreTools(memoryManager).filter((t) =>
+      allowsTool(t.name),
+    );
+    if (appStoreTools.length > 0) registry = registry.withTools(appStoreTools);
+  }
+
+  if (scraperEnabled("playstore")) {
+    const playStoreTools = createPlayStoreTools(memoryManager).filter((t) =>
+      allowsTool(t.name),
+    );
+    if (playStoreTools.length > 0)
+      registry = registry.withTools(playStoreTools);
+  }
+
+  if (memoryManager && allowsTool("cross_source_search")) {
+    registry = registry.withTools([createCrossSourceSearchTool(memoryManager)]);
+  }
+
+  if (scraperEnabled("ideas")) {
+    const ideaTools = [...createIdeaTools("workflow", memoryManager)].filter(
+      (t) => allowsTool(t.name),
+    );
+    if (ideaTools.length > 0) registry = registry.withTools(ideaTools);
+
+    const signalTools = [...createSignalTools("workflow")].filter((t) =>
+      allowsTool(t.name),
+    );
+    if (signalTools.length > 0) registry = registry.withTools(signalTools);
+  }
+
+  if (allowsTool("get_scraper_status")) {
+    registry = registry.withTools([createGetScraperStatusTool()]);
+  }
+
+  {
+    const analyticsTools = createAnalyticsTools("workflow").filter((t) =>
+      allowsTool(t.name),
+    );
+    if (analyticsTools.length > 0)
+      registry = registry.withTools(analyticsTools);
+  }
+
+  {
+    const routingTools = createRoutingDashboardTools().filter((t) =>
+      allowsTool(t.name),
+    );
+    if (routingTools.length > 0) registry = registry.withTools(routingTools);
+  }
+
+  {
+    const dbTools = createDbTools().filter((t) => allowsTool(t.name));
+    if (dbTools.length > 0) registry = registry.withTools(dbTools);
+  }
+
+  {
+    const processTools = createProcessMonitorTools().filter((t) =>
+      allowsTool(t.name),
+    );
+    if (processTools.length > 0) registry = registry.withTools(processTools);
+  }
+
+  {
+    const logTools = createLogCheckerTools().filter((t) =>
+      allowsTool(t.name),
+    );
+    if (logTools.length > 0) registry = registry.withTools(logTools);
+  }
+
+  {
+    const memoryStatsTools = createMemoryStatsTools().filter((t) =>
+      allowsTool(t.name),
+    );
+    if (memoryStatsTools.length > 0)
+      registry = registry.withTools(memoryStatsTools);
+  }
+
+  {
+    const calendarTools = createEconomicCalendarTool().filter((t) =>
+      allowsTool(t.name),
+    );
+    if (calendarTools.length > 0) registry = registry.withTools(calendarTools);
+  }
+
+  if (config.tools) {
+    if (allowsTool("project_context")) {
+      registry = registry.withTools([createProjectContextTool(config.tools)]);
+    }
+    if (allowsTool("validate_code")) {
+      registry = registry.withTools([createValidateCodeTool(config.tools)]);
+    }
+    if (allowsTool("run_tests")) {
+      registry = registry.withTools([createRunTestsTool(config.tools)]);
+    }
+  }
+
+  log.info("Workflow tool registry built", {
+    toolCount: registry.definitions.length,
+  });
+
+  return registry;
+}
+
+
 export interface ToolBuilderDeps {
   readonly config: OpenCrowConfig;
   readonly agentRegistry: AgentRegistry;

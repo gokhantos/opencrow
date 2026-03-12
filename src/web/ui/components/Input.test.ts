@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import React from "react";
-import { renderHTML, mount } from "../test-helpers";
+import { renderHTML } from "../test-helpers";
 import { Input } from "./Input";
 
 test("Input renders as input element", () => {

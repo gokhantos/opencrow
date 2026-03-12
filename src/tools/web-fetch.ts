@@ -263,7 +263,7 @@ async function readBodyLimited(
       const trimmed = value.slice(0, value.byteLength - excess);
       chunks.push(trimmed);
       truncated = true;
-      reader.cancel().catch(() => {});
+      reader.cancel().catch((err) => log.debug("Reader cancel failed", err));
       break;
     }
     chunks.push(value);

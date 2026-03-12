@@ -1,4 +1,4 @@
-import type { AgentOptions, ProgressEvent } from "../agent/types";
+import type { AgentOptions } from "../agent/types";
 import type { Channel } from "../channels/types";
 import type { ChannelRegistry } from "../channels/registry";
 import type { ChannelManager } from "../channels/manager";

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback } from "react";
 import { Modal, Button } from "../../components";
 import { getToken } from "../../api";
 import { Sparkles, Wand2, StopCircle, Check } from "lucide-react";

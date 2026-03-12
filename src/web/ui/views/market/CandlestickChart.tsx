@@ -1,10 +1,9 @@
-import React, { useMemo, useRef, useState, useCallback } from "react";
+import { useMemo, useRef, useState, useCallback } from "react";
 import type { EChartsOption } from "echarts";
 import { useECharts } from "./useECharts";
 import {
   CHART_COLORS,
   AXIS_DEFAULTS,
-  TOOLTIP_DEFAULTS,
   DATA_ZOOM_DEFAULTS,
   CROSSHAIR_DEFAULTS,
 } from "./chartTheme";

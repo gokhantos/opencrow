@@ -1,6 +1,6 @@
-import { test, expect, afterEach } from "bun:test";
+import { test, expect } from "bun:test";
 import React from "react";
-import { renderHTML, mount, click, queryAll } from "../test-helpers";
+import { renderHTML, mount, click } from "../test-helpers";
 import { Button } from "./Button";
 
 /* ---------- static rendering ---------- */

@@ -85,7 +85,6 @@ export function JobControls({
     availableLanguages.length > 0 &&
     languages != null &&
     onLanguagesChange != null;
-  const hasSettings = showPerRun || showLanguages || children != null;
 
   function toggleLanguage(code: string) {
     if (!onLanguagesChange || !languages) return;

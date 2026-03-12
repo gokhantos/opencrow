@@ -80,7 +80,7 @@ async function main(): Promise<void> {
       return ctx.buildOptionsForAgent(agent);
     },
     agentRegistry: ctx.agentRegistry,
-    toolRegistry: ctx.baseToolRegistry ?? undefined,
+    toolRegistry: ctx.workflowToolRegistry ?? undefined,
     buildAgentOptions: ctx.buildOptionsForAgent,
     cronStore,
     memoryManager: ctx.memoryManager ?? undefined,
@@ -119,7 +119,7 @@ async function main(): Promise<void> {
   let systemWsNextId = 0;
   const systemWsClients = new Set<import("bun").ServerWebSocket<WsData>>();
 
-  const server = Bun.serve<WsData>({
+  Bun.serve<WsData>({
     port: config.web.port,
     hostname: config.web.host,
     reusePort: true,
@@ -460,10 +460,11 @@ async function main(): Promise<void> {
   });
 
   process.on("uncaughtException", (error: Error) => {
-    log.error("Uncaught exception (non-fatal)", {
+    log.error("Uncaught exception — exiting", {
       error: error.message,
       stack: error.stack,
     });
+    process.exit(1);
   });
 }
 

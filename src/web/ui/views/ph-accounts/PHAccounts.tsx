@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { apiFetch } from "../../api";
 import { Button, LoadingState, EmptyState, PageHeader } from "../../components";
 import type {

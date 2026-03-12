@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Modal, Button } from "../../components";
 import { fetchSkillDetail } from "../../api";
 import { GraduationCap, Pencil, Trash2 } from "lucide-react";

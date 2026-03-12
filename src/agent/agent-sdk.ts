@@ -29,7 +29,6 @@ import {
   formatToolProgress,
   truncate,
   summarizeThinking,
-  shortenPath,
   MAX_DETAIL_LENGTH,
   MAX_THINKING_SUMMARY,
 } from "./sdk-progress";

@@ -1,15 +1,6 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import { getDb } from "../store/db";
 
-interface ToolAuditRow {
-  id: bigint;
-  agent_id: string;
-  session_id: string | null;
-  tool_name: string;
-  is_error: boolean;
-  created_at: number;
-}
-
 export function createGetToolUsageTool(): ToolDefinition {
   return {
     name: "get_tool_usage",
@@ -134,20 +125,6 @@ export function createGetToolUsageTool(): ToolDefinition {
   };
 }
 
-interface TokenUsageRow {
-  id: string;
-  agent_id: string;
-  model: string;
-  provider: string;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_creation_tokens: number;
-  cost_usd: number;
-  duration_ms: number;
-  tool_use_count: number;
-  created_at: number;
-}
 
 export function createGetAgentPerformanceTool(): ToolDefinition {
   return {
@@ -232,14 +209,6 @@ export function createGetAgentPerformanceTool(): ToolDefinition {
       }
     },
   };
-}
-
-interface SessionRow {
-  id: string;
-  channel: string;
-  chat_id: string;
-  created_at: number;
-  updated_at: number;
 }
 
 export function createGetSessionStatsTool(): ToolDefinition {

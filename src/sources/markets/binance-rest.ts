@@ -201,7 +201,6 @@ export async function fetchBinanceTicker24hr(
 
     const t: BinanceTicker24hr = await res.json();
     const price = Number(t.lastPrice);
-    const openPrice = Number(t.openPrice);
     const summary: MarketSummary = {
       symbol,
       marketType,

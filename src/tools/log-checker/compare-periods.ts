@@ -113,8 +113,8 @@ async function compareErrors(
   db: ReturnType<typeof getDb>,
   currentSince: number,
   previousSince: number,
-  currentHoursBack: number,
-  previousHoursBack: number,
+  _currentHoursBack: number,
+  _previousHoursBack: number,
 ): Promise<{ output: string; isError: boolean }> {
   const rows = (await db.unsafe(
     `SELECT

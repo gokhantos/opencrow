@@ -1,12 +1,11 @@
 import * as p from "@clack/prompts";
 import fs from "node:fs";
 import path from "node:path";
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { getAppDir, getVersion } from "./prompts.ts";
 
 const APP_DIR = getAppDir();
 const ENV_PATH = path.join(APP_DIR, ".env");
-const DOCKER_COMPOSE_PATH = path.join(APP_DIR, "docker-compose.yml");
 
 type CheckResult = {
   readonly name: string;
@@ -14,15 +13,6 @@ type CheckResult = {
   readonly message: string;
   readonly repair?: string;
 };
-
-function hasCommand(cmd: string): boolean {
-  try {
-    execSync(`command -v ${cmd}`, { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function runCmd(cmd: string, args: string[]): { ok: boolean; output: string } {
   const result = spawnSync(cmd, args, {
@@ -69,83 +59,6 @@ async function checkBun(): Promise<CheckResult> {
   return { name: "Bun", status: "pass", message: `v${version}` };
 }
 
-async function checkDocker(): Promise<CheckResult> {
-  if (!hasCommand("docker")) {
-    return {
-      name: "Docker",
-      status: "warn",
-      message: "Docker not installed (needed for managed PostgreSQL/Qdrant)",
-      repair: "https://docs.docker.com/get-docker/",
-    };
-  }
-  const info = runCmd("docker", ["info"]);
-  if (!info.ok) {
-    return {
-      name: "Docker",
-      status: "warn",
-      message: "Docker installed but not running",
-      repair: "Start Docker Desktop or: sudo systemctl start docker",
-    };
-  }
-  return { name: "Docker", status: "pass", message: "Running" };
-}
-
-async function checkContainers(): Promise<CheckResult> {
-  if (!hasCommand("docker")) {
-    return {
-      name: "Containers",
-      status: "warn",
-      message: "Docker not available",
-    };
-  }
-
-  const composeCmd = runCmd("docker", ["compose", "version"]).ok
-    ? ["docker", "compose"]
-    : hasCommand("docker-compose")
-      ? ["docker-compose"]
-      : null;
-
-  if (!composeCmd) {
-    return {
-      name: "Containers",
-      status: "warn",
-      message: "Docker Compose not available",
-    };
-  }
-
-  const ps = runCmd(composeCmd[0]!, [
-    ...(composeCmd.length > 1 ? [composeCmd[1]!] : []),
-    "-f",
-    DOCKER_COMPOSE_PATH,
-    "ps",
-    "--format",
-    "json",
-  ]);
-
-  if (!ps.ok) {
-    return {
-      name: "Containers",
-      status: "warn",
-      message: "Could not check containers",
-      repair: `docker compose -f ${DOCKER_COMPOSE_PATH} up -d`,
-    };
-  }
-
-  const running = ps.output.includes('"running"') || ps.output.includes("Up");
-  return running
-    ? {
-        name: "Containers",
-        status: "pass",
-        message: "PostgreSQL + Qdrant running",
-      }
-    : {
-        name: "Containers",
-        status: "fail",
-        message: "Containers not running",
-        repair: `docker compose -f ${DOCKER_COMPOSE_PATH} up -d`,
-      };
-}
-
 async function checkPostgres(): Promise<CheckResult> {
   const env = readEnvVars();
   const dbUrl = env.DATABASE_URL;
@@ -161,7 +74,7 @@ async function checkPostgres(): Promise<CheckResult> {
   try {
     const { SQL } = await import("bun");
     const db = new SQL({ url: dbUrl, max: 1 });
-    const rows = await db`SELECT 1 as ok`;
+    await db`SELECT 1 as ok`;
     await db.close();
     return { name: "PostgreSQL", status: "pass", message: "Connected" };
   } catch (err) {

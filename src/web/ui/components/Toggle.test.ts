@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import React from "react";
-import { renderHTML, mount, click, queryAll } from "../test-helpers";
+import { renderHTML, mount, click } from "../test-helpers";
 import { Toggle } from "./Toggle";
 
 test("Toggle renders as button", () => {

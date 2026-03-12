@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { z } from "zod";
 import { Controller } from "react-hook-form";
 import { apiFetch } from "../api";
@@ -518,7 +518,7 @@ export default function Cron() {
               .then((res) => {
                 if (res.success) setRuns(res.data);
               })
-              .catch(() => {});
+              .catch((err) => console.error("Failed to load cron runs", err));
           }
         }
         prevActiveJobIds.current = currentActiveJobIds;
@@ -542,7 +542,7 @@ export default function Cron() {
       .then((res) => {
         if (res.success) setAgents(res.data);
       })
-      .catch(() => {});
+      .catch((err) => console.error("Failed to load agents", err));
   }, []);
 
   async function toggleJob(id: string) {

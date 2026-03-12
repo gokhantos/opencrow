@@ -53,7 +53,7 @@ async function followUser(
       response
         .json()
         .then((body) => capturedProfile.push(body as Record<string, unknown>))
-        .catch(() => {});
+        .catch((err) => log.debug("Failed to parse profile response JSON", err));
     }
   };
 
@@ -140,7 +140,7 @@ export async function autoFollow(
   maxFollows: number = 3,
   usernames: string[] = [],
   alreadyFollowed: string[] = [],
-  languages: string | null = null,
+  _languages: string | null = null,
 ): Promise<AutofollowOutcome> {
   const validation = validateCookies(authToken, ct0);
   if (!validation.valid) {
