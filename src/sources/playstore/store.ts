@@ -105,9 +105,10 @@ export async function getRankings(
   const db = getDb();
 
   if (listType) {
+    const pattern = `${listType}%`;
     const rows = await db`
       SELECT * FROM playstore_rankings
-      WHERE list_type = ${listType}
+      WHERE list_type LIKE ${pattern} AND list_type != 'discovered'
       ORDER BY rank ASC, updated_at DESC
       LIMIT ${limit}
     `;
@@ -116,7 +117,21 @@ export async function getRankings(
 
   const rows = await db`
     SELECT * FROM playstore_rankings
-    ORDER BY list_type, rank ASC, updated_at DESC
+    WHERE list_type != 'discovered'
+    ORDER BY rank ASC, updated_at DESC
+    LIMIT ${limit}
+  `;
+  return rows as PlayRankingRow[];
+}
+
+export async function getDiscoveredApps(
+  limit = 50,
+): Promise<PlayRankingRow[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT * FROM playstore_rankings
+    WHERE list_type = 'discovered'
+    ORDER BY rank ASC, updated_at DESC
     LIMIT ${limit}
   `;
   return rows as PlayRankingRow[];

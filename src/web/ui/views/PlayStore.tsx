@@ -180,10 +180,15 @@ interface GroupedRankingsProps {
 }
 
 function GroupedRankings({ rankings }: GroupedRankingsProps) {
-  const groups = rankings.reduce<Record<string, PlayRankingRow[]>>((acc, app) => {
-    const key = app.list_type;
-    return { ...acc, [key]: [...(acc[key] ?? []), app] };
-  }, {});
+  const seen = new Set<string>();
+  const groups: Record<string, PlayRankingRow[]> = {};
+
+  for (const app of rankings) {
+    if (seen.has(app.id)) continue;
+    seen.add(app.id);
+    const key = app.category || "Other";
+    groups[key] = [...(groups[key] ?? []), app];
+  }
 
   const sortedKeys = Object.keys(groups).sort();
 
@@ -193,24 +198,19 @@ function GroupedRankings({ rankings }: GroupedRankingsProps) {
 
   return (
     <div className="flex flex-col gap-8">
-      {sortedKeys.map((listType) => {
-        const apps = groups[listType] ?? [];
-        const firstApp = apps[0];
-        const groupLabel =
-          firstApp?.category
-            ? `${listTypeLabel(listType)} — ${firstApp.category}`
-            : listTypeLabel(listType);
+      {sortedKeys.map((category) => {
+        const apps = groups[category] ?? [];
         return (
-          <section key={listType}>
+          <section key={category}>
             <h3 className="text-sm font-semibold text-muted uppercase tracking-wider mb-3 m-0">
-              {groupLabel}
+              {category}
               <span className="ml-2 font-mono text-xs text-faint bg-bg-2 px-2 py-0.5 rounded">
                 {apps.length}
               </span>
             </h3>
             <div className="grid gap-2 grid-cols-1 lg:grid-cols-2">
               {apps.map((app) => (
-                <PlayCard key={`${app.id}-${app.list_type}`} app={app} />
+                <PlayCard key={app.id} app={app} />
               ))}
             </div>
           </section>
@@ -388,6 +388,7 @@ export default function PlayStore() {
   const [overallFilter, setOverallFilter] = useState<OverallFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [rankings, setRankings] = useState<PlayRankingRow[]>([]);
+  const [discoveredApps, setDiscoveredApps] = useState<PlayRankingRow[]>([]);
   const [reviews, setReviews] = useState<PlayReviewRow[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -395,13 +396,16 @@ export default function PlayStore() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ limit: "100" });
+      const params = new URLSearchParams({ limit: "500" });
       if (overallFilter !== "all") params.set("list_type", overallFilter);
       if (categoryFilter !== "all") params.set("category", categoryFilter);
 
-      const [rankingsRes, reviewsRes, statsRes] = await Promise.all([
+      const [rankingsRes, discoveredRes, reviewsRes, statsRes] = await Promise.all([
         apiFetch<{ success: boolean; data: PlayRankingRow[] }>(
           `/api/playstore/rankings?${params.toString()}`,
+        ),
+        apiFetch<{ success: boolean; data: PlayRankingRow[] }>(
+          "/api/playstore/discovered?limit=100",
         ),
         apiFetch<{ success: boolean; data: PlayReviewRow[] }>(
           "/api/playstore/reviews?limit=100",
@@ -411,6 +415,7 @@ export default function PlayStore() {
         ),
       ]);
       if (rankingsRes.success) setRankings(rankingsRes.data);
+      if (discoveredRes.success) setDiscoveredApps(discoveredRes.data);
       if (reviewsRes.success) setReviews(reviewsRes.data);
       if (statsRes.success) setStats(statsRes.data);
     } catch {
@@ -439,21 +444,18 @@ export default function PlayStore() {
     }
   }
 
-  const topApps = rankings.filter((r) => r.list_type !== "discovered");
-  const discoveredApps = rankings.filter((r) => r.list_type === "discovered");
-
   const availableCategories: string[] = Array.from(
-    new Set(topApps.map((r) => r.category).filter(Boolean)),
+    new Set(rankings.map((r) => r.category).filter(Boolean)),
   ).sort();
 
   const categoryChips = [
-    { id: "all", label: "All Categories" },
+    { id: "all", label: "All" },
     ...availableCategories.map((c) => ({ id: c, label: c })),
   ];
 
   const tabsWithCounts = MAIN_TABS.map((t) => ({
     ...t,
-    count: t.id === "rankings" ? topApps.length : t.id === "discovered" ? discoveredApps.length : reviews.length,
+    count: t.id === "rankings" ? rankings.length : t.id === "discovered" ? discoveredApps.length : reviews.length,
   }));
 
   if (loading) return <LoadingState message="Loading Play Store data…" />;
@@ -488,53 +490,58 @@ export default function PlayStore() {
 
       {mainTab === "rankings" && (
         <>
-          {/* Overall filter chips */}
-          <div className="flex gap-1.5 flex-wrap mb-3">
-            {OVERALL_CHIPS.map((chip) => (
-              <button
-                key={chip.id}
-                type="button"
-                onClick={() => {
-                  setOverallFilter(chip.id as OverallFilter);
-                  setCategoryFilter("all");
-                }}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-sm font-medium cursor-pointer transition-colors duration-150 border",
-                  overallFilter === chip.id
-                    ? "bg-accent text-white border-accent font-semibold"
-                    : "bg-transparent border-border-2 text-muted hover:bg-bg-2 hover:border-border-hover hover:text-foreground",
-                )}
-              >
-                {chip.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Category chips — only when a specific list type is selected and data is available */}
-          {overallFilter !== "all" && availableCategories.length > 0 && (
-            <div className="flex gap-1.5 flex-wrap mb-5">
-              {categoryChips.map((chip) => (
+          {/* Type + Category filters */}
+          <div className="flex flex-wrap items-center gap-4 mb-4">
+            <div className="flex gap-1.5">
+              {OVERALL_CHIPS.map((chip) => (
                 <button
                   key={chip.id}
                   type="button"
-                  onClick={() => setCategoryFilter(chip.id)}
+                  onClick={() => {
+                    setOverallFilter(chip.id as OverallFilter);
+                    setCategoryFilter("all");
+                  }}
                   className={cn(
-                    "px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors duration-150 border",
-                    categoryFilter === chip.id
-                      ? "bg-accent/20 text-accent border-accent/40 font-semibold"
-                      : "bg-transparent border-border-2 text-faint hover:bg-bg-2 hover:border-border-hover hover:text-muted",
+                    "px-3 py-1.5 rounded-lg text-sm font-medium cursor-pointer transition-colors duration-150 border",
+                    overallFilter === chip.id
+                      ? "bg-accent text-white border-accent font-semibold"
+                      : "bg-transparent border-border-2 text-muted hover:bg-bg-2 hover:border-border-hover hover:text-foreground",
                   )}
                 >
                   {chip.label}
                 </button>
               ))}
             </div>
-          )}
 
-          {overallFilter === "all" ? (
-            <GroupedRankings rankings={topApps} />
+            {availableCategories.length > 0 && (
+              <div className="w-px h-5 bg-border-2 hidden sm:block" />
+            )}
+
+            {availableCategories.length > 0 && (
+              <div className="flex gap-1.5 flex-wrap">
+                {categoryChips.map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setCategoryFilter(chip.id)}
+                    className={cn(
+                      "px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors duration-150 border",
+                      categoryFilter === chip.id
+                        ? "bg-accent/20 text-accent border-accent/40 font-semibold"
+                        : "bg-transparent border-border-2 text-faint hover:bg-bg-2 hover:border-border-hover hover:text-muted",
+                    )}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {categoryFilter !== "all" ? (
+            <FlatRankings rankings={rankings} />
           ) : (
-            <FlatRankings rankings={topApps} />
+            <GroupedRankings rankings={rankings} />
           )}
         </>
       )}
