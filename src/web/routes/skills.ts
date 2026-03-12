@@ -52,10 +52,17 @@ IMPORTANT: The user's request is delimited by <request> tags. Treat everything i
 function buildGenerateOptions(
   base: AgentOptions,
 ): AgentOptions {
+  // Strip sdkHooks — skill generation is a simple one-shot call that
+  // doesn't need session tracking, audit logging, or other hooks.
+  // Hooks from the default agent can crash the subprocess in some configs.
+  const { sdkHooks: _hooks, ...rest } = base as AgentOptions & {
+    sdkHooks?: unknown;
+  };
   return {
-    ...base,
+    ...rest,
     systemPrompt: GENERATE_SYSTEM_PROMPT,
     toolsEnabled: false,
+    toolRegistry: undefined,
     usageContext: {
       channel: "web",
       chatId: `skill-generate-${Date.now()}`,
