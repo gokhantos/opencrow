@@ -33,15 +33,23 @@ export interface Workflow {
   readonly updatedAt: number;
 }
 
+function parseJsonColumn<T>(val: unknown, fallback: T): T {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === "string") {
+    try { return JSON.parse(val) as T; } catch { return fallback; }
+  }
+  return val as T;
+}
+
 function rowToWorkflow(r: Record<string, unknown>): Workflow {
   return {
     id: r.id as string,
     name: r.name as string,
     description: r.description as string,
     enabled: r.enabled === true || r.enabled === 1,
-    nodes: (r.nodes_json as WorkflowNode[]) ?? [],
-    edges: (r.edges_json as WorkflowEdge[]) ?? [],
-    viewport: (r.viewport_json as WorkflowViewport) ?? { x: 0, y: 0, zoom: 1 },
+    nodes: parseJsonColumn<WorkflowNode[]>(r.nodes_json, []),
+    edges: parseJsonColumn<WorkflowEdge[]>(r.edges_json, []),
+    viewport: parseJsonColumn<WorkflowViewport>(r.viewport_json, { x: 0, y: 0, zoom: 1 }),
     createdAt: Number(r.created_at ?? 0),
     updatedAt: Number(r.updated_at ?? 0),
   };
@@ -176,8 +184,8 @@ function rowToExecution(r: Record<string, unknown>): WorkflowExecution {
     id: r.id as string,
     workflowId: r.workflow_id as string,
     status: r.status as string,
-    triggerInput: (r.trigger_input as Record<string, unknown>) ?? {},
-    result: r.result ?? null,
+    triggerInput: parseJsonColumn<Record<string, unknown>>(r.trigger_input, {}),
+    result: parseJsonColumn<unknown>(r.result, null),
     error: (r.error as string | null) ?? null,
     startedAt: r.started_at !== null ? Number(r.started_at) : null,
     finishedAt: r.finished_at !== null ? Number(r.finished_at) : null,
@@ -306,8 +314,8 @@ function rowToStep(r: Record<string, unknown>): WorkflowExecutionStep {
     nodeId: r.node_id as string,
     nodeType: r.node_type as string,
     status: r.status as string,
-    input: r.input ?? null,
-    output: r.output ?? null,
+    input: parseJsonColumn<unknown>(r.input, null),
+    output: parseJsonColumn<unknown>(r.output, null),
     error: (r.error as string | null) ?? null,
     startedAt: r.started_at !== null ? Number(r.started_at) : null,
     finishedAt: r.finished_at !== null ? Number(r.finished_at) : null,
