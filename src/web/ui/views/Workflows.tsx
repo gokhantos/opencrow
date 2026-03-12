@@ -3,7 +3,7 @@ import "@xyflow/react/dist/style.css";
 import { z } from "zod";
 import { apiFetch } from "../api";
 import { Button } from "../components";
-import { Save, FolderOpen, Plus, Undo2, Redo2, Download, Upload, AlertCircle } from "lucide-react";
+import { Save, FolderOpen, Plus, Undo2, Redo2, Download, Upload, AlertCircle, ClipboardPaste, X } from "lucide-react";
 import { useWorkflowReducer } from "./workflows/useWorkflowReducer";
 import { useKeyboardShortcuts } from "./workflows/useKeyboardShortcuts";
 import { validateWorkflowGraph } from "./workflows/validation-ui";
@@ -34,6 +34,9 @@ export default function Workflows() {
   const [activeExecutionId, setActiveExecutionId] = useState<string | null>(null);
   const [historyStepStatuses, setHistoryStepStatuses] = useState<ExecutionStepMap | null>(null);
   const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importJson, setImportJson] = useState("");
+  const [importError, setImportError] = useState("");
   const importRef = useRef<HTMLInputElement>(null);
   const validationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -129,7 +132,31 @@ export default function Workflows() {
   }
 
   function handleImportClick() {
-    importRef.current?.click();
+    setImportJson("");
+    setImportError("");
+    setShowImportModal(true);
+  }
+
+  function loadWorkflowFromJson(jsonStr: string): boolean {
+    try {
+      const raw = JSON.parse(jsonStr);
+      const parsed = importSchema.parse(raw);
+      dispatch({
+        type: "LOAD_WORKFLOW",
+        state: {
+          id: null,
+          name: parsed.name,
+          description: parsed.description,
+          enabled: false,
+          nodes: parsed.nodes as Node<WorkflowNodeData>[],
+          edges: parsed.edges as Edge[],
+          viewport: { x: 0, y: 0, zoom: 1 },
+        },
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -137,28 +164,27 @@ export default function Workflows() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      try {
-        const raw = JSON.parse(ev.target?.result as string);
-        const parsed = importSchema.parse(raw);
-        dispatch({
-          type: "LOAD_WORKFLOW",
-          state: {
-            id: null,
-            name: parsed.name,
-            description: parsed.description,
-            enabled: false,
-            nodes: parsed.nodes as Node<WorkflowNodeData>[],
-            edges: parsed.edges as Edge[],
-            viewport: { x: 0, y: 0, zoom: 1 },
-          },
-        });
-      } catch {
-        setSaveError("Invalid workflow JSON file");
+      const text = ev.target?.result as string;
+      if (loadWorkflowFromJson(text)) {
+        setShowImportModal(false);
+      } else {
+        setImportError("Invalid workflow JSON file");
       }
     };
     reader.readAsText(file);
-    // Reset so same file can be re-imported
     e.target.value = "";
+  }
+
+  function handleImportPaste() {
+    if (!importJson.trim()) {
+      setImportError("Paste workflow JSON first");
+      return;
+    }
+    if (loadWorkflowFromJson(importJson)) {
+      setShowImportModal(false);
+    } else {
+      setImportError("Invalid workflow JSON — must have name, nodes, edges");
+    }
   }
 
   const totalErrors = Array.from(validationErrors.values()).reduce(
@@ -323,6 +349,63 @@ export default function Workflows() {
         onClose={() => setShowList(false)}
         dispatch={dispatch}
       />
+
+      {/* Import modal — file upload or paste JSON */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-bg-1 border border-border rounded-xl shadow-2xl w-full max-w-lg mx-4">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <h3 className="text-sm font-semibold text-strong">Import Workflow</h3>
+              <button
+                type="button"
+                onClick={() => setShowImportModal(false)}
+                className="w-7 h-7 flex items-center justify-center rounded text-muted hover:text-foreground hover:bg-bg-2 transition-colors bg-transparent border-none cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-muted mb-2">Upload JSON file</label>
+                <button
+                  type="button"
+                  onClick={() => importRef.current?.click()}
+                  className="w-full py-3 px-4 border-2 border-dashed border-border-2 rounded-lg text-sm text-muted hover:border-accent hover:text-foreground transition-colors cursor-pointer bg-transparent flex items-center justify-center gap-2"
+                >
+                  <Upload size={16} />
+                  Choose .json file
+                </button>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-px bg-border" />
+                <span className="text-xs text-muted">or</span>
+                <div className="flex-1 h-px bg-border" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-muted mb-2">Paste JSON</label>
+                <textarea
+                  value={importJson}
+                  onChange={(e) => { setImportJson(e.target.value); setImportError(""); }}
+                  placeholder='{"name": "My Workflow", "nodes": [...], "edges": [...]}'
+                  className="w-full h-40 px-3 py-2 bg-bg border border-border-2 rounded-lg text-sm text-foreground font-mono resize-none outline-none focus:border-accent transition-colors placeholder:text-muted/50"
+                />
+              </div>
+              {importError && (
+                <p className="text-xs text-danger">{importError}</p>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border">
+              <Button variant="ghost" size="sm" onClick={() => setShowImportModal(false)}>
+                Cancel
+              </Button>
+              <Button variant="primary" size="sm" onClick={handleImportPaste} disabled={!importJson.trim()}>
+                <ClipboardPaste size={14} />
+                Import
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
