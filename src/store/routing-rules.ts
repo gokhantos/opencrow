@@ -135,7 +135,7 @@ export async function resolveAgentForMessage(
   return null;
 }
 
-function matchRule(
+export function matchRule(
   rule: RoutingRule,
   chatId: string,
   senderId: string,
