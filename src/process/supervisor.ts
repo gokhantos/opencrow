@@ -18,9 +18,12 @@ const HEARTBEAT_INTERVAL_MS = 5_000;
 const COMMAND_POLL_INTERVAL_MS = 3_000;
 const CLEANUP_INTERVAL_MS = 300_000; // 5 min
 
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
 export interface ProcessSupervisor {
   start(): Promise<void>;
   stop(): Promise<void>;
+  onShutdown(hook: () => void | Promise<void>): void;
 }
 
 export function createProcessSupervisor(
@@ -31,6 +34,7 @@ export function createProcessSupervisor(
   let commandTimer: ReturnType<typeof setInterval> | null = null;
   let cleanupTimer: ReturnType<typeof setInterval> | null = null;
   let running = false;
+  const shutdownHooks: Array<() => void | Promise<void>> = [];
 
   async function pollCommands(): Promise<void> {
     try {
@@ -52,12 +56,14 @@ export function createProcessSupervisor(
           log.info("Restarting process (exit 0 for systemd restart)", {
             process: name,
           });
+          await drainHooks();
           await unregisterProcess(name);
           process.exit(0);
         }
 
         if (cmd.action === "stop") {
           log.info("Stopping process", { process: name });
+          await drainHooks();
           await unregisterProcess(name);
           process.exit(0);
         }
@@ -81,6 +87,26 @@ export function createProcessSupervisor(
     } catch (err) {
       log.error("Command cleanup failed", { process: name, error: err });
     }
+  }
+
+  async function drainHooks(): Promise<void> {
+    if (shutdownHooks.length === 0) return;
+    log.info("Draining shutdown hooks", {
+      process: name,
+      count: shutdownHooks.length,
+    });
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timeoutHandle = setTimeout(() => {
+        log.warn("Shutdown hook timeout reached", { process: name });
+        resolve();
+      }, SHUTDOWN_TIMEOUT_MS);
+    });
+    await Promise.race([
+      Promise.allSettled(shutdownHooks.map((fn) => Promise.resolve(fn()))),
+      timeout,
+    ]);
+    clearTimeout(timeoutHandle);
   }
 
   async function ensureSingleInstance(): Promise<void> {
@@ -173,6 +199,7 @@ export function createProcessSupervisor(
         if (!running) return;
         running = false;
         log.info("Graceful shutdown", { process: name });
+        await drainHooks();
         await unregisterProcess(name);
         process.exit(0);
       };
@@ -192,8 +219,13 @@ export function createProcessSupervisor(
       commandTimer = null;
       cleanupTimer = null;
 
+      await drainHooks();
       await unregisterProcess(name);
       log.info("Process supervisor stopped", { process: name });
+    },
+
+    onShutdown(hook: () => void | Promise<void>): void {
+      shutdownHooks.push(hook);
     },
   };
 }

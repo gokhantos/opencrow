@@ -71,6 +71,13 @@ async function main(): Promise<void> {
     type: "core",
     port: CORE_PORT,
   });
+
+  supervisor.onShutdown(async () => {
+    server.stop(true);
+  });
+
+  supervisor.onShutdown(() => orchestrator.stop());
+
   await supervisor.start();
 
   // Start orchestrator after everything else is ready

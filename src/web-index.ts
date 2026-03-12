@@ -221,6 +221,16 @@ async function main(): Promise<void> {
 
       // Internal restart endpoint — web process restarts itself
       if (url.pathname === "/internal/restart" && req.method === "POST") {
+        const expectedToken = process.env.OPENCROW_WEB_TOKEN;
+        if (expectedToken) {
+          const authHeader = req.headers.get("authorization");
+          const bearerToken = authHeader?.startsWith("Bearer ")
+            ? authHeader.slice(7)
+            : null;
+          if (bearerToken !== expectedToken) {
+            return new Response("Unauthorized", { status: 401 });
+          }
+        }
         log.info("Restart requested via /internal/restart");
         setTimeout(() => process.exit(0), 100);
         return new Response(JSON.stringify({ ok: true }), {
