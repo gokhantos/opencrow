@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach, afterEach, mock } from "bun:test";
+import { test, expect, describe, beforeEach } from "bun:test";
 import { createWebFetchTool } from "./web-fetch";
 import type { ToolDefinition, ToolResult } from "./types";
 
@@ -116,7 +116,6 @@ describe("rate limiting", () => {
   });
 
   test("allows requests under the limit", async () => {
-    const tool = createWebFetchTool();
     // First request should succeed (assuming example.com resolves)
     // We test the rate limit logic indirectly
     resetRateLimit();

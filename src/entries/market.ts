@@ -8,13 +8,9 @@ import { loadConfig, loadConfigWithOverrides } from "../config/loader";
 import { bootstrap } from "../process/bootstrap";
 import { createProcessSupervisor } from "../process/supervisor";
 import { getOverride } from "../store/config-overrides";
-import {
-  createMarketPipeline,
-  type MarketPipeline,
-} from "../sources/markets/pipeline";
+import { createMarketPipeline } from "../sources/markets/pipeline";
 import {
   createLiveKlineHub,
-  type LiveKlineHub,
   type WsClientData,
 } from "../sources/markets/ws-hub";
 import { createLogger } from "../logger";

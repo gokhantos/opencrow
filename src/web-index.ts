@@ -119,7 +119,7 @@ async function main(): Promise<void> {
   let systemWsNextId = 0;
   const systemWsClients = new Set<import("bun").ServerWebSocket<WsData>>();
 
-  const server = Bun.serve<WsData>({
+  Bun.serve<WsData>({
     port: config.web.port,
     hostname: config.web.host,
     reusePort: true,

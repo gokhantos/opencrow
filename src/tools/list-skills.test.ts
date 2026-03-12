@@ -1,7 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
-import { join } from "path";
-import { tmpdir } from "os";
+import { describe, it, expect } from "bun:test";
 
 // We test the tool definition structure and mock the loadSkills dependency
 // to avoid relying on the actual .ecc directory at test time.

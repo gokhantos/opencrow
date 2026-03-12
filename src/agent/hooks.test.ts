@@ -5,11 +5,9 @@ import {
   vi,
   beforeAll,
   afterAll,
-  beforeEach,
-  afterEach,
 } from "bun:test";
 import { buildSdkHooks } from "./hooks";
-import { getDb, initDb, closeDb } from "../store/db";
+import { initDb, closeDb } from "../store/db";
 import type { ProgressEvent } from "./types";
 
 const agentId = "test-agent";

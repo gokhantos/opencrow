@@ -225,11 +225,6 @@ describe("createToolRegistry", () => {
 
 describe("buildRegistry (internal)", () => {
   it("should build registry from tool definitions", () => {
-    const tools = [
-      createMockTool("tool_a", "Tool A", ["code"]),
-      createMockTool("tool_b", "Tool B", ["fileops"]),
-    ];
-
     // Note: buildRegistry is internal, but we test via createToolRegistry
     // This is a placeholder for when we export it for testing
   });

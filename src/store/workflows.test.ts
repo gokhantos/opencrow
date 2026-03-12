@@ -105,7 +105,7 @@ describe("workflows", () => {
       const wf1 = await createWorkflow({ name: "test-order-a" });
       // Bump updated_at on wf1 so it should appear first after the update
       await updateWorkflow(wf1.id, { description: "bumped" });
-      const wf2 = await createWorkflow({ name: "test-order-b" });
+      await createWorkflow({ name: "test-order-b" });
 
       const all = await getAllWorkflows();
       const testWfs = all.filter((w) => w.name.startsWith("test-order-"));

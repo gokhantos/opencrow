@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { cn } from "../lib/cn";
 import type { TimeFrame, MarketType } from "./market/types";
 import {

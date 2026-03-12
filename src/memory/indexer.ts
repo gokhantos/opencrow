@@ -17,7 +17,7 @@ import type {
   TweetForIndex,
 } from "./types";
 import { NEWS_SOURCE_KIND_MAP } from "./types";
-import type { QdrantClient, QdrantPoint } from "./qdrant";
+import type { QdrantClient } from "./qdrant";
 import { updateChunkFts } from "./fts";
 import { getChunkProfileWithOverrides } from "./chunk-profiles";
 

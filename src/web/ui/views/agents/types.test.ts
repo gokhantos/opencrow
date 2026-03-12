@@ -1,6 +1,5 @@
 import { test, expect } from "bun:test";
 import { providerLabel, getInitials, shortModel } from "./types";
-import type { AiProvider } from "./types";
 
 /* ---------- providerLabel ---------- */
 

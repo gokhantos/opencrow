@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from "react";
+import { useMemo, useRef } from "react";
 import type { EChartsOption } from "echarts";
 import { useECharts } from "./useECharts";
 import { CHART_COLORS, AXIS_DEFAULTS, TOOLTIP_DEFAULTS } from "./chartTheme";

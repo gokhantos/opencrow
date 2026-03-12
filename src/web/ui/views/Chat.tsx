@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { apiFetch, getToken } from "../api";
-import { PageHeader, LoadingState } from "../components";
+import { LoadingState } from "../components";
 import { Send, Trash2, Bot, User, AlertCircle, ChevronDown } from "lucide-react";
 
 /* ───── Types ───── */

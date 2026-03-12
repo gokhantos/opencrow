@@ -1,7 +1,6 @@
 import type { ToolDefinition, ToolCategory } from "../types";
 import { getDb } from "../../store/db";
 import { getMcpHealth, getToolPerformance, getCostBreakdown } from "./queries";
-import { formatMcpHealth } from "./formatters";
 
 export function createRoutingStatsTool(): ToolDefinition {
   return {

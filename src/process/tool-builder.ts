@@ -5,7 +5,6 @@ import type { ResolvedAgent } from "../agents/types";
 import type { AgentRegistry } from "../agents/registry";
 import type { MemoryManager } from "../memory/types";
 import type { OpenCrowConfig } from "../config/schema";
-import { createLogger } from "../logger";
 import { createSubAgentTracker } from "../agents/tracker";
 import { createListAgentsTool } from "../tools/list-agents";
 import { createSpawnAgentTool } from "../tools/spawn-agent";
@@ -37,8 +36,6 @@ import { createLogCheckerTools } from "../tools/log-checker";
 import { createMemoryStatsTools } from "../tools/memory-stats";
 import { createEconomicCalendarTool } from "../tools/economic-calendar";
 import { createDbTools } from "../tools/db-query";
-
-const log = createLogger("tool-builder");
 
 export interface ToolBuilderDeps {
   readonly config: OpenCrowConfig;

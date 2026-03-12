@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { AgentDefinition } from "../../agents/types";
 import type { WebAppDeps } from "../app";
+import { createLogger } from "../../logger";
 import { REDACTED_SENTINEL, stripRedactedKeys } from "../../config/io";
 import {
   loadConfigWithOverrides,
@@ -16,6 +17,8 @@ import {
 } from "../../config/agent-mutations";
 
 import { TEMPLATES } from "../../tools/agent-templates";
+
+const log = createLogger("agents-api");
 
 const SAFE_AGENT_ID = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -200,7 +203,10 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
   });
 
   app.post("/agents", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -260,7 +266,10 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
       return c.json({ success: false, error: "Invalid agent ID" }, 400);
     }
 
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }

@@ -1,6 +1,6 @@
 /** Share top video bookmark by posting the video URL as a new tweet. */
 
-import type { Page, Response as PwResponse } from "playwright";
+import type { Response as PwResponse } from "playwright";
 import type { ShareOutcome } from "../bookmarks/types";
 import {
   launchXBrowser,
@@ -177,7 +177,7 @@ export async function shareBookmark(
           const videos = extractVideoTweets(body);
           bookmarkEntries.push(...videos);
         })
-        .catch(() => {});
+        .catch((err) => log.debug("Failed to parse bookmark response JSON", err));
     }
   };
 

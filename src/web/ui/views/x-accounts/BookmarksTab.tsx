@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../../api";
 import { useJobPoller, useAutoRefresh } from "./hooks/useJobPoller";
 import { useJobActions } from "./hooks/useJobActions";

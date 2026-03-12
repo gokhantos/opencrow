@@ -4,7 +4,6 @@ import {
   createMemoryTools,
   createGetObservationsTool,
 } from "./memory";
-import type { ToolDefinition } from "./types";
 import type { MemoryManager, SearchResult, MemorySourceKind } from "../memory/types";
 import { MEMORY_SOURCE_KINDS } from "../memory/types";
 

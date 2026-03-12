@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../api";
 import { cn } from "../lib/cn";
 import { LoadingState, EmptyState, PageHeader, SearchBar, FilterTabs } from "../components";
@@ -23,7 +23,7 @@ function ToolCard({
   index,
   isSelected,
   onSelect,
-  onToggle,
+  onToggle: _onToggle,
 }: {
   tool: ToolInfo;
   index: number;

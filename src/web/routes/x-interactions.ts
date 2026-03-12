@@ -13,22 +13,6 @@ import {
 
 const log = createLogger("x-interactions-api");
 
-const SUPPORTED_LANGUAGES = [
-  "tr",
-  "en",
-  "de",
-  "fr",
-  "es",
-  "pt",
-  "it",
-  "nl",
-  "ru",
-  "ar",
-  "ja",
-  "ko",
-  "zh",
-] as const;
-
 const startSchema = z.object({
   account_id: z.string().min(1),
   interval_minutes: z.number().int().min(1).max(1440).default(15),
@@ -51,7 +35,10 @@ export function createInteractionRoutes(opts: {
   const app = new Hono();
 
   app.post("/interactions/start", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -95,7 +82,10 @@ export function createInteractionRoutes(opts: {
   });
 
   app.post("/interactions/stop", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -170,7 +160,10 @@ export function createInteractionRoutes(opts: {
   });
 
   app.post("/interactions/run-now", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }

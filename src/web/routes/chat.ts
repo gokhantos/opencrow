@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import type { WebAppDeps } from "../app";
 import {
-  getMessagesByChat,
   getMessagesByChatPaginated,
   getRecentMessages,
 } from "../../store/messages";
@@ -450,7 +449,7 @@ function getChatScript(token?: string): string {
             appendMessage(data.data[i].role, data.data[i].content);
           }
         }
-      } catch(e) {}
+      } catch(err) { console.error('Failed to load messages:', err); }
     })();
   </script>
 </body>

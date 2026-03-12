@@ -1,9 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, writeFile, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { detectProjectContext } from "./project-context";
-import type { ProjectContext } from "./project-context";
 
 describe("detectProjectContext", () => {
   let tempDir: string;

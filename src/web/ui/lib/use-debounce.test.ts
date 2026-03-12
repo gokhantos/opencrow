@@ -1,6 +1,4 @@
 import { test, expect } from "bun:test";
-import React from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 
 // useDebounce is a React hook — we test the underlying setTimeout/clearTimeout
 // logic by re-implementing the pure logic

@@ -3,7 +3,6 @@ import type { AgentRegistry } from "../agents/registry";
 import {
   getMergedAgentsWithSource,
   computeMergedAgentHash,
-  type AgentWithSource,
 } from "../config/loader";
 import {
   addAgentToDb,

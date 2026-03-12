@@ -1,4 +1,4 @@
-import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { test, expect, describe } from "bun:test";
 
 // We test applyEnvOverrides by replicating the logic, since it's not exported.
 // This validates the env → config mapping rules.

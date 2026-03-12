@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { apiFetch } from "../../api";
 import { PageHeader, LoadingState, EmptyState } from "../../components";
 import { AccountSwitcher } from "./AccountSwitcher";

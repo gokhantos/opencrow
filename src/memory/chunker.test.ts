@@ -39,14 +39,6 @@ describe("chunkText", () => {
 
     // Check overlap: last sentence(s) of chunk N should appear in chunk N+1
     if (chunks.length >= 2) {
-      // The overlap means some content from chunk[0] end appears in chunk[1] start
-      const firstChunkWords = chunks[0]!.split(/\s+/);
-      const secondChunkWords = chunks[1]!.split(/\s+/);
-      const lastWordOfFirst = firstChunkWords[firstChunkWords.length - 1];
-      // At least some trailing content should appear in the next chunk
-      const hasOverlap = secondChunkWords.some(
-        (w) => w === lastWordOfFirst,
-      );
       // Overlap is best-effort — just verify chunks connect reasonably
       expect(chunks.every((c) => c.length > 0)).toBe(true);
     }

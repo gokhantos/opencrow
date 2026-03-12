@@ -5,7 +5,6 @@ import { createLogger } from "../logger";
 const log = createLogger("embeddings");
 
 const MAX_RETRIES = 3;
-const BATCH_DELAY_MS = 200;
 const MAX_CONCURRENT_BATCHES = 4;
 
 interface OpenRouterEmbeddingResponse {

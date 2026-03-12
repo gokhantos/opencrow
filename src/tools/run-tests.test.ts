@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import type { ToolsConfig } from "../config/schema";

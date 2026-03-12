@@ -1,6 +1,6 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import { getDb } from "../store/db";
-import { getNumber, getString, getEnum, isToolError, requireString } from "./input-helpers";
+import { getNumber, getString, getEnum } from "./input-helpers";
 
 // ============================================================================
 // Process Monitoring Tools
@@ -182,8 +182,6 @@ function createGetProcessHealthTool(): ToolDefinition {
           if (heartbeatFresh) healthyCount++;
           else staleCount++;
 
-          let _metadata: Record<string, unknown> = {};
-          try { _metadata = JSON.parse(proc.metadata_json); } catch { /* ignore invalid JSON */ }
           const pid = proc.pid;
 
           lines.push(

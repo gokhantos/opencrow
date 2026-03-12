@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { z } from "zod";
 import { QRCodeSVG } from "qrcode.react";
 import { setupChannel, requestWhatsAppPairingCode, apiFetch } from "../api";

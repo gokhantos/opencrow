@@ -35,7 +35,10 @@ export function createTimelineRoutes(opts: {
   const app = new Hono();
 
   app.post("/timeline/start", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -78,7 +81,10 @@ export function createTimelineRoutes(opts: {
   });
 
   app.post("/timeline/stop", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -165,7 +171,10 @@ export function createTimelineRoutes(opts: {
   });
 
   app.post("/timeline/run-now", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }

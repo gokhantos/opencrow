@@ -3,12 +3,15 @@ import path from "node:path";
 import os from "node:os";
 import { execFile } from "./exec.ts";
 import { buildSystemdUnit } from "./unit-builder.ts";
+import { createLogger } from "../logger";
 import type {
   OpenCrowService,
   ServiceInstallArgs,
   ServiceManageArgs,
   ServiceRuntime,
 } from "./types.ts";
+
+const log = createLogger("daemon");
 
 function isRoot(): boolean {
   return typeof process.getuid === "function" && process.getuid() === 0;
@@ -107,7 +110,7 @@ export function createSystemdService(
       await systemctl(["stop", unitName]);
 
       if (port) {
-        await execFile("fuser", ["-k", `${port}/tcp`]).catch(() => {});
+        await execFile("fuser", ["-k", `${port}/tcp`]).catch((err) => log.debug("No process on port to kill (expected)", err));
         await Bun.sleep(500);
       }
 

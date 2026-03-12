@@ -39,7 +39,7 @@ async function main(): Promise<void> {
   });
 
   // Reload with DB overrides now that DB is initialized
-  const config = await loadConfigWithOverrides();
+  await loadConfigWithOverrides();
 
   const { memoryManager } = ctx;
 

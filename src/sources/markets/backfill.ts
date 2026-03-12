@@ -339,7 +339,7 @@ export async function backfillSymbol(
   options: BackfillOptions,
 ): Promise<BackfillProgress> {
   const exchangeId = symbolToExchangeId(symbol);
-  const { config, onProgress, signal } = options;
+  const { onProgress, signal } = options;
 
   let progress: BackfillProgress = {
     symbol,
@@ -522,7 +522,7 @@ export async function backfillSymbol(
       marketType,
       timeframe,
       errorProgress,
-    ).catch(() => {});
+    ).catch((err) => log.warn("Failed to persist backfill error progress", err));
     log.error("Backfill failed", {
       symbol,
       marketType,

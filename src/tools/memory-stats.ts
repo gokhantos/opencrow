@@ -1,6 +1,6 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import { getDb } from "../store/db";
-import { getNumber, getString, getEnum, isToolError, requireString } from "./input-helpers";
+import { getNumber, getString, getEnum } from "./input-helpers";
 
 // ============================================================================
 // Memory/Context Tools
@@ -13,15 +13,6 @@ interface MemorySourceRow {
   channel: string | null;
   chat_id: string | null;
   metadata_json: string;
-  created_at: number;
-}
-
-interface MemoryChunkRow {
-  id: string;
-  source_id: string;
-  content: string;
-  chunk_index: number;
-  token_count: number;
   created_at: number;
 }
 

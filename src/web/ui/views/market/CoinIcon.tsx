@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 
 const COIN_META: Record<string, { color: string; name: string }> = {
   BTC: { color: "#f7931a", name: "Bitcoin" },

@@ -60,13 +60,6 @@ function hasDep(pkg: PkgJson, name: string): boolean {
   return !!(pkg.dependencies?.[name] || pkg.devDependencies?.[name]);
 }
 
-function hasAnyDep(pkg: PkgJson, names: readonly string[]): string | null {
-  for (const n of names) {
-    if (hasDep(pkg, n)) return n;
-  }
-  return null;
-}
-
 // --- Detection functions ---
 
 async function detectLanguages(
@@ -195,7 +188,7 @@ async function detectFramework(
 }
 
 function detectTestRunner(
-  dir: string,
+  _dir: string,
   pkg: PkgJson | null,
   pm: string | null,
   languages: readonly string[],

@@ -168,7 +168,10 @@ export function createSkillRoutes(deps: WebAppDeps): Hono {
 
   app.post("/skills/generate", async (c) => {
     const parsed = generateInputSchema.safeParse(
-      await c.req.json().catch(() => null),
+      await c.req.json().catch((err: unknown) => {
+        log.warn("Malformed JSON body", { path: c.req.path, err });
+        return null;
+      }),
     );
     if (!parsed.success) {
       return c.json(

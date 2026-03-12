@@ -1,5 +1,5 @@
 import { createLogger } from "../../../logger";
-import type { TimelineScrapeOutcome, TimelineTweetFromPython } from "./types";
+import type { TimelineScrapeOutcome } from "./types";
 import type { MemoryManager, TweetForIndex } from "../../../memory/types";
 import {
   getDueTimelineScrapeJobs,
@@ -25,19 +25,6 @@ function jitter(seconds: number): number {
 }
 
 const TIMELINE_AGENT_ID = "x-timeline";
-
-function tweetsToIndexFormat(
-  tweets: readonly TimelineTweetFromPython[],
-): readonly TweetForIndex[] {
-  return tweets.map((t) => ({
-    id: t.tweet_id,
-    text: t.text,
-    authorHandle: t.author_username,
-    tweetTimestamp: t.tweet_created_at
-      ? new Date(t.tweet_created_at * 1000).toISOString()
-      : new Date().toISOString(),
-  }));
-}
 
 export interface TimelineScrapeProcessor {
   start(): void;

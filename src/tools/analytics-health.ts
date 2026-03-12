@@ -1,16 +1,6 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import { getDb } from "../store/db";
 
-interface SessionAnalysisRow {
-  agent_id: string;
-  session_id: string;
-  prompt: string | null;
-  result: string | null;
-  created_at: Date;
-  updated_at: Date;
-  duration_seconds: number | null;
-}
-
 export function createGetSessionAnalysisTool(): ToolDefinition {
   return {
     name: "get_session_analysis",

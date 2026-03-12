@@ -8,6 +8,9 @@ import {
   resolveAgentForMessage,
 } from "../../store/routing-rules";
 import type { WebAppDeps } from "../app";
+import { createLogger } from "../../logger";
+
+const log = createLogger("routing-rules-api");
 
 const ruleCreateSchema = z.object({
   channel: z.string().min(1),
@@ -55,7 +58,10 @@ export function createRoutingRulesRoutes(_deps?: WebAppDeps): Hono {
   });
 
   app.post("/routing/rules", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -90,7 +96,10 @@ export function createRoutingRulesRoutes(_deps?: WebAppDeps): Hono {
 
   app.put("/routing/rules/:id", async (c) => {
     const id = c.req.param("id");
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }
@@ -133,7 +142,10 @@ export function createRoutingRulesRoutes(_deps?: WebAppDeps): Hono {
   });
 
   app.post("/routing/rules/resolve", async (c) => {
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch((err: unknown) => {
+      log.warn("Malformed JSON body", { path: c.req.path, err });
+      return null;
+    });
     if (!body) {
       return c.json({ success: false, error: "Invalid JSON body" }, 400);
     }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { apiFetch, setConfigHash } from "../../api";
 import { cn } from "../../lib/cn";
 import type {
@@ -111,7 +111,7 @@ export function DetailPanel({
       .then((res) => {
         if (res.success) setAllTools(res.data);
       })
-      .catch(() => {});
+      .catch((err) => console.error("Failed to load tools", err));
   }, []);
 
   useEffect(() => {
@@ -124,7 +124,7 @@ export function DetailPanel({
           if (res.configHash) setConfigHash(res.configHash);
         }
       })
-      .catch(() => {})
+      .catch((err) => console.error("Failed to load agent detail", err))
       .finally(() => setLoading(false));
   }, [agent.id]);
 

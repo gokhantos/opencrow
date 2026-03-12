@@ -4,7 +4,6 @@ import type {
   ConversationMessage,
 } from "../../agent/types";
 import type { AgentRegistry } from "../../agents/registry";
-import type { MemoryManager } from "../../memory/types";
 import type { ObservationHook } from "../../memory/observation-hook";
 import type { ResolvedAgent } from "../../agents/types";
 import type { Channel } from "../types";

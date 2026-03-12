@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { Play, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "../../components";
 import { apiFetch } from "../../api";

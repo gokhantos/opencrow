@@ -21,7 +21,7 @@ export function createAlertDeduplicator(
   const entries = new Map<string, DedupEntry>();
 
   return {
-    shouldFire(key: string, level: AlertLevel): boolean {
+    shouldFire(key: string, _level: AlertLevel): boolean {
       const entry = entries.get(key);
       if (!entry) return true;
       return Date.now() - entry.lastFiredAt > cooldownMs;

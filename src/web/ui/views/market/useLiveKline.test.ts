@@ -98,7 +98,7 @@ function aggregateKline(
   prev: OhlcvRow | null,
   kline: { open: number; high: number; low: number; close: number; volume: number; quoteVolume: number; trades: number },
   pStart: number,
-  tf: TimeFrame,
+  _tf: TimeFrame,
 ): OhlcvRow {
   if (!prev || prev.open_time !== pStart) {
     return {

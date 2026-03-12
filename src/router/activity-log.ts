@@ -5,9 +5,6 @@ import { createLogger } from "../logger";
 
 const log = createLogger("activity-log");
 
-/** Telegram message character limit */
-const TELEGRAM_CHAR_LIMIT = 4096;
-
 /** Leave headroom for the header/footer lines */
 const MAX_TEXT_LENGTH = 3800;
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../../api";
 import { cn } from "../../lib/cn";
 import type { ExecutionRecord, ExecutionStepMap, StepInfo } from "./types";

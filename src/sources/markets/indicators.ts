@@ -116,7 +116,6 @@ export function computeOverlays(
     values: closes,
     stdDev: config.bbStdDev,
   });
-  const bbPad = len - bb.length;
 
   const ichimoku = IchimokuCloud.calculate({
     high: highs,
@@ -126,7 +125,6 @@ export function computeOverlays(
     spanPeriod: 52,
     displacement: 26,
   });
-  const ichPad = len - ichimoku.length;
 
   // SuperTrend (custom: ATR-based trend indicator)
   const stPeriod = config.superTrendPeriod;

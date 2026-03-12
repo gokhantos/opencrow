@@ -1,7 +1,6 @@
-import { describe, test, expect, mock } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { createActivityLog } from "./activity-log";
 import type { Channel, ChannelName } from "../channels/types";
-import type { ProgressEvent } from "../agent/types";
 
 function createMockChannel(): Channel & {
   sentMessages: string[];

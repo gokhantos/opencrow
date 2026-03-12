@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { cn } from "../../lib/cn";
 import { apiFetch } from "../../api";
 import { LoadingState, EmptyState } from "../../components";

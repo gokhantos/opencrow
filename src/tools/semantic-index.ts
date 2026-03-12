@@ -7,8 +7,6 @@ const log = createLogger("tool:semantic-index");
 
 const COLLECTION = "tool_routing";
 const DEFAULT_vectorSize = 512;
-// Stable prefix so we can identify tool routing points from memory points
-const POINT_ID_PREFIX = "tool-";
 
 export interface SemanticToolIndex {
   init(tools: readonly ToolDefinition[]): Promise<void>;

@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useLocalStorage } from "../lib/useLocalStorage";
 import { apiFetch } from "../api";
-import { LoadingState, EmptyState, PageHeader, SearchBar } from "../components";
+import { LoadingState, EmptyState, PageHeader } from "../components";
 import { cn } from "../lib/cn";
 import { relativeTime, formatNumber } from "../lib/format";
 

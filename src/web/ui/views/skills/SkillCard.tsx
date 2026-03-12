@@ -1,4 +1,3 @@
-import React from "react";
 import { GraduationCap } from "lucide-react";
 import type { SkillInfo } from "./types";
 

@@ -1,6 +1,6 @@
 /** Shared utilities for X/Twitter scrapers — browser, cookies, GraphQL, tweet parsing. */
 
-import { chromium, type BrowserContext, type Page, type Response } from "playwright";
+import { chromium, type BrowserContext, type Response } from "playwright";
 import { createLogger } from "../../logger";
 
 const log = createLogger("x-shared");
@@ -136,7 +136,7 @@ export function createGraphQLInterceptor(
       response
         .json()
         .then((body) => responses.push(body as Record<string, unknown>))
-        .catch(() => {});
+        .catch((err) => log.debug("Failed to parse X API response JSON", err));
     }
   };
 

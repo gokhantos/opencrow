@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { createWriteFileTool } from "./write-file";
 import type { ToolsConfig } from "../config/schema";
-import { mkdtemp, readFile, rm, mkdir, access } from "fs/promises";
+import { mkdtemp, readFile, rm, mkdir } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
