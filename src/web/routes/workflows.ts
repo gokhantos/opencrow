@@ -81,7 +81,10 @@ export interface WorkflowRouteDeps {
   readonly agentRegistry: AgentRegistry;
   readonly toolRegistry: ToolRegistry | null;
   readonly cronStore?: CronStore;
-  readonly buildAgentOptions?: (agent: ResolvedAgent) => Promise<AgentOptions>;
+  readonly buildAgentOptions?: (
+    agent: ResolvedAgent,
+    onProgress?: (event: import("../../agent/types").ProgressEvent) => void,
+  ) => Promise<AgentOptions>;
 }
 
 export function createWorkflowRoutes(deps?: WorkflowRouteDeps): Hono {

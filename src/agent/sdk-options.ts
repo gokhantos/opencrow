@@ -5,6 +5,7 @@
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentOptions } from "./types";
 import type { createOpenCrowMcpServer } from "./mcp-bridge";
+import { createLogger } from "../logger";
 
 /**
  * Build thinking/effort/beta options from AgentOptions.
@@ -234,12 +235,37 @@ export function buildDisallowedTools(options: AgentOptions): string[] {
 }
 
 /**
+ * Detect the runtime executable name for the Agent SDK.
+ * The SDK expects `'bun' | 'node' | 'deno'`, not a full path.
+ */
+function detectExecutable(): "bun" | "node" {
+  return process.execPath.toLowerCase().includes("bun") ? "bun" : "node";
+}
+
+/**
  * Build session-level options that apply to all SDK queries.
  */
 export function buildSessionOptions(): Record<string, unknown> {
   return {
     persistSession: false,
     settingSources: [],
-    executable: process.execPath,
+    executable: detectExecutable(),
+  };
+}
+
+const stderrLog = createLogger("agent-sdk:stderr");
+
+/**
+ * Build a stderr handler that logs SDK subprocess stderr output.
+ * Useful for diagnosing Claude Code subprocess crashes.
+ */
+export function buildStderrHandler(
+  agentId: string,
+): (data: string) => void {
+  return (data: string) => {
+    stderrLog.warn("SDK subprocess stderr", {
+      agentId,
+      stderr: data.slice(0, 2000),
+    });
   };
 }

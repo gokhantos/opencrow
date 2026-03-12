@@ -74,7 +74,10 @@ export interface WebAppDeps {
   readonly cronStore?: CronStore;
   readonly cronScheduler?: CronScheduler;
   readonly subAgentTracker?: SubAgentTracker;
-  readonly buildAgentOptions?: (agent: ResolvedAgent) => Promise<AgentOptions>;
+  readonly buildAgentOptions?: (
+    agent: ResolvedAgent,
+    onProgress?: (event: import("../agent/types").ProgressEvent) => void,
+  ) => Promise<AgentOptions>;
   readonly messageHandler?: MessageHandler;
   readonly memoryManager?: MemoryManager;
   readonly marketPipeline?: MarketPipeline;

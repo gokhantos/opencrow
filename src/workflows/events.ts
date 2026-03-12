@@ -15,7 +15,15 @@ export interface ExecutionEvent {
   readonly result?: unknown;
 }
 
-export type ExecutionStreamEvent = StepEvent | ExecutionEvent;
+export interface AgentProgressEvent {
+  readonly type: "agent_progress";
+  readonly nodeId: string;
+  readonly agentId: string;
+  readonly progressType: import("../agent/types").ProgressEvent["type"];
+  readonly detail?: string;
+}
+
+export type ExecutionStreamEvent = StepEvent | ExecutionEvent | AgentProgressEvent;
 
 type Callback = (event: ExecutionStreamEvent) => void;
 

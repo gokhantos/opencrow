@@ -41,7 +41,10 @@ export interface ExecutionContext {
 export interface EngineDeps {
   readonly agentRegistry: AgentRegistry;
   readonly toolRegistry: ToolRegistry | null;
-  readonly buildAgentOptions?: (agent: import("../agents/types").ResolvedAgent) => Promise<import("../agent/types").AgentOptions>;
+  readonly buildAgentOptions?: (
+    agent: import("../agents/types").ResolvedAgent,
+    onProgress?: (event: import("../agent/types").ProgressEvent) => void,
+  ) => Promise<import("../agent/types").AgentOptions>;
 }
 
 export type { WorkflowNode, WorkflowEdge };
