@@ -32,7 +32,7 @@ import News from "./views/News";
 import Ideas from "./views/Ideas";
 import GitHub from "./views/GitHub";
 import Processes from "./views/Processes";
-import Skills from "./views/Skills";
+import Skills from "./views/skills/Skills";
 import Tools from "./views/Tools";
 import AgentMetrics from "./views/AgentMetrics";
 import RoutingRules from "./views/RoutingRules";

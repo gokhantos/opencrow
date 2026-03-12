@@ -1,5 +1,18 @@
 import { Hono } from "hono";
-import { loadSkills, readSkillContent } from "../../skills/loader";
+import { z } from "zod";
+import {
+  loadSkills,
+  readSkillDetail,
+  createSkill,
+  updateSkill,
+  deleteSkill,
+} from "../../skills/loader";
+
+const skillInputSchema = z.object({
+  name: z.string().min(1, "Name is required").max(100).trim(),
+  description: z.string().min(1, "Description is required").max(500).trim(),
+  content: z.string().max(100_000).default(""),
+});
 
 export function createSkillRoutes(): Hono {
   const app = new Hono();
@@ -18,22 +31,57 @@ export function createSkillRoutes(): Hono {
 
   app.get("/skills/:id", async (c) => {
     const id = c.req.param("id");
-    const skills = await loadSkills();
-    const skill = skills.find((s) => s.id === id);
-    if (!skill) {
+    const detail = await readSkillDetail(id);
+    if (!detail) {
       return c.json({ success: false, error: "Skill not found" }, 404);
     }
+    return c.json({ success: true, data: detail });
+  });
 
-    const content = await readSkillContent(id);
-    return c.json({
-      success: true,
-      data: {
-        id: skill.id,
-        name: skill.name,
-        description: skill.description,
-        content,
-      },
-    });
+  app.post("/skills", async (c) => {
+    const parsed = skillInputSchema.safeParse(await c.req.json());
+    if (!parsed.success) {
+      return c.json(
+        { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input" },
+        400,
+      );
+    }
+
+    const result = await createSkill(parsed.data);
+    if (result.error) {
+      return c.json({ success: false, error: result.error }, 409);
+    }
+
+    return c.json({ success: true, data: { id: result.id } }, 201);
+  });
+
+  app.put("/skills/:id", async (c) => {
+    const id = c.req.param("id");
+    const parsed = skillInputSchema.safeParse(await c.req.json());
+    if (!parsed.success) {
+      return c.json(
+        { success: false, error: parsed.error.issues[0]?.message ?? "Invalid input" },
+        400,
+      );
+    }
+
+    const result = await updateSkill(id, parsed.data);
+    if (result.error) {
+      return c.json({ success: false, error: result.error }, 404);
+    }
+
+    return c.json({ success: true });
+  });
+
+  app.delete("/skills/:id", async (c) => {
+    const id = c.req.param("id");
+    const result = await deleteSkill(id);
+
+    if (result.error) {
+      return c.json({ success: false, error: result.error }, 404);
+    }
+
+    return c.json({ success: true });
   });
 
   return app;
