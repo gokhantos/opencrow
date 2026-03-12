@@ -357,6 +357,7 @@ export default function AppStore() {
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [rankings, setRankings] = useState<AppRankingRow[]>([]);
   const [reviews, setReviews] = useState<AppReviewRow[]>([]);
+  const [discoveredApps, setDiscoveredApps] = useState<AppRankingRow[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
@@ -367,9 +368,12 @@ export default function AppStore() {
       if (overallFilter !== "all") params.set("list_type", overallFilter);
       if (categoryFilter !== "all") params.set("category", categoryFilter);
 
-      const [rankingsRes, reviewsRes, statsRes] = await Promise.all([
+      const [rankingsRes, discoveredRes, reviewsRes, statsRes] = await Promise.all([
         apiFetch<{ success: boolean; data: AppRankingRow[] }>(
           `/api/appstore/rankings?${params.toString()}`,
+        ),
+        apiFetch<{ success: boolean; data: AppRankingRow[] }>(
+          "/api/appstore/rankings?list_type=discovered&limit=100",
         ),
         apiFetch<{ success: boolean; data: AppReviewRow[] }>(
           "/api/appstore/reviews?limit=100",
@@ -379,6 +383,7 @@ export default function AppStore() {
         ),
       ]);
       if (rankingsRes.success) setRankings(rankingsRes.data);
+      if (discoveredRes.success) setDiscoveredApps(discoveredRes.data);
       if (reviewsRes.success) setReviews(reviewsRes.data);
       if (statsRes.success) setStats(statsRes.data);
     } catch {
@@ -408,7 +413,6 @@ export default function AppStore() {
   }
 
   const topApps = rankings.filter((r) => r.list_type !== "discovered");
-  const discoveredApps = rankings.filter((r) => r.list_type === "discovered");
 
   const availableCategories: string[] = Array.from(
     new Set(topApps.map((r) => r.category).filter(Boolean)),
