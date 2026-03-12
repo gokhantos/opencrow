@@ -221,15 +221,21 @@ function CanvasInner({ state, dispatch, validationErrors, stepStatuses = new Map
           defaultViewport={state.viewport}
           fitView={state.nodes.length === 0}
           deleteKeyCode={null}
+          proOptions={{ hideAttribution: true }}
           className="bg-bg"
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} className="opacity-30" />
           <MiniMap
             nodeColor={(node) => MINIMAP_COLORS[node.type ?? ""] ?? "#6366f1"}
             maskColor="rgba(0,0,0,0.3)"
-            className="!bg-bg-1 !border !border-border rounded-lg overflow-hidden"
+            style={{ width: 160, height: 100, right: 16, bottom: 16 }}
+            className="!bg-bg-1 !border !border-border !rounded-lg"
           />
-          <Controls className="!bg-bg-1 !border !border-border rounded-lg overflow-hidden [&>button]:!bg-bg-1 [&>button]:!border-border [&>button]:!text-foreground [&>button:hover]:!bg-bg-2" />
+          <Controls
+            showInteractive={false}
+            style={{ left: 16, bottom: 16 }}
+            className="!bg-bg-1 !border !border-border !rounded-lg [&>button]:!bg-bg-1 [&>button]:!border-border [&>button]:!fill-foreground [&>button:hover]:!bg-bg-2"
+          />
         </ReactFlow>
         </ValidationProvider>
       </ExecutionStatusProvider>
