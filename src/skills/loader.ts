@@ -123,7 +123,7 @@ export async function createSkill(
   input: SkillInput,
 ): Promise<{ id: string; error?: string }> {
   const id = toSkillId(input.name);
-  if (!id) return { id: "", error: "Invalid skill name" };
+  if (!id || !isValidSkillId(id)) return { id: "", error: "Invalid skill name" };
 
   const skillDir = path.join(SKILLS_DIR, id);
   try {

@@ -8,10 +8,11 @@ import {
   Button,
 } from "../../components";
 import { useToast } from "../../components/Toast";
-import { Plus, Upload } from "lucide-react";
+import { Plus, Upload, Sparkles } from "lucide-react";
 import { SkillCard } from "./SkillCard";
 import { SkillFormModal } from "./SkillFormModal";
 import { SkillDetailModal } from "./SkillDetailModal";
+import { AiSkillGenerator } from "./AiSkillGenerator";
 import type {
   SkillInfo,
   SkillDetail,
@@ -32,6 +33,7 @@ export default function Skills() {
   const [editData, setEditData] = useState<SkillFormData | undefined>(
     undefined,
   );
+  const [aiGeneratorOpen, setAiGeneratorOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const toast = useToast();
@@ -68,6 +70,13 @@ export default function Skills() {
       content: detail.body ?? "",
     });
     setSelectedSkill(null);
+    setFormOpen(true);
+  }
+
+  function handleAiGenerated(data: SkillFormData) {
+    setFormMode("create");
+    setEditId(undefined);
+    setEditData(data);
     setFormOpen(true);
   }
 
@@ -166,6 +175,14 @@ export default function Skills() {
             <Upload size={14} />
             Load File
           </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setAiGeneratorOpen(true)}
+          >
+            <Sparkles size={14} />
+            AI Generate
+          </Button>
           <Button size="sm" onClick={openCreate}>
             <Plus size={14} />
             Create Skill
@@ -221,6 +238,12 @@ export default function Skills() {
         onSubmit={handleSubmit}
         initial={editData}
         mode={formMode}
+      />
+
+      <AiSkillGenerator
+        open={aiGeneratorOpen}
+        onClose={() => setAiGeneratorOpen(false)}
+        onGenerated={handleAiGenerated}
       />
     </div>
   );
