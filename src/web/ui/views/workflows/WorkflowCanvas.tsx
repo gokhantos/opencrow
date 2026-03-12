@@ -168,7 +168,7 @@ function CanvasInner({ state, dispatch, validationErrors, stepStatuses = new Map
   );
 
   const isValidConnection = useCallback<IsValidConnection>(
-    (connection) => {
+    (connection: any) => {
       const source = "source" in connection ? connection.source : null;
       const target = "target" in connection ? connection.target : null;
       if (!source || !target) return false;
@@ -226,7 +226,7 @@ function CanvasInner({ state, dispatch, validationErrors, stepStatuses = new Map
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} className="opacity-30" />
           <MiniMap
-            nodeColor={(node) => MINIMAP_COLORS[node.type ?? ""] ?? "#6366f1"}
+            nodeColor={(node: any) => MINIMAP_COLORS[node.type ?? ""] ?? "#6366f1"}
             maskColor="rgba(0,0,0,0.3)"
             style={{ width: 160, height: 100, right: 16, bottom: 16 }}
             className="!bg-bg-1 !border !border-border !rounded-lg"
