@@ -2,6 +2,7 @@ import type { ToolDefinition, ToolResult } from "./types";
 import { createLogger } from "../logger";
 import { requireString, getString, getNumber, getEnum } from "./input-helpers";
 import { isToolError } from "./input-helpers";
+import { rateLimitError, serviceError, inputError } from "./error-helpers";
 
 import { getErrorMessage } from "../lib/error-serialization";
 const log = createLogger("tool:web-fetch");
@@ -356,16 +357,18 @@ async function executeWebFetch(
   // Validate URL (SSRF prevention)
   const urlError = await validateUrl(url);
   if (urlError) {
-    return { output: urlError, isError: true };
+    return inputError(urlError);
   }
 
   // Rate limit check
-  const rateLimitError = checkRateLimit();
-  if (rateLimitError) {
-    return {
-      output: `Rate limit exceeded: max ${MAX_REQUESTS_PER_MINUTE} requests per minute.`,
-      isError: true,
-    };
+  const rateLimitMsg = checkRateLimit();
+  if (rateLimitMsg) {
+    const oldestTs = requestTimestamps[0] ?? Date.now();
+    const retryAfterMs = Math.max(0, oldestTs + 60_000 - Date.now());
+    return rateLimitError(
+      `Rate limit exceeded: max ${MAX_REQUESTS_PER_MINUTE} requests per minute.`,
+      retryAfterMs,
+    );
   }
   recordRequest();
 
@@ -402,6 +405,6 @@ async function executeWebFetch(
   } catch (err) {
     const message = getErrorMessage(err);
     log.error("fetch failed", { url, error: message });
-    return { output: `Fetch failed: ${message}`, isError: true };
+    return serviceError(`Fetch failed: ${message}`);
   }
 }

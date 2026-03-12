@@ -1,5 +1,6 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import { getDb } from "../store/db";
+import { inputError, permissionError, serviceError } from "./error-helpers";
 
 // ============================================================================
 // Database Query Tool
@@ -46,7 +47,7 @@ export function createDbQueryTool(): ToolDefinition {
     async execute(input): Promise<{ output: string; isError: boolean }> {
       const rawQuery = input.query as string | undefined;
       if (!rawQuery) {
-        return { output: "Error: query is required", isError: true };
+        return inputError("Error: query is required");
       }
       const query = rawQuery.trim();
       const params = (input.params as (string | number)[]) || [];
@@ -54,10 +55,9 @@ export function createDbQueryTool(): ToolDefinition {
 
       // Security: Only allow SELECT queries
       if (!query.toUpperCase().startsWith("SELECT")) {
-        return {
-          output: "Only SELECT queries are allowed for safety. Use mcp__dbhub__execute_sql for write operations.",
-          isError: true,
-        };
+        return permissionError(
+          "Only SELECT queries are allowed for safety. Use mcp__dbhub__execute_sql for write operations.",
+        );
       }
 
       // Prevent dangerous operations
@@ -74,17 +74,15 @@ export function createDbQueryTool(): ToolDefinition {
       ];
 
       if (DENIED_KEYWORDS.some((kw) => upperQuery.includes(kw))) {
-        return {
-          output: "Only read-only SELECT queries are allowed. No DDL or DML operations.",
-          isError: true,
-        };
+        return permissionError(
+          "Only read-only SELECT queries are allowed. No DDL or DML operations.",
+        );
       }
 
       if (DENIED_FUNCTIONS.some((fn) => upperQuery.includes(fn))) {
-        return {
-          output: "Query uses a restricted PostgreSQL function. Access to system catalog functions and file I/O is not allowed.",
-          isError: true,
-        };
+        return permissionError(
+          "Query uses a restricted PostgreSQL function. Access to system catalog functions and file I/O is not allowed.",
+        );
       }
 
       // Add LIMIT if not present and query doesn't have one
@@ -156,7 +154,7 @@ export function createDbQueryTool(): ToolDefinition {
         return { output, isError: false };
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Query error: ${msg}`, isError: true };
+        return serviceError(`Query error: ${msg}`);
       }
     },
   };

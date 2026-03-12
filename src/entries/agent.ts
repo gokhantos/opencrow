@@ -62,6 +62,11 @@ async function main(): Promise<void> {
     (isDefault ? config.channels.telegram.botToken : undefined);
 
   const deliveryStore = createDeliveryStore();
+  const supervisor = createProcessSupervisor(processName, {
+    agentId,
+    type: "agent",
+    isDefault,
+  });
 
   // --- Telegram channel ---
   if (telegramToken) {
@@ -97,6 +102,11 @@ async function main(): Promise<void> {
           deliveryStore,
         );
         poller.start();
+        supervisor.onShutdown(async () => {
+          router.dispose();
+          poller.stop();
+          await telegramChannel.disconnect();
+        });
       }
     } else {
       // Non-default agent: dedicated Telegram bot
@@ -118,6 +128,10 @@ async function main(): Promise<void> {
       const channelName = `telegram:${agentId}`;
       const poller = createDeliveryPoller(channelName, channel, deliveryStore);
       poller.start();
+      supervisor.onShutdown(async () => {
+        poller.stop();
+        await channel.disconnect();
+      });
     }
   } else {
     log.warn("No Telegram token available, skipping Telegram", { agentId });
@@ -159,6 +173,10 @@ async function main(): Promise<void> {
         deliveryStore,
       );
       waPoller.start();
+      supervisor.onShutdown(async () => {
+        waPoller.stop();
+        await waChannel.disconnect();
+      });
     } catch (err) {
       log.error("WhatsApp failed to start (non-fatal)", { error: err });
     }
@@ -192,12 +210,6 @@ async function main(): Promise<void> {
     }
   }
 
-  // --- Supervisor ---
-  const supervisor = createProcessSupervisor(processName, {
-    agentId,
-    type: "agent",
-    isDefault,
-  });
   await supervisor.start();
 
   log.info("Agent process started", { agentId, processName });

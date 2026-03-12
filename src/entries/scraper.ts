@@ -149,6 +149,11 @@ async function main(): Promise<void> {
     type: "scraper",
     scraperId,
   });
+
+  supervisor.onShutdown(async () => {
+    log.info("Scraper shutting down (writes are idempotent)", { scraperId });
+  });
+
   await supervisor.start();
 
   log.info("Scraper process started", { scraperId, processName });
