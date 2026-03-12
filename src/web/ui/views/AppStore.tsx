@@ -359,7 +359,6 @@ export default function AppStore() {
   const [rankings, setRankings] = useState<AppRankingRow[]>([]);
   const [discoveredApps, setDiscoveredApps] = useState<AppRankingRow[]>([]);
   const [reviews, setReviews] = useState<AppReviewRow[]>([]);
-  const [discoveredApps, setDiscoveredApps] = useState<AppRankingRow[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scraping, setScraping] = useState(false);
