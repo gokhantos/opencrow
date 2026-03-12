@@ -7,7 +7,7 @@ export interface TokenUsageRecord {
   readonly provider: string;
   readonly channel: string;
   readonly chatId: string;
-  readonly source: "message" | "cron" | "web" | "subagent";
+  readonly source: "message" | "cron" | "web" | "subagent" | "workflow";
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly cacheReadTokens: number;

@@ -1,8 +1,5 @@
 import { z } from "zod";
-import {
-  createSdkMcpServer,
-  tool,
-} from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type { ToolRegistry } from "../tools/registry";
 import type { ToolDefinition } from "../tools/types";
 import { createLogger } from "../logger";
@@ -118,18 +115,36 @@ function inputSchemaToZodShape(
 }
 
 /**
- * Convert a single OpenCrow ToolDefinition into an Agent SDK MCP tool definition.
+ * Raw MCP tool definition shape expected by createSdkMcpServer's registerTool.
+ *
+ * We bypass the SDK's `tool()` helper because it returns a broken structure
+ * (`.name` is the entire config object instead of a string) in v0.2.x.
+ * Passing raw objects with `{ name, description, inputSchema, handler }` works
+ * correctly — `registerTool` validates via `.safeParseAsync()` on the Zod schema.
  */
-function opencrowToolToSdkTool(
-  toolDef: ToolDefinition,
-): ReturnType<typeof tool> {
+interface RawSdkTool {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: z.ZodTypeAny;
+  readonly handler: (
+    input: Record<string, unknown>,
+  ) => Promise<{
+    content: Array<{ type: "text"; text: string }>;
+    isError?: boolean;
+  }>;
+}
+
+/**
+ * Convert a single OpenCrow ToolDefinition into a raw SDK MCP tool definition.
+ */
+function opencrowToolToSdkTool(toolDef: ToolDefinition): RawSdkTool {
   const zodShape = inputSchemaToZodShape(toolDef.inputSchema);
 
-  return tool(
-    toolDef.name,
-    toolDef.description,
-    zodShape,
-    async (args: Record<string, unknown>) => {
+  return {
+    name: toolDef.name,
+    description: toolDef.description,
+    inputSchema: z.object(zodShape),
+    handler: async (args: Record<string, unknown>) => {
       try {
         const result = await toolDef.execute(args);
         return {
@@ -142,8 +157,7 @@ function opencrowToolToSdkTool(
           isError: result.isError,
         };
       } catch (err) {
-        const message =
-          getErrorMessage(err);
+        const message = getErrorMessage(err);
         log.error("MCP tool execution error", {
           tool: toolDef.name,
           error: message,
@@ -154,7 +168,7 @@ function opencrowToolToSdkTool(
         };
       }
     },
-  );
+  };
 }
 
 /**
@@ -181,6 +195,6 @@ export function createOpenCrowMcpServer(
   return createSdkMcpServer({
     name: "opencrow-tools",
     version: "1.0.0",
-    tools: sdkTools,
+    tools: sdkTools as unknown as Parameters<typeof createSdkMcpServer>[0]["tools"],
   });
 }

@@ -281,7 +281,7 @@ async function handleUpdate(
   const existing = await store.getJob(jobId);
   if (!existing) return { output: `Error: job not found: ${jobId}`, isError: true };
 
-  const existingPayload = existing.payload;
+  const existingPayload = existing.payload.kind === "agentTurn" ? existing.payload : undefined;
   const patch: CronJobPatch = {
     name: input.name as string | undefined,
     enabled: input.enabled as boolean | undefined,

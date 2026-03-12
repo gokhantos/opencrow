@@ -114,7 +114,7 @@ export interface ModelParams {
 export interface UsageContext {
   readonly channel: string;
   readonly chatId: string;
-  readonly source: "message" | "cron" | "web" | "subagent";
+  readonly source: "message" | "cron" | "web" | "subagent" | "workflow";
 }
 
 export interface AgentOptions {

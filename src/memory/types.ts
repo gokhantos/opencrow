@@ -334,6 +334,15 @@ export interface MemoryManager {
     opts?: SearchOptions,
   ): Promise<readonly SearchResult[]>;
   getStats(agentId?: string): Promise<MemoryStats>;
+  evict(config: {
+    readonly ttlDays: number;
+    readonly batchSize: number;
+  }): Promise<EvictionResult>;
+}
+
+export interface EvictionResult {
+  readonly sourcesDeleted: number;
+  readonly chunksDeleted: number;
 }
 
 export interface MemoryStats {

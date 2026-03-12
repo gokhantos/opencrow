@@ -5,14 +5,14 @@ import { MEMORY_SOURCE_KINDS } from "./types";
 describe("getChunkProfile", () => {
   test("returns profile for x_post", () => {
     const p = getChunkProfile("x_post");
-    expect(p.maxTokens).toBe(150);
+    expect(p.maxTokens).toBe(300);
     expect(p.overlap).toBe(0);
   });
 
   test("returns profile for reuters_news", () => {
     const p = getChunkProfile("reuters_news");
-    expect(p.maxTokens).toBe(500);
-    expect(p.overlap).toBe(100);
+    expect(p.maxTokens).toBe(800);
+    expect(p.overlap).toBe(150);
   });
 
   test("returns profile for conversation", () => {
@@ -23,14 +23,14 @@ describe("getChunkProfile", () => {
 
   test("returns profile for observation", () => {
     const p = getChunkProfile("observation");
-    expect(p.maxTokens).toBe(300);
-    expect(p.overlap).toBe(50);
+    expect(p.maxTokens).toBe(500);
+    expect(p.overlap).toBe(80);
   });
 
   test("returns profile for idea", () => {
     const p = getChunkProfile("idea");
-    expect(p.maxTokens).toBe(400);
-    expect(p.overlap).toBe(80);
+    expect(p.maxTokens).toBe(600);
+    expect(p.overlap).toBe(100);
   });
 
   test("all memory source kinds have profiles", () => {

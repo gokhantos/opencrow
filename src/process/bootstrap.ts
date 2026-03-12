@@ -1,28 +1,15 @@
 import type { OpenCrowConfig } from "../config/schema";
 import type { AgentOptions, ProgressEvent } from "../agent/types";
-import type { ToolDefinition, ToolCategory } from "../tools/types";
 import type { ToolRegistry } from "../tools/registry";
 import type { ResolvedAgent } from "../agents/types";
 import type { MemoryManager } from "../memory/types";
 import type { CronToolConfig } from "../tools/cron";
-import type { CronStore } from "../cron/store";
-import type { CronScheduler } from "../cron/scheduler";
 import { initDb } from "../store/db";
 import { createToolRegistry } from "../tools/registry";
 import { createToolRouter } from "../tools/router";
 import { createAgentRegistry, type AgentRegistry } from "../agents/registry";
 import { loadConfigWithOverrides } from "../config/loader";
 import { createSubAgentTracker } from "../agents/tracker";
-import { createListAgentsTool } from "../tools/list-agents";
-import { createSpawnAgentTool } from "../tools/spawn-agent";
-import { createCronTool } from "../tools/cron";
-import {
-  createLogger,
-  setLogLevel,
-  setProcessName,
-  startLogPersistence,
-} from "../logger";
-import { createMemoryTools, createSearchMemoryTool } from "../tools/memory";
 import { createListSkillsTool } from "../tools/list-skills";
 import { createUseSkillTool } from "../tools/use-skill";
 import { readSkillContent } from "../skills/loader";
@@ -39,34 +26,17 @@ import { buildSdkHooks } from "../agent/hooks";
 import { createMemoryManager } from "../memory/manager";
 import { createEmbeddingProviderFromConfig } from "../memory/embeddings";
 import { createQdrantClient } from "../memory/qdrant";
-import { createMarketTools } from "../sources/markets/tools";
 import { initQuestDBReadOnly } from "../sources/markets/questdb";
-import { createNewsTools } from "../tools/news";
-import { createPHTools } from "../tools/ph";
-import { createHNTools } from "../tools/hn";
-import { createRedditTools } from "../tools/reddit";
-import { createGithubTools } from "../tools/github";
-import { createXTimelineTools } from "../tools/x-timeline";
-import { createAppStoreTools } from "../tools/appstore";
-import { createPlayStoreTools } from "../tools/playstore";
-import { createCrossSourceSearchTool } from "../tools/cross-search";
-import { createGetScraperStatusTool } from "../tools/scraper-status";
-import { createGetSubagentRunsTool } from "../tools/subagent-runs";
-import { createGetObservationsTool } from "../tools/memory";
-import { createAnalyticsTools } from "../tools/analytics";
-import { createRoutingDashboardTools } from "../tools/routing-dashboard";
-import { createIdeaTools } from "../tools/ideas";
-import { createSignalTools } from "../tools/signals";
-import { createProjectContextTool } from "../tools/project-context";
-import { createValidateCodeTool } from "../tools/validate-code";
-import { createRunTestsTool } from "../tools/run-tests";
-
-import { createProcessMonitorTools } from "../tools/process-monitor";
-import { createLogCheckerTools } from "../tools/log-checker";
-import { createMemoryStatsTools } from "../tools/memory-stats";
-import { createEconomicCalendarTool } from "../tools/economic-calendar";
-
-import { createDbTools } from "../tools/db-query";
+import {
+  buildRegistryForAgent as buildRegistry,
+  type ToolBuilderDeps,
+} from "./tool-builder";
+import {
+  createLogger,
+  setLogLevel,
+  setProcessName,
+  startLogPersistence,
+} from "../logger";
 
 const log = createLogger("bootstrap");
 
@@ -152,10 +122,8 @@ export async function bootstrap(
   startLogPersistence(db);
   log.info("Database initialized (PostgreSQL)");
 
-  // Merge file config with DB overrides
   const mergedConfig = await loadConfigWithOverrides();
 
-  // Load manually disabled tools from DB
   const { getOverride } = await import("../store/config-overrides");
   const disabledToolsRaw = await getOverride("tools", "disabledTools");
   const disabledTools = new Set<string>(
@@ -163,7 +131,6 @@ export async function bootstrap(
   );
 
   const agentRegistry = createAgentRegistry(mergedConfig.agents, mergedConfig.agent);
-
   const subAgentTracker = createSubAgentTracker();
 
   let baseToolRegistry: ToolRegistry | null = null;
@@ -173,7 +140,6 @@ export async function bootstrap(
       createListSkillsTool(),
       createUseSkillTool(),
     ]);
-    // Create router for smart tool selection
     toolRouter = createToolRouter(registry.definitions);
     baseToolRegistry = registry.withRouter(toolRouter);
     log.info("Tool registry initialized", {
@@ -231,7 +197,6 @@ export async function bootstrap(
       autoIndex: memSearch.autoIndex,
     });
 
-    // Wire semantic tool routing if both embedding provider and Qdrant are available
     if (baseToolRegistry && embeddingProvider && qdrantClient.available) {
       try {
         baseToolRegistry = await baseToolRegistry.withSemanticIndex(
@@ -267,7 +232,6 @@ export async function bootstrap(
     }
   }
 
-  // Initialize QuestDB read-only client for market query tools
   try {
     await initQuestDBReadOnly();
   } catch {
@@ -338,226 +302,18 @@ export async function bootstrap(
   ): ToolRegistry | null {
     if (!baseToolRegistry) return null;
 
-    // Cache hit: only for static (no onProgress) calls to avoid sharing closures
-    // that capture a specific progress callback across different callers.
-    const cacheKey = onProgress === undefined ? registryCacheKey(agent) : null;
-    if (cacheKey !== null) {
-      const cached = registryCache.get(cacheKey);
-      if (cached !== undefined) return cached;
-    }
-
-    let registry = baseToolRegistry.withFilter(agent.toolFilter);
-
-    const allowsTool = (name: string): boolean => {
-      if (disabledTools.has(name)) return false;
-      if (agent.toolFilter.mode === "all") return true;
-      if (agent.toolFilter.mode === "allowlist")
-        return agent.toolFilter.tools.includes(name);
-      return !agent.toolFilter.tools.includes(name);
+    const deps: ToolBuilderDeps = {
+      config: mergedConfig,
+      agentRegistry,
+      baseToolRegistry,
+      subAgentTracker,
+      memoryManager,
+      disabledTools,
+      enrichSystemPrompt,
+      getCronToolConfig: () => cronToolConfig,
     };
 
-    if (agent.subagents.allowAgents.length > 0) {
-      const listAgents = createListAgentsTool(agentRegistry, agent.id);
-      const spawnAgent = createSpawnAgentTool({
-        agentRegistry,
-        baseToolRegistry: baseToolRegistry!,
-        tracker: subAgentTracker,
-        currentAgentId: agent.id,
-        sessionId: crypto.randomUUID(),
-        maxIterations: config.tools.maxIterations,
-        buildRegistryForAgent: (a) => buildRegistryForAgent(a, onProgress),
-        buildSystemPrompt: enrichSystemPrompt,
-        onProgress,
-      });
-      const subagentTools = [listAgents, spawnAgent].filter((t) =>
-        allowsTool(t.name),
-      );
-      if (subagentTools.length > 0)
-        registry = registry.withTools(subagentTools);
-    }
-
-    if (cronToolConfig && allowsTool("cron")) {
-      const cronTool = createCronTool({
-        ...cronToolConfig,
-        currentAgentId: agent.id,
-      });
-      registry = registry.withTools([cronTool]);
-    }
-
-    {
-      const memoryTools = createMemoryTools(agent.id);
-      if (memoryTools.length > 0) registry = registry.withTools(memoryTools);
-
-      const extraTools: ToolDefinition[] = [];
-      if (memoryManager)
-        extraTools.push(createSearchMemoryTool(agent.id, memoryManager));
-      if (extraTools.length > 0) registry = registry.withTools(extraTools);
-    }
-
-    // Feature-aware tool registration: skip tools for disabled scrapers/features
-    const enabledScrapers = new Set(config.processes.scraperProcesses.scraperIds ?? []);
-    const scraperEnabled = (id: string) => enabledScrapers.has(id);
-
-    if (config.market) {
-      const marketTools = createMarketTools(
-        config.market.symbols ?? [],
-        config.market.marketTypes ?? [],
-      ).filter((t) => allowsTool(t.name));
-      if (marketTools.length > 0) registry = registry.withTools(marketTools);
-    }
-
-    if (scraperEnabled("news")) {
-      const newsTools = createNewsTools(memoryManager).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (newsTools.length > 0) registry = registry.withTools(newsTools);
-    }
-
-    if (scraperEnabled("producthunt")) {
-      const phTools = createPHTools(memoryManager).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (phTools.length > 0) registry = registry.withTools(phTools);
-    }
-
-    if (scraperEnabled("hackernews")) {
-      const hnTools = createHNTools(memoryManager).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (hnTools.length > 0) registry = registry.withTools(hnTools);
-    }
-
-    if (scraperEnabled("reddit")) {
-      const redditTools = createRedditTools(memoryManager).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (redditTools.length > 0) registry = registry.withTools(redditTools);
-    }
-
-    if (scraperEnabled("github")) {
-      const githubTools = createGithubTools(memoryManager).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (githubTools.length > 0) registry = registry.withTools(githubTools);
-    }
-
-    if (scraperEnabled("x")) {
-      const xTimelineTools = createXTimelineTools(memoryManager).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (xTimelineTools.length > 0)
-        registry = registry.withTools(xTimelineTools);
-    }
-
-    if (scraperEnabled("appstore")) {
-      const appStoreTools = createAppStoreTools(memoryManager).filter((t) => allowsTool(t.name));
-      if (appStoreTools.length > 0) registry = registry.withTools(appStoreTools);
-    }
-
-    if (scraperEnabled("playstore")) {
-      const playStoreTools = createPlayStoreTools(memoryManager).filter((t) => allowsTool(t.name));
-      if (playStoreTools.length > 0) registry = registry.withTools(playStoreTools);
-    }
-
-    if (memoryManager && allowsTool("cross_source_search")) {
-      registry = registry.withTools([
-        createCrossSourceSearchTool(memoryManager),
-      ]);
-    }
-
-    if (scraperEnabled("ideas")) {
-      const ideaTools = [...createIdeaTools(agent.id, memoryManager)].filter((t) =>
-        allowsTool(t.name),
-      );
-      if (ideaTools.length > 0) registry = registry.withTools(ideaTools);
-
-      const signalTools = [...createSignalTools(agent.id)].filter((t) =>
-        allowsTool(t.name),
-      );
-      if (signalTools.length > 0) registry = registry.withTools(signalTools);
-    }
-
-    if (allowsTool("get_scraper_status")) {
-      registry = registry.withTools([createGetScraperStatusTool()]);
-    }
-
-    if (allowsTool("get_observations")) {
-      registry = registry.withTools([createGetObservationsTool(agent.id)]);
-    }
-
-    if (allowsTool("get_subagent_runs")) {
-      registry = registry.withTools([createGetSubagentRunsTool()]);
-    }
-
-    // Analytics and intelligence tools
-    {
-      const analyticsTools = createAnalyticsTools(agent.id).filter((t) =>
-        allowsTool(t.name),
-      );
-      if (analyticsTools.length > 0) registry = registry.withTools(analyticsTools);
-    }
-
-    // Routing dashboard tools
-    {
-      const routingTools = createRoutingDashboardTools().filter((t) =>
-        allowsTool(t.name),
-      );
-      if (routingTools.length > 0) registry = registry.withTools(routingTools);
-    }
-
-    // Database query tools
-    {
-      const dbTools = createDbTools().filter((t) => allowsTool(t.name));
-      if (dbTools.length > 0) registry = registry.withTools(dbTools);
-    }
-
-    // Process monitoring tools
-    {
-      const processTools = createProcessMonitorTools().filter((t) =>
-        allowsTool(t.name),
-      );
-      if (processTools.length > 0) registry = registry.withTools(processTools);
-    }
-
-    // Log checker tools
-    {
-      const logTools = createLogCheckerTools().filter((t) =>
-        allowsTool(t.name),
-      );
-      if (logTools.length > 0) registry = registry.withTools(logTools);
-    }
-
-    // Memory stats tools
-    {
-      const memoryStatsTools = createMemoryStatsTools().filter((t) =>
-        allowsTool(t.name),
-      );
-      if (memoryStatsTools.length > 0) registry = registry.withTools(memoryStatsTools);
-    }
-
-    // Economic calendar tool
-    {
-      const calendarTools = createEconomicCalendarTool().filter((t) =>
-        allowsTool(t.name),
-      );
-      if (calendarTools.length > 0) registry = registry.withTools(calendarTools);
-    }
-
-    // Development tools
-    if (allowsTool("project_context")) {
-      registry = registry.withTools([createProjectContextTool(config.tools)]);
-    }
-    if (allowsTool("validate_code")) {
-      registry = registry.withTools([createValidateCodeTool(config.tools)]);
-    }
-    if (allowsTool("run_tests")) {
-      registry = registry.withTools([createRunTestsTool(config.tools)]);
-    }
-
-    if (cacheKey !== null) {
-      registryCache.set(cacheKey, registry);
-    }
-    return registry;
+    return buildRegistry(agent, deps, onProgress);
   }
 
   async function buildOptionsForAgent(
@@ -606,7 +362,6 @@ export async function bootstrap(
 
     return { ...agentOpts, sdkHooks, ...(onProgress ? { onProgress } : {}) };
   }
-
 
   return {
     config: mergedConfig,

@@ -31,6 +31,7 @@ import { createSecretsRoutes } from "./routes/secrets";
 import { createRoutingRulesRoutes } from "./routes/routing-rules";
 import { createAppStoreRoutes } from "./routes/appstore";
 import { createPlayStoreRoutes } from "./routes/playstore";
+import { createWorkflowRoutes } from "./routes/workflows";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
 import type { AutofollowProcessor } from "../sources/x/follow/processor";
@@ -50,6 +51,7 @@ import type { ChannelRegistry } from "../channels/registry";
 import type { ChannelManager } from "../channels/manager";
 import type { AgentOptions } from "../agent/types";
 import type { AgentRegistry } from "../agents/registry";
+import type { ToolRegistry } from "../tools/registry";
 import type { CronStore } from "../cron/store";
 import type { CronScheduler } from "../cron/scheduler";
 import type { SubAgentTracker } from "../agents/tracker";
@@ -68,10 +70,14 @@ export interface WebAppDeps {
   readonly channelManager?: ChannelManager;
   readonly getDefaultAgentOptions: () => Promise<AgentOptions>;
   readonly agentRegistry: AgentRegistry;
+  readonly toolRegistry?: ToolRegistry;
   readonly cronStore?: CronStore;
   readonly cronScheduler?: CronScheduler;
   readonly subAgentTracker?: SubAgentTracker;
-  readonly buildAgentOptions?: (agent: ResolvedAgent) => Promise<AgentOptions>;
+  readonly buildAgentOptions?: (
+    agent: ResolvedAgent,
+    onProgress?: (event: import("../agent/types").ProgressEvent) => void,
+  ) => Promise<AgentOptions>;
   readonly messageHandler?: MessageHandler;
   readonly memoryManager?: MemoryManager;
   readonly marketPipeline?: MarketPipeline;
@@ -342,7 +348,18 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
 
 
-  const skills = createSkillRoutes();
+  const workflows = createWorkflowRoutes(
+    deps.toolRegistry !== undefined
+      ? {
+          agentRegistry: deps.agentRegistry,
+          toolRegistry: deps.toolRegistry,
+          buildAgentOptions: deps.buildAgentOptions,
+        }
+      : undefined,
+  );
+  app.route("/api", workflows);
+
+  const skills = createSkillRoutes(deps);
   app.route("/api", skills);
 
   const usage = createUsageRoutes();

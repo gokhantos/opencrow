@@ -18,6 +18,7 @@ import {
   buildMcpServers,
   buildDisallowedTools,
   buildSessionOptions,
+  buildStderrHandler,
 } from "./sdk-options";
 import {
   type SdkUsage,
@@ -138,6 +139,8 @@ export async function chat(
       ? abortSignalToController(options.abortSignal)
       : undefined;
 
+    const agentId = options.agentId ?? "default";
+
     for await (const message of query({
       prompt: enrichedPrompt,
       options: {
@@ -147,6 +150,7 @@ export async function chat(
         maxTurns: 1,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
+        stderr: buildStderrHandler(agentId),
         ...buildThinkingOptions(options),
         ...buildSessionOptions(),
         ...(abortController ? { abortController } : {}),
@@ -239,6 +243,7 @@ async function runQuery(
       allowDangerouslySkipPermissions: true,
       mcpServers: buildMcpServers(options, opencrowMcp),
       disallowedTools: buildDisallowedTools(options),
+      stderr: buildStderrHandler(agentId),
       ...buildThinkingOptions(options),
       ...buildSessionOptions(),
       ...(abortController ? { abortController } : {}),
@@ -494,7 +499,14 @@ export async function agenticChat(
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    log.error("Agent SDK agentic chat error", { error: msg });
+    const stack = error instanceof Error ? error.stack : undefined;
+    log.error("Agent SDK agentic chat error", {
+      agentId,
+      model: options.model,
+      provider: options.provider ?? "agent-sdk",
+      error: msg,
+      stack,
+    });
     throw new Error(`Agent SDK agentic error: ${msg}`);
   }
 }

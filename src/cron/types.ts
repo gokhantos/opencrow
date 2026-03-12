@@ -4,12 +4,17 @@ export type CronSchedule =
   | { readonly kind: "cron"; readonly expr: string; readonly tz?: string };
 
 
-export interface CronPayload {
-  readonly kind: "agentTurn";
-  readonly message?: string;
-  readonly agentId?: string;
-  readonly timeoutSeconds?: number;
-}
+export type CronPayload =
+  | {
+      readonly kind: "agentTurn";
+      readonly message?: string;
+      readonly agentId?: string;
+      readonly timeoutSeconds?: number;
+    }
+  | {
+      readonly kind: "workflowRun";
+      readonly workflowId: string;
+    };
 
 export interface CronDelivery {
   readonly mode: "none" | "announce";

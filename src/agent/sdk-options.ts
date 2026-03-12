@@ -5,6 +5,7 @@
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentOptions } from "./types";
 import type { createOpenCrowMcpServer } from "./mcp-bridge";
+import { createLogger } from "../logger";
 
 /**
  * Build thinking/effort/beta options from AgentOptions.
@@ -234,12 +235,59 @@ export function buildDisallowedTools(options: AgentOptions): string[] {
 }
 
 /**
+ * Detect the runtime executable name for the Agent SDK at module load time.
+ * The SDK expects `'bun' | 'node'`, not a full path, and resolves it via PATH.
+ *
+ * We detect whether we're running under Bun, but only return "bun" if `bun`
+ * is actually resolvable in PATH.  On production servers Bun may be installed
+ * under ~/.bun/bin which is not in the system PATH exported to child processes
+ * (e.g. when launched by a systemd service unit), so the SDK would fail with
+ * ENOENT when it tries to spawn `bun <claude-cli.js>`.  Fall back to "node"
+ * when bun is not on PATH — Node.js can run the Claude Code CLI just as well.
+ *
+ * Result is memoised at module initialisation to avoid repeated process probes.
+ */
+function resolveExecutable(): "bun" | "node" {
+  if (!process.execPath.toLowerCase().includes("bun")) {
+    return "node";
+  }
+
+  // Verify "bun" is resolvable via PATH before trusting the detection.
+  try {
+    const { spawnSync } = require("child_process") as typeof import("child_process");
+    const result = spawnSync("bun", ["--version"], { stdio: "ignore", timeout: 2000 });
+    return result.error ? "node" : "bun";
+  } catch {
+    return "node";
+  }
+}
+
+const RESOLVED_EXECUTABLE: "bun" | "node" = resolveExecutable();
+
+/**
  * Build session-level options that apply to all SDK queries.
  */
 export function buildSessionOptions(): Record<string, unknown> {
   return {
     persistSession: false,
     settingSources: [],
-    executable: process.execPath,
+    executable: RESOLVED_EXECUTABLE,
+  };
+}
+
+const stderrLog = createLogger("agent-sdk:stderr");
+
+/**
+ * Build a stderr handler that logs SDK subprocess stderr output.
+ * Useful for diagnosing Claude Code subprocess crashes.
+ */
+export function buildStderrHandler(
+  agentId: string,
+): (data: string) => void {
+  return (data: string) => {
+    stderrLog.warn("SDK subprocess stderr", {
+      agentId,
+      stderr: data.slice(0, 2000),
+    });
   };
 }

@@ -32,12 +32,13 @@ import News from "./views/News";
 import Ideas from "./views/Ideas";
 import GitHub from "./views/GitHub";
 import Processes from "./views/Processes";
-import Skills from "./views/Skills";
+import Skills from "./views/skills/Skills";
 import Tools from "./views/Tools";
 import AgentMetrics from "./views/AgentMetrics";
 import RoutingRules from "./views/RoutingRules";
 import Memory from "./views/Memory";
 import AppStore from "./views/AppStore";
+import Workflows from "./views/Workflows";
 import PlayStore from "./views/PlayStore";
 import Settings from "./views/Settings";
 
@@ -345,6 +346,7 @@ function App() {
             {tab === "system" && <SystemMetrics />}
             {tab === "logs" && <Logs />}
             {tab === "settings" && <Settings />}
+            {tab === "workflows" && <Workflows />}
           </div>
         </ErrorBoundary>
       </main>

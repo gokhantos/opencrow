@@ -713,7 +713,7 @@ describe("withAlibabaEnv", () => {
   it("throws error when ALIBABA_API_KEY is not set", async () => {
     await expect(async () => {
       await withAlibabaEnv(async () => "test");
-    }).toThrow("ALIBABA_API_KEY environment variable is not set");
+    }).toThrow("ALIBABA_API_KEY is not set");
   });
 
   it("sets ANTHROPIC_API_KEY to ALIBABA_API_KEY value during execution", async () => {

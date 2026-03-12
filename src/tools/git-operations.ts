@@ -3,6 +3,13 @@ import type { ToolsConfig } from "../config/schema";
 import { runShell, truncateOutput } from "./shell-runner";
 import { resolveAllowedDirs, isPathAllowedSync } from "./path-utils";
 import { createLogger } from "../logger";
+import {
+  inputError,
+  notFoundError,
+  permissionError,
+  timeoutError,
+  serviceError,
+} from "./error-helpers";
 
 const log = createLogger("tool:git");
 
@@ -96,7 +103,7 @@ async function verifyGitRepo(path: string): Promise<ToolResult | null> {
   );
 
   if (result.exitCode !== 0) {
-    return err(
+    return notFoundError(
       `Path is not a git repository: ${path}\n${stripAnsi(result.stderr)}`,
     );
   }
@@ -108,7 +115,7 @@ function handleShellResult(
   label: string,
 ): ToolResult {
   if (result.timedOut) {
-    return err(`Git ${label} timed out`);
+    return timeoutError(`Git ${label} timed out`);
   }
   if (result.exitCode !== 0) {
     const output = stripAnsi(result.stderr || result.stdout);
@@ -362,21 +369,21 @@ export function createGitOperationsTool(config: ToolsConfig): ToolDefinition {
       const input = parseInput(rawInput, defaultPath);
 
       if (!isValidAction(input.action)) {
-        return err(
+        return inputError(
           `Unsupported action: ${input.action}. Valid actions: ${VALID_ACTIONS.join(", ")}`,
         );
       }
 
       if (!isPathAllowedSync(input.path, allowedDirs)) {
-        return err(`Error: path not allowed: ${input.path}`);
+        return permissionError(`Error: path not allowed: ${input.path}`);
       }
 
       // Validate required fields before hitting the filesystem
       if (input.action === "commit" && !input.message) {
-        return err("Error: commit message is required");
+        return inputError("Error: commit message is required");
       }
       if (input.action === "branch_create" && !input.branch) {
-        return err("Error: branch name is required for branch_create");
+        return inputError("Error: branch name is required for branch_create");
       }
 
       log.debug("Git operation", { action: input.action, path: input.path });
@@ -392,7 +399,7 @@ export function createGitOperationsTool(config: ToolsConfig): ToolDefinition {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         log.error("Git operation failed", error);
-        return err(`Git operation error: ${message}`);
+        return serviceError(`Git operation error: ${message}`);
       }
     },
   };
