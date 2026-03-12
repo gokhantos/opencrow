@@ -4,7 +4,7 @@ import {
   upsertRankings,
   upsertReviews,
   getRankings,
-  getAllKnownAppIds,
+  getDiscoveredAppIds,
   getUnindexedReviews,
   markReviewsIndexed,
   getUnindexedRankings,
@@ -536,7 +536,7 @@ export function createAppStoreScraper(config?: {
 
       // Discovery: find related apps to expand the database
       try {
-        const knownIds = await getAllKnownAppIds();
+        const knownIds = await getDiscoveredAppIds();
         const allRanked = [...freeApps, ...paidApps, ...categoryRankings].filter((a) => a.id);
         const seeds = allRanked.sort(() => Math.random() - 0.5).slice(0, DISCOVERY_LOOKUPS_PER_CYCLE);
         let discoveredCount = 0;

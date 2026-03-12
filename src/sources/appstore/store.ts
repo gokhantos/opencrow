@@ -192,6 +192,12 @@ export async function getAllKnownAppIds(): Promise<Set<string>> {
   return new Set((rows as Array<{ id: string }>).map((r) => r.id));
 }
 
+export async function getDiscoveredAppIds(): Promise<Set<string>> {
+  const db = getDb();
+  const rows = await db`SELECT DISTINCT id FROM appstore_rankings WHERE list_type = 'discovered'`;
+  return new Set((rows as Array<{ id: string }>).map((r) => r.id));
+}
+
 export async function markRankingsIndexed(
   ids: readonly string[],
 ): Promise<void> {
