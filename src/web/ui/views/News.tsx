@@ -197,6 +197,8 @@ export default function News() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [loading, setLoading] = useState(true);
   const [scrapingSource, setScrapingSource] = useState<string | null>(null);
+  const [backfilling, setBackfilling] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<string | null>(null);
   const [enabledScrapers, setEnabledScrapers] = useState<ReadonlySet<string>>(new Set());
 
   const isCalendar = sourceFilter === "investing_calendar";
@@ -292,6 +294,35 @@ export default function News() {
     }
   }
 
+  async function handleBackfillRag() {
+    if (sourceFilter === "all") return;
+    setBackfilling(true);
+    setBackfillResult(null);
+    try {
+      const res = await apiFetch<{ success: boolean; data: { indexed: number } }>(
+        "/api/news/backfill-rag",
+        { method: "POST", body: JSON.stringify({ source: sourceFilter }) },
+      );
+      if (res.success) {
+        setBackfillResult(`Indexed ${res.data.indexed} articles`);
+      }
+    } catch (err) {
+      let message = "Unknown error";
+      if (err && typeof err === "object" && "message" in err) {
+        const raw = String((err as { message: string }).message);
+        try {
+          const parsed = JSON.parse(raw) as { error?: string };
+          message = parsed.error ?? raw;
+        } catch {
+          message = raw;
+        }
+      }
+      setBackfillResult(`Backfill failed: ${message}`);
+    } finally {
+      setBackfilling(false);
+    }
+  }
+
   function totalArticles(): number {
     return stats.reduce((sum, s) => sum + s.count, 0);
   }
@@ -308,15 +339,28 @@ export default function News() {
         count={totalArticles()}
         actions={
           sourceFilter !== "all" ? (
-            <Button
-              size="sm"
-              onClick={() => handleScrapeNow(sourceFilter)}
-              loading={scrapingSource === sourceFilter}
-              disabled={scrapingSource !== null}
-            >
-              Scrape{" "}
-              {ALL_SOURCE_TABS.find((t) => t.id === sourceFilter)?.label ?? ""}
-            </Button>
+            <div className="flex items-center gap-2">
+              {backfillResult && (
+                <span className="text-xs text-muted">{backfillResult}</span>
+              )}
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleBackfillRag}
+                loading={backfilling}
+              >
+                Backfill RAG
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => handleScrapeNow(sourceFilter)}
+                loading={scrapingSource === sourceFilter}
+                disabled={scrapingSource !== null}
+              >
+                Scrape{" "}
+                {ALL_SOURCE_TABS.find((t) => t.id === sourceFilter)?.label ?? ""}
+              </Button>
+            </div>
           ) : undefined
         }
       />

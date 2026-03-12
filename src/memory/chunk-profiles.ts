@@ -24,9 +24,9 @@ export const DEFAULT_CHUNK_PROFILES: Record<MemorySourceKind, ChunkProfile> = {
   observation: { maxTokens: 500, overlap: 80 },
   idea: { maxTokens: 600, overlap: 100, contentMaxChars: 1500 },
   appstore_review: { maxTokens: 400, overlap: 0 },
-  appstore_ranking: { maxTokens: 400, overlap: 0 },
+  appstore_app: { maxTokens: 400, overlap: 0 },
   playstore_review: { maxTokens: 400, overlap: 0 },
-  playstore_ranking: { maxTokens: 400, overlap: 0 },
+  playstore_app: { maxTokens: 400, overlap: 0 },
 };
 
 export function getChunkProfile(kind: MemorySourceKind): ChunkProfile {

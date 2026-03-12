@@ -88,7 +88,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     }
 
     // Filter out tiny chunks that are semantically meaningless
-    const MIN_CHUNK_TOKENS = 30;
+    const MIN_CHUNK_TOKENS = 10;
     const filteredIndices = newIndices.filter(
       (i) => countTokens(texts[i]!) >= MIN_CHUNK_TOKENS,
     );
@@ -678,7 +678,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       let firstSourceId = "";
 
       for (const [store, group] of byStore) {
-        const kind: MemorySourceKind = `${store}_ranking`;
+        const kind: MemorySourceKind = `${store}_app`;
         const sourceId = crypto.randomUUID();
         if (!firstSourceId) firstSourceId = sourceId;
 

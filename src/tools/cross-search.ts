@@ -11,9 +11,9 @@ const SEARCHABLE_KINDS: readonly MemorySourceKind[] = [
   "producthunt_product",
   "github_repo",
   "appstore_review",
-  "appstore_ranking",
+  "appstore_app",
   "playstore_review",
-  "playstore_ranking",
+  "playstore_app",
 ];
 
 const KIND_LABELS: Record<string, string> = {

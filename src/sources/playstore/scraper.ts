@@ -11,6 +11,7 @@ import {
   markRankingsIndexed,
   type PlayRankingRow,
   type PlayReviewRow,
+  type PlayAppRow,
 } from "./store";
 
 import { getErrorMessage } from "../../lib/error-serialization";
@@ -147,12 +148,11 @@ function reviewsToAppReviewsForIndex(
 }
 
 function rankingsToAppRankingsForIndex(
-  rankings: readonly PlayRankingRow[],
+  rankings: readonly PlayAppRow[],
 ): readonly AppRankingForIndex[] {
   return rankings
-    .filter((r) => r.description)
     .map((r) => ({
-      id: `playstore-ranking-${r.id}-${r.list_type}`,
+      id: `playstore-ranking-${r.id}`,
       name: r.name,
       artist: r.developer,
       category: r.category,
@@ -291,17 +291,23 @@ export function createPlayStoreScraper(config?: {
   async function indexUnindexedReviews(): Promise<void> {
     if (!config?.memoryManager) return;
 
+    const MAX_ITERATIONS = 10;
+    let iterations = 0;
+
     try {
-      const unindexed = await getUnindexedReviews(200);
-      if (unindexed.length === 0) return;
+      while (iterations < MAX_ITERATIONS) {
+        const unindexed = await getUnindexedReviews(200);
+        if (unindexed.length === 0) break;
 
-      const forIndex = reviewsToAppReviewsForIndex(unindexed);
-      const ids = unindexed.map((r) => r.id);
+        const forIndex = reviewsToAppReviewsForIndex(unindexed);
+        const ids = unindexed.map((r) => r.id);
 
-      await config.memoryManager.indexAppReviews(PLAYSTORE_AGENT_ID, forIndex);
-      await markReviewsIndexed(ids);
+        await config.memoryManager.indexAppReviews(PLAYSTORE_AGENT_ID, forIndex);
+        await markReviewsIndexed(ids);
 
-      log.info("Indexed Play Store reviews into memory", { count: ids.length });
+        log.info("Indexed Play Store reviews into memory", { count: ids.length, iteration: iterations + 1 });
+        iterations++;
+      }
     } catch (err) {
       log.error("Failed to index Play Store reviews into RAG", { error: err });
     }
@@ -310,17 +316,23 @@ export function createPlayStoreScraper(config?: {
   async function indexUnindexedRankings(): Promise<void> {
     if (!config?.memoryManager) return;
 
+    const MAX_ITERATIONS = 10;
+    let iterations = 0;
+
     try {
-      const unindexed = await getUnindexedRankings(200);
-      if (unindexed.length === 0) return;
+      while (iterations < MAX_ITERATIONS) {
+        const unindexed = await getUnindexedRankings(200);
+        if (unindexed.length === 0) break;
 
-      const forIndex = rankingsToAppRankingsForIndex(unindexed);
-      const ids = unindexed.map((r) => r.id);
+        const forIndex = rankingsToAppRankingsForIndex(unindexed);
+        const ids = unindexed.map((r) => r.id);
 
-      await config.memoryManager.indexAppRankings(PLAYSTORE_AGENT_ID, forIndex);
-      await markRankingsIndexed(ids);
+        await config.memoryManager.indexAppRankings(PLAYSTORE_AGENT_ID, forIndex);
+        await markRankingsIndexed(ids);
 
-      log.info("Indexed Play Store rankings into memory", { count: ids.length });
+        log.info("Indexed Play Store rankings into memory", { count: ids.length, iteration: iterations + 1 });
+        iterations++;
+      }
     } catch (err) {
       log.error("Failed to index Play Store rankings into RAG", { error: err });
     }

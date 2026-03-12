@@ -32,7 +32,7 @@ export interface NewsProcessor {
     inserted: number;
     error?: string;
   }>;
-  backfillRag(): Promise<{ indexed: number; error?: string }>;
+  backfillRag(source?: string): Promise<{ indexed: number; error?: string }>;
 }
 
 function parsePublishedAt(raw: string | undefined, fallback: number): number {
@@ -226,7 +226,7 @@ export function createNewsProcessor(config?: {
 
     scrapeNow: runSource,
 
-    async backfillRag(): Promise<{ indexed: number; error?: string }> {
+    async backfillRag(source?: string): Promise<{ indexed: number; error?: string }> {
       if (!config?.memoryManager) {
         return { indexed: 0, error: "memoryManager not configured" };
       }
@@ -237,7 +237,7 @@ export function createNewsProcessor(config?: {
 
       try {
         while (true) {
-          const articles = await getArticles({ limit: BATCH_SIZE, offset });
+          const articles = await getArticles({ source, limit: BATCH_SIZE, offset });
           if (articles.length === 0) break;
 
           const forIndex: ArticleForIndex[] = articles.map((a) => ({

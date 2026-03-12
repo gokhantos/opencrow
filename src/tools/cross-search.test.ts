@@ -103,7 +103,7 @@ describe("createCrossSourceSearchTool", () => {
     expect(sourceItems.enum).toContain("producthunt_product");
     expect(sourceItems.enum).toContain("github_repo");
     expect(sourceItems.enum).toContain("appstore_review");
-    expect(sourceItems.enum).toContain("playstore_ranking");
+    expect(sourceItems.enum).toContain("playstore_app");
   });
 
   // -- Execute: input validation --------------------------------------------

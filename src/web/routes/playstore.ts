@@ -47,10 +47,10 @@ export function createPlayStoreRoutes(
     const db = getDb();
     const rows = await db`
       SELECT
-        (SELECT count(*) FROM playstore_rankings) as total_apps,
+        (SELECT count(*) FROM playstore_apps) as total_apps,
         (SELECT count(*) FROM playstore_reviews) as total_reviews,
-        (SELECT count(DISTINCT category) FROM playstore_rankings) as total_categories,
-        (SELECT max(updated_at) FROM playstore_rankings) as last_updated_at
+        (SELECT count(DISTINCT category) FROM playstore_apps) as total_categories,
+        (SELECT max(updated_at) FROM playstore_apps) as last_updated_at
     `;
     const stats = rows[0] ?? {
       total_apps: 0,

@@ -47,10 +47,10 @@ export function createAppStoreRoutes(
     const db = getDb();
     const rows = await db`
       SELECT
-        (SELECT count(*) FROM appstore_rankings) as total_apps,
+        (SELECT count(*) FROM appstore_apps) as total_apps,
         (SELECT count(*) FROM appstore_reviews) as total_reviews,
-        (SELECT count(DISTINCT category) FROM appstore_rankings) as total_categories,
-        (SELECT max(updated_at) FROM appstore_rankings) as last_updated_at
+        (SELECT count(DISTINCT category) FROM appstore_apps) as total_categories,
+        (SELECT max(updated_at) FROM appstore_apps) as last_updated_at
     `;
     const stats = rows[0] ?? {
       total_apps: 0,

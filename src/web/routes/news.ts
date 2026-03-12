@@ -4,6 +4,8 @@ import { createLogger } from "../../logger";
 import type { NewsProcessor } from "../../sources/news/processor";
 import type { NewsSource } from "../../sources/news/types";
 import type { CoreClient } from "../core-client";
+import type { MemoryManager } from "../../memory/types";
+import type { ArticleForIndex } from "../../memory/types";
 import {
   getArticles,
   getCalendarEvents,
@@ -34,6 +36,7 @@ const scrapeNowSchema = z.object({
 export function createNewsRoutes(opts: {
   processor?: NewsProcessor;
   coreClient?: CoreClient;
+  memoryManager?: MemoryManager;
 }): Hono {
   const app = new Hono();
 
@@ -111,10 +114,19 @@ export function createNewsRoutes(opts: {
   });
 
   app.post("/news/backfill-rag", async (c) => {
-    log.info("News RAG backfill triggered");
+    const body = await c.req.json().catch(() => ({})) as { source?: string };
+    const source = body.source || undefined;
+    log.info("News RAG backfill triggered", { source: source ?? "all" });
     try {
       if (opts.processor) {
-        const result = await opts.processor.backfillRag();
+        const result = await opts.processor.backfillRag(source);
+        if (result.error) {
+          return c.json({ success: false, error: result.error, data: result }, 500);
+        }
+        return c.json({ success: true, data: result });
+      }
+      if (opts.memoryManager) {
+        const result = await backfillRagDirect(opts.memoryManager, source);
         if (result.error) {
           return c.json({ success: false, error: result.error, data: result }, 500);
         }
@@ -133,4 +145,56 @@ export function createNewsRoutes(opts: {
   });
 
   return app;
+}
+
+const SHARED_AGENT_ID = "shared";
+
+function parsePublishedAt(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const parsed = new Date(raw).getTime();
+  return isNaN(parsed) ? fallback : Math.floor(parsed / 1000);
+}
+
+async function backfillRagDirect(
+  memoryManager: MemoryManager,
+  source?: string,
+): Promise<{ indexed: number; error?: string }> {
+  const BATCH_SIZE = 50;
+  let totalIndexed = 0;
+  let offset = 0;
+
+  try {
+    while (true) {
+      const articles = await getArticles({ source, limit: BATCH_SIZE, offset });
+      if (articles.length === 0) break;
+
+      const forIndex: ArticleForIndex[] = articles.map((a) => ({
+        id: a.id,
+        title: a.title,
+        url: a.url,
+        sourceName: a.source_name,
+        category: a.category ?? "",
+        content: a.summary || null,
+        publishedAt: parsePublishedAt(a.published_at, a.scraped_at),
+      }));
+
+      await memoryManager.indexArticles(SHARED_AGENT_ID, forIndex);
+      totalIndexed += forIndex.length;
+      offset += BATCH_SIZE;
+
+      log.info("News RAG backfill batch", {
+        batch: Math.ceil(offset / BATCH_SIZE),
+        batchSize: forIndex.length,
+        totalSoFar: totalIndexed,
+        source: source ?? "all",
+      });
+    }
+
+    log.info("News RAG backfill complete", { totalIndexed, source: source ?? "all" });
+    return { indexed: totalIndexed };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error("News RAG backfill failed", { error: msg, totalIndexed });
+    return { indexed: totalIndexed, error: msg };
+  }
 }
