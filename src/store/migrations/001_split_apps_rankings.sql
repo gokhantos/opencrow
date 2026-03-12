@@ -83,3 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_appstore_apps_indexed_at ON appstore_apps USING b
 CREATE INDEX IF NOT EXISTS idx_playstore_apps_category ON playstore_apps USING btree (category);
 
 CREATE INDEX IF NOT EXISTS idx_playstore_apps_indexed_at ON playstore_apps USING btree (indexed_at);
+
+-- Drop old tables (replaced by *_apps + *_ranking_history)
+DROP TABLE IF EXISTS appstore_rankings;
+DROP TABLE IF EXISTS playstore_rankings;
