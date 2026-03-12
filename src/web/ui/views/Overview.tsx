@@ -2,8 +2,8 @@ import React, { useState, useEffect, useCallback } from "react";
 import { apiFetch, getToken, setToken, clearToken } from "../api";
 import { formatUptime } from "../lib/format";
 import { cn } from "../lib/cn";
-import { PageHeader, Button, Input, StatusBadge } from "../components";
-import { Clock, Users, Zap, Shield, Wifi, WifiOff, Key, MessageCircle, Send } from "lucide-react";
+import { Button, Input } from "../components";
+import { Clock, Users, Shield, Key, Send, MessageCircle, Zap } from "lucide-react";
 import { useSystemEvents } from "../hooks/useSystemEvents";
 
 interface ChannelInfo {
@@ -17,6 +17,31 @@ interface StatusData {
   version: string;
   sessions: number;
   channels: Record<string, ChannelInfo>;
+}
+
+type SystemStatus = "online" | "partial" | "offline" | "loading";
+
+function deriveStatus(
+  status: StatusData | null,
+  channelEntries: [string, ChannelInfo][],
+): { label: string; variant: SystemStatus; connectedCount: number } {
+  if (!status) return { label: "Loading", variant: "loading", connectedCount: 0 };
+
+  const connectedCount = channelEntries.filter(
+    ([, v]) => v.status === "connected",
+  ).length;
+  const allConnected =
+    channelEntries.length > 0 && connectedCount === channelEntries.length;
+  const anyConnected = connectedCount > 0;
+
+  if (allConnected) return { label: "All Systems Online", variant: "online", connectedCount };
+  if (anyConnected) return { label: "Partial Connectivity", variant: "partial", connectedCount };
+  return { label: "Systems Offline", variant: "offline", connectedCount };
+}
+
+function uptimePercent(uptimeSeconds: number): number {
+  const maxDisplay = 30 * 24 * 3600;
+  return Math.min((uptimeSeconds / maxDisplay) * 100, 100);
 }
 
 export default function Overview() {
@@ -37,24 +62,23 @@ export default function Overview() {
 
   const { connected: wsConnected } = useSystemEvents(handleSystemEvent);
 
-  // Initial fetch + fallback polling when WS is disconnected
+  const fetchStatus = useCallback(async () => {
+    try {
+      const data = await apiFetch<StatusData>("/api/status");
+      setStatus(data);
+      setError("");
+    } catch {
+      setError("Failed to connect to system");
+    }
+  }, []);
+
   useEffect(() => {
     fetchStatus();
     if (!wsConnected) {
       const interval = setInterval(fetchStatus, 10000);
       return () => clearInterval(interval);
     }
-  }, [wsConnected]);
-
-  async function fetchStatus() {
-    try {
-      const data = await apiFetch<StatusData>("/api/status");
-      setStatus(data);
-      setError("");
-    } catch {
-      setError("Failed to load status");
-    }
-  }
+  }, [wsConnected, fetchStatus]);
 
   async function handleTokenSave(e: React.FormEvent) {
     e.preventDefault();
@@ -71,114 +95,158 @@ export default function Overview() {
   }
 
   const channelEntries = status ? Object.entries(status.channels) : [];
-  const connectedCount = channelEntries.filter(
-    ([, v]) => v.status === "connected",
-  ).length;
-  const allConnected =
-    channelEntries.length > 0 && connectedCount === channelEntries.length;
-  const anyConnected = connectedCount > 0;
-
-  const statusLabel = allConnected
-    ? "Online"
-    : anyConnected
-      ? "Partial"
-      : status
-        ? "Offline"
-        : "\u2014";
-
-  const statusVariant = allConnected
-    ? "green"
-    : anyConnected
-      ? "yellow"
-      : status
-        ? "red"
-        : "gray";
+  const { label: statusLabel, variant: statusVariant, connectedCount } =
+    deriveStatus(status, channelEntries);
 
   return (
-    <div>
-      <PageHeader
-        title="Overview"
-        subtitle={
-          status
-            ? `v${status.version} \u00b7 ${channelEntries.length} channels \u00b7 ${status.sessions} sessions`
-            : undefined
-        }
-      />
-
-      {error && (
-        <div className="bg-danger-subtle border border-danger/20 rounded-lg px-4 py-3 text-danger text-sm mb-6">
-          {error}
+    <div className="ov-root">
+      {/* Hero */}
+      <div className="ov-hero">
+        <div className="ov-orb-wrap">
+          <div className="ov-orb-ring-outer" />
+          <div className="ov-orb-ring" />
+          <div className={`ov-orb ov-orb--${statusVariant}`}>
+            <Zap size={28} color="rgba(255,255,255,0.7)" strokeWidth={2.5} />
+          </div>
         </div>
-      )}
 
-      {/* Stat Cards */}
-      <div className="grid grid-cols-4 max-md:grid-cols-2 max-sm:grid-cols-1 gap-4 mb-8">
-        <StatCard icon={<Zap size={16} />} label="Status">
-          <StatusBadge status={statusLabel} variant={statusVariant as "green" | "yellow" | "red" | "gray"} />
-        </StatCard>
-        <StatCard icon={<Clock size={16} />} label="Uptime">
-          <span className="font-mono text-sm text-strong">
-            {status ? formatUptime(status.uptime) : "\u2014"}
-          </span>
-        </StatCard>
-        <StatCard icon={<Users size={16} />} label="Sessions">
-          <span className="font-mono text-sm text-strong">
-            {status ? String(status.sessions) : "\u2014"}
-          </span>
-        </StatCard>
-        <StatCard icon={<Shield size={16} />} label="Version">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-sm text-strong">
-              {status ? `v${status.version}` : "\u2014"}
-            </span>
-            {status?.authEnabled && (
-              <span className="text-[10px] font-semibold text-success bg-success-subtle px-1.5 py-0.5 rounded uppercase tracking-wide">
-                Auth
-              </span>
+        <div className="ov-hero-text">
+          <h2 className="ov-title">
+            <span className="ov-title-gradient">OpenCrow</span>
+          </h2>
+          <div className="ov-subtitle">
+            {status ? (
+              <>
+                <span>v{status.version}</span>
+                <span className="ov-subtitle-sep">/</span>
+                <span>{channelEntries.length} channels</span>
+                <span className="ov-subtitle-sep">/</span>
+                <span>{status.sessions} sessions</span>
+                <span className="ov-subtitle-sep">/</span>
+                <span className="ov-ws">
+                  <span className={cn("ov-ws-dot", wsConnected ? "ov-ws-dot--on" : "ov-ws-dot--off")} />
+                  {wsConnected ? "live" : "polling"}
+                </span>
+              </>
+            ) : (
+              <span>Connecting...</span>
             )}
           </div>
-        </StatCard>
+          <div className={`ov-hero-badge ov-hero-badge--${statusVariant}`}>
+            <span className={`ov-hero-dot ov-hero-dot--${statusVariant}`} />
+            {statusLabel}
+          </div>
+        </div>
+      </div>
+
+      {/* Error */}
+      {error && <div className="ov-error" role="alert">{error}</div>}
+
+      {/* Bento Stats */}
+      <div className="ov-bento">
+        {/* Status — wide */}
+        <div className="ov-card ov-card--status">
+          <div className="ov-card-label">
+            <Zap size={11} />
+            System Status
+          </div>
+          <div className="ov-status-row">
+            <span className={`ov-status-dot ov-status-dot--${statusVariant}`} />
+            <span className="ov-card-value">
+              {status ? (statusVariant === "online" ? "Operational" : statusVariant === "partial" ? "Degraded" : "Down") : "\u2014"}
+            </span>
+          </div>
+          {channelEntries.length > 0 && (
+            <div className="ov-card-meta">
+              {connectedCount}/{channelEntries.length} channels active
+            </div>
+          )}
+        </div>
+
+        {/* Uptime — wide */}
+        <div className="ov-card ov-card--uptime">
+          <div className="ov-card-label">
+            <Clock size={11} />
+            Uptime
+          </div>
+          <div className="ov-card-value ov-card-value--mono">
+            {status ? formatUptime(status.uptime) : "\u2014"}
+          </div>
+          {status && (
+            <div
+              className="ov-uptime-bar-wrap"
+              role="progressbar"
+              aria-valuenow={Math.round(uptimePercent(status.uptime))}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Uptime over 30 days"
+            >
+              <div
+                className="ov-uptime-bar"
+                style={{ width: `${uptimePercent(status.uptime)}%` }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Sessions — narrow */}
+        <div className="ov-card ov-card--sessions">
+          <div className="ov-card-label">
+            <Users size={11} />
+            Sessions
+          </div>
+          <div className="ov-card-value">
+            {status ? String(status.sessions) : "\u2014"}
+          </div>
+        </div>
+
+        {/* Version — narrow */}
+        <div className="ov-card ov-card--version">
+          <div className="ov-card-label">
+            <Shield size={11} />
+            Version
+          </div>
+          <div className="ov-card-value ov-card-value--sm">
+            {status ? `v${status.version}` : "\u2014"}
+          </div>
+          {status?.authEnabled && (
+            <div className="ov-card-meta ov-card-meta--success">
+              Auth enabled
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Channels */}
       {channelEntries.length > 0 && (
-        <div className="mb-8">
-          <div className="flex items-center gap-3 mb-4">
-            <h3 className="text-xs font-semibold uppercase tracking-widest text-faint m-0">
-              Channels
-            </h3>
-            <span className="font-mono text-sm font-medium text-muted bg-bg-2 px-2.5 py-1 rounded-md">
+        <div className="ov-section">
+          <div className="ov-section-head">
+            <span className="ov-section-title">Channels</span>
+            <span className="ov-section-count">
               {connectedCount}/{channelEntries.length}
             </span>
+            <span className="ov-section-line" />
           </div>
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-3">
-            {channelEntries.map(([name, info]) => {
+          <div className="ov-channels">
+            {channelEntries.map(([name, info], i) => {
               const connected = info.status === "connected";
               return (
                 <div
                   key={name}
                   className={cn(
-                    "flex items-center gap-3 px-4 py-3 rounded-lg bg-bg-1 border border-border transition-colors hover:border-border-2",
-                    !connected && "opacity-60",
+                    "ov-channel",
+                    connected ? "ov-channel--connected" : "ov-channel--offline",
                   )}
+                  style={{ animationDelay: `${i * 50}ms` }}
                 >
-                  {connected ? (
-                    <Wifi size={14} className="text-success shrink-0" />
-                  ) : (
-                    <WifiOff size={14} className="text-danger shrink-0" />
-                  )}
-                  <span className="text-sm font-semibold text-strong capitalize flex-1 truncate">
-                    {name.replace("Agent:", "").replace("agent:", "")}
-                  </span>
+                  <SignalBars />
+                  <div className="ov-channel-info">
+                    <div className="ov-channel-name">
+                      {name.replace("Agent:", "").replace("agent:", "")}
+                    </div>
+                    <div className="ov-channel-status">{info.status}</div>
+                  </div>
                   <ChannelTypeBadges type={info.type} />
-                  <span
-                    className={cn(
-                      "text-xs font-mono capitalize",
-                      connected ? "text-success" : "text-danger",
-                    )}
-                  >
-                    {info.status}
-                  </span>
                 </div>
               );
             })}
@@ -186,37 +254,38 @@ export default function Overview() {
         </div>
       )}
 
-      {/* Token Management */}
+      {/* Token */}
       {status?.authEnabled && (
-        <div className="mb-8">
-          <h3 className="text-xs font-semibold uppercase tracking-widest text-faint mb-4">
-            Access Token
-          </h3>
+        <div className="ov-section">
+          <div className="ov-section-head">
+            <span className="ov-section-title">Access Token</span>
+            <span className="ov-section-line" />
+          </div>
           {getToken() ? (
-            <div className="flex items-center justify-between px-4 py-3 rounded-lg bg-bg-1 border border-border">
-              <div className="flex items-center gap-3">
+            <div className="ov-token-card">
+              <div className="ov-token-row">
                 <Key size={14} className="text-success shrink-0" />
-                <span className="text-sm text-foreground">
-                  Token configured
-                </span>
+                <span className="ov-token-text">Token configured</span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    clearToken();
+                    setTokenMsg("Token cleared. Refresh to re-enter.");
+                  }}
+                >
+                  Clear
+                </Button>
               </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  clearToken();
-                  setTokenMsg("Token cleared. Refresh to re-enter.");
-                }}
-              >
-                Clear token
-              </Button>
+              {tokenMsg && (
+                <p className="ov-token-msg ov-token-msg--muted" aria-live="polite">
+                  {tokenMsg}
+                </p>
+              )}
             </div>
           ) : (
-            <form
-              onSubmit={handleTokenSave}
-              className="px-4 py-4 rounded-lg bg-bg-1 border border-border"
-            >
-              <div className="flex gap-3">
+            <div className="ov-token-card">
+              <form onSubmit={handleTokenSave} className="ov-token-form">
                 <Input
                   id="overview-token"
                   type="password"
@@ -227,14 +296,13 @@ export default function Overview() {
                 <Button type="submit" variant="primary" className="shrink-0">
                   Save
                 </Button>
-              </div>
+              </form>
               {tokenMsg && (
-                <p className="text-danger text-sm mt-2">{tokenMsg}</p>
+                <p className="ov-token-msg ov-token-msg--danger" aria-live="polite">
+                  {tokenMsg}
+                </p>
               )}
-            </form>
-          )}
-          {tokenMsg && getToken() && (
-            <p className="text-muted text-sm mt-2">{tokenMsg}</p>
+            </div>
           )}
         </div>
       )}
@@ -242,44 +310,38 @@ export default function Overview() {
   );
 }
 
-function ChannelTypeBadges({ type }: { readonly type: string }) {
-  const types = type.split("+");
+function SignalBars() {
   return (
-    <div className="flex items-center gap-1 shrink-0">
-      {types.map((t) => (
-        <span
-          key={t}
-          className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted bg-bg-2 px-1.5 py-0.5 rounded"
-          title={t}
-        >
-          {t === "telegram" ? <Send size={10} /> : <MessageCircle size={10} />}
-          {t === "telegram" ? "TG" : "WA"}
-        </span>
-      ))}
+    <div className="ov-channel-signal">
+      <span className="ov-signal-bar" />
+      <span className="ov-signal-bar" />
+      <span className="ov-signal-bar" />
+      <span className="ov-signal-bar" />
     </div>
   );
 }
 
-function StatCard({
-  icon,
-  label,
-  children,
-}: {
-  readonly icon: React.ReactNode;
-  readonly label: string;
-  readonly children: React.ReactNode;
-}) {
+const CHANNEL_TYPE_META: Record<string, { icon: React.ReactNode; label: string }> = {
+  telegram: { icon: <Send size={9} />, label: "TG" },
+  whatsapp: { icon: <MessageCircle size={9} />, label: "WA" },
+};
+
+function ChannelTypeBadges({ type }: { readonly type: string }) {
+  const types = type.split("+");
   return (
-    <div className="flex items-center gap-3 px-4 py-4 rounded-lg bg-bg-1 border border-border transition-colors hover:border-border-2">
-      <div className="w-9 h-9 rounded-md flex items-center justify-center shrink-0 bg-bg-2 text-muted border border-border">
-        {icon}
-      </div>
-      <div className="flex flex-col gap-0.5 min-w-0">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-faint">
-          {label}
-        </span>
-        {children}
-      </div>
+    <div className="ov-channel-badges">
+      {types.map((t) => {
+        const meta = CHANNEL_TYPE_META[t] ?? {
+          icon: <MessageCircle size={9} />,
+          label: t.toUpperCase().slice(0, 3),
+        };
+        return (
+          <span key={t} className="ov-channel-badge" title={t}>
+            {meta.icon}
+            {meta.label}
+          </span>
+        );
+      })}
     </div>
   );
 }
