@@ -53,6 +53,7 @@ export function createChatRoutes(deps: WebAppDeps): Hono {
   });
 
   app.post("/chat", async (c) => {
+    let chatId = "web-default";
     try {
       const body = await c.req.json<{
         message: string;
@@ -60,7 +61,7 @@ export function createChatRoutes(deps: WebAppDeps): Hono {
         agentId?: string;
       }>();
       const { message } = body;
-      const chatId = body.chatId ?? "web-default";
+      chatId = body.chatId ?? "web-default";
 
       if (!message?.trim()) {
         return c.json({ success: false, error: "Message is required" }, 400);
@@ -141,7 +142,6 @@ export function createChatRoutes(deps: WebAppDeps): Hono {
     } catch (error) {
       log.error("Chat error", error);
 
-      const chatId = "web-default";
       const errMsg = "An internal error occurred. Please try again.";
       await addAssistantMessage("web", chatId, errMsg).catch((e) =>
         log.error("Failed to save error placeholder", { error: e }),
