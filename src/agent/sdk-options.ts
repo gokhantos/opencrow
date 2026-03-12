@@ -264,6 +264,7 @@ function resolveExecutable(): "bun" | "node" {
 
 const RESOLVED_EXECUTABLE: "bun" | "node" = resolveExecutable();
 
+
 /**
  * Build session-level options that apply to all SDK queries.
  */

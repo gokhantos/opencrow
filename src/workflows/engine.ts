@@ -12,7 +12,7 @@ import { interpolate, interpolateObject } from "./interpolation";
 import { evaluateCondition } from "./expression";
 import { runAgentIsolated } from "../agents/runner";
 import { chat } from "../agent/chat";
-import type { ConversationMessage } from "../agent/types";
+import type { ConversationMessage, ProgressEvent } from "../agent/types";
 import { readSkillContent } from "../skills/loader";
 import { createLogger } from "../logger";
 import { executionEvents } from "./events";
@@ -20,7 +20,7 @@ import { executionEvents } from "./events";
 const log = createLogger("workflows:engine");
 
 const MAX_STEPS = 100;
-const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes — agentic tasks need subprocess boot + MCP init + tool calls
+const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes — subprocess boot + MCP init + tool calls
 const MAX_RETRIES = 2;
 const BASE_DELAY_MS = 1000;
 
@@ -475,7 +475,34 @@ async function executeAgentNode(
       throw new Error(`Agent not found: ${agentId}`);
     }
 
-    const options = await deps.buildAgentOptions(agent);
+    // Progress callback that forwards agent events to the SSE stream
+    const onProgress = (event: ProgressEvent): void => {
+      const summary =
+        event.type === "tool_start" ? event.tool :
+        event.type === "tool_done" ? event.tool :
+        event.type === "thinking" ? event.summary :
+        event.type === "text_output" ? event.preview :
+        event.type === "complete" ? "complete" :
+        undefined;
+      executionEvents.emit(executionId, {
+        type: "agent_progress",
+        nodeId,
+        agentId,
+        progressType: event.type,
+        detail: summary,
+      });
+    };
+
+    const options = await deps.buildAgentOptions(agent, onProgress);
+
+    // Strip heavyweight MCP servers AND built-in web tools for workflow execution
+    // unless explicitly enabled in the workflow node data.  This avoids spawning
+    // npx subprocesses (playwright, context7, github, etc.) that may crash the
+    // Claude Code subprocess, and disables WebSearch/WebFetch by default.
+    const mcpOverrides: Record<string, boolean> = {};
+    for (const flag of MCP_FLAGS) {
+      mcpOverrides[flag] = (data[flag] as boolean) ?? false;
+    }
 
     const messages: readonly ConversationMessage[] = [
       { role: "user", content: task, timestamp: Math.floor(Date.now() / 1000) },
@@ -484,22 +511,58 @@ async function executeAgentNode(
     log.info("Running workflow agent via buildAgentOptions", {
       agentId,
       provider: agent.provider,
+      model: options.model,
       nodeId,
+      toolsEnabled: options.toolsEnabled,
+      mcpOverrides,
+      hasSdkHooks: Boolean(options.sdkHooks),
     });
 
-    const response = await chat(messages, {
+    const workflowOptions = {
       ...options,
+      ...mcpOverrides,
       abortSignal,
       usageContext: { channel: "workflow" as const, chatId: nodeId, source: "workflow" as const },
-    });
+    };
 
-    log.info("Workflow agent completed", {
-      agentId,
-      nodeId,
-      toolUseCount: response.toolUseCount,
-    });
+    // Retry with exponential backoff for transient errors.
+    // NOTE: Retrying agent calls is not strictly safe for non-idempotent operations
+    // (e.g. the agent wrote a file before the subprocess crashed).  We accept this
+    // risk because "process exited" failures typically happen during startup, before
+    // any tool use.
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (abortSignal.aborted) {
+        throw new Error("Workflow execution aborted");
+      }
+      try {
+        const response = await chat(messages, workflowOptions);
 
-    return response.text;
+        log.info("Workflow agent completed", {
+          agentId,
+          nodeId,
+          toolUseCount: response.toolUseCount,
+          attempt,
+        });
+
+        return response.text;
+      } catch (err) {
+        if (!isRetryableError(err) || attempt === MAX_RETRIES) {
+          throw err;
+        }
+        const delayMs = BASE_DELAY_MS * 2 ** attempt;
+        log.warn("Workflow agent transient error, retrying", {
+          agentId,
+          nodeId,
+          attempt,
+          delayMs,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await delay(delayMs);
+      }
+    }
+
+    // Unreachable — the loop always returns or throws
+    throw new Error("Unexpected: retry loop exited without result");
   }
 
   const result = await runAgentIsolated({
