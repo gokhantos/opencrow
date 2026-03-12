@@ -237,13 +237,20 @@ export async function getUsageTimeSeries(options: {
 
 export async function getRecentUsage(
   limit: number,
+  since?: number,
 ): Promise<TokenUsageRecord[]> {
   const db = getDb();
   const clampedLimit = Math.max(1, Math.min(limit, 500));
-  const rows = (await db.unsafe(
-    `SELECT * FROM token_usage ORDER BY created_at DESC LIMIT $1`,
-    [clampedLimit],
-  )) as Array<Record<string, unknown>>;
+  const params: unknown[] = [clampedLimit];
+  let query = "SELECT * FROM token_usage";
+  if (since) {
+    query += " WHERE created_at >= $2";
+    params.push(since);
+  }
+  query += " ORDER BY created_at DESC LIMIT $1";
+  const rows = (await db.unsafe(query, params)) as Array<
+    Record<string, unknown>
+  >;
 
   return rows.map((r) => ({
     id: r.id as string,
