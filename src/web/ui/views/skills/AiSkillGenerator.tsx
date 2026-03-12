@@ -32,12 +32,16 @@ function parseGeneratedSkill(text: string): SkillFormData | null {
     const parsed = JSON.parse(trimmed.slice(jsonStart, jsonEnd + 1));
     if (
       typeof parsed.name === "string" &&
+      parsed.name.length > 0 &&
+      parsed.name.length <= 100 &&
       typeof parsed.description === "string" &&
+      parsed.description.length > 0 &&
+      parsed.description.length <= 500 &&
       typeof parsed.content === "string"
     ) {
       return {
-        name: parsed.name,
-        description: parsed.description,
+        name: parsed.name.trim(),
+        description: parsed.description.trim(),
         content: parsed.content,
       };
     }
@@ -46,6 +50,56 @@ function parseGeneratedSkill(text: string): SkillFormData | null {
   }
 
   return null;
+}
+
+async function consumeSseStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onDelta: (accumulated: string) => void,
+): Promise<{ text: string } | { error: string }> {
+  const decoder = new TextDecoder();
+  let accumulated = "";
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data: ")) continue;
+
+        try {
+          const event = JSON.parse(trimmed.slice(6));
+
+          if (event.type === "text_delta") {
+            accumulated += event.text;
+            onDelta(accumulated);
+          }
+
+          if (event.type === "error") {
+            return { error: event.message ?? "Generation failed" };
+          }
+
+          if (event.type === "done") {
+            return { text: event.text ?? accumulated };
+          }
+        } catch {
+          // skip malformed SSE
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return accumulated
+    ? { text: accumulated }
+    : { error: "No response received" };
 }
 
 export function AiSkillGenerator({
@@ -77,7 +131,16 @@ export function AiSkillGenerator({
     onClose();
   }
 
-  async function handleGenerate() {
+  function handleStop() {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setStreamedText("");
+    setState("idle");
+  }
+
+  const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) return;
 
     reset();
@@ -115,91 +178,35 @@ export function AiSkillGenerator({
         return;
       }
 
-      const decoder = new TextDecoder();
-      let accumulated = "";
-      let buffer = "";
+      const result = await consumeSseStream(reader, setStreamedText);
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-
-          try {
-            const event = JSON.parse(trimmed.slice(6));
-
-            if (event.type === "text_delta") {
-              accumulated += event.text;
-              setStreamedText(accumulated);
-            }
-
-            if (event.type === "error") {
-              setErrorMsg(event.message ?? "Generation failed");
-              setState("error");
-              reader.releaseLock();
-              return;
-            }
-
-            if (event.type === "done") {
-              const finalText = event.text ?? accumulated;
-              setStreamedText(finalText);
-              const parsed = parseGeneratedSkill(finalText);
-              if (parsed) {
-                setParsedSkill(parsed);
-                setState("done");
-              } else {
-                setErrorMsg(
-                  "Could not parse the generated skill. Try again with a more specific prompt.",
-                );
-                setState("error");
-              }
-              reader.releaseLock();
-              return;
-            }
-          } catch {
-            // skip malformed SSE
-          }
-        }
+      if ("error" in result) {
+        setErrorMsg(result.error);
+        setState("error");
+        return;
       }
 
-      reader.releaseLock();
-
-      if (accumulated) {
-        const parsed = parseGeneratedSkill(accumulated);
-        if (parsed) {
-          setParsedSkill(parsed);
-          setState("done");
-        } else {
-          setErrorMsg("Could not parse the generated skill. Try a more specific prompt.");
-          setState("error");
-        }
+      setStreamedText(result.text);
+      const parsed = parseGeneratedSkill(result.text);
+      if (parsed) {
+        setParsedSkill(parsed);
+        setState("done");
       } else {
-        setErrorMsg("No response received");
+        setErrorMsg(
+          "Could not parse the generated skill. Try again with a more specific prompt.",
+        );
         setState("error");
       }
     } catch (err) {
       if ((err as Error).name === "AbortError") {
+        setStreamedText("");
         setState("idle");
         return;
       }
       setErrorMsg("Generation failed. Please try again.");
       setState("error");
     }
-  }
-
-  function handleStop() {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
-    }
-    setState("idle");
-  }
+  }, [prompt, reset]);
 
   function handleUseSkill() {
     if (parsedSkill) {
@@ -322,9 +329,7 @@ export function AiSkillGenerator({
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => {
-                  reset();
-                }}
+                onClick={() => reset()}
               >
                 <Wand2 size={14} />
                 Try Again
