@@ -27,6 +27,7 @@ interface StreamEntry {
   status: StreamStatus;
   reconnectAttempts: number;
   messagesReceived: number;
+  reconnectTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /**
@@ -153,12 +154,13 @@ export function createKlineStream(options: StreamOptions): KlineStream {
 
     ws.addEventListener("open", () => {
       log.info("Stream connected", { key });
+      const current = entries.get(key) ?? entry;
       const updated: StreamEntry = {
-        ...entry,
+        ...current,
         ws,
         reconnectAttempts: 0,
         status: {
-          ...entry.status,
+          ...current.status,
           connected: true,
           lastUpdate: Date.now(),
         },
@@ -249,11 +251,23 @@ export function createKlineStream(options: StreamOptions): KlineStream {
       delayMs: delay,
     });
 
-    setTimeout(() => {
+    // Clear any previous pending reconnect before scheduling a new one
+    const updated = entries.get(key)!;
+    if (updated.reconnectTimer) {
+      clearTimeout(updated.reconnectTimer);
+    }
+
+    const timer = setTimeout(() => {
+      const e = entries.get(key);
+      if (e) {
+        entries.set(key, { ...e, reconnectTimer: null });
+      }
       if (running && !signal?.aborted) {
         connectStream(marketType, symbol, timeframe);
       }
     }, delay);
+
+    entries.set(key, { ...updated, reconnectTimer: timer });
   }
 
   return {
@@ -272,6 +286,7 @@ export function createKlineStream(options: StreamOptions): KlineStream {
               ws: null,
               reconnectAttempts: 0,
               messagesReceived: 0,
+              reconnectTimer: null,
               status: {
                 symbol,
                 marketType,
@@ -297,6 +312,9 @@ export function createKlineStream(options: StreamOptions): KlineStream {
     async stop() {
       running = false;
       for (const [key, entry] of entries) {
+        if (entry.reconnectTimer) {
+          clearTimeout(entry.reconnectTimer);
+        }
         if (entry.ws) {
           entry.ws.close();
           log.debug("Stream closed", { key });

@@ -20,6 +20,7 @@ import { NEWS_SOURCE_KIND_MAP } from "./types";
 import type { QdrantClient } from "./qdrant";
 import { updateChunkFts } from "./fts";
 import { getChunkProfileWithOverrides } from "./chunk-profiles";
+import type { TransactionSQL } from "bun";
 
 const log = createLogger("memory-indexer");
 
@@ -41,13 +42,30 @@ async function hashText(text: string): Promise<string> {
     .join("");
 }
 
+interface PreparedChunks {
+  readonly filteredIndices: readonly number[];
+  readonly newTexts: readonly string[];
+  readonly newHashes: readonly string[];
+  readonly embeddings: Float32Array[] | null;
+}
+
+interface ChunkResult {
+  readonly id: string;
+  readonly textIndex: number;
+}
+
 export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
-  async function insertChunks(
+  /**
+   * Phase 1: Compute hashes, run dedup checks against existing chunks, and
+   * generate embeddings. No writes are performed — safe to call outside a
+   * transaction so we don't hold a connection open during I/O-heavy work.
+   *
+   * Returns null when there is nothing left to write after dedup/filtering.
+   */
+  async function prepareChunks(
     sourceId: string,
-    agentId: string,
-    kind: MemorySourceKind,
     texts: readonly string[],
-  ): Promise<void> {
+  ): Promise<PreparedChunks | null> {
     const db = getDb();
 
     // Compute content hashes for dedup
@@ -75,7 +93,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         sourceId,
         total: texts.length,
       });
-      return;
+      return null;
     }
 
     if (newIndices.length < texts.length) {
@@ -103,7 +121,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
 
     if (filteredIndices.length === 0) {
       log.debug("All chunks too small, skipping", { sourceId });
-      return;
+      return null;
     }
 
     const newTexts = filteredIndices.map((i) => texts[i]!);
@@ -118,39 +136,67 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       }
     }
 
-    // Track which chunks were actually inserted (not skipped by ON CONFLICT)
-    interface ChunkResult {
-      readonly id: string;
-      readonly textIndex: number;
-    }
+    return { filteredIndices, newTexts, newHashes, embeddings };
+  }
+
+  /**
+   * Phase 2: Write prepared chunks inside the provided transaction context.
+   * The source row must already be inserted within the same transaction before
+   * calling this function.
+   *
+   * Returns the list of actually-inserted chunks (ON CONFLICT skips are
+   * excluded) so that the caller can update Qdrant and FTS after commit.
+   */
+  async function writeChunks(
+    tx: TransactionSQL,
+    sourceId: string,
+    prepared: PreparedChunks,
+  ): Promise<readonly ChunkResult[]> {
+    const { filteredIndices, newTexts, newHashes } = prepared;
     const insertedChunks: ChunkResult[] = [];
     const now = Math.floor(Date.now() / 1000);
 
-    await db.begin(async (tx) => {
-      for (let i = 0; i < newTexts.length; i++) {
-        const id = crypto.randomUUID();
-        const text = newTexts[i]!;
-        const tokenCount = countTokens(text);
-        const contentHash = newHashes[i]!;
+    for (let i = 0; i < newTexts.length; i++) {
+      const id = crypto.randomUUID();
+      const text = newTexts[i]!;
+      const tokenCount = countTokens(text);
+      const contentHash = newHashes[i]!;
 
-        // ON CONFLICT DO NOTHING + RETURNING: only get id back if row was inserted
-        const rows = await tx`
-          INSERT INTO memory_chunks (id, source_id, content, chunk_index, token_count, created_at, content_hash)
-          VALUES (${id}, ${sourceId}, ${text}, ${filteredIndices[i]!}, ${tokenCount}, ${now}, ${contentHash})
-          ON CONFLICT (content_hash) DO NOTHING
-          RETURNING id
-        `;
+      // ON CONFLICT DO NOTHING + RETURNING: only get id back if row was inserted
+      const rows = await tx`
+        INSERT INTO memory_chunks (id, source_id, content, chunk_index, token_count, created_at, content_hash)
+        VALUES (${id}, ${sourceId}, ${text}, ${filteredIndices[i]!}, ${tokenCount}, ${now}, ${contentHash})
+        ON CONFLICT (content_hash) DO NOTHING
+        RETURNING id
+      `;
 
-        if (rows.length > 0) {
-          insertedChunks.push({ id, textIndex: i });
-        }
+      if (rows.length > 0) {
+        insertedChunks.push({ id, textIndex: i });
       }
-    });
+    }
 
+    return insertedChunks;
+  }
+
+  /**
+   * Post-commit: push vectors to Qdrant and update FTS for the given chunks.
+   * Separated from writeChunks so it runs after the transaction commits —
+   * Qdrant is not transactional with PostgreSQL.
+   */
+  async function postCommit(
+    sourceId: string,
+    agentId: string,
+    kind: MemorySourceKind,
+    prepared: PreparedChunks,
+    insertedChunks: readonly ChunkResult[],
+    now: number,
+  ): Promise<void> {
     if (insertedChunks.length === 0) {
       log.debug("All chunks deduplicated at insert time", { sourceId });
       return;
     }
+
+    const { filteredIndices, newTexts, embeddings } = prepared;
 
     // Upsert vectors to Qdrant — only for actually inserted chunks,
     // with semantic dedup to skip near-duplicates (same story, different source).
@@ -233,11 +279,58 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     });
   }
 
+  /**
+   * Atomically insert a memory_sources row and all associated chunks in a
+   * single transaction. Qdrant and FTS updates happen after commit.
+   *
+   * Returns the sourceId. The source row is always persisted even if all chunks are deduplicated.
+   */
+  async function indexSourceWithChunks(
+    agentId: string,
+    kind: MemorySourceKind,
+    metadataJson: string,
+    chunks: readonly string[],
+  ): Promise<string> {
+    const db = getDb();
+    const sourceId = crypto.randomUUID();
+    const now = Math.floor(Date.now() / 1000);
+
+    if (chunks.length === 0) {
+      // No chunks — still persist the source record so callers have a sourceId.
+      await db`
+        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
+        VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
+      `;
+      return sourceId;
+    }
+
+    // Prepare outside the transaction: dedup reads + embeddings (I/O-heavy)
+    const prepared = await prepareChunks(sourceId, chunks);
+
+    // Wrap source INSERT + chunk INSERTs in a single transaction so an
+    // interrupted process cannot leave an orphaned source row without chunks.
+    let insertedChunks: readonly ChunkResult[] = [];
+    await db.begin(async (tx) => {
+      await tx`
+        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
+        VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
+      `;
+
+      if (prepared !== null) {
+        insertedChunks = await writeChunks(tx, sourceId, prepared);
+      }
+    });
+
+    // Post-commit: Qdrant vectors + FTS (safe to run after transaction commits)
+    if (prepared !== null) {
+      await postCommit(sourceId, agentId, kind, prepared, insertedChunks, now);
+    }
+
+    return sourceId;
+  }
+
   return {
     async indexTweets(agentId, tweets: readonly TweetForIndex[], metadata) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
       const tweetIds = tweets.map((t) => t.id).join(",");
       const metadataJson = JSON.stringify({
         ...(metadata ?? {}),
@@ -245,26 +338,21 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         tweetCount: String(tweets.length),
       });
 
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'x_post', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
-
       const profile = await getChunkProfileWithOverrides("x_post");
       const chunks = tweets.flatMap((t) => {
         const text = `@${t.authorHandle} (${t.tweetTimestamp}): ${t.text}`;
         const itemChunks = chunkText(text, profile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "x_post", chunks);
-      }
+
+      const sourceId = await indexSourceWithChunks(agentId, "x_post", metadataJson, chunks);
 
       log.info("Indexed tweets", {
         agentId,
         tweetCount: tweets.length,
         chunks: chunks.length,
       });
+
       return sourceId;
     },
 
@@ -273,9 +361,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       articles: readonly ArticleForIndex[],
       metadata,
     ) {
-      const db = getDb();
-      const now = Math.floor(Date.now() / 1000);
-
       // Group articles by source so each gets the correct kind
       const bySource = new Map<string, ArticleForIndex[]>();
       for (const a of articles) {
@@ -289,8 +374,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       for (const [sourceName, group] of bySource) {
         const kind: MemorySourceKind =
           NEWS_SOURCE_KIND_MAP[sourceName] ?? "reuters_news";
-        const sourceId = crypto.randomUUID();
-        if (!firstSourceId) firstSourceId = sourceId;
 
         const articleIds = group.map((a) => a.id).join(",");
         const metadataJson = JSON.stringify({
@@ -299,11 +382,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           articleCount: String(group.length),
           sourceName,
         });
-
-        await db`
-          INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-          VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-        `;
 
         const profile = await getChunkProfileWithOverrides(kind);
         const contentMaxChars = profile.contentMaxChars ?? 400;
@@ -314,9 +392,9 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           const itemChunks = chunkText(text, profile);
           return itemChunks.length > 0 ? itemChunks : [text];
         });
-        if (chunks.length > 0) {
-          await insertChunks(sourceId, agentId, kind, chunks);
-        }
+
+        const sourceId = await indexSourceWithChunks(agentId, kind, metadataJson, chunks);
+        if (!firstSourceId) firstSourceId = sourceId;
 
         log.info("Indexed news", {
           agentId,
@@ -335,20 +413,12 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       products: readonly ProductForIndex[],
       metadata,
     ) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
       const productIds = products.map((p) => p.id).join(",");
       const metadataJson = JSON.stringify({
         ...(metadata ?? {}),
         productIds,
         productCount: String(products.length),
       });
-
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'producthunt_product', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
 
       const profile = await getChunkProfileWithOverrides("producthunt_product");
       const chunks = products.flatMap((p) => {
@@ -365,9 +435,8 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         const itemChunks = chunkText(text, profile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "producthunt_product", chunks);
-      }
+
+      const sourceId = await indexSourceWithChunks(agentId, "producthunt_product", metadataJson, chunks);
 
       log.info("Indexed products", {
         agentId,
@@ -378,20 +447,12 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     },
 
     async indexStories(agentId, stories: readonly StoryForIndex[], metadata) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
       const storyIds = stories.map((s) => s.id).join(",");
       const metadataJson = JSON.stringify({
         ...(metadata ?? {}),
         storyIds,
         storyCount: String(stories.length),
       });
-
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'hackernews_story', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
 
       const profile = await getChunkProfileWithOverrides("hackernews_story");
       const commentMaxChars = profile.commentMaxChars ?? 800;
@@ -406,9 +467,8 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         const itemChunks = chunkText(text, profile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "hackernews_story", chunks);
-      }
+
+      const sourceId = await indexSourceWithChunks(agentId, "hackernews_story", metadataJson, chunks);
 
       log.info("Indexed stories", {
         agentId,
@@ -423,20 +483,12 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       posts: readonly RedditPostForIndex[],
       metadata,
     ) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
       const postIds = posts.map((p) => p.id).join(",");
       const metadataJson = JSON.stringify({
         ...(metadata ?? {}),
         postIds,
         postCount: String(posts.length),
       });
-
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'reddit_post', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
 
       const profile = await getChunkProfileWithOverrides("reddit_post");
       const contentMaxChars = profile.contentMaxChars ?? 5000;
@@ -452,9 +504,8 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         const itemChunks = chunkText(text, profile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "reddit_post", chunks);
-      }
+
+      const sourceId = await indexSourceWithChunks(agentId, "reddit_post", metadataJson, chunks);
 
       log.info("Indexed reddit posts", {
         agentId,
@@ -469,20 +520,12 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       repos: readonly GithubRepoForIndex[],
       metadata,
     ) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
       const repoIds = repos.map((r) => r.id).join(",");
       const metadataJson = JSON.stringify({
         ...(metadata ?? {}),
         repoIds,
         repoCount: String(repos.length),
       });
-
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'github_repo', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
 
       const repoProfile = await getChunkProfileWithOverrides("github_repo");
       const repoContentMaxChars = repoProfile.contentMaxChars ?? 1500;
@@ -498,9 +541,8 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         const itemChunks = chunkText(text, repoProfile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "github_repo", chunks);
-      }
+
+      const sourceId = await indexSourceWithChunks(agentId, "github_repo", metadataJson, chunks);
 
       log.info("Indexed GitHub repos", {
         agentId,
@@ -515,20 +557,12 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       observations: readonly ObservationForIndex[],
       metadata,
     ) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
       const observationIds = observations.map((o) => o.id);
       const metadataJson = JSON.stringify({
         ...(metadata ?? {}),
         observationIds,
         observationCount: String(observations.length),
       });
-
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'observation', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
 
       const profile = await getChunkProfileWithOverrides("observation");
       const chunks = observations.flatMap((o) => {
@@ -540,9 +574,8 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         const itemChunks = chunkText(text, profile);
         return itemChunks.length > 0 ? itemChunks : [text];
       });
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "observation", chunks);
-      }
+
+      const sourceId = await indexSourceWithChunks(agentId, "observation", metadataJson, chunks);
 
       log.info("Indexed observations", {
         agentId,
@@ -553,30 +586,18 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     },
 
     async indexNote(agentId, content, metadata) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
       const metadataJson = JSON.stringify(metadata ?? {});
-
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'note', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
 
       const noteProfile = await getChunkProfileWithOverrides("note");
       const chunks = chunkText(content, noteProfile);
-      if (chunks.length > 0) {
-        await insertChunks(sourceId, agentId, "note", chunks);
-      }
+
+      const sourceId = await indexSourceWithChunks(agentId, "note", metadataJson, chunks);
 
       log.info("Indexed note", { agentId, chunks: chunks.length });
       return sourceId;
     },
 
     async indexIdea(agentId, idea: IdeaForIndex, metadata) {
-      const db = getDb();
-      const sourceId = crypto.randomUUID();
-      const now = Math.floor(Date.now() / 1000);
       const metadataJson = JSON.stringify({
         ...(metadata ?? {}),
         ideaId: idea.id,
@@ -584,18 +605,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         category: idea.category,
       });
 
-      await db`
-        INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-        VALUES (${sourceId}, 'idea', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-      `;
-
       const profile = await getChunkProfileWithOverrides("idea");
       const ideaContentMaxChars = profile.contentMaxChars ?? 1500;
       const text = `[${idea.category}] ${idea.title}\n${idea.summary}\n${idea.reasoning.slice(0, ideaContentMaxChars)}`;
-      const chunks = chunkText(text, profile);
-      const finalChunks = chunks.length > 0 ? chunks : [text];
+      const rawChunks = chunkText(text, profile);
+      const chunks = rawChunks.length > 0 ? rawChunks : [text];
 
-      await insertChunks(sourceId, agentId, "idea", finalChunks);
+      const sourceId = await indexSourceWithChunks(agentId, "idea", metadataJson, chunks);
 
       log.info("Indexed idea", { agentId, ideaId: idea.id });
       return sourceId;
@@ -606,9 +622,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       reviews: readonly AppReviewForIndex[],
       metadata,
     ) {
-      const db = getDb();
-      const now = Math.floor(Date.now() / 1000);
-
       // Group by store for separate kinds
       const byStore = new Map<"appstore" | "playstore", AppReviewForIndex[]>();
       for (const r of reviews) {
@@ -621,8 +634,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
 
       for (const [store, group] of byStore) {
         const kind: MemorySourceKind = `${store}_review`;
-        const sourceId = crypto.randomUUID();
-        if (!firstSourceId) firstSourceId = sourceId;
 
         const reviewIds = group.map((r) => r.id).join(",");
         const metadataJson = JSON.stringify({
@@ -632,20 +643,15 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           store,
         });
 
-        await db`
-          INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-          VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-        `;
-
         const profile = await getChunkProfileWithOverrides(kind);
         const chunks = group.flatMap((r) => {
           const text = `[${r.store}] ${r.appName} Review (${r.rating}/5): ${r.title}\n${r.content}`;
           const itemChunks = chunkText(text, profile);
           return itemChunks.length > 0 ? itemChunks : [text];
         });
-        if (chunks.length > 0) {
-          await insertChunks(sourceId, agentId, kind, chunks);
-        }
+
+        const sourceId = await indexSourceWithChunks(agentId, kind, metadataJson, chunks);
+        if (!firstSourceId) firstSourceId = sourceId;
 
         log.info("Indexed app reviews", {
           agentId,
@@ -664,9 +670,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       rankings: readonly AppRankingForIndex[],
       metadata,
     ) {
-      const db = getDb();
-      const now = Math.floor(Date.now() / 1000);
-
       // Group by store for separate kinds
       const byStore = new Map<"appstore" | "playstore", AppRankingForIndex[]>();
       for (const r of rankings) {
@@ -679,8 +682,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
 
       for (const [store, group] of byStore) {
         const kind: MemorySourceKind = `${store}_app`;
-        const sourceId = crypto.randomUUID();
-        if (!firstSourceId) firstSourceId = sourceId;
 
         const rankingIds = group.map((r) => r.id).join(",");
         const metadataJson = JSON.stringify({
@@ -690,11 +691,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           store,
         });
 
-        await db`
-          INSERT INTO memory_sources (id, kind, agent_id, channel, chat_id, metadata_json, created_at)
-          VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
-        `;
-
         const profile = await getChunkProfileWithOverrides(kind);
         const chunks = group.flatMap((r) => {
           const installs = r.installs ? ` | Installs: ${r.installs}` : "";
@@ -702,9 +698,9 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           const itemChunks = chunkText(text, profile);
           return itemChunks.length > 0 ? itemChunks : [text];
         });
-        if (chunks.length > 0) {
-          await insertChunks(sourceId, agentId, kind, chunks);
-        }
+
+        const sourceId = await indexSourceWithChunks(agentId, kind, metadataJson, chunks);
+        if (!firstSourceId) firstSourceId = sourceId;
 
         log.info("Indexed app rankings", {
           agentId,

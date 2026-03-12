@@ -52,9 +52,17 @@ export function createObservationHook(
         return;
       }
 
+      // Evict stale entries to prevent the map from growing unboundedly.
+      const TTL_SEC = debounceSec * 2;
+      const now = Math.floor(Date.now() / 1000);
+      for (const [k, t] of lastExtraction) {
+        if (now - t > TTL_SEC) {
+          lastExtraction.delete(k);
+        }
+      }
+
       // Debounce: skip if we extracted recently for this chat
       const chatKey = `${channel}:${chatId}`;
-      const now = Math.floor(Date.now() / 1000);
       const lastTime = lastExtraction.get(chatKey) ?? 0;
       if (now - lastTime < debounceSec) {
         log.debug("Skipping observation extraction (debounced)", {

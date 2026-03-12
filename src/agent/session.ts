@@ -2,10 +2,10 @@ import type { ConversationMessage } from "./types";
 import {
   getMessagesByChat,
   saveMessage,
-  clearChatMessages,
 } from "../store/messages";
 import { getOrCreateSession } from "../store/sessions";
-import { getLatestSummary, clearSummaries } from "../store/summaries";
+import { getLatestSummary } from "../store/summaries";
+import { getDb } from "../store/db";
 import { createLogger } from "../logger";
 
 const log = createLogger("session");
@@ -34,8 +34,7 @@ export async function getSessionHistory(
         ageDays: Math.floor(age / 86400),
         messageCount: stored.length,
       });
-      await clearChatMessages(channel, chatId);
-      await clearSummaries(channel, chatId);
+      await clearSession(channel, chatId);
       return [];
     }
   }
@@ -121,7 +120,10 @@ export async function clearSession(
   channel: string,
   chatId: string,
 ): Promise<void> {
-  await clearChatMessages(channel, chatId);
-  await clearSummaries(channel, chatId);
+  const db = getDb();
+  await db.begin(async (tx) => {
+    await tx`DELETE FROM messages WHERE channel = ${channel} AND chat_id = ${chatId}`;
+    await tx`DELETE FROM conversation_summaries WHERE channel = ${channel} AND chat_id = ${chatId}`;
+  });
   log.info("Session cleared", { channel, chatId });
 }

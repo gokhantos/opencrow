@@ -214,11 +214,12 @@ export function createOrchestrator(
         });
       }, PING_INTERVAL_MS);
 
+      // Graceful shutdown handlers — once() prevents accumulation across start/stop cycles
       const shutdown = () => {
         gracefulShutdown().then(() => process.exit(0));
       };
-      process.on("SIGTERM", shutdown);
-      process.on("SIGINT", shutdown);
+      process.once("SIGTERM", shutdown);
+      process.once("SIGINT", shutdown);
 
       log.info("Orchestrator started", { childCount: children.size });
     },

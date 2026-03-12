@@ -14,6 +14,10 @@ import {
 import { cn } from "../lib/cn";
 import { LoadingState, Button } from "../components";
 
+// ============================================================================
+// Types
+// ============================================================================
+
 interface DiskInfo {
   filesystem: string;
   mount: string;
@@ -46,20 +50,21 @@ interface SystemMetricsData {
   }>;
 }
 
-/* Palette tokens for chart colors */
-const COLORS = {
-  primary: "#2dd4bf",
-  secondary: "#a78bfa",
-  accent: "#7928ca",
-  warning: "#f5a623",
-  danger: "#ee5555",
-  success: "#2dd4bf",
-  border: "#222222",
-  text: {
-    primary: "#ffffff",
-    secondary: "#888888",
-    muted: "#666666",
-  },
+// ============================================================================
+// Design Tokens
+// ============================================================================
+
+const C = {
+  teal: "#2dd4bf",
+  purple: "#a78bfa",
+  deepPurple: "#7928ca",
+  amber: "#f5a623",
+  red: "#f87171",
+  blue: "#3b82f6",
+  border: "rgba(255,255,255,0.06)",
+  borderHover: "rgba(255,255,255,0.12)",
+  cardBg: "rgba(19, 19, 22, 0.65)",
+  tooltipBg: "rgba(10, 10, 14, 0.95)",
 };
 
 function formatBytes(bytes: number): string {
@@ -69,9 +74,18 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Lightweight ECharts hook for system charts (no zoom/boundary)     */
-/* ------------------------------------------------------------------ */
+/** Convert 6-digit hex to rgba string */
+function rgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ============================================================================
+// ECharts Hook
+// ============================================================================
+
 function useChart(
   ref: React.RefObject<HTMLDivElement | null>,
   option: echarts.EChartsOption,
@@ -83,10 +97,8 @@ function useChart(
     if (!el) return;
     const chart = echarts.init(el, undefined, { renderer: "canvas" });
     chartRef.current = chart;
-
     const ro = new ResizeObserver(() => chart.resize());
     ro.observe(el);
-
     return () => {
       ro.disconnect();
       chart.dispose();
@@ -99,34 +111,37 @@ function useChart(
   }, [option]);
 }
 
-/* ------------------------------------------------------------------ */
-/*  Shared tooltip / axis styling                                      */
-/* ------------------------------------------------------------------ */
+// ============================================================================
+// Shared Chart Styles
+// ============================================================================
+
 const tooltipStyle: echarts.EChartsOption["tooltip"] = {
-  backgroundColor: "rgba(16, 19, 26, 0.95)",
-  borderColor: "rgba(255, 255, 255, 0.08)",
+  backgroundColor: C.tooltipBg,
+  borderColor: C.border,
   borderWidth: 1,
   textStyle: {
-    color: COLORS.text.secondary,
+    color: "#b0b0b8",
     fontSize: 12,
     fontFamily: "'JetBrains Mono', monospace",
   },
-  extraCssText: "border-radius:8px;",
+  extraCssText:
+    "border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.4);backdrop-filter:blur(8px);",
 };
 
 const axisLabel = {
-  color: COLORS.text.muted,
+  color: "#454550",
   fontSize: 11,
   fontFamily: "'JetBrains Mono', monospace",
 };
 
 const splitLine = {
-  lineStyle: { color: COLORS.border, type: "dashed" as const, opacity: 0.5 },
+  lineStyle: { color: "rgba(255,255,255,0.04)", type: "dashed" as const },
 };
 
-/* ------------------------------------------------------------------ */
-/*  Chart option builders                                              */
-/* ------------------------------------------------------------------ */
+// ============================================================================
+// Chart Option Builders
+// ============================================================================
+
 function buildTimelineOption(
   chartData: { time: string; cpu: number; memory: number }[],
 ): echarts.EChartsOption {
@@ -157,14 +172,15 @@ function buildTimelineOption(
         data: chartData.map((d) => d.cpu),
         smooth: true,
         showSymbol: false,
-        lineStyle: { color: COLORS.primary, width: 2 },
+        lineStyle: { color: C.teal, width: 2.5 },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: "rgba(212, 165, 116, 0.3)" },
-            { offset: 1, color: "rgba(212, 165, 116, 0)" },
+            { offset: 0, color: rgba(C.teal, 0.35) },
+            { offset: 0.6, color: rgba(C.teal, 0.08) },
+            { offset: 1, color: rgba(C.teal, 0) },
           ]),
         },
-        itemStyle: { color: COLORS.primary },
+        itemStyle: { color: C.teal },
       },
       {
         name: "Memory %",
@@ -172,14 +188,15 @@ function buildTimelineOption(
         data: chartData.map((d) => d.memory),
         smooth: true,
         showSymbol: false,
-        lineStyle: { color: COLORS.secondary, width: 2 },
+        lineStyle: { color: C.purple, width: 2.5 },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: "rgba(45, 212, 191, 0.3)" },
-            { offset: 1, color: "rgba(45, 212, 191, 0)" },
+            { offset: 0, color: rgba(C.purple, 0.3) },
+            { offset: 0.6, color: rgba(C.purple, 0.06) },
+            { offset: 1, color: rgba(C.purple, 0) },
           ]),
         },
-        itemStyle: { color: COLORS.secondary },
+        itemStyle: { color: C.purple },
       },
     ],
     animation: false,
@@ -187,6 +204,9 @@ function buildTimelineOption(
 }
 
 function buildGaugeOption(cpuUsage: number): echarts.EChartsOption {
+  const gaugeColor =
+    cpuUsage > 80 ? C.red : cpuUsage > 60 ? C.amber : C.teal;
+
   return {
     series: [
       {
@@ -195,15 +215,25 @@ function buildGaugeOption(cpuUsage: number): echarts.EChartsOption {
         endAngle: -40,
         min: 0,
         max: 100,
-        radius: "90%",
+        radius: "88%",
         progress: {
           show: true,
-          width: 14,
+          width: 16,
           roundCap: true,
-          itemStyle: { color: COLORS.primary },
+          itemStyle: {
+            color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+              { offset: 0, color: gaugeColor },
+              { offset: 1, color: rgba(gaugeColor, 0.6) },
+            ]),
+            shadowColor: rgba(gaugeColor, 0.4),
+            shadowBlur: 12,
+          },
         },
         axisLine: {
-          lineStyle: { width: 14, color: [[1, COLORS.border]] },
+          lineStyle: {
+            width: 16,
+            color: [[1, "rgba(255,255,255,0.04)"]],
+          },
           roundCap: true,
         },
         axisTick: { show: false },
@@ -212,19 +242,19 @@ function buildGaugeOption(cpuUsage: number): echarts.EChartsOption {
         pointer: { show: false },
         title: {
           show: true,
-          offsetCenter: [0, "30%"],
+          offsetCenter: [0, "32%"],
           fontSize: 12,
-          color: COLORS.text.secondary,
+          color: "#707078",
           fontFamily: "'JetBrains Mono', monospace",
         },
         detail: {
           valueAnimation: true,
           offsetCenter: [0, "-5%"],
-          fontSize: 28,
+          fontSize: 30,
           fontWeight: 700,
           fontFamily: "'JetBrains Mono', monospace",
           formatter: "{value}%",
-          color: COLORS.text.primary,
+          color: "#e8e8ec",
         },
         data: [{ value: Math.round(cpuUsage * 10) / 10, name: "CPU" }],
       },
@@ -241,22 +271,45 @@ function buildPieOption(
     tooltip: {
       ...tooltipStyle,
       trigger: "item",
-      formatter: (p: any) => `${p.name}: ${p.value.toFixed(1)} GB`,
+      formatter: (p: unknown) => {
+        const item = p as { name: string; value: number };
+        return `${item.name}: ${item.value.toFixed(1)} GB`;
+      },
     },
     series: [
       {
         type: "pie",
-        radius: ["55%", "80%"],
+        radius: ["52%", "78%"],
         center: ["50%", "50%"],
         padAngle: 4,
         itemStyle: { borderRadius: 6 },
         label: { show: false },
+        emphasis: {
+          itemStyle: {
+            shadowBlur: 16,
+            shadowColor: "rgba(0,0,0,0.3)",
+          },
+        },
         data: [
-          { value: usedGB, name: "Used", itemStyle: { color: COLORS.danger } },
+          {
+            value: usedGB,
+            name: "Used",
+            itemStyle: {
+              color: new echarts.graphic.LinearGradient(0, 0, 1, 1, [
+                { offset: 0, color: C.purple },
+                { offset: 1, color: C.red },
+              ]),
+            },
+          },
           {
             value: availableGB,
             name: "Available",
-            itemStyle: { color: COLORS.success },
+            itemStyle: {
+              color: new echarts.graphic.LinearGradient(0, 0, 1, 1, [
+                { offset: 0, color: C.teal },
+                { offset: 1, color: rgba(C.teal, 0.5) },
+              ]),
+            },
           },
         ],
       },
@@ -298,8 +351,14 @@ function buildLoadOption(
         data: chartData.map((d) => d.load1m),
         smooth: true,
         showSymbol: false,
-        lineStyle: { color: COLORS.accent, width: 2 },
-        itemStyle: { color: COLORS.accent },
+        lineStyle: { color: C.deepPurple, width: 2 },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: rgba(C.deepPurple, 0.2) },
+            { offset: 1, color: rgba(C.deepPurple, 0) },
+          ]),
+        },
+        itemStyle: { color: C.deepPurple },
       },
       {
         name: "5m Load",
@@ -307,8 +366,8 @@ function buildLoadOption(
         data: chartData.map((d) => d.load5m),
         smooth: true,
         showSymbol: false,
-        lineStyle: { color: COLORS.warning, width: 2 },
-        itemStyle: { color: COLORS.warning },
+        lineStyle: { color: C.amber, width: 2 },
+        itemStyle: { color: C.amber },
       },
       {
         name: "15m Load",
@@ -316,17 +375,18 @@ function buildLoadOption(
         data: chartData.map((d) => d.load15m),
         smooth: true,
         showSymbol: false,
-        lineStyle: { color: COLORS.danger, width: 2 },
-        itemStyle: { color: COLORS.danger },
+        lineStyle: { color: C.red, width: 2, type: "dashed" },
+        itemStyle: { color: C.red },
       },
     ],
     animation: false,
   };
 }
 
-/* ------------------------------------------------------------------ */
-/*  Chart wrapper components                                           */
-/* ------------------------------------------------------------------ */
+// ============================================================================
+// Chart Wrapper Components
+// ============================================================================
+
 function TimelineChart({
   data,
 }: {
@@ -340,7 +400,7 @@ function TimelineChart({
 function GaugeChart({ value }: { value: number }) {
   const ref = useRef<HTMLDivElement>(null);
   useChart(ref, buildGaugeOption(value));
-  return <div ref={ref} style={{ width: "100%", height: 150 }} />;
+  return <div ref={ref} style={{ width: "100%", height: 160 }} />;
 }
 
 function MemoryPieChart({
@@ -352,7 +412,7 @@ function MemoryPieChart({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useChart(ref, buildPieOption(usedGB, availableGB));
-  return <div ref={ref} style={{ width: "100%", height: 150 }} />;
+  return <div ref={ref} style={{ width: "100%", height: 160 }} />;
 }
 
 function LoadChart({
@@ -365,10 +425,50 @@ function LoadChart({
   return <div ref={ref} style={{ width: "100%", height: 240 }} />;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Metric Card                                                        */
-/* ------------------------------------------------------------------ */
-const MetricCard = ({
+// ============================================================================
+// Glass Card (shared container)
+// ============================================================================
+
+function GlassCard({
+  children,
+  className,
+  accentColor,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  accentColor?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "relative rounded-xl overflow-hidden border transition-all duration-300",
+        "hover:border-white/[0.12] hover:shadow-[0_0_30px_rgba(0,0,0,0.3)]",
+        className,
+      )}
+      style={{
+        background: C.cardBg,
+        borderColor: C.border,
+        backdropFilter: "blur(16px)",
+      }}
+    >
+      {accentColor && (
+        <div
+          className="absolute top-0 left-0 right-0 h-[2px]"
+          style={{
+            background: `linear-gradient(90deg, ${accentColor}, ${rgba(accentColor, 0.2)}, transparent)`,
+          }}
+        />
+      )}
+      {children}
+    </div>
+  );
+}
+
+// ============================================================================
+// Metric Card (premium)
+// ============================================================================
+
+function MetricCard({
   title,
   value,
   detail,
@@ -379,44 +479,95 @@ const MetricCard = ({
   title: string;
   value: string;
   detail?: string;
-  icon: any;
+  icon: React.ElementType;
   color: string;
   trend?: number;
-}) => (
-  <div className="relative bg-bg-1 border border-border rounded-lg p-6 overflow-hidden">
-    <div className="flex items-center gap-4 mb-4">
-      <div
-        className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
-        style={{ backgroundColor: `${color}18` }}
-      >
-        <Icon size={20} style={{ color }} />
+}) {
+  return (
+    <GlassCard accentColor={color} className="p-6 group">
+      <div className="flex items-center gap-4 mb-4">
+        {/* Icon with glow */}
+        <div className="relative">
+          <div
+            className="absolute inset-[-4px] rounded-xl blur-xl opacity-25 transition-opacity duration-300 group-hover:opacity-40"
+            style={{ backgroundColor: color }}
+          />
+          <div
+            className="relative w-10 h-10 rounded-xl flex items-center justify-center"
+            style={{ backgroundColor: rgba(color, 0.12) }}
+          >
+            <Icon size={20} style={{ color }} />
+          </div>
+        </div>
+        <h3 className="text-[10px] font-semibold text-faint uppercase tracking-[0.12em]">
+          {title}
+        </h3>
       </div>
-      <h3 className="text-xs font-semibold text-faint m-0 uppercase tracking-wide">
-        {title}
-      </h3>
-    </div>
-    <div className="font-mono text-[1.75rem] font-bold text-strong mb-1 tabular-nums tracking-tight">
-      {value}
-    </div>
-    {detail && <div className="font-mono text-sm text-faint">{detail}</div>}
-    {trend !== undefined && (
-      <div
-        className="absolute top-5 right-5 flex items-center gap-1.5 font-mono text-xs font-semibold px-2.5 py-[3px] rounded-full bg-bg-2"
-        style={{ color: trend > 0 ? COLORS.danger : COLORS.success }}
-      >
-        <TrendingUp
-          size={16}
-          style={{ transform: trend < 0 ? "scaleY(-1)" : "none" }}
-        />
-        <span>{Math.abs(trend).toFixed(1)}%</span>
-      </div>
-    )}
-  </div>
-);
 
-/* ------------------------------------------------------------------ */
-/*  Main Component                                                     */
-/* ------------------------------------------------------------------ */
+      {/* Value with glow */}
+      <div
+        className="font-mono text-[2rem] font-bold text-strong mb-1 tabular-nums tracking-tight leading-none"
+        style={{ textShadow: `0 0 40px ${rgba(color, 0.25)}` }}
+      >
+        {value}
+      </div>
+      {detail && (
+        <div className="font-mono text-sm text-faint mt-2">{detail}</div>
+      )}
+
+      {/* Trend badge */}
+      {trend !== undefined && Math.abs(trend) > 0.1 && (
+        <div
+          className="absolute top-5 right-5 flex items-center gap-1.5 font-mono text-xs font-semibold px-2.5 py-1 rounded-full"
+          style={{
+            color: trend > 0 ? C.red : C.teal,
+            backgroundColor: rgba(trend > 0 ? C.red : C.teal, 0.1),
+            border: `1px solid ${rgba(trend > 0 ? C.red : C.teal, 0.2)}`,
+          }}
+        >
+          <TrendingUp
+            size={14}
+            style={{ transform: trend < 0 ? "scaleY(-1)" : "none" }}
+          />
+          <span>{Math.abs(trend).toFixed(1)}%</span>
+        </div>
+      )}
+    </GlassCard>
+  );
+}
+
+// ============================================================================
+// Chart Section Card
+// ============================================================================
+
+function ChartSection({
+  title,
+  right,
+  children,
+  className,
+}: {
+  title: string;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <GlassCard className={cn("p-6", className)}>
+      <div className="flex justify-between items-center mb-5">
+        <h3 className="text-sm font-semibold m-0 text-strong tracking-tight">
+          {title}
+        </h3>
+        {right}
+      </div>
+      {children}
+    </GlassCard>
+  );
+}
+
+// ============================================================================
+// Main Component
+// ============================================================================
+
 export default function SystemMetrics() {
   const [metrics, setMetrics] = useState<SystemMetricsData[]>([]);
   const [currentMetrics, setCurrentMetrics] =
@@ -445,14 +596,12 @@ export default function SystemMetrics() {
     }
   }
 
-  if (loading) {
-    return <LoadingState />;
-  }
+  if (loading) return <LoadingState />;
 
   if (error) {
     return (
       <div className="flex flex-col items-center justify-center h-[60vh] gap-5 text-center">
-        <AlertCircle size={52} color={COLORS.danger} />
+        <AlertCircle size={52} color={C.red} />
         <h2 className="text-xl font-bold text-strong m-0">
           Unable to load metrics
         </h2>
@@ -504,32 +653,18 @@ export default function SystemMetrics() {
 
   const getHealthStatus = () => {
     if (!currentMetrics)
-      return { status: "unknown", color: COLORS.text.muted, cls: "" };
+      return { status: "unknown", color: "#666", icon: AlertCircle };
     const { cpu, memory, disk } = currentMetrics;
     const maxDiskPct =
       disk.length > 0 ? Math.max(...disk.map((d) => d.percentage)) : 0;
 
     if (cpu.usage > 90 || memory.percentage > 90 || maxDiskPct > 95) {
-      return {
-        status: "Critical",
-        color: COLORS.danger,
-        icon: AlertCircle,
-        cls: "border-danger",
-      };
-    } else if (cpu.usage > 70 || memory.percentage > 70 || maxDiskPct > 85) {
-      return {
-        status: "Warning",
-        color: COLORS.warning,
-        icon: AlertCircle,
-        cls: "border-border-2",
-      };
+      return { status: "Critical", color: C.red, icon: AlertCircle };
     }
-    return {
-      status: "Healthy",
-      color: COLORS.success,
-      icon: CheckCircle,
-      cls: "border-success",
-    };
+    if (cpu.usage > 70 || memory.percentage > 70 || maxDiskPct > 85) {
+      return { status: "Warning", color: C.amber, icon: AlertCircle };
+    }
+    return { status: "Healthy", color: C.teal, icon: CheckCircle };
   };
 
   const health = getHealthStatus();
@@ -537,25 +672,38 @@ export default function SystemMetrics() {
   return (
     <div className="max-w-[1600px] mx-auto">
       {/* Page Header */}
-      <div className="flex justify-between items-start mb-8 pb-6 border-b border-border max-md:flex-col max-md:gap-4 max-md:items-start">
-        <div className="flex flex-col gap-1">
-          <h1 className="m-0 font-bold text-[1.75rem] tracking-tight text-strong leading-[1.2]">
+      <div className="flex justify-between items-start mb-8 pb-6 border-b border-white/[0.06] max-md:flex-col max-md:gap-4 max-md:items-start">
+        <div className="flex flex-col gap-1.5">
+          <h1 className="m-0 font-bold text-[1.85rem] tracking-tight text-strong leading-[1.2]">
             System Metrics
           </h1>
           <p className="text-faint text-sm m-0">
             Real-time monitoring and performance analysis
           </p>
         </div>
+
+        {/* Health badge with glow */}
         <div
-          className={cn(
-            "inline-flex items-center gap-3 px-4 py-2.5 bg-bg-1 border rounded-lg text-sm font-semibold",
-            health.cls,
-          )}
+          className="inline-flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300"
+          style={{
+            color: health.color,
+            backgroundColor: rgba(health.color, 0.08),
+            border: `1px solid ${rgba(health.color, 0.25)}`,
+            boxShadow: `0 0 20px ${rgba(health.color, 0.1)}`,
+          }}
         >
-          {health.icon && (
-            <health.icon size={20} style={{ color: health.color }} />
-          )}
-          <span style={{ color: health.color }}>System {health.status}</span>
+          {/* Animated pulse dot */}
+          <span className="relative flex h-2.5 w-2.5">
+            <span
+              className="absolute inline-flex h-full w-full rounded-full opacity-60 animate-ping"
+              style={{ backgroundColor: health.color }}
+            />
+            <span
+              className="relative inline-flex rounded-full h-2.5 w-2.5"
+              style={{ backgroundColor: health.color }}
+            />
+          </span>
+          System {health.status}
         </div>
       </div>
 
@@ -568,7 +716,7 @@ export default function SystemMetrics() {
               value={`${currentMetrics.cpu.usage.toFixed(1)}%`}
               detail={`Load: ${currentMetrics.cpu.loadAvg.map((l) => l.toFixed(2)).join(" / ")}`}
               icon={Cpu}
-              color={COLORS.primary}
+              color={C.teal}
               trend={cpuTrend}
             />
             <MetricCard
@@ -576,7 +724,7 @@ export default function SystemMetrics() {
               value={`${currentMetrics.memory.percentage.toFixed(1)}%`}
               detail={`${(currentMetrics.memory.used / 1024 / 1024 / 1024).toFixed(1)} / ${(currentMetrics.memory.total / 1024 / 1024 / 1024).toFixed(1)} GB`}
               icon={HardDrive}
-              color={COLORS.secondary}
+              color={C.purple}
               trend={memoryTrend}
             />
             <MetricCard
@@ -584,14 +732,14 @@ export default function SystemMetrics() {
               value={processData.length.toString()}
               detail="High resource usage"
               icon={Activity}
-              color={COLORS.accent}
+              color={C.deepPurple}
             />
             <MetricCard
               title="System Load"
               value={currentMetrics.cpu.loadAvg[0].toFixed(2)}
               detail="1 minute average"
               icon={Zap}
-              color={COLORS.warning}
+              color={C.amber}
             />
             {currentMetrics.disk.length > 0 && (
               <MetricCard
@@ -599,164 +747,215 @@ export default function SystemMetrics() {
                 value={`${currentMetrics.disk[0]!.percentage.toFixed(0)}%`}
                 detail={`${formatBytes(currentMetrics.disk[0]!.used)} / ${formatBytes(currentMetrics.disk[0]!.total)}`}
                 icon={Database}
-                color={COLORS.primary}
+                color={C.blue}
               />
             )}
           </div>
 
           {/* Performance Timeline + Side Charts */}
           <div className="grid grid-cols-[2fr_1fr] gap-4 mb-5 max-lg:grid-cols-1">
-            <div className="bg-bg-1 border border-border rounded-lg p-6">
-              <div className="flex justify-between items-center mb-5">
-                <h3 className="text-base font-semibold m-0 text-strong tracking-tight">
-                  Performance Timeline
-                </h3>
+            <ChartSection
+              title="Performance Timeline"
+              right={
                 <div className="flex gap-5">
-                  <span className="flex items-center gap-2 text-sm text-muted">
+                  <span className="flex items-center gap-2 text-xs text-muted font-mono">
                     <span
-                      className="w-2.5 h-2.5 rounded-full"
-                      style={{ backgroundColor: COLORS.primary }}
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: C.teal }}
                     />
                     CPU
                   </span>
-                  <span className="flex items-center gap-2 text-sm text-muted">
+                  <span className="flex items-center gap-2 text-xs text-muted font-mono">
                     <span
-                      className="w-2.5 h-2.5 rounded-full"
-                      style={{ backgroundColor: COLORS.secondary }}
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: C.purple }}
                     />
                     Memory
                   </span>
                 </div>
-              </div>
+              }
+            >
               <TimelineChart data={chartData} />
-            </div>
+            </ChartSection>
 
             <div className="flex flex-col gap-4 max-lg:flex-row max-md:flex-col">
-              <div className="bg-bg-1 border border-border rounded-lg p-6 h-fit">
-                <h3 className="text-base font-semibold m-0 mb-5 text-strong tracking-tight">
-                  Resource Usage
-                </h3>
+              <ChartSection title="CPU Gauge">
                 <GaugeChart value={currentMetrics.cpu.usage} />
-              </div>
-
-              <div className="bg-bg-1 border border-border rounded-lg p-6 h-fit">
-                <h3 className="text-base font-semibold m-0 mb-5 text-strong tracking-tight">
-                  Memory Distribution
-                </h3>
+              </ChartSection>
+              <ChartSection title="Memory Split">
                 <MemoryPieChart usedGB={usedGB} availableGB={availableGB} />
-              </div>
+                <div className="flex justify-center gap-5 mt-2">
+                  <span className="flex items-center gap-1.5 text-[11px] text-muted font-mono">
+                    <span
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: C.purple }}
+                    />
+                    Used: {usedGB.toFixed(1)} GB
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[11px] text-muted font-mono">
+                    <span
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: C.teal }}
+                    />
+                    Free: {availableGB.toFixed(1)} GB
+                  </span>
+                </div>
+              </ChartSection>
             </div>
           </div>
 
           {/* Disk Usage */}
           {currentMetrics.disk.length > 0 && (
-            <div className="bg-bg-1 border border-border rounded-lg p-6 mb-5">
-              <h3 className="text-base font-semibold m-0 mb-5 text-strong tracking-tight">
-                Disk Usage
-              </h3>
+            <ChartSection title="Disk Usage" className="mb-5">
               <div className="flex flex-col gap-3">
-                {currentMetrics.disk.map((d) => (
-                  <div
-                    key={d.mount}
-                    className="grid grid-cols-[180px_1fr_60px] gap-4 items-center p-3.5 px-5 bg-bg border border-border rounded-md transition-colors hover:bg-bg-2 max-md:grid-cols-[1fr_60px]"
-                  >
-                    <div className="flex flex-col gap-0.5 min-w-0 max-md:col-span-full">
-                      <div className="font-mono font-semibold text-sm text-strong whitespace-nowrap overflow-hidden text-ellipsis">
-                        {d.mount}
-                      </div>
-                      <div className="font-mono text-xs text-faint whitespace-nowrap overflow-hidden text-ellipsis">
-                        {d.filesystem}
-                      </div>
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <div className="h-2 bg-bg-3 rounded-sm overflow-hidden">
-                        <div
-                          className="h-full rounded-sm bg-accent transition-all duration-400"
-                          style={{ width: `${Math.min(d.percentage, 100)}%` }}
-                        />
-                      </div>
-                      <div className="flex justify-between font-mono text-xs text-faint max-md:flex-wrap max-md:gap-1">
-                        <span>{formatBytes(d.used)} used</span>
-                        <span>{formatBytes(d.available)} free</span>
-                        <span>{formatBytes(d.total)} total</span>
-                      </div>
-                    </div>
+                {currentMetrics.disk.map((d) => {
+                  const barColor =
+                    d.percentage > 90
+                      ? C.red
+                      : d.percentage > 75
+                        ? C.amber
+                        : C.teal;
+                  return (
                     <div
-                      className="font-mono font-bold text-base text-right tabular-nums"
-                      style={{
-                        color:
-                          d.percentage > 90
-                            ? COLORS.danger
-                            : d.percentage > 75
-                              ? COLORS.warning
-                              : COLORS.success,
-                      }}
+                      key={d.mount}
+                      className="grid grid-cols-[180px_1fr_60px] gap-4 items-center p-4 rounded-lg transition-all duration-200 hover:bg-white/[0.02] max-md:grid-cols-[1fr_60px]"
+                      style={{ border: `1px solid ${C.border}` }}
                     >
-                      {d.percentage.toFixed(0)}%
+                      <div className="flex flex-col gap-0.5 min-w-0 max-md:col-span-full">
+                        <div className="font-mono font-semibold text-sm text-strong whitespace-nowrap overflow-hidden text-ellipsis">
+                          {d.mount}
+                        </div>
+                        <div className="font-mono text-xs text-faint whitespace-nowrap overflow-hidden text-ellipsis">
+                          {d.filesystem}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <div className="h-2.5 rounded-full overflow-hidden bg-white/[0.04]">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{
+                              width: `${Math.min(d.percentage, 100)}%`,
+                              background: `linear-gradient(90deg, ${barColor}, ${rgba(barColor, 0.6)})`,
+                              boxShadow: `0 0 8px ${rgba(barColor, 0.3)}`,
+                            }}
+                          />
+                        </div>
+                        <div className="flex justify-between font-mono text-xs text-faint max-md:flex-wrap max-md:gap-1">
+                          <span>{formatBytes(d.used)} used</span>
+                          <span>{formatBytes(d.available)} free</span>
+                          <span>{formatBytes(d.total)} total</span>
+                        </div>
+                      </div>
+                      <div
+                        className="font-mono font-bold text-base text-right tabular-nums"
+                        style={{
+                          color: barColor,
+                          textShadow: `0 0 20px ${rgba(barColor, 0.3)}`,
+                        }}
+                      >
+                        {d.percentage.toFixed(0)}%
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
-            </div>
+            </ChartSection>
           )}
 
           {/* Load Average + Processes */}
           <div className="grid grid-cols-2 gap-4 mb-5 max-md:grid-cols-1">
-            <div className="bg-bg-1 border border-border rounded-lg p-6">
-              <h3 className="text-base font-semibold m-0 mb-5 text-strong tracking-tight">
-                System Load Average
-              </h3>
+            <ChartSection
+              title="System Load Average"
+              right={
+                <div className="flex gap-4">
+                  <span className="flex items-center gap-1.5 text-[11px] text-muted font-mono">
+                    <span
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: C.deepPurple }}
+                    />
+                    1m
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[11px] text-muted font-mono">
+                    <span
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: C.amber }}
+                    />
+                    5m
+                  </span>
+                  <span className="flex items-center gap-1.5 text-[11px] text-muted font-mono">
+                    <span
+                      className="w-2 h-2 rounded-full"
+                      style={{ backgroundColor: C.red }}
+                    />
+                    15m
+                  </span>
+                </div>
+              }
+            >
               <LoadChart data={chartData} />
-            </div>
+            </ChartSection>
 
-            <div className="bg-bg-1 border border-border rounded-lg p-6">
-              <h3 className="text-base font-semibold m-0 mb-5 text-strong tracking-tight">
-                Top Processes
-              </h3>
-              <div className="flex flex-col gap-3">
-                {processData.map((process, index) => (
-                  <div
-                    key={process.pid}
-                    className="grid grid-cols-[36px_1fr_180px] gap-4 items-center p-3 px-4 bg-bg border border-border rounded-md transition-colors hover:bg-bg-2 max-md:grid-cols-[36px_1fr]"
-                  >
-                    <div className="w-9 h-9 bg-accent-subtle border border-border rounded-md flex items-center justify-center font-mono font-bold text-sm text-accent">
-                      {index + 1}
+            <ChartSection title="Top Processes">
+              <div className="flex flex-col gap-2.5">
+                {processData.map((process, index) => {
+                  const rankColors = [C.teal, C.purple, C.amber];
+                  const rankColor = rankColors[index] ?? "#454550";
+                  return (
+                    <div
+                      key={process.pid}
+                      className="grid grid-cols-[36px_1fr_180px] gap-4 items-center p-3 px-4 rounded-lg transition-all duration-200 hover:bg-white/[0.03] max-md:grid-cols-[36px_1fr]"
+                      style={{ border: `1px solid ${C.border}` }}
+                    >
+                      <div
+                        className="w-9 h-9 rounded-lg flex items-center justify-center font-mono font-bold text-sm"
+                        style={{
+                          color: rankColor,
+                          backgroundColor: rgba(rankColor, 0.1),
+                          border: `1px solid ${rgba(rankColor, 0.2)}`,
+                        }}
+                      >
+                        {index + 1}
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        <div className="font-semibold text-sm text-strong">
+                          {process.name}
+                        </div>
+                        <div className="flex gap-4 font-mono text-xs text-muted">
+                          <span className="flex items-center gap-1">
+                            <Cpu size={12} />
+                            {process.cpu.toFixed(1)}%
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <HardDrive size={12} />
+                            {process.memoryMB.toFixed(0)} MB
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-[5px] max-md:hidden">
+                        <div className="h-[5px] rounded-full overflow-hidden bg-white/[0.04]">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{
+                              width: `${Math.min(process.cpu, 100)}%`,
+                              background: `linear-gradient(90deg, ${C.teal}, ${rgba(C.teal, 0.4)})`,
+                            }}
+                          />
+                        </div>
+                        <div className="h-[5px] rounded-full overflow-hidden bg-white/[0.04]">
+                          <div
+                            className="h-full rounded-full transition-all duration-500"
+                            style={{
+                              width: `${Math.min((process.memoryMB / 1000) * 100, 100)}%`,
+                              background: `linear-gradient(90deg, ${C.purple}, ${rgba(C.purple, 0.4)})`,
+                            }}
+                          />
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex flex-col gap-0.5">
-                      <div className="font-semibold text-sm text-strong">
-                        {process.name}
-                      </div>
-                      <div className="flex gap-4 font-mono text-xs text-muted">
-                        <span className="flex items-center gap-1">
-                          <Cpu size={14} />
-                          {process.cpu.toFixed(1)}%
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <HardDrive size={14} />
-                          {process.memoryMB.toFixed(0)} MB
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex flex-col gap-[5px] max-md:hidden">
-                      <div className="h-[5px] bg-bg-3 rounded-sm overflow-hidden">
-                        <div
-                          className="h-full rounded-sm bg-accent transition-all duration-400"
-                          style={{ width: `${Math.min(process.cpu, 100)}%` }}
-                        />
-                      </div>
-                      <div className="h-[5px] bg-bg-3 rounded-sm overflow-hidden">
-                        <div
-                          className="h-full rounded-sm bg-success transition-all duration-400"
-                          style={{
-                            width: `${Math.min((process.memoryMB / 1000) * 100, 100)}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
-            </div>
+            </ChartSection>
           </div>
         </>
       )}

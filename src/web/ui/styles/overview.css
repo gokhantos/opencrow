@@ -635,6 +635,120 @@ html[data-theme="light"] .ov-card:hover {
   background: var(--color-faint);
 }
 
+/* --- Orb Logo --- */
+.ov-orb-logo {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 8px rgba(255, 255, 255, 0.2));
+  pointer-events: none;
+}
+
+/* --- Operations Bento Grid --- */
+.ov-bento-ops {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.ov-card--usage::before {
+  background: linear-gradient(90deg, var(--color-warning), transparent 80%);
+}
+
+.ov-card--agents::before {
+  background: linear-gradient(90deg, var(--color-accent), transparent 80%);
+}
+
+.ov-card--processes::before {
+  background: linear-gradient(90deg, var(--color-cyan), transparent 80%);
+}
+
+.ov-card--cron::before {
+  background: linear-gradient(90deg, var(--color-info), transparent 80%);
+}
+
+.ov-card--memory::before {
+  background: linear-gradient(90deg, var(--color-purple), transparent 80%);
+}
+
+/* Corner glows for ops cards */
+.ov-card--usage::after { background: radial-gradient(circle, rgba(251, 191, 36, 0.06), transparent 70%); }
+.ov-card--agents::after { background: radial-gradient(circle, rgba(167, 139, 250, 0.06), transparent 70%); }
+.ov-card--processes::after { background: radial-gradient(circle, rgba(45, 212, 191, 0.06), transparent 70%); }
+.ov-card--cron::after { background: radial-gradient(circle, rgba(148, 163, 184, 0.06), transparent 70%); }
+.ov-card--memory::after { background: radial-gradient(circle, rgba(192, 132, 252, 0.06), transparent 70%); }
+
+/* --- Usage Breakdown --- */
+.ov-usage-breakdown {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 0.4rem;
+}
+
+.ov-usage-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  color: var(--color-muted);
+}
+
+.ov-usage-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.ov-usage-dot--input {
+  background: var(--color-accent);
+}
+
+.ov-usage-dot--output {
+  background: var(--color-cyan);
+}
+
+/* --- Process Grid --- */
+.ov-process-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ov-process-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-2);
+}
+
+.ov-process-name {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--color-foreground);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov-process-uptime {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--color-muted);
+  flex-shrink: 0;
+}
+
+.ov-process-icon--alive { color: var(--color-success); }
+.ov-process-icon--stale { color: var(--color-warning); }
+.ov-process-icon--dead { color: var(--color-danger); }
+
 /* --- Keyframes --- */
 @keyframes orbPulse {
   0%, 100% { filter: brightness(1); }
@@ -693,10 +807,19 @@ html[data-theme="light"] .ov-card:hover {
   .ov-title {
     font-size: 1.6rem;
   }
+
+  .ov-orb-logo {
+    width: 36px;
+    height: 36px;
+  }
 }
 
 @media (max-width: 600px) {
   .ov-bento {
+    grid-template-columns: 1fr;
+  }
+
+  .ov-bento-ops {
     grid-template-columns: 1fr;
   }
 
@@ -709,6 +832,11 @@ html[data-theme="light"] .ov-card:hover {
 
   .ov-channels {
     grid-template-columns: 1fr;
+  }
+
+  .ov-orb-logo {
+    width: 32px;
+    height: 32px;
   }
 
   .ov-hero {

@@ -29,9 +29,9 @@ interface NodeWrapperProps {
 
 function executionOverlayClass(status: StepStatus): string {
   if (status === "pending") return "opacity-60";
-  if (status === "running") return "ring-2 ring-blue-500 animate-pulse rounded-lg";
-  if (status === "completed") return "ring-2 ring-green-500 rounded-lg";
-  if (status === "failed") return "ring-2 ring-red-500 rounded-lg";
+  if (status === "running") return "ring-2 ring-blue-400/70 animate-pulse rounded-xl";
+  if (status === "completed") return "ring-2 ring-green-400/70 rounded-xl";
+  if (status === "failed") return "ring-2 ring-red-400/70 rounded-xl";
   if (status === "skipped") return "opacity-30";
   return "";
 }
@@ -64,7 +64,7 @@ function NodeWrapper({ nodeId, color, icon, label, sublabel, selected, children 
       {stepInfo && <ExecutionBadge status={stepInfo.status} />}
       <div
         className={cn(
-          "bg-bg-1 border border-t-[4px] border-border-2 rounded-lg min-w-[160px] max-w-[240px] shadow-md transition-colors",
+          "bg-bg-1 border border-t-[3px] border-border-2 rounded-xl min-w-[160px] max-w-[240px] shadow-lg shadow-black/15 transition-all",
           color,
           selected && "border-accent ring-1 ring-accent/40",
           hasErrors && "border-red-500 ring-1 ring-red-500/30",
