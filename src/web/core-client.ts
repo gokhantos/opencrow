@@ -109,10 +109,12 @@ export interface CoreClient {
 export function createCoreClient(baseUrl: string): CoreClient {
   async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     const url = `${baseUrl}${path}`;
+    const internalToken = process.env.OPENCROW_INTERNAL_TOKEN;
     const res = await fetch(url, {
       ...init,
       headers: {
         "Content-Type": "application/json",
+        ...(internalToken ? { Authorization: `Bearer ${internalToken}` } : {}),
         ...init?.headers,
       },
     });
@@ -133,9 +135,13 @@ export function createCoreClient(baseUrl: string): CoreClient {
 
     async chatStream(body) {
       const url = `${baseUrl}/internal/chat/stream`;
+      const internalToken = process.env.OPENCROW_INTERNAL_TOKEN;
       const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(internalToken ? { Authorization: `Bearer ${internalToken}` } : {}),
+        },
         body: JSON.stringify(body),
       });
       return res;
