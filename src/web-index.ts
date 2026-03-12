@@ -80,7 +80,7 @@ async function main(): Promise<void> {
       return ctx.buildOptionsForAgent(agent);
     },
     agentRegistry: ctx.agentRegistry,
-    toolRegistry: ctx.baseToolRegistry ?? undefined,
+    toolRegistry: ctx.workflowToolRegistry ?? undefined,
     buildAgentOptions: ctx.buildOptionsForAgent,
     cronStore,
     memoryManager: ctx.memoryManager ?? undefined,

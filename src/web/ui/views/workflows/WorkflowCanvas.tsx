@@ -36,8 +36,8 @@ const MINIMAP_COLORS: Record<string, string> = {
 
 const DEFAULT_EDGE_OPTIONS = {
   type: "smoothstep" as const,
-  markerEnd: { type: MarkerType.ArrowClosed, color: "#4a4a5a" },
-  style: { stroke: "#4a4a5a", strokeWidth: 2 },
+  markerEnd: { type: MarkerType.ArrowClosed, color: "#64748b" },
+  style: { stroke: "#64748b", strokeWidth: 2 },
 };
 
 function generateId(): string {
@@ -224,10 +224,10 @@ function CanvasInner({ state, dispatch, validationErrors, stepStatuses = new Map
           proOptions={{ hideAttribution: true }}
           className="bg-bg"
         >
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} className="opacity-30" />
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1} className="opacity-20" />
           <MiniMap
             nodeColor={(node) => MINIMAP_COLORS[node.type ?? ""] ?? "#6366f1"}
-            maskColor="rgba(0,0,0,0.3)"
+            maskColor="rgba(0,0,0,0.6)"
             style={{ width: 160, height: 100, right: 16, bottom: 16 }}
             className="!bg-bg-1 !border !border-border !rounded-lg"
           />

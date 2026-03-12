@@ -29,6 +29,7 @@ import { createQdrantClient } from "../memory/qdrant";
 import { initQuestDBReadOnly } from "../sources/markets/questdb";
 import {
   buildRegistryForAgent as buildRegistry,
+  buildWorkflowToolRegistry,
   type ToolBuilderDeps,
 } from "./tool-builder";
 import {
@@ -44,6 +45,7 @@ export interface BootstrapContext {
   readonly config: OpenCrowConfig;
   readonly agentRegistry: AgentRegistry;
   readonly baseToolRegistry: ToolRegistry | null;
+  readonly workflowToolRegistry: ToolRegistry | null;
   readonly memoryManager: MemoryManager | null;
   readonly observationHook: ObservationHook | null;
   readonly subAgentTracker: ReturnType<typeof createSubAgentTracker>;
@@ -232,6 +234,15 @@ export async function bootstrap(
     // QuestDB unavailable — market tools will fail gracefully at runtime
   }
 
+  const workflowToolRegistry = baseToolRegistry
+    ? buildWorkflowToolRegistry(
+        baseToolRegistry,
+        mergedConfig,
+        memoryManager,
+        disabledTools,
+      )
+    : null;
+
   // Mutable ref for cronToolConfig — set by caller after cron is initialized
   let cronToolConfig: CronToolConfig | null = null;
 
@@ -337,6 +348,7 @@ export async function bootstrap(
     config: mergedConfig,
     agentRegistry,
     baseToolRegistry,
+    workflowToolRegistry,
     memoryManager,
     observationHook,
     subAgentTracker,
