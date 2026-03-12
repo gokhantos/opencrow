@@ -198,6 +198,12 @@ async function main(): Promise<void> {
     type: "agent",
     isDefault,
   });
+
+  // Release background timers (e.g. Qdrant recovery probe) before exit
+  const onShutdown = () => ctx.dispose();
+  process.once("SIGTERM", onShutdown);
+  process.once("SIGINT", onShutdown);
+
   await supervisor.start();
 
   log.info("Agent process started", { agentId, processName });
@@ -208,10 +214,11 @@ process.on("unhandledRejection", (reason: unknown) => {
 });
 
 process.on("uncaughtException", (error: Error) => {
-  log.error("Uncaught exception (non-fatal)", {
+  log.error("Uncaught exception — exiting", {
     error: error.message,
     stack: error.stack,
   });
+  process.exit(1);
 });
 
 main().catch((err) => {

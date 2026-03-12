@@ -204,7 +204,10 @@ export function createOrchestrator(
   }
 
   async function pingChildren(): Promise<void> {
-    for (const [name, state] of children) {
+    // Snapshot before any await so concurrent reconcile() mutations to the map
+    // don't affect iteration (entries added/removed mid-loop).
+    const snapshot = Array.from(children.entries());
+    for (const [name, state] of snapshot) {
       if (state.status !== "running" || !state.proc) continue;
 
       // Send ping via IPC
@@ -456,12 +459,12 @@ export function createOrchestrator(
         });
       }, PING_INTERVAL_MS);
 
-      // Graceful shutdown handlers
+      // Graceful shutdown handlers — once() prevents accumulation across start/stop cycles
       const shutdown = () => {
         gracefulShutdown().then(() => process.exit(0));
       };
-      process.on("SIGTERM", shutdown);
-      process.on("SIGINT", shutdown);
+      process.once("SIGTERM", shutdown);
+      process.once("SIGINT", shutdown);
 
       log.info("Orchestrator started", {
         childCount: children.size,
