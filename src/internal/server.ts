@@ -21,10 +21,29 @@ const log = createLogger("internal-api");
 export function createInternalApi(deps: InternalApiDeps): Hono {
   const app = new Hono();
 
-  // Health check
+  // Health check — unauthenticated (used for liveness probes)
   app.get("/internal/health", (c) =>
     c.json({ status: "ok", timestamp: Date.now() }),
   );
+
+  // Auth middleware for all other internal endpoints.
+  // /internal/health is registered above and is intentionally exempt (liveness probes).
+  // IMPORTANT: any route registered BEFORE this middleware is also exempt — keep health first.
+  const internalToken = process.env.OPENCROW_INTERNAL_TOKEN;
+  if (!internalToken) {
+    log.warn("OPENCROW_INTERNAL_TOKEN not set — internal API is unauthenticated");
+  } else {
+    app.use("/internal/*", async (c, next) => {
+      const authHeader = c.req.header("authorization");
+      const bearerToken = authHeader?.startsWith("Bearer ")
+        ? authHeader.slice(7)
+        : null;
+      if (bearerToken !== internalToken) {
+        return c.json({ error: "Unauthorized" }, 401);
+      }
+      await next();
+    });
+  }
 
   // --- Live status ---
   app.get("/internal/status", async (c) => {

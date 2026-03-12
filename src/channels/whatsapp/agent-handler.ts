@@ -60,8 +60,6 @@ export function createWhatsAppAgentHandler(deps: WhatsAppHandlerDeps): void {
   channel.onMessage(async (msg) => {
     const isGroup = msg.chatId.endsWith("@g.us");
 
-    if (!isGroup) return;
-
     if (isGroup && allowedGroups.length > 0) {
       const groupBare = msg.chatId.split("@")[0] ?? "";
       const allowed = allowedGroups.some(
@@ -78,7 +76,7 @@ export function createWhatsAppAgentHandler(deps: WhatsAppHandlerDeps): void {
     if (!isGroup && allowedNumbers.length > 0) {
       const senderBare = msg.senderId.split("@")[0]?.split(":")[0] ?? "";
       const allowed = allowedNumbers.some(
-        (num) => senderBare.includes(num) || num.includes(senderBare),
+        (num) => senderBare === num,
       );
       if (!allowed) {
         log.debug("WhatsApp DM from non-allowed number, ignoring", {
@@ -87,6 +85,9 @@ export function createWhatsAppAgentHandler(deps: WhatsAppHandlerDeps): void {
         return;
       }
     }
+
+    // Block DMs when no allowedNumbers are configured (groups-only mode)
+    if (!isGroup && allowedNumbers.length === 0) return;
 
     const text = msg.content.text ?? "";
 
