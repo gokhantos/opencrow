@@ -36,7 +36,10 @@ describe("CronStore", () => {
     expect(job.name).toBe("Test Job");
     expect(job.enabled).toBe(true);
     expect(job.schedule.kind).toBe("every");
-    expect(job.payload.message).toBe("Hello");
+    expect(job.payload.kind).toBe("agentTurn");
+    if (job.payload.kind === "agentTurn") {
+      expect(job.payload.message).toBe("Hello");
+    }
     expect(job.nextRunAt).toBeTruthy();
   });
 

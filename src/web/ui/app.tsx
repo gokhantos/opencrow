@@ -38,6 +38,7 @@ import AgentMetrics from "./views/AgentMetrics";
 import RoutingRules from "./views/RoutingRules";
 import Memory from "./views/Memory";
 import AppStore from "./views/AppStore";
+import Workflows from "./views/Workflows";
 import PlayStore from "./views/PlayStore";
 import Settings from "./views/Settings";
 
@@ -137,10 +138,15 @@ const SCRAPER_TO_TAB: Record<string, Tab> = {
   hackernews: "hackernews",
   reddit: "reddit",
   github: "github",
+  "github-search": "github",
   producthunt: "producthunt",
   appstore: "appstore",
   playstore: "playstore",
-  news: "news",
+  cryptopanic: "news",
+  cointelegraph: "news",
+  reuters: "news",
+  investing_news: "news",
+  investing_calendar: "news",
   x: "x-accounts",
   ideas: "ideas",
 };
@@ -155,9 +161,17 @@ function computeHiddenTabs(features: FeaturesState | null): ReadonlySet<Tab> {
   if (!features) return new Set();
   const hidden = new Set<Tab>();
 
-  // Hide scraper tabs when that scraper is disabled
+  // Build set of tabs that have at least one enabled scraper
+  const tabsWithEnabledScraper = new Set<Tab>();
   for (const [scraperId, tabId] of Object.entries(SCRAPER_TO_TAB)) {
-    if (!features.enabledScrapers.has(scraperId)) {
+    if (features.enabledScrapers.has(scraperId)) {
+      tabsWithEnabledScraper.add(tabId);
+    }
+  }
+  // Hide scraper tabs where no mapped scraper is enabled
+  const allScraperTabs = new Set(Object.values(SCRAPER_TO_TAB));
+  for (const tabId of allScraperTabs) {
+    if (!tabsWithEnabledScraper.has(tabId)) {
       hidden.add(tabId);
     }
   }
@@ -332,6 +346,7 @@ function App() {
             {tab === "system" && <SystemMetrics />}
             {tab === "logs" && <Logs />}
             {tab === "settings" && <Settings />}
+            {tab === "workflows" && <Workflows />}
           </div>
         </ErrorBoundary>
       </main>

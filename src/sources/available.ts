@@ -41,9 +41,29 @@ export const AVAILABLE_SCRAPERS: readonly ScraperMeta[] = [
     description: "Android app store reviews and rankings",
   },
   {
-    id: "news",
-    name: "News",
-    description: "General news articles from configured sources",
+    id: "cryptopanic",
+    name: "CryptoPanic",
+    description: "Crypto news aggregator",
+  },
+  {
+    id: "cointelegraph",
+    name: "CoinTelegraph",
+    description: "Cryptocurrency and blockchain news",
+  },
+  {
+    id: "reuters",
+    name: "Reuters",
+    description: "Global financial and business news",
+  },
+  {
+    id: "investing_news",
+    name: "Investing News",
+    description: "Investment and market news articles",
+  },
+  {
+    id: "investing_calendar",
+    name: "Investing Calendar",
+    description: "Economic calendar events and schedules",
   },
   {
     id: "x",

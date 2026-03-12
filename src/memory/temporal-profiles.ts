@@ -17,9 +17,9 @@ const halfLifeDays: Record<MemorySourceKind, number> = {
   observation: 60,
   idea: 120,
   appstore_review: 60,
-  appstore_ranking: 30,
+  appstore_app: 30,
   playstore_review: 60,
-  playstore_ranking: 30,
+  playstore_app: 30,
 };
 
 export function getTemporalHalfLife(kind: MemorySourceKind): number {

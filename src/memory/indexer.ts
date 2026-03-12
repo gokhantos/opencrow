@@ -19,7 +19,7 @@ import type {
 import { NEWS_SOURCE_KIND_MAP } from "./types";
 import type { QdrantClient, QdrantPoint } from "./qdrant";
 import { updateChunkFts } from "./fts";
-import { getChunkProfile } from "./chunk-profiles";
+import { getChunkProfileWithOverrides } from "./chunk-profiles";
 
 const log = createLogger("memory-indexer");
 
@@ -88,7 +88,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     }
 
     // Filter out tiny chunks that are semantically meaningless
-    const MIN_CHUNK_TOKENS = 50;
+    const MIN_CHUNK_TOKENS = 10;
     const filteredIndices = newIndices.filter(
       (i) => countTokens(texts[i]!) >= MIN_CHUNK_TOKENS,
     );
@@ -250,7 +250,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         VALUES (${sourceId}, 'x_post', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const profile = getChunkProfile("x_post");
+      const profile = await getChunkProfileWithOverrides("x_post");
       const chunks = tweets.flatMap((t) => {
         const text = `@${t.authorHandle} (${t.tweetTimestamp}): ${t.text}`;
         const itemChunks = chunkText(text, profile);
@@ -305,10 +305,11 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
         `;
 
-        const profile = getChunkProfile(kind);
+        const profile = await getChunkProfileWithOverrides(kind);
+        const contentMaxChars = profile.contentMaxChars ?? 400;
         const chunks = group.flatMap((a) => {
           const date = new Date(a.publishedAt * 1000).toISOString().slice(0, 16);
-          const snippet = a.content ? ` — ${a.content.slice(0, 200)}` : "";
+          const snippet = a.content ? ` — ${a.content.slice(0, contentMaxChars)}` : "";
           const text = `[${a.category}] ${a.title} (${a.sourceName}, ${date})${snippet}\n${a.url}`;
           const itemChunks = chunkText(text, profile);
           return itemChunks.length > 0 ? itemChunks : [text];
@@ -349,7 +350,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         VALUES (${sourceId}, 'producthunt_product', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const profile = getChunkProfile("producthunt_product");
+      const profile = await getChunkProfileWithOverrides("producthunt_product");
       const chunks = products.flatMap((p) => {
         const rank = p.rank ? `#${p.rank}` : "unranked";
         const topics = p.topics.length > 0 ? p.topics.join(", ") : "none";
@@ -392,13 +393,14 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         VALUES (${sourceId}, 'hackernews_story', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const profile = getChunkProfile("hackernews_story");
+      const profile = await getChunkProfileWithOverrides("hackernews_story");
+      const commentMaxChars = profile.commentMaxChars ?? 800;
       const chunks = stories.flatMap((s) => {
         const site = s.siteLabel ? ` (${s.siteLabel})` : "";
         const descLine = s.description ? `\nDescription: ${s.description}` : "";
         const commentsLine =
           s.topComments && s.topComments.length > 0
-            ? `\nTop comments:\n${s.topComments.map((c, i) => `  ${i + 1}. ${c.slice(0, 300)}`).join("\n")}`
+            ? `\nTop comments:\n${s.topComments.map((c, i) => `  ${i + 1}. ${c.slice(0, commentMaxChars)}`).join("\n")}`
             : "";
         const text = `#${s.rank} ${s.title}${site} — ${s.points} pts, ${s.commentCount} comments, by ${s.author}\n${s.url}\nHN: ${s.hnUrl}${descLine}${commentsLine}`;
         const itemChunks = chunkText(text, profile);
@@ -436,13 +438,15 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         VALUES (${sourceId}, 'reddit_post', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const profile = getChunkProfile("reddit_post");
+      const profile = await getChunkProfileWithOverrides("reddit_post");
+      const contentMaxChars = profile.contentMaxChars ?? 5000;
+      const commentMaxChars = profile.commentMaxChars ?? 800;
       const chunks = posts.flatMap((p) => {
         const flairLabel = p.flair ? ` [${p.flair}]` : "";
-        const selftext = p.selftext ? `\n${p.selftext.slice(0, 2000)}` : "";
+        const selftext = p.selftext ? `\n${p.selftext.slice(0, contentMaxChars)}` : "";
         const commentsLine =
           p.topComments && p.topComments.length > 0
-            ? `\nTop comments:\n${p.topComments.map((c) => `- ${c.slice(0, 300)}`).join("\n")}`
+            ? `\nTop comments:\n${p.topComments.map((c) => `- ${c.slice(0, commentMaxChars)}`).join("\n")}`
             : "";
         const text = `Reddit r/${p.subreddit}${flairLabel}: ${p.title}${selftext}${commentsLine}\nScore: ${p.score} | Comments: ${p.numComments} | By: u/${p.author}\nURL: ${p.url}`;
         const itemChunks = chunkText(text, profile);
@@ -480,14 +484,15 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         VALUES (${sourceId}, 'github_repo', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const repoProfile = getChunkProfile("github_repo");
+      const repoProfile = await getChunkProfileWithOverrides("github_repo");
+      const repoContentMaxChars = repoProfile.contentMaxChars ?? 1500;
       const chunks = repos.flatMap((r) => {
         const lang = r.language ? ` (${r.language})` : "";
         const contributors =
           r.builtBy.length > 0
             ? `\nBuilt by: ${r.builtBy.slice(0, 5).join(", ")}`
             : "";
-        const desc = r.description ? `\n${r.description.slice(0, 500)}` : "";
+        const desc = r.description ? `\n${r.description.slice(0, repoContentMaxChars)}` : "";
         const periodLabel = r.period === "weekly" ? "this week" : "today";
         const text = `GitHub: ${r.id}${lang}\nStars: ${r.stars} (+${r.starsToday} ${periodLabel}) | Forks: ${r.forks}${contributors}${desc}\n${r.url}`;
         const itemChunks = chunkText(text, repoProfile);
@@ -525,7 +530,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         VALUES (${sourceId}, 'observation', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const profile = getChunkProfile("observation");
+      const profile = await getChunkProfileWithOverrides("observation");
       const chunks = observations.flatMap((o) => {
         const facts =
           o.facts.length > 0 ? `\nFacts: ${o.facts.join("; ")}` : "";
@@ -558,7 +563,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         VALUES (${sourceId}, 'note', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const noteProfile = getChunkProfile("note");
+      const noteProfile = await getChunkProfileWithOverrides("note");
       const chunks = chunkText(content, noteProfile);
       if (chunks.length > 0) {
         await insertChunks(sourceId, agentId, "note", chunks);
@@ -584,8 +589,9 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         VALUES (${sourceId}, 'idea', ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
       `;
 
-      const text = `[${idea.category}] ${idea.title}\n${idea.summary}\n${idea.reasoning.slice(0, 500)}`;
-      const profile = getChunkProfile("idea");
+      const profile = await getChunkProfileWithOverrides("idea");
+      const ideaContentMaxChars = profile.contentMaxChars ?? 1500;
+      const text = `[${idea.category}] ${idea.title}\n${idea.summary}\n${idea.reasoning.slice(0, ideaContentMaxChars)}`;
       const chunks = chunkText(text, profile);
       const finalChunks = chunks.length > 0 ? chunks : [text];
 
@@ -631,7 +637,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
         `;
 
-        const profile = getChunkProfile(kind);
+        const profile = await getChunkProfileWithOverrides(kind);
         const chunks = group.flatMap((r) => {
           const text = `[${r.store}] ${r.appName} Review (${r.rating}/5): ${r.title}\n${r.content}`;
           const itemChunks = chunkText(text, profile);
@@ -672,7 +678,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       let firstSourceId = "";
 
       for (const [store, group] of byStore) {
-        const kind: MemorySourceKind = `${store}_ranking`;
+        const kind: MemorySourceKind = `${store}_app`;
         const sourceId = crypto.randomUUID();
         if (!firstSourceId) firstSourceId = sourceId;
 
@@ -689,7 +695,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           VALUES (${sourceId}, ${kind}, ${agentId}, ${null}, ${null}, ${metadataJson}, ${now})
         `;
 
-        const profile = getChunkProfile(kind);
+        const profile = await getChunkProfileWithOverrides(kind);
         const chunks = group.flatMap((r) => {
           const installs = r.installs ? ` | Installs: ${r.installs}` : "";
           const text = `[${r.store}] ${r.name} by ${r.artist} | Category: ${r.category} | Price: ${r.price}${installs}\n${r.description}\n${r.storeUrl}`;

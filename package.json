@@ -27,6 +27,7 @@
     "opencrow": "bin/opencrow"
   },
   "scripts": {
+    "postinstall": "npx playwright install chromium || true",
     "start": "bun run src/index.ts",
     "start:web": "bun run src/web-index.ts",
     "dev": "bun run --watch src/index.ts",
@@ -69,6 +70,7 @@
     "@playwright/mcp": "^0.0.68",
     "@questdb/nodejs-client": "^4.0.3",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "@xyflow/react": "^12.10.1",
     "croner": "^10.0.1",
     "echarts": "^5.6.0",
     "google-play-scraper": "^10.1.2",

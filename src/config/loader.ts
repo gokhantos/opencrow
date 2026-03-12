@@ -126,10 +126,9 @@ async function mergeFeatureOverrides(
 
   if (qdrantEnabled !== null) {
     if (Boolean(qdrantEnabled)) {
-      // Restore memorySearch only if it was previously set; keep base value if present
-      // If user enabled it but it was never configured, we leave it as-is from base
+      // Enable memorySearch with defaults if not already configured
       if (base.memorySearch === undefined) {
-        // Nothing to restore — memorySearch was never configured
+        result = { ...result, memorySearch: {} };
       }
     } else {
       // Disable by removing the memorySearch key

@@ -85,42 +85,64 @@ async function main(): Promise<void> {
       scraper.start();
       break;
     }
-    case "news": {
+    case "cryptopanic":
+    case "cointelegraph":
+    case "reuters":
+    case "investing_news":
+    case "investing_calendar": {
       const { createNewsProcessor } = await import("../sources/news/processor");
       const processor = createNewsProcessor({
+        enabledSources: [scraperId as import("../sources/news/types").NewsSource],
         memoryManager: memoryManager ?? undefined,
       });
       processor.start();
+      break;
+    }
+    case "x": {
+      // Composite: start all X sub-processors in one process
+      const { createBookmarkProcessor } =
+        await import("../sources/x/bookmarks/processor");
+      createBookmarkProcessor().start();
+
+      const { createAutolikeProcessor } =
+        await import("../sources/x/interactions/processor");
+      createAutolikeProcessor().start();
+
+      const { createAutofollowProcessor } =
+        await import("../sources/x/follow/processor");
+      createAutofollowProcessor().start();
+
+      const { createTimelineScrapeProcessor } =
+        await import("../sources/x/timeline/processor");
+      createTimelineScrapeProcessor({
+        memoryManager: memoryManager ?? undefined,
+      }).start();
       break;
     }
     case "x-bookmarks": {
       const { createBookmarkProcessor } =
         await import("../sources/x/bookmarks/processor");
-      const processor = createBookmarkProcessor();
-      processor.start();
+      createBookmarkProcessor().start();
       break;
     }
     case "x-autolike": {
       const { createAutolikeProcessor } =
         await import("../sources/x/interactions/processor");
-      const processor = createAutolikeProcessor();
-      processor.start();
+      createAutolikeProcessor().start();
       break;
     }
     case "x-autofollow": {
       const { createAutofollowProcessor } =
         await import("../sources/x/follow/processor");
-      const processor = createAutofollowProcessor();
-      processor.start();
+      createAutofollowProcessor().start();
       break;
     }
     case "x-timeline": {
       const { createTimelineScrapeProcessor } =
         await import("../sources/x/timeline/processor");
-      const processor = createTimelineScrapeProcessor({
+      createTimelineScrapeProcessor({
         memoryManager: memoryManager ?? undefined,
-      });
-      processor.start();
+      }).start();
       break;
     }
     case "appstore": {

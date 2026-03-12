@@ -6,6 +6,7 @@ import { createWebApp } from "./web/app";
 import { createBookmarkProcessor } from "./sources/x/bookmarks/processor";
 import { createAutolikeProcessor } from "./sources/x/interactions/processor";
 import { createAutofollowProcessor } from "./sources/x/follow/processor";
+import { createTimelineScrapeProcessor } from "./sources/x/timeline/processor";
 import { createProcessSupervisor } from "./process/supervisor";
 import { chat } from "./agent/chat";
 import {
@@ -65,6 +66,9 @@ async function main(): Promise<void> {
   const bookmarkProcessor = createBookmarkProcessor();
   const autolikeProcessor = createAutolikeProcessor();
   const autofollowProcessor = createAutofollowProcessor();
+  const timelineScrapeProcessor = createTimelineScrapeProcessor({
+    memoryManager: ctx.memoryManager ?? undefined,
+  });
 
   const mergedConfig = ctx.config;
 
@@ -76,12 +80,15 @@ async function main(): Promise<void> {
       return ctx.buildOptionsForAgent(agent);
     },
     agentRegistry: ctx.agentRegistry,
+    toolRegistry: ctx.baseToolRegistry ?? undefined,
+    buildAgentOptions: ctx.buildOptionsForAgent,
     cronStore,
     memoryManager: ctx.memoryManager ?? undefined,
     coreClient,
     bookmarkProcessor,
     autolikeProcessor,
     autofollowProcessor,
+    timelineScrapeProcessor,
     marketSymbols: config.market?.symbols ?? [],
     marketTypes: config.market?.marketTypes ?? [],
   });
@@ -214,6 +221,16 @@ async function main(): Promise<void> {
 
       // Internal restart endpoint — web process restarts itself
       if (url.pathname === "/internal/restart" && req.method === "POST") {
+        const expectedToken = process.env.OPENCROW_WEB_TOKEN;
+        if (expectedToken) {
+          const authHeader = req.headers.get("authorization");
+          const bearerToken = authHeader?.startsWith("Bearer ")
+            ? authHeader.slice(7)
+            : null;
+          if (bearerToken !== expectedToken) {
+            return new Response("Unauthorized", { status: 401 });
+          }
+        }
         log.info("Restart requested via /internal/restart");
         setTimeout(() => process.exit(0), 100);
         return new Response(JSON.stringify({ ok: true }), {

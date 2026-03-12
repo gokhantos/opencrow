@@ -183,6 +183,10 @@ export function PHCredentials() {
   }, []);
 
   useEffect(() => {
+    fetchSecrets();
+  }, [fetchSecrets]);
+
+  useEffect(() => {
     if (expanded) {
       fetchSecrets();
     }

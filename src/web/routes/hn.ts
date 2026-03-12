@@ -56,20 +56,32 @@ export function createHNRoutes(opts: {
 
   app.post("/hn/backfill-rag", async (c) => {
     log.info("HN RAG backfill triggered");
-    if (opts.scraper) {
-      const result = await opts.scraper.backfillRag();
-      return c.json({ success: true, data: result });
+    try {
+      if (opts.scraper) {
+        const result = await opts.scraper.backfillRag();
+        if (result.error) {
+          return c.json({ success: false, error: result.error, data: result }, 500);
+        }
+        return c.json({ success: true, data: result });
+      }
+      // Run backfill directly if we have a memoryManager (web process)
+      if (opts.memoryManager) {
+        const result = await backfillRagDirect(opts.memoryManager);
+        if (result.error) {
+          return c.json({ success: false, error: result.error, data: result }, 500);
+        }
+        return c.json({ success: true, data: result });
+      }
+      if (opts.coreClient) {
+        const result = await opts.coreClient.scraperAction("hn", "backfill-rag");
+        return c.json({ success: true, data: result.data });
+      }
+      return c.json({ success: false, error: "HN scraper not available" }, 503);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Backfill failed";
+      log.error("HN RAG backfill error", { error: err });
+      return c.json({ success: false, error: message }, 500);
     }
-    // Run backfill directly if we have a memoryManager (web process)
-    if (opts.memoryManager) {
-      const result = await backfillRagDirect(opts.memoryManager);
-      return c.json({ success: true, data: result });
-    }
-    if (opts.coreClient) {
-      const result = await opts.coreClient.scraperAction("hn", "backfill-rag");
-      return c.json({ success: true, data: result.data });
-    }
-    return c.json({ success: false, error: "HN scraper not available" }, 503);
   });
 
   return app;

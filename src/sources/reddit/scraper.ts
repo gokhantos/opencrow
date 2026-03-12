@@ -9,11 +9,13 @@ import {
   markPostsIndexed,
   type RedditPostRow,
 } from "./store";
-import { scrapeRedditFeed, type RawRedditPost } from "./reddit-scraper";
+import { scrapeRedditFeed, enrichPostsWithComments, type RawRedditPost } from "./reddit-scraper";
 import { getErrorMessage } from "../../lib/error-serialization";
+import { loadScraperIntervalMs } from "../scraper-config";
+
 const log = createLogger("reddit-scraper");
 
-const TICK_INTERVAL_MS = 1_800_000; // 30 minutes
+const DEFAULT_INTERVAL_MINUTES = 30;
 
 export interface RedditScraper {
   start(): void;
@@ -86,33 +88,26 @@ export function createRedditScraper(config?: {
   let timer: ReturnType<typeof setInterval> | null = null;
   const running = new Set<string>();
 
-  async function runScraper(
-    cookiesJson: string,
-  ): Promise<{ ok: true; posts: RawPost[] } | { ok: false; error: string }> {
-    try {
-      const posts = await scrapeRedditFeed(cookiesJson);
-      return { ok: true, posts: posts as RawPost[] };
-    } catch (err) {
-      const msg = getErrorMessage(err);
-      return { ok: false, error: msg };
-    }
-  }
-
   async function scrapeAccount(
     accountId: string,
     cookiesJson: string,
   ): Promise<ScrapeResult> {
-    const result = await runScraper(cookiesJson);
-
-    if (!result.ok) {
-      log.warn("Reddit scrape failed", { accountId, error: result.error });
-      return { ok: false, error: result.error };
+    // Stage 1: Fetch posts and persist immediately (survives restarts)
+    let posts: readonly RawPost[];
+    try {
+      posts = await scrapeRedditFeed(cookiesJson) as RawPost[];
+    } catch (err) {
+      const msg = getErrorMessage(err);
+      log.warn("Reddit scrape failed", { accountId, error: msg });
+      return { ok: false, error: msg };
     }
 
-    const rows = result.posts.map((p) => rawToRow(p));
+    const rows = posts.map((p) => rawToRow(p));
     const count = await upsertPosts(rows);
     await updateLastScrape(accountId, count);
+    log.info("Reddit posts persisted", { accountId, posts: count });
 
+    // Index into RAG
     if (config?.memoryManager) {
       const unindexed = await getUnindexedPosts(200);
       if (unindexed.length > 0) {
@@ -130,6 +125,19 @@ export function createRedditScraper(config?: {
       }
     }
 
+    // Stage 2: Enrich with comments and update DB (best-effort, data already saved)
+    try {
+      const enriched = await enrichPostsWithComments(cookiesJson, posts) as RawPost[];
+      const enrichedRows = enriched.map((p) => rawToRow(p));
+      await upsertPosts(enrichedRows);
+      log.info("Reddit comments enriched", { accountId, posts: enrichedRows.length });
+    } catch (err) {
+      log.warn("Reddit comment enrichment failed (posts already saved)", {
+        accountId,
+        error: getErrorMessage(err),
+      });
+    }
+
     log.info("Reddit scrape complete", { accountId, posts: count });
     return { ok: true, count };
   }
@@ -137,7 +145,10 @@ export function createRedditScraper(config?: {
   async function tick(): Promise<void> {
     try {
       const accounts = await getActiveAccounts();
-      if (accounts.length === 0) return;
+      if (accounts.length === 0) {
+        log.warn("Reddit scraper tick: no active accounts found, skipping");
+        return;
+      }
 
       log.info("Reddit scraper tick", { accounts: accounts.length });
 
@@ -187,10 +198,11 @@ export function createRedditScraper(config?: {
   }
 
   return {
-    start() {
+    async start() {
       if (timer) return;
-      timer = setInterval(tick, TICK_INTERVAL_MS);
-      log.info("Reddit scraper started", { tickMs: TICK_INTERVAL_MS });
+      const intervalMs = await loadScraperIntervalMs("reddit", DEFAULT_INTERVAL_MINUTES);
+      timer = setInterval(tick, intervalMs);
+      log.info("Reddit scraper started", { tickMs: intervalMs });
       tick().catch((err) =>
         log.error("Reddit scraper first tick error", { error: err }),
       );

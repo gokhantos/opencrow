@@ -77,7 +77,7 @@ jobs:
           find src -name '*.test.ts' \
             | grep -vE "$ISOLATED" \
             | grep -vE "$INTEGRATION" \
-            | xargs bun test --timeout 30000
+            | xargs bun test --timeout 30000 --coverage
 
   # ─── Integration Tests (with DB) ───────────────────────────
   integration-tests:

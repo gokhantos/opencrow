@@ -37,8 +37,8 @@ CLAUDE.md
 # Finder (MacOS) folder config
 .DS_Store
 
-# scripts (local-only)
-scripts/
+# scripts (track embedding server and deployment scripts)
+# scripts/
 
 # OpenCrow data
 opencrow.db

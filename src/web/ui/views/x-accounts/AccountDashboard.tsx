@@ -1,12 +1,10 @@
 import React, { useState, useEffect } from "react";
 import { cn } from "../../lib/cn";
 import { AccountHeader } from "./AccountHeader";
-import { OverviewTab } from "./OverviewTab";
 import { AutoLikesTab } from "./AutoLikesTab";
 import { AutoFollowTab } from "./AutoFollowTab";
 import { BookmarksTab } from "./BookmarksTab";
 import { TimelineTab } from "./TimelineTab";
-import { SettingsTab } from "./SettingsTab";
 import type { XAccount, FeatureTab } from "./types";
 
 interface FeatureTabDef {
@@ -15,12 +13,10 @@ interface FeatureTabDef {
 }
 
 const FEATURE_TABS: ReadonlyArray<FeatureTabDef> = [
-  { id: "overview", label: "Overview" },
+  { id: "timeline", label: "Timeline" },
   { id: "auto-likes", label: "Auto Likes" },
   { id: "auto-follow", label: "Auto Follow" },
   { id: "bookmarks", label: "Bookmarks" },
-  { id: "timeline", label: "Timeline" },
-  { id: "settings", label: "Settings" },
 ];
 
 interface AccountDashboardProps {
@@ -38,10 +34,10 @@ export function AccountDashboard({
   onDelete,
   verifying = false,
 }: AccountDashboardProps) {
-  const [activeTab, setActiveTab] = useState<FeatureTab>("overview");
+  const [activeTab, setActiveTab] = useState<FeatureTab>("timeline");
 
   useEffect(() => {
-    setActiveTab("overview");
+    setActiveTab("timeline");
   }, [account.id]);
 
   return (
@@ -75,8 +71,8 @@ export function AccountDashboard({
 
       {/* Tab content */}
       <div className="p-6">
-        {activeTab === "overview" && (
-          <OverviewTab accountId={account.id} onNavigate={setActiveTab} />
+        {activeTab === "timeline" && (
+          <TimelineTab accountId={account.id} />
         )}
         {activeTab === "auto-likes" && (
           <AutoLikesTab accountId={account.id} />
@@ -86,12 +82,6 @@ export function AccountDashboard({
         )}
         {activeTab === "bookmarks" && (
           <BookmarksTab accountId={account.id} />
-        )}
-        {activeTab === "timeline" && (
-          <TimelineTab accountId={account.id} />
-        )}
-        {activeTab === "settings" && (
-          <SettingsTab account={account} onSaved={onUpdate} />
         )}
       </div>
     </div>

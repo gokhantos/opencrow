@@ -9,10 +9,11 @@ import {
 } from "./store";
 import { getErrorMessage } from "../../lib/error-serialization";
 import { getOverride } from "../../store/config-overrides";
+import { loadScraperIntervalMs } from "../scraper-config";
 
 const log = createLogger("github-search-scraper");
 
-const TICK_INTERVAL_MS = 21_600_000; // 6 hours
+const DEFAULT_INTERVAL_MINUTES = 360; // 6 hours
 
 const GITHUB_API_URL = "https://api.github.com/search/repositories";
 const GITHUB_AGENT_ID = "github";
@@ -267,10 +268,11 @@ export function createGithubSearchScraper(config?: {
   }
 
   return {
-    start() {
+    async start() {
       if (timer) return;
-      timer = setInterval(tick, TICK_INTERVAL_MS);
-      log.info("GitHub search scraper started", { tickMs: TICK_INTERVAL_MS });
+      const intervalMs = await loadScraperIntervalMs("github-search", DEFAULT_INTERVAL_MINUTES);
+      timer = setInterval(tick, intervalMs);
+      log.info("GitHub search scraper started", { tickMs: intervalMs });
       tick().catch((err) =>
         log.error("GitHub search scraper first tick error", { error: err }),
       );

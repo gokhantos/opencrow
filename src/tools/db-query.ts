@@ -53,41 +53,64 @@ export function createDbQueryTool(): ToolDefinition {
       const params = (input.params as (string | number)[]) || [];
       const limit = Math.min((input.limit as number) || 50, 500);
 
-      // Security: Only allow SELECT queries
-      if (!query.toUpperCase().startsWith("SELECT")) {
+      // Security: Only allow SELECT queries (strip leading whitespace, comments)
+      const stripped = query.replace(/^(\s*--[^\n]*\n|\s*\/\*[\s\S]*?\*\/\s*)*/g, "").trimStart();
+      if (!/^SELECT\b/i.test(stripped)) {
         return permissionError(
           "Only SELECT queries are allowed for safety. Use mcp__dbhub__execute_sql for write operations.",
         );
       }
 
-      // Prevent dangerous operations
-      const upperQuery = query.toUpperCase();
-      const DENIED_KEYWORDS = [
-        "DROP ", "DELETE ", "UPDATE ", "INSERT ", "TRUNCATE ", "ALTER ",
-        "CREATE ", "GRANT ", "REVOKE ", "COPY ",
-      ];
-      const DENIED_FUNCTIONS = [
-        "PG_READ_FILE", "PG_READ_BINARY_FILE", "PG_WRITE_FILE",
-        "PG_EXECUTE_SERVER_PROGRAM", "LO_IMPORT", "LO_EXPORT",
-        "DBLINK", "PG_STAT_ACTIVITY", "PG_AUTHID", "PG_SHADOW",
-        "PG_ROLES", "PG_USER",
-      ];
+      // Block CTEs that could hide write operations (WITH ... DELETE/UPDATE/INSERT)
+      if (/\bWITH\b[\s\S]*?\b(DELETE|UPDATE|INSERT|DROP|TRUNCATE|ALTER|CREATE|GRANT|REVOKE)\b/i.test(query)) {
+        return {
+          output: "CTEs with write operations are not allowed. Only pure SELECT queries permitted.",
+          isError: true,
+        };
+      }
 
-      if (DENIED_KEYWORDS.some((kw) => upperQuery.includes(kw))) {
+      // Prevent dangerous operations using word-boundary regex (not bypassable with comments/whitespace)
+      const DENIED_KEYWORD_PATTERN = /\b(DROP|DELETE|UPDATE|INSERT|TRUNCATE|ALTER|CREATE|GRANT|REVOKE|COPY)\b/i;
+      const DENIED_FUNCTION_PATTERN = /\b(PG_READ_FILE|PG_READ_BINARY_FILE|PG_WRITE_FILE|PG_EXECUTE_SERVER_PROGRAM|LO_IMPORT|LO_EXPORT|DBLINK|PG_STAT_ACTIVITY|PG_AUTHID|PG_SHADOW|PG_ROLES|PG_USER)\b/i;
+
+      // Strip SQL comments before checking keywords (prevents bypass via /* */ or --)
+      const decommented = query
+        .replace(/--[^\n]*/g, "")
+        .replace(/\/\*[\s\S]*?\*\//g, "");
+
+      if (DENIED_KEYWORD_PATTERN.test(decommented)) {
         return permissionError(
           "Only read-only SELECT queries are allowed. No DDL or DML operations.",
         );
       }
 
-      if (DENIED_FUNCTIONS.some((fn) => upperQuery.includes(fn))) {
+      if (DENIED_FUNCTION_PATTERN.test(decommented)) {
         return permissionError(
           "Query uses a restricted PostgreSQL function. Access to system catalog functions and file I/O is not allowed.",
         );
       }
 
-      // Add LIMIT if not present and query doesn't have one
+      // Block access to sensitive tables that may contain secrets or credentials
+      const SENSITIVE_TABLES = [
+        "config_overrides",
+        "pg_shadow",
+        "pg_authid",
+        "pg_auth_members",
+      ];
+      const lowerDecommented = decommented.toLowerCase();
+      const accessedSensitive = SENSITIVE_TABLES.find((t) =>
+        new RegExp(`\\b${t}\\b`).test(lowerDecommented),
+      );
+      if (accessedSensitive) {
+        return {
+          output: `Access to table "${accessedSensitive}" is restricted for security. This table may contain sensitive configuration.`,
+          isError: true,
+        };
+      }
+
+      // Add LIMIT if not present (use regex to handle whitespace/comments around LIMIT)
       let finalQuery = query;
-      if (!upperQuery.includes("LIMIT ")) {
+      if (!/\bLIMIT\s+\d+/i.test(decommented)) {
         finalQuery = `${query} LIMIT ${limit}`;
       }
 
@@ -95,7 +118,8 @@ export function createDbQueryTool(): ToolDefinition {
         const db = getDb();
         const startTime = Date.now();
 
-        // Execute query — use db.unsafe(query, params) which properly parameterizes
+        // Security: relies on the regex blocklist above — no DB-level read-only guarantee.
+        // db.unsafe() is required here because the query is dynamic (agent-supplied).
         let rows;
         if (params.length > 0) {
           rows = await db.unsafe(finalQuery, params);
@@ -328,7 +352,7 @@ export function createDbRowCountTool(): ToolDefinition {
           } catch {
             // Fallback to estimate
             countResult = await db`
-              SELECT n_live_today as cnt
+              SELECT n_live_tup as cnt
               FROM pg_stat_user_tables
               WHERE schemaname = ${schema} AND relname = ${t.table_name}
             `;

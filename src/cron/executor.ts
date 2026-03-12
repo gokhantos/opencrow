@@ -6,10 +6,13 @@ import type { Channel } from "../channels/types";
 import type { ResolvedAgent } from "../agents/types";
 import type { DeliveryStore } from "./delivery-store";
 import type { ProgressEvent } from "../agent/types";
+import type { EngineDeps } from "../workflows/types";
 import { runAgentIsolated } from "../agents/runner";
 import { computeNextRunAt } from "./schedule";
 import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
+import { getWorkflowById } from "../store/workflows";
+import { startWorkflowExecution } from "../workflows/engine";
 
 const log = createLogger("cron:executor");
 
@@ -20,6 +23,7 @@ export interface ExecutorDeps {
   readonly channels: ReadonlyMap<string, Channel>;
   readonly defaultTimeoutSeconds: number;
   readonly deliveryStore?: DeliveryStore;
+  readonly workflowEngineDeps?: EngineDeps;
   readonly buildRegistryForAgent?: (
     agent: ResolvedAgent,
   ) => ToolRegistry | null;
@@ -91,8 +95,6 @@ export async function executeCronJob(
 
   log.info("Executing cron job", { jobId: job.id, name: job.name, runId });
 
-  const agentId = job.payload.agentId ?? deps.agentRegistry.getDefault().id;
-
   // 1. Create a 'running' record BEFORE execution
   const runningRecord: CronRunRecord = {
     id: runId,
@@ -106,6 +108,13 @@ export async function executeCronJob(
     progress: null,
   };
   await deps.cronStore.addRun(runningRecord);
+
+  // workflowRun payloads are handled separately
+  if (job.payload.kind === "workflowRun") {
+    return executeWorkflowRunJob(job, deps, runId, runningRecord, startedAt, startMs);
+  }
+
+  const agentId = job.payload.agentId ?? deps.agentRegistry.getDefault().id;
 
   // 2. Build progress collector with periodic DB flush
   const progressEntries: CronProgressEntry[] = [];
@@ -247,6 +256,79 @@ export async function executeCronJob(
     startedAt,
     endedAt,
     progress: progressEntries.length > 0 ? progressEntries : null,
+  };
+}
+
+async function executeWorkflowRunJob(
+  job: CronJob,
+  deps: ExecutorDeps,
+  runId: string,
+  runningRecord: CronRunRecord,
+  startedAt: number,
+  startMs: number,
+): Promise<CronRunRecord> {
+  if (job.payload.kind !== "workflowRun") {
+    throw new Error("executeWorkflowRunJob called with non-workflowRun payload");
+  }
+
+  const { workflowId } = job.payload;
+
+  let status: CronRunRecord["status"] = "ok";
+  let resultSummary: string | null = null;
+  let error: string | null = null;
+
+  try {
+    if (!deps.workflowEngineDeps) {
+      throw new Error("Workflow engine deps not configured for workflow cron job");
+    }
+
+    const workflow = await getWorkflowById(workflowId);
+    if (!workflow) {
+      throw new Error(`Workflow not found: ${workflowId}`);
+    }
+
+    if (!workflow.enabled) {
+      throw new Error(`Workflow is disabled: ${workflowId}`);
+    }
+
+    const { executionId } = await startWorkflowExecution(
+      workflow,
+      { triggeredBy: "cron", jobId: job.id },
+      deps.workflowEngineDeps,
+    );
+
+    resultSummary = `Started execution ${executionId}`;
+    log.info("Workflow cron job started execution", { workflowId, executionId, jobId: job.id });
+  } catch (err) {
+    const msg = getErrorMessage(err);
+    status = "error";
+    error = msg;
+    log.error("Workflow cron job failed", { workflowId, jobId: job.id, error: msg });
+  }
+
+  const endedAt = Math.floor(Date.now() / 1000);
+  const durationMs = Date.now() - startMs;
+
+  await deps.cronStore.updateRunStatus(runId, status, resultSummary, error, durationMs, endedAt);
+  await deps.cronStore.setJobLastRun(job.id, status, error);
+
+  if (job.deleteAfterRun) {
+    await deps.cronStore.removeJob(job.id);
+    log.info("Cron job deleted after run", { jobId: job.id });
+  } else {
+    const nextRunAt = computeNextRunAt(job.schedule, Date.now());
+    await deps.cronStore.setJobNextRun(job.id, nextRunAt ?? null);
+  }
+
+  return {
+    ...runningRecord,
+    status,
+    resultSummary,
+    error,
+    durationMs,
+    startedAt,
+    endedAt,
+    progress: null,
   };
 }
 

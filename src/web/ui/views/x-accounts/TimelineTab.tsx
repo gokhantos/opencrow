@@ -50,10 +50,10 @@ const INTERVAL_PRESETS = [
 type SourceFilter = "all" | "home" | "top_posts";
 
 const PILL_BASE =
-  "py-2 px-5 rounded-full border font-mono text-sm font-medium cursor-pointer transition-colors";
+  "py-1.5 px-4 rounded-full border font-mono text-xs font-medium cursor-pointer transition-all duration-150";
 const PILL_ACTIVE = "bg-accent-subtle border-accent text-accent font-semibold";
 const PILL_INACTIVE =
-  "bg-bg-2 border-border text-muted hover:bg-accent-subtle hover:border-accent hover:text-accent";
+  "bg-bg-1 border-border text-muted hover:bg-accent-subtle hover:border-accent hover:text-accent";
 const PILL_DISABLED = "opacity-40 cursor-not-allowed pointer-events-none";
 
 interface TimelineTabProps {
@@ -108,11 +108,12 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
   useAutoRefresh(isRunning, loadData);
 
   function buildSources(): Record<string, unknown> {
+    const srcs = [
+      ...(homeEnabled ? ["home"] : []),
+      ...(topEnabled ? ["top_posts"] : []),
+    ].join(",");
     return {
-      sources: {
-        home: homeEnabled,
-        top: topEnabled,
-      },
+      sources: srcs || "home",
       languages: languages.trim() || null,
     };
   }
@@ -121,7 +122,7 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
     useJobActions({
       startUrl: "/api/x/timeline/start",
       stopUrl: "/api/x/timeline/stop",
-      runNowUrl: "/api/x/timeline/scrape-now",
+      runNowUrl: "/api/x/timeline/run-now",
       accountId,
       startBody: { interval_minutes: intervalMinutes, ...buildSources() },
       onSuccess: loadData,
@@ -146,7 +147,6 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
         : topTweets;
 
   const displayError = error ?? job?.last_error ?? null;
-
   const onlyOneSrcActive = homeEnabled !== topEnabled;
 
   return (
@@ -158,21 +158,9 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
         lastRunAt={job?.last_run_at ?? null}
         lastError={displayError}
         stats={[
-          {
-            label: "total",
-            value: tweets.length,
-            color: "text-accent",
-          },
-          {
-            label: "home",
-            value: homeTweets.length,
-            color: "text-foreground",
-          },
-          {
-            label: "top",
-            value: topTweets.length,
-            color: "text-foreground",
-          },
+          { label: "total", value: tweets.length, color: "text-accent" },
+          { label: "home", value: homeTweets.length, color: "text-foreground" },
+          { label: "top", value: topTweets.length, color: "text-foreground" },
         ]}
       />
 
@@ -196,61 +184,61 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
         intervalPresets={INTERVAL_PRESETS}
         startLabel="Start Scraping"
         runNowLabel="Scrape Now"
-      />
+      >
+        {/* Sources */}
+        <div>
+          <div className="font-sans text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-faint mb-2">
+            Sources
+          </div>
+          <div className="flex gap-1.5 flex-wrap">
+            <button
+              type="button"
+              className={cn(
+                PILL_BASE,
+                homeEnabled ? PILL_ACTIVE : PILL_INACTIVE,
+                (isRunning || (onlyOneSrcActive && homeEnabled)) && PILL_DISABLED,
+              )}
+              onClick={() => setHomeEnabled((v) => !v)}
+              disabled={isRunning || (onlyOneSrcActive && homeEnabled)}
+            >
+              Home Timeline
+            </button>
+            <button
+              type="button"
+              className={cn(
+                PILL_BASE,
+                topEnabled ? PILL_ACTIVE : PILL_INACTIVE,
+                (isRunning || (onlyOneSrcActive && topEnabled)) && PILL_DISABLED,
+              )}
+              onClick={() => setTopEnabled((v) => !v)}
+              disabled={isRunning || (onlyOneSrcActive && topEnabled)}
+            >
+              Top Posts
+            </button>
+          </div>
+        </div>
 
-      {/* Source toggles */}
-      <div className="mb-5">
-        <div className="font-sans text-xs font-semibold uppercase tracking-widest text-faint mb-3">
-          Sources
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          <button
-            type="button"
+        {/* Languages */}
+        <div>
+          <div className="font-sans text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-faint mb-2">
+            Languages
+          </div>
+          <input
+            type="text"
+            value={languages}
+            onChange={(e) => setLanguages(e.target.value)}
+            disabled={isRunning}
+            placeholder="en,es,fr"
             className={cn(
-              PILL_BASE,
-              homeEnabled ? PILL_ACTIVE : PILL_INACTIVE,
-              (isRunning || (onlyOneSrcActive && homeEnabled)) && PILL_DISABLED,
+              "w-48 px-3 py-1.5 rounded-lg border bg-bg-1 border-border font-mono text-xs text-foreground placeholder:text-faint focus:outline-none focus:border-accent transition-colors",
+              isRunning && "opacity-40 cursor-not-allowed",
             )}
-            onClick={() => setHomeEnabled((v) => !v)}
-            disabled={isRunning || (onlyOneSrcActive && homeEnabled)}
-          >
-            Home Timeline
-          </button>
-          <button
-            type="button"
-            className={cn(
-              PILL_BASE,
-              topEnabled ? PILL_ACTIVE : PILL_INACTIVE,
-              (isRunning || (onlyOneSrcActive && topEnabled)) && PILL_DISABLED,
-            )}
-            onClick={() => setTopEnabled((v) => !v)}
-            disabled={isRunning || (onlyOneSrcActive && topEnabled)}
-          >
-            Top Posts
-          </button>
+          />
+          <p className="text-faint text-[0.6rem] mt-1 font-sans">
+            Comma-separated language codes. Leave empty to fetch all.
+          </p>
         </div>
-      </div>
-
-      {/* Language filter */}
-      <div className="mb-5">
-        <div className="font-sans text-xs font-semibold uppercase tracking-widest text-faint mb-3">
-          Languages
-        </div>
-        <input
-          type="text"
-          value={languages}
-          onChange={(e) => setLanguages(e.target.value)}
-          disabled={isRunning}
-          placeholder="en,es,fr"
-          className={cn(
-            "w-48 px-4 py-2 rounded-lg border bg-bg-2 border-border font-mono text-sm text-foreground placeholder:text-faint focus:outline-none focus:border-accent transition-colors",
-            isRunning && "opacity-40 cursor-not-allowed",
-          )}
-        />
-        <p className="text-faint text-xs mt-1 font-sans">
-          Comma-separated language codes. Leave empty to fetch all.
-        </p>
-      </div>
+      </JobControls>
 
       {/* Source filter tabs */}
       <div className="flex gap-0 border-b border-border mb-4">
@@ -258,11 +246,7 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
           [
             { id: "all" as const, label: "All", count: tweets.length },
             { id: "home" as const, label: "Home", count: homeTweets.length },
-            {
-              id: "top_posts" as const,
-              label: "Top Posts",
-              count: topTweets.length,
-            },
+            { id: "top_posts" as const, label: "Top Posts", count: topTweets.length },
           ] as const
         ).map((tab) => (
           <button
@@ -287,7 +271,7 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
         ))}
       </div>
 
-      {/* Tweet list — full height, no max-height */}
+      {/* Tweet list */}
       <div className="flex flex-col gap-1">
         {visibleTweets.length === 0 ? (
           <div className="text-center text-faint py-8 text-sm font-sans">

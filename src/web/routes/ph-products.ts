@@ -75,18 +75,24 @@ export function createPHProductRoutes(opts: {
 
   app.post("/ph/backfill-rag", async (c) => {
     log.info("PH RAG backfill triggered");
-
-    if (opts.scraper) {
-      const result = await opts.scraper.backfillRag();
-      return c.json({ success: true, data: result });
+    try {
+      if (opts.scraper) {
+        const result = await opts.scraper.backfillRag();
+        if (result.error) {
+          return c.json({ success: false, error: result.error, data: result }, 500);
+        }
+        return c.json({ success: true, data: result });
+      }
+      if (opts.coreClient) {
+        const result = await opts.coreClient.scraperAction("ph", "backfill-rag");
+        return c.json({ success: true, data: result.data });
+      }
+      return c.json({ success: false, error: "PH scraper not available" }, 503);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Backfill failed";
+      log.error("PH RAG backfill error", { error: err });
+      return c.json({ success: false, error: message }, 500);
     }
-
-    if (opts.coreClient) {
-      const result = await opts.coreClient.scraperAction("ph", "backfill-rag");
-      return c.json({ success: true, data: result.data });
-    }
-
-    return c.json({ success: false, error: "PH scraper not available" }, 503);
   });
 
   return app;

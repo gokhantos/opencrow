@@ -138,21 +138,30 @@ export function createTimelineRoutes(opts: {
 
   app.post("/timeline/backfill-rag", async (c) => {
     log.info("Timeline RAG backfill triggered");
-    if (opts.processor) {
-      const result = await opts.processor.backfillRag();
-      return c.json({ success: true, data: result });
-    }
-    if (opts.coreClient) {
-      const result = await opts.coreClient.scraperAction(
-        "x-timeline",
-        "backfill-rag",
+    try {
+      if (opts.processor) {
+        const result = await opts.processor.backfillRag();
+        if (result.error) {
+          return c.json({ success: false, error: result.error, data: result }, 500);
+        }
+        return c.json({ success: true, data: result });
+      }
+      if (opts.coreClient) {
+        const result = await opts.coreClient.scraperAction(
+          "x-timeline",
+          "backfill-rag",
+        );
+        return c.json({ success: true, data: result.data });
+      }
+      return c.json(
+        { success: false, error: "Timeline processor not available" },
+        503,
       );
-      return c.json({ success: true, data: result.data });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Backfill failed";
+      log.error("Timeline RAG backfill error", { error: err });
+      return c.json({ success: false, error: message }, 500);
     }
-    return c.json(
-      { success: false, error: "Timeline processor not available" },
-      503,
-    );
   });
 
   app.post("/timeline/run-now", async (c) => {

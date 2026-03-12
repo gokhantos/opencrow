@@ -3,6 +3,7 @@ import { createLogger } from "../../logger";
 import {
   getRankings,
   getRankingsByCategory,
+  getDiscoveredApps,
   getLowRatedReviews,
 } from "../../sources/playstore/store";
 import { getDb } from "../../store/db";
@@ -19,13 +20,20 @@ export function createPlayStoreRoutes(
     const listType = c.req.query("list_type") || undefined;
     const category = c.req.query("category") || undefined;
     const limitParam = c.req.query("limit");
-    const limit = Math.max(1, Math.min(Number(limitParam ?? "50") || 50, 200));
+    const limit = Math.max(1, Math.min(Number(limitParam ?? "200") || 200, 500));
 
     const rankings = category
       ? await getRankingsByCategory(category, limit)
       : await getRankings(listType, limit);
 
     return c.json({ success: true, data: rankings });
+  });
+
+  app.get("/playstore/discovered", async (c) => {
+    const limitParam = c.req.query("limit");
+    const limit = Math.max(1, Math.min(Number(limitParam ?? "100") || 100, 500));
+    const apps = await getDiscoveredApps(limit);
+    return c.json({ success: true, data: apps });
   });
 
   app.get("/playstore/reviews", async (c) => {
@@ -39,10 +47,10 @@ export function createPlayStoreRoutes(
     const db = getDb();
     const rows = await db`
       SELECT
-        (SELECT count(*) FROM playstore_rankings) as total_apps,
+        (SELECT count(*) FROM playstore_apps) as total_apps,
         (SELECT count(*) FROM playstore_reviews) as total_reviews,
-        (SELECT count(DISTINCT category) FROM playstore_rankings) as total_categories,
-        (SELECT max(updated_at) FROM playstore_rankings) as last_updated_at
+        (SELECT count(DISTINCT category) FROM playstore_apps) as total_categories,
+        (SELECT max(updated_at) FROM playstore_apps) as last_updated_at
     `;
     const stats = rows[0] ?? {
       total_apps: 0,

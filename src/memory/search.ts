@@ -122,10 +122,15 @@ export function createMemorySearch(config: SearchConfig): MemorySearch {
     // Check cache first to avoid redundant embedding API calls
     let queryEmbedding = queryEmbeddingCache.get(query);
     if (!queryEmbedding) {
-      const [embedded] = await config.embeddingProvider.embed([query]);
-      if (!embedded) return new Map();
-      queryEmbeddingCache.set(query, embedded);
-      queryEmbedding = embedded;
+      try {
+        const [embedded] = await config.embeddingProvider.embed([query]);
+        if (!embedded) return new Map();
+        queryEmbeddingCache.set(query, embedded);
+        queryEmbedding = embedded;
+      } catch {
+        // Embedding timeout — degrade gracefully to FTS-only
+        return new Map();
+      }
     }
 
     const filter = buildQdrantFilter(agentId, kinds);

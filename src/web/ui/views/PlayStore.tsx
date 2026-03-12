@@ -7,7 +7,9 @@ import {
   FilterTabs,
   Button,
 } from "../components";
+import { useToast } from "../components/Toast";
 import { cn } from "../lib/cn";
+import { Settings2, ChevronDown } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -49,7 +51,7 @@ interface StatsData {
   readonly last_updated_at: number | null;
 }
 
-type MainTab = "rankings" | "reviews";
+type MainTab = "rankings" | "discovered" | "reviews";
 type OverallFilter = "all" | "top-free" | "top-paid";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -178,10 +180,15 @@ interface GroupedRankingsProps {
 }
 
 function GroupedRankings({ rankings }: GroupedRankingsProps) {
-  const groups = rankings.reduce<Record<string, PlayRankingRow[]>>((acc, app) => {
-    const key = app.list_type;
-    return { ...acc, [key]: [...(acc[key] ?? []), app] };
-  }, {});
+  const seen = new Set<string>();
+  const groups: Record<string, PlayRankingRow[]> = {};
+
+  for (const app of rankings) {
+    if (seen.has(app.id)) continue;
+    seen.add(app.id);
+    const key = app.category || "Other";
+    groups[key] = [...(groups[key] ?? []), app];
+  }
 
   const sortedKeys = Object.keys(groups).sort();
 
@@ -191,24 +198,19 @@ function GroupedRankings({ rankings }: GroupedRankingsProps) {
 
   return (
     <div className="flex flex-col gap-8">
-      {sortedKeys.map((listType) => {
-        const apps = groups[listType] ?? [];
-        const firstApp = apps[0];
-        const groupLabel =
-          firstApp?.category
-            ? `${listTypeLabel(listType)} — ${firstApp.category}`
-            : listTypeLabel(listType);
+      {sortedKeys.map((category) => {
+        const apps = groups[category] ?? [];
         return (
-          <section key={listType}>
+          <section key={category}>
             <h3 className="text-sm font-semibold text-muted uppercase tracking-wider mb-3 m-0">
-              {groupLabel}
+              {category}
               <span className="ml-2 font-mono text-xs text-faint bg-bg-2 px-2 py-0.5 rounded">
                 {apps.length}
               </span>
             </h3>
             <div className="grid gap-2 grid-cols-1 lg:grid-cols-2">
               {apps.map((app) => (
-                <PlayCard key={`${app.id}-${app.list_type}`} app={app} />
+                <PlayCard key={app.id} app={app} />
               ))}
             </div>
           </section>
@@ -294,15 +296,99 @@ const OVERALL_CHIPS = [
 ] as const;
 
 const MAIN_TABS = [
-  { id: "rankings", label: "Rankings" },
+  { id: "rankings", label: "Top Apps" },
+  { id: "discovered", label: "Discovered" },
   { id: "reviews", label: "Reviews" },
 ] as const;
+
+function IntervalConfigPanel({ scraperId, defaultMinutes }: { readonly scraperId: string; readonly defaultMinutes: number }) {
+  const { success, error: toastError } = useToast();
+  const [open, setOpen] = useState(false);
+  const [interval, setInterval_] = useState(defaultMinutes);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open || loaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch<{ data: { intervalMinutes: number } }>(
+          `/api/features/scraper-config/${scraperId}`,
+        );
+        if (!cancelled) { setInterval_(res.data.intervalMinutes); setLoaded(true); }
+      } catch {
+        if (!cancelled) { setLoaded(true); toastError("Failed to load config."); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await apiFetch(`/api/features/scraper-config/${scraperId}`, {
+        method: "PUT",
+        body: JSON.stringify({ intervalMinutes: interval }),
+      });
+      success("Config saved.");
+    } catch {
+      toastError("Failed to save config.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="bg-bg-1 border border-border rounded-lg mb-5">
+      <button
+        type="button"
+        onClick={() => setOpen((p) => !p)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-transparent border-none cursor-pointer text-left"
+      >
+        <div className="flex items-center gap-2 text-xs text-muted">
+          <Settings2 className="w-3.5 h-3.5" />
+          <span className="font-medium">Scraper Config</span>
+        </div>
+        <ChevronDown className={`w-3.5 h-3.5 text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="border-t border-border px-4 py-3 flex flex-col gap-3">
+          {!loaded ? (
+            <p className="text-xs text-muted">Loading...</p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-foreground">Scrape interval (min)</div>
+                  <div className="text-xs text-muted mt-0.5">How often to scrape</div>
+                </div>
+                <input
+                  type="number"
+                  min={10}
+                  max={1440}
+                  value={interval}
+                  onChange={(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n)) setInterval_(n); }}
+                  className="w-20 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
+                />
+              </div>
+              <div className="flex justify-end">
+                <Button variant="primary" size="sm" onClick={handleSave} disabled={saving} loading={saving}>Save</Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function PlayStore() {
   const [mainTab, setMainTab] = useState<MainTab>("rankings");
   const [overallFilter, setOverallFilter] = useState<OverallFilter>("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [rankings, setRankings] = useState<PlayRankingRow[]>([]);
+  const [discoveredApps, setDiscoveredApps] = useState<PlayRankingRow[]>([]);
   const [reviews, setReviews] = useState<PlayReviewRow[]>([]);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -310,13 +396,16 @@ export default function PlayStore() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ limit: "100" });
+      const params = new URLSearchParams({ limit: "500" });
       if (overallFilter !== "all") params.set("list_type", overallFilter);
       if (categoryFilter !== "all") params.set("category", categoryFilter);
 
-      const [rankingsRes, reviewsRes, statsRes] = await Promise.all([
+      const [rankingsRes, discoveredRes, reviewsRes, statsRes] = await Promise.all([
         apiFetch<{ success: boolean; data: PlayRankingRow[] }>(
           `/api/playstore/rankings?${params.toString()}`,
+        ),
+        apiFetch<{ success: boolean; data: PlayRankingRow[] }>(
+          "/api/playstore/discovered?limit=100",
         ),
         apiFetch<{ success: boolean; data: PlayReviewRow[] }>(
           "/api/playstore/reviews?limit=100",
@@ -326,6 +415,7 @@ export default function PlayStore() {
         ),
       ]);
       if (rankingsRes.success) setRankings(rankingsRes.data);
+      if (discoveredRes.success) setDiscoveredApps(discoveredRes.data);
       if (reviewsRes.success) setReviews(reviewsRes.data);
       if (statsRes.success) setStats(statsRes.data);
     } catch {
@@ -359,13 +449,13 @@ export default function PlayStore() {
   ).sort();
 
   const categoryChips = [
-    { id: "all", label: "All Categories" },
+    { id: "all", label: "All" },
     ...availableCategories.map((c) => ({ id: c, label: c })),
   ];
 
   const tabsWithCounts = MAIN_TABS.map((t) => ({
     ...t,
-    count: t.id === "rankings" ? rankings.length : reviews.length,
+    count: t.id === "rankings" ? rankings.length : t.id === "discovered" ? discoveredApps.length : reviews.length,
   }));
 
   if (loading) return <LoadingState message="Loading Play Store data…" />;
@@ -381,7 +471,6 @@ export default function PlayStore() {
         subtitle={subtitle}
         actions={
           <Button
-            variant="secondary"
             size="sm"
             onClick={handleScrapeNow}
             disabled={scraping}
@@ -391,6 +480,8 @@ export default function PlayStore() {
         }
       />
 
+      <IntervalConfigPanel scraperId="playstore" defaultMinutes={60} />
+
       <FilterTabs
         tabs={tabsWithCounts}
         active={mainTab}
@@ -399,53 +490,75 @@ export default function PlayStore() {
 
       {mainTab === "rankings" && (
         <>
-          {/* Overall filter chips */}
-          <div className="flex gap-1.5 flex-wrap mb-3">
-            {OVERALL_CHIPS.map((chip) => (
-              <button
-                key={chip.id}
-                type="button"
-                onClick={() => {
-                  setOverallFilter(chip.id as OverallFilter);
-                  setCategoryFilter("all");
-                }}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg text-sm font-medium cursor-pointer transition-colors duration-150 border",
-                  overallFilter === chip.id
-                    ? "bg-accent text-white border-accent font-semibold"
-                    : "bg-transparent border-border-2 text-muted hover:bg-bg-2 hover:border-border-hover hover:text-foreground",
-                )}
-              >
-                {chip.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Category chips — only when a specific list type is selected and data is available */}
-          {overallFilter !== "all" && availableCategories.length > 0 && (
-            <div className="flex gap-1.5 flex-wrap mb-5">
-              {categoryChips.map((chip) => (
+          {/* Type + Category filters */}
+          <div className="flex flex-wrap items-center gap-4 mb-4">
+            <div className="flex gap-1.5">
+              {OVERALL_CHIPS.map((chip) => (
                 <button
                   key={chip.id}
                   type="button"
-                  onClick={() => setCategoryFilter(chip.id)}
+                  onClick={() => {
+                    setOverallFilter(chip.id as OverallFilter);
+                    setCategoryFilter("all");
+                  }}
                   className={cn(
-                    "px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors duration-150 border",
-                    categoryFilter === chip.id
-                      ? "bg-accent/20 text-accent border-accent/40 font-semibold"
-                      : "bg-transparent border-border-2 text-faint hover:bg-bg-2 hover:border-border-hover hover:text-muted",
+                    "px-3 py-1.5 rounded-lg text-sm font-medium cursor-pointer transition-colors duration-150 border",
+                    overallFilter === chip.id
+                      ? "bg-accent text-white border-accent font-semibold"
+                      : "bg-transparent border-border-2 text-muted hover:bg-bg-2 hover:border-border-hover hover:text-foreground",
                   )}
                 >
                   {chip.label}
                 </button>
               ))}
             </div>
-          )}
 
-          {overallFilter === "all" ? (
-            <GroupedRankings rankings={rankings} />
-          ) : (
+            {availableCategories.length > 0 && (
+              <div className="w-px h-5 bg-border-2 hidden sm:block" />
+            )}
+
+            {availableCategories.length > 0 && (
+              <div className="flex gap-1.5 flex-wrap">
+                {categoryChips.map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    onClick={() => setCategoryFilter(chip.id)}
+                    className={cn(
+                      "px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer transition-colors duration-150 border",
+                      categoryFilter === chip.id
+                        ? "bg-accent/20 text-accent border-accent/40 font-semibold"
+                        : "bg-transparent border-border-2 text-faint hover:bg-bg-2 hover:border-border-hover hover:text-muted",
+                    )}
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {categoryFilter !== "all" ? (
             <FlatRankings rankings={rankings} />
+          ) : (
+            <GroupedRankings rankings={rankings} />
+          )}
+        </>
+      )}
+
+      {mainTab === "discovered" && (
+        <>
+          {discoveredApps.length === 0 ? (
+            <EmptyState
+              title="No discovered apps"
+              description="Discovered apps will appear here after the next scrape cycle."
+            />
+          ) : (
+            <div className="grid gap-2 grid-cols-1 lg:grid-cols-2">
+              {discoveredApps.map((app) => (
+                <PlayCard key={`${app.id}-${app.list_type}`} app={app} />
+              ))}
+            </div>
           )}
         </>
       )}

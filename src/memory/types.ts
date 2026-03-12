@@ -33,9 +33,9 @@ export type MemorySourceKind =
   | "observation"
   | "idea"
   | "appstore_review"
-  | "appstore_ranking"
+  | "appstore_app"
   | "playstore_review"
-  | "playstore_ranking"
+  | "playstore_app"
 ;
 
 export const MEMORY_SOURCE_KINDS = [
@@ -54,9 +54,9 @@ export const MEMORY_SOURCE_KINDS = [
   "observation",
   "idea",
   "appstore_review",
-  "appstore_ranking",
+  "appstore_app",
   "playstore_review",
-  "playstore_ranking",
+  "playstore_app",
 ] as const satisfies readonly MemorySourceKind[];
 
 /** Map news source_name from scrapers to the corresponding memory kind. */
