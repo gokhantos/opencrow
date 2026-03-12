@@ -31,6 +31,7 @@ import { createSecretsRoutes } from "./routes/secrets";
 import { createRoutingRulesRoutes } from "./routes/routing-rules";
 import { createAppStoreRoutes } from "./routes/appstore";
 import { createPlayStoreRoutes } from "./routes/playstore";
+import { createWorkflowRoutes } from "./routes/workflows";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
 import type { AutofollowProcessor } from "../sources/x/follow/processor";
@@ -340,6 +341,9 @@ export function createWebApp(deps: WebAppDeps): Hono {
   app.route("/api", playStore);
 
 
+
+  const workflows = createWorkflowRoutes();
+  app.route("/api", workflows);
 
   const skills = createSkillRoutes();
   app.route("/api", skills);

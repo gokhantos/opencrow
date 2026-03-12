@@ -24,6 +24,7 @@ import {
   Smartphone,
   Settings,
   MessagesSquare,
+  Workflow,
 } from "lucide-react";
 
 export type Tab =
@@ -51,7 +52,8 @@ export type Tab =
   | "routing"
   | "memory"
   | "logs"
-  | "settings";
+  | "settings"
+  | "workflows";
 
 export interface NavItem {
   readonly id: Tab;
@@ -71,7 +73,7 @@ export const VALID_TABS = new Set<Tab>([
   "github", "appstore", "playstore",
   "news", "markets", "ideas", "cron",
   "processes", "system", "tools", "agent-metrics", "routing",
-  "memory", "logs", "settings",
+  "memory", "logs", "settings", "workflows",
 ]);
 
 export const TAB_TITLES: Record<Tab, string> = {
@@ -100,6 +102,7 @@ export const TAB_TITLES: Record<Tab, string> = {
   memory: "Memory",
   logs: "Logs",
   settings: "Settings",
+  workflows: "Workflows",
 };
 
 export const NAV_SECTIONS: readonly NavSection[] = [
@@ -120,6 +123,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       { id: "sessions", label: "Sessions", Icon: MessageSquare },
       { id: "routing", label: "Routing", Icon: GitBranch },
       { id: "channels", label: "Channels", Icon: Hash },
+      { id: "workflows", label: "Workflows", Icon: Workflow },
     ],
   },
   {
