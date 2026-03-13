@@ -24,6 +24,7 @@ import {
   Settings,
   MessagesSquare,
   Workflow,
+  Zap,
 } from "lucide-react";
 
 export type Tab =
@@ -51,7 +52,8 @@ export type Tab =
   | "memory"
   | "logs"
   | "settings"
-  | "workflows";
+  | "workflows"
+  | "pipelines";
 
 export interface NavItem {
   readonly id: Tab;
@@ -71,7 +73,7 @@ export const VALID_TABS = new Set<Tab>([
   "github", "appstore", "playstore",
   "news", "markets", "cron",
   "processes", "system", "tools", "agent-metrics", "routing",
-  "memory", "logs", "settings", "workflows",
+  "memory", "logs", "settings", "workflows", "pipelines",
 ]);
 
 export const TAB_TITLES: Record<Tab, string> = {
@@ -100,6 +102,7 @@ export const TAB_TITLES: Record<Tab, string> = {
   logs: "Logs",
   settings: "Settings",
   workflows: "Workflows",
+  pipelines: "Pipelines",
 };
 
 export const NAV_SECTIONS: readonly NavSection[] = [
@@ -142,6 +145,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     items: [
       { id: "news", label: "News Feed", Icon: Newspaper },
       { id: "markets", label: "Markets", Icon: TrendingUp },
+      { id: "pipelines", label: "Pipelines", Icon: Zap },
       { id: "memory", label: "Memory", Icon: Brain },
     ],
   },

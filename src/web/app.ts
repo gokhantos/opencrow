@@ -30,6 +30,7 @@ import { createRoutingRulesRoutes } from "./routes/routing-rules";
 import { createAppStoreRoutes } from "./routes/appstore";
 import { createPlayStoreRoutes } from "./routes/playstore";
 import { createWorkflowRoutes } from "./routes/workflows";
+import { createPipelineRoutes } from "./routes/pipelines";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
 import type { AutofollowProcessor } from "../sources/x/follow/processor";
@@ -331,6 +332,9 @@ export function createWebApp(deps: WebAppDeps): Hono {
     });
     app.route("/api", news);
   }
+
+  const pipelines = createPipelineRoutes();
+  app.route("/api", pipelines);
 
   const appStore = createAppStoreRoutes({ coreClient: cc });
   app.route("/api", appStore);

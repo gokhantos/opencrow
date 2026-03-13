@@ -22,6 +22,7 @@ export interface InsertIdeaInput {
   readonly sources_used: string;
   readonly category: string;
   readonly quality_score: number | null;
+  readonly pipeline_run_id?: string;
 }
 
 export interface GetIdeasOptions {
@@ -45,8 +46,8 @@ export async function insertIdea(
   const id = crypto.randomUUID();
 
   const rows = await db`
-    INSERT INTO generated_ideas (id, agent_id, title, summary, reasoning, sources_used, category, quality_score)
-    VALUES (${id}, ${input.agent_id}, ${input.title}, ${input.summary}, ${input.reasoning}, ${input.sources_used}, ${input.category}, ${input.quality_score})
+    INSERT INTO generated_ideas (id, agent_id, title, summary, reasoning, sources_used, category, quality_score, pipeline_run_id)
+    VALUES (${id}, ${input.agent_id}, ${input.title}, ${input.summary}, ${input.reasoning}, ${input.sources_used}, ${input.category}, ${input.quality_score}, ${input.pipeline_run_id ?? null})
     RETURNING *
   `;
 

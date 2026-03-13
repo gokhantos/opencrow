@@ -40,6 +40,7 @@ import AppStore from "./views/AppStore";
 import Workflows from "./views/Workflows";
 import PlayStore from "./views/PlayStore";
 import Settings from "./views/Settings";
+import Pipelines from "./views/Pipelines";
 
 interface StatusResponse {
   uptime: number;
@@ -336,6 +337,7 @@ function App() {
             {tab === "appstore" && <AppStore />}
             {tab === "playstore" && <PlayStore />}
             {tab === "news" && <News />}
+            {tab === "pipelines" && <Pipelines />}
             {tab === "memory" && <Memory />}
             {tab === "processes" && <Processes />}
             {tab === "routing" && <RoutingRules />}
