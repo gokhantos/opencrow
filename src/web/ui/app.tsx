@@ -29,7 +29,6 @@ import ProductHunt from "./views/ProductHunt";
 import HackerNews from "./views/HackerNews";
 import Reddit from "./views/Reddit";
 import News from "./views/News";
-import Ideas from "./views/Ideas";
 import GitHub from "./views/GitHub";
 import Processes from "./views/Processes";
 import Skills from "./views/skills/Skills";
@@ -148,7 +147,6 @@ const SCRAPER_TO_TAB: Record<string, Tab> = {
   investing_news: "news",
   investing_calendar: "news",
   x: "x-accounts",
-  ideas: "ideas",
 };
 
 interface FeaturesState {
@@ -338,7 +336,6 @@ function App() {
             {tab === "appstore" && <AppStore />}
             {tab === "playstore" && <PlayStore />}
             {tab === "news" && <News />}
-            {tab === "ideas" && <Ideas />}
             {tab === "memory" && <Memory />}
             {tab === "processes" && <Processes />}
             {tab === "routing" && <RoutingRules />}

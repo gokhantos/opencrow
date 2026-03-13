@@ -2,7 +2,6 @@ import { describe, it, expect } from "bun:test";
 import {
   createSearchMemoryTool,
   createMemoryTools,
-  createGetObservationsTool,
 } from "./memory";
 import type { MemoryManager, SearchResult, MemorySourceKind } from "../memory/types";
 import { MEMORY_SOURCE_KINDS } from "../memory/types";
@@ -67,8 +66,6 @@ function mockMemoryManager(
 describe("createSearchMemoryTool", () => {
   const tool = createSearchMemoryTool("agent-1", mockMemoryManager());
 
-  // -- Tool definition tests ------------------------------------------------
-
   it('should have name "search_memory"', () => {
     expect(tool.name).toBe("search_memory");
   });
@@ -100,15 +97,11 @@ describe("createSearchMemoryTool", () => {
     expect(tool.description).toContain("REFERENCE ONLY");
   });
 
-  // -- Execute: empty results -----------------------------------------------
-
   it("should return friendly message when no results found", async () => {
     const result = await tool.execute({ query: "something obscure" });
     expect(result.isError).toBe(false);
     expect(result.output).toContain("No relevant memories found");
   });
-
-  // -- Execute: successful results ------------------------------------------
 
   it("should return formatted results with scores and source kind", async () => {
     const results = [
@@ -128,8 +121,6 @@ describe("createSearchMemoryTool", () => {
     expect(result.output).toContain("A stored note");
   });
 
-  // -- Execute: error handling ----------------------------------------------
-
   it("should handle search errors gracefully", async () => {
     const failing = {
       ...mockMemoryManager(),
@@ -143,8 +134,6 @@ describe("createSearchMemoryTool", () => {
     expect(result.output).toContain("Error searching memory");
     expect(result.output).toContain("Qdrant timeout");
   });
-
-  // -- Execute: limit handling ----------------------------------------------
 
   it("should pass limit to search capped at 20", async () => {
     let capturedLimit: number | undefined;
@@ -178,14 +167,14 @@ describe("createSearchMemoryTool", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: createMemoryTools (remember + recall)
+// Tests: createMemoryTools (remember only)
 // ---------------------------------------------------------------------------
 
 describe("createMemoryTools", () => {
   const tools = createMemoryTools("agent-1");
 
-  it("should return exactly 2 tools", () => {
-    expect(tools).toHaveLength(2);
+  it("should return exactly 1 tool", () => {
+    expect(tools).toHaveLength(1);
   });
 
   it('should include "remember" tool', () => {
@@ -193,12 +182,7 @@ describe("createMemoryTools", () => {
     expect(names).toContain("remember");
   });
 
-  it('should include "recall" tool', () => {
-    const names = tools.map((t) => t.name);
-    expect(names).toContain("recall");
-  });
-
-  it("should have both tools with memory category", () => {
+  it("should have tool with memory category", () => {
     for (const tool of tools) {
       expect(tool.categories).toContain("memory");
     }
@@ -231,68 +215,5 @@ describe("remember tool definition", () => {
 
   it("should mention long-term memory in description", () => {
     expect(tool.description.toLowerCase()).toContain("long-term memory");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: recall tool
-// ---------------------------------------------------------------------------
-
-describe("recall tool definition", () => {
-  const tools = createMemoryTools("agent-1");
-  const tool = tools.find((t) => t.name === "recall")!;
-
-  it("should have the correct name", () => {
-    expect(tool.name).toBe("recall");
-  });
-
-  it("should have no required fields", () => {
-    expect(tool.inputSchema.required).toEqual([]);
-  });
-
-  it("should have optional key property", () => {
-    const props = tool.inputSchema.properties as Record<string, any>;
-    expect(props).toHaveProperty("key");
-    expect(props.key.type).toBe("string");
-  });
-
-  it("should mention retrieving memory in description", () => {
-    expect(tool.description.toLowerCase()).toContain("retrieve");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: createGetObservationsTool
-// ---------------------------------------------------------------------------
-
-describe("createGetObservationsTool", () => {
-  const tool = createGetObservationsTool("agent-1");
-
-  it('should have name "get_observations"', () => {
-    expect(tool.name).toBe("get_observations");
-  });
-
-  it('should have "memory" category', () => {
-    expect(tool.categories).toContain("memory");
-  });
-
-  it("should have no required fields", () => {
-    expect(tool.inputSchema.required).toEqual([]);
-  });
-
-  it("should have optional limit property", () => {
-    const props = tool.inputSchema.properties as Record<string, any>;
-    expect(props).toHaveProperty("limit");
-    expect(props.limit.type).toBe("number");
-  });
-
-  it("should mention observations or learnings in description", () => {
-    expect(tool.description.toLowerCase()).toContain("observations");
-  });
-
-  it("should mention observation types in description", () => {
-    expect(tool.description).toContain("preference");
-    expect(tool.description).toContain("decision");
-    expect(tool.description).toContain("capability");
   });
 });
