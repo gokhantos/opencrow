@@ -208,17 +208,40 @@ export async function runIdeasPipeline(
 
     for (const candidate of qualityFiltered) {
       try {
+        // Format source links as markdown
+        const sourceLinksText =
+          candidate.sourceLinks?.length > 0
+            ? candidate.sourceLinks
+                .map(
+                  (link) =>
+                    `- [${link.title}](${link.url}) (${link.source})`,
+                )
+                .join("\n")
+            : "";
+
+        const reasoning = [
+          "## Analysis",
+          candidate.reasoning,
+          "",
+          "## Design & UX",
+          candidate.designDescription || "Not specified.",
+          "",
+          "## Monetization",
+          candidate.monetizationDetail || candidate.revenueModel,
+          "",
+          "## Details",
+          `**Target Audience:** ${candidate.targetAudience}`,
+          `**Key Features:** ${candidate.keyFeatures.join(", ")}`,
+          ...(sourceLinksText
+            ? ["", "## Sources", sourceLinksText]
+            : []),
+        ].join("\n");
+
         const idea = await insertIdea({
           agent_id: AGENT_ID,
           title: candidate.title,
           summary: candidate.summary,
-          reasoning: [
-            candidate.reasoning,
-            "",
-            `Target Audience: ${candidate.targetAudience}`,
-            `Key Features: ${candidate.keyFeatures.join(", ")}`,
-            `Revenue Model: ${candidate.revenueModel}`,
-          ].join("\n"),
+          reasoning,
           sources_used: candidate.sourcesUsed,
           category: candidate.category || config.category,
           quality_score: Math.min(Math.max(candidate.qualityScore, 1), 5),

@@ -72,6 +72,99 @@ function qualityBadgeStyle(score: number): string {
   return "bg-danger-subtle text-danger border border-danger/20";
 }
 
+// ── Reasoning renderer (markdown-lite: headers, links, bold) ───────────
+
+function ReasoningContent({ text }: { readonly text: string }) {
+  const lines = text.split("\n");
+
+  return (
+    <div className="space-y-2">
+      {lines.map((line, i) => {
+        const trimmed = line.trim();
+        if (!trimmed) return <div key={i} className="h-2" />;
+
+        // ## Headers
+        if (trimmed.startsWith("## ")) {
+          return (
+            <h4
+              key={i}
+              className="text-xs font-bold text-strong uppercase tracking-wider mt-3 mb-1"
+            >
+              {trimmed.slice(3)}
+            </h4>
+          );
+        }
+
+        // Render inline markdown (links + bold)
+        return (
+          <p key={i} className="text-sm text-muted leading-relaxed">
+            <InlineMarkdown text={trimmed} />
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function InlineMarkdown({ text }: { readonly text: string }) {
+  // Parse markdown links [title](url) and **bold**
+  const parts: Array<{ type: "text" | "link" | "bold"; value: string; url?: string }> = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    // Check for markdown link: [title](url)
+    const linkMatch = remaining.match(/^(.*?)\[([^\]]+)\]\(([^)]+)\)/);
+    // Check for bold: **text**
+    const boldMatch = remaining.match(/^(.*?)\*\*([^*]+)\*\*/);
+
+    const linkIdx = linkMatch ? (linkMatch[1]?.length ?? Infinity) : Infinity;
+    const boldIdx = boldMatch ? (boldMatch[1]?.length ?? Infinity) : Infinity;
+
+    if (linkIdx === Infinity && boldIdx === Infinity) {
+      parts.push({ type: "text", value: remaining });
+      break;
+    }
+
+    if (linkIdx <= boldIdx && linkMatch) {
+      if (linkMatch[1]) parts.push({ type: "text", value: linkMatch[1] });
+      parts.push({ type: "link", value: linkMatch[2]!, url: linkMatch[3]! });
+      remaining = remaining.slice(linkMatch[0]!.length);
+    } else if (boldMatch) {
+      if (boldMatch[1]) parts.push({ type: "text", value: boldMatch[1] });
+      parts.push({ type: "bold", value: boldMatch[2]! });
+      remaining = remaining.slice(boldMatch[0]!.length);
+    }
+  }
+
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.type === "link") {
+          return (
+            <a
+              key={i}
+              href={part.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent transition-colors"
+            >
+              {part.value}
+            </a>
+          );
+        }
+        if (part.type === "bold") {
+          return (
+            <strong key={i} className="text-strong font-semibold">
+              {part.value}
+            </strong>
+          );
+        }
+        return <span key={i}>{part.value}</span>;
+      })}
+    </>
+  );
+}
+
 // ── Idea Card ──────────────────────────────────────────────────────────
 
 function IdeaCard({
@@ -226,10 +319,10 @@ function IdeaCard({
         </div>
       </div>
 
-      {/* Expandable reasoning */}
+      {/* Expandable reasoning with rich rendering */}
       {expanded && idea.reasoning && (
-        <div className="mt-4 px-5 py-4 bg-accent-subtle border-l-2 border-l-accent rounded-r-md text-sm text-muted leading-relaxed whitespace-pre-wrap">
-          {idea.reasoning}
+        <div className="mt-4 px-5 py-4 bg-accent-subtle border-l-2 border-l-accent rounded-r-md text-sm text-muted leading-relaxed">
+          <ReasoningContent text={idea.reasoning} />
         </div>
       )}
     </div>

@@ -216,31 +216,32 @@ Market Gaps: ${analysis.gaps.join("; ")}
 Key Signals: ${JSON.stringify(analysis.signals.slice(0, 15), null, 2)}
 ${existingList}
 
-For each idea, provide:
+For each idea, provide ALL of these fields:
 - title: A catchy, memorable product name (2-4 words)
-- summary: 2-3 sentences describing what it does and why it matters
-- reasoning: Detailed reasoning (3-5 sentences): which signals led to this idea, why now, what's the competitive advantage
-- sourcesUsed: Comma-separated list of data sources that informed this idea
+- summary: A full paragraph (4-6 sentences) describing what the product does, the core problem it solves, who it's for, and why it matters NOW. Be specific — don't be generic.
+- reasoning: Detailed analysis (5-8 sentences): which specific signals and data points led to this idea, what trends converge here, why the timing is right, and what's the competitive advantage over existing solutions.
+- designDescription: A full paragraph (4-6 sentences) describing the UX/UI vision: what does the app look like? What are the key screens? What's the user journey from first open to daily use? Describe the visual style, interaction patterns, and what makes it delightful to use.
+- monetizationDetail: A full paragraph (3-5 sentences) on the business model: pricing tiers with specific dollar amounts, expected conversion rates, comparable apps and their revenue, estimated TAM (total addressable market), and path to profitability.
+- sourceLinks: An array of 3-8 specific references from the data that inspired this idea. Each link must have "title" (descriptive label), "url" (the actual URL from the data), and "source" (which platform: hackernews, reddit, producthunt, github, appstore, playstore, news). ONLY use real URLs that appear in the data above — do NOT make up URLs.
+- sourcesUsed: Comma-separated list of data source names
 - category: "${category}"
-- qualityScore: Self-assessed quality score (1.0-5.0) based on:
-  * Market demand (from complaint/pain point data)
-  * Trend alignment (how many sources confirm this direction)
-  * Feasibility (are building blocks available on GitHub?)
-  * Competition gap (how poorly served is this niche currently?)
-  * Uniqueness (how different from existing ideas)
-- targetAudience: Who is this for? (1 sentence)
-- keyFeatures: 3-5 key features as an array
-- revenueModel: Monetization strategy (1 sentence)
+- qualityScore: Quality score (1.0-5.0) based on: market demand, trend alignment, feasibility, competition gap, uniqueness
+- targetAudience: Who is this for? Be specific (age range, profession, pain level).
+- keyFeatures: 5-7 key features as an array — be specific, not generic
+- revenueModel: One-line summary of the primary revenue model
 
-Generate DIVERSE ideas - don't just focus on one theme. Cover multiple opportunity areas.
+Generate DIVERSE ideas across different themes. Each idea should feel like a real product pitch, not a vague concept.
 
 Return ONLY a JSON array:
 \`\`\`json
 [
   {
     "title": "string",
-    "summary": "string",
-    "reasoning": "string",
+    "summary": "string (full paragraph)",
+    "reasoning": "string (detailed analysis)",
+    "designDescription": "string (UX/UI vision paragraph)",
+    "monetizationDetail": "string (business model paragraph)",
+    "sourceLinks": [{"title": "string", "url": "string", "source": "string"}],
     "sourcesUsed": "string",
     "category": "${category}",
     "qualityScore": number,

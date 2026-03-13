@@ -29,10 +29,19 @@ export interface AnalysisResult {
   readonly totalSignals: number;
 }
 
+export interface SourceLink {
+  readonly title: string;
+  readonly url: string;
+  readonly source: string;
+}
+
 export interface GeneratedIdeaCandidate {
   readonly title: string;
   readonly summary: string;
   readonly reasoning: string;
+  readonly designDescription: string;
+  readonly monetizationDetail: string;
+  readonly sourceLinks: readonly SourceLink[];
   readonly sourcesUsed: string;
   readonly category: string;
   readonly qualityScore: number;

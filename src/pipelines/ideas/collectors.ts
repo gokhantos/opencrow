@@ -1,7 +1,7 @@
 /**
  * Smart data collectors for the idea generation pipeline.
  * Each collector fetches data from a specific source and formats it
- * into a compact text summary for AI analysis.
+ * into a compact text summary with URLs for AI analysis.
  */
 
 import {
@@ -36,7 +36,7 @@ async function collectAppStore(): Promise<CollectedData> {
       .slice(0, 20)
       .map(
         (r) =>
-          `#${r.rank} ${r.name} by ${r.artist} (${r.category}) - ${r.list_type}`,
+          `#${r.rank} ${r.name} by ${r.artist} (${r.category}) - ${r.list_type}\n  URL: ${r.store_url || "n/a"}`,
       )
       .join("\n");
 
@@ -77,7 +77,7 @@ async function collectPlayStore(): Promise<CollectedData> {
       .slice(0, 20)
       .map(
         (r) =>
-          `#${r.rank} ${r.name} by ${r.developer} (${r.category}, ${r.installs} installs, ${r.rating ?? "?"}/5) - ${r.list_type}`,
+          `#${r.rank} ${r.name} by ${r.developer} (${r.category}, ${r.installs} installs, ${r.rating ?? "?"}/5) - ${r.list_type}\n  URL: ${r.store_url || "n/a"}`,
       )
       .join("\n");
 
@@ -114,7 +114,7 @@ async function collectProductHunt(): Promise<CollectedData> {
     const summary = products
       .map(
         (p) =>
-          `${p.name} - ${p.tagline} (${p.votes_count} votes, ${p.comments_count} comments${p.is_featured ? ", FEATURED" : ""})${p.description ? `\n  ${p.description.slice(0, 150)}` : ""}`,
+          `${p.name} - ${p.tagline} (${p.votes_count} votes, ${p.comments_count} comments${p.is_featured ? ", FEATURED" : ""})\n  URL: ${p.url || p.website_url || "n/a"}${p.description ? `\n  ${p.description.slice(0, 150)}` : ""}`,
       )
       .join("\n");
 
@@ -139,7 +139,7 @@ async function collectHackerNews(): Promise<CollectedData> {
           ? ` [velocity: ${s.points_velocity > 0 ? "+" : ""}${s.points_velocity}]`
           : "";
         const comments = s.comment_count > 0 ? ` (${s.comment_count} comments)` : "";
-        return `${s.title} - ${s.points} pts${comments}${velocity}\n  ${s.url || s.hn_url}`;
+        return `${s.title} - ${s.points} pts${comments}${velocity}\n  URL: ${s.url || "n/a"}\n  HN: ${s.hn_url}`;
       })
       .join("\n");
 
@@ -162,7 +162,10 @@ async function collectReddit(): Promise<CollectedData> {
       .map((p) => {
         const engagement = `${p.score} pts, ${p.num_comments} comments`;
         const selftext = p.selftext ? `\n  ${p.selftext.slice(0, 200)}` : "";
-        return `r/${p.subreddit}: ${p.title} (${engagement})${selftext}`;
+        const url = p.permalink
+          ? `https://reddit.com${p.permalink}`
+          : p.url || "n/a";
+        return `r/${p.subreddit}: ${p.title} (${engagement})\n  URL: ${url}${selftext}`;
       })
       .join("\n");
 
@@ -186,7 +189,7 @@ async function collectGitHub(): Promise<CollectedData> {
         const velocity = r.stars_velocity
           ? ` [velocity: +${r.stars_velocity}]`
           : "";
-        return `${r.full_name} - ${r.description?.slice(0, 150) ?? ""}\n  ${r.language || "?"} | ${r.stars} stars (+${r.stars_today} today) | ${r.forks} forks${velocity}`;
+        return `${r.full_name} - ${r.description?.slice(0, 150) ?? ""}\n  ${r.language || "?"} | ${r.stars} stars (+${r.stars_today} today) | ${r.forks} forks${velocity}\n  URL: ${r.url || `https://github.com/${r.full_name}`}`;
       })
       .join("\n");
 
@@ -208,7 +211,7 @@ async function collectNews(): Promise<CollectedData> {
     const summary = (articles as readonly NewsArticle[])
       .map(
         (a) =>
-          `[${a.source_name}] ${a.title}\n  ${a.summary?.slice(0, 200) ?? ""}`,
+          `[${a.source_name}] ${a.title}\n  URL: ${a.url || "n/a"}\n  ${a.summary?.slice(0, 200) ?? ""}`,
       )
       .join("\n");
 
