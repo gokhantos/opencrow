@@ -62,6 +62,25 @@ function rowToStep(r: Record<string, unknown>): PipelineStep {
   };
 }
 
+// ── Orphan recovery (runs stuck as 'running' after process restart) ──────
+
+/**
+ * Mark any runs stuck in 'running' as 'failed'.
+ * Call this at startup to clean up after unclean shutdowns.
+ */
+export async function recoverOrphanedRuns(): Promise<number> {
+  const db = getDb();
+  const rows = await db`
+    UPDATE pipeline_runs
+    SET status = 'failed',
+        error = 'Run was interrupted by process restart',
+        finished_at = ${now()}
+    WHERE status = 'running'
+    RETURNING id
+  `;
+  return rows.length;
+}
+
 // ── Atomic pipeline lock ────────────────────────────────────────────────
 
 export interface LockResult {

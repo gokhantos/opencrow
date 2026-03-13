@@ -3,6 +3,7 @@ import { bootstrap } from "./process/bootstrap";
 import { getDb } from "./store/db";
 import { createCoreClient, type CoreClient } from "./web/core-client";
 import { createWebApp } from "./web/app";
+import { recoverOrphanedRuns } from "./pipelines/store";
 import { createBookmarkProcessor } from "./sources/x/bookmarks/processor";
 import { createAutolikeProcessor } from "./sources/x/interactions/processor";
 import { createAutofollowProcessor } from "./sources/x/follow/processor";
@@ -96,6 +97,11 @@ async function main(): Promise<void> {
     marketSymbols: config.market?.symbols ?? [],
     marketTypes: config.market?.marketTypes ?? [],
   });
+
+  // Recover any pipeline runs stuck as 'running' from a previous crash
+  recoverOrphanedRuns().then((count) => {
+    if (count > 0) log.info("Recovered orphaned pipeline runs", { count });
+  }).catch(() => {});
 
   // Periodic agent reload — skip if config unchanged
   let lastConfigHash = "";
