@@ -175,19 +175,16 @@ export async function chat(
         );
 
         // Capture assistant text blocks (where actual generated content lives)
+        // SDK wraps content at message.message.content (not message.content)
         if (message.type === "assistant") {
-          const content = (message as Record<string, unknown>).content;
-          if (Array.isArray(content)) {
+          const msg = message as Record<string, unknown>;
+          const content = (msg.message as Record<string, unknown>)?.content as
+            | ReadonlyArray<Record<string, unknown>>
+            | undefined;
+          if (content) {
             for (const block of content) {
-              if (
-                block &&
-                typeof block === "object" &&
-                (block as Record<string, unknown>).type === "text" &&
-                (block as Record<string, unknown>).text
-              ) {
-                lastAssistantText = String(
-                  (block as Record<string, unknown>).text,
-                );
+              if (block.type === "text" && block.text) {
+                lastAssistantText = String(block.text);
               }
             }
           }
