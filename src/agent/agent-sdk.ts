@@ -149,38 +149,50 @@ export async function chat(
       ? abortSignalToController(options.abortSignal)
       : undefined;
 
-    for await (const message of query({
-      prompt: enrichedPrompt,
-      options: {
-        model: options.model,
-        systemPrompt: buildSystemPromptOption(options.systemPrompt),
-        cwd: options.cwd ?? process.cwd(),
-        maxTurns: 1,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-        stderr: stderrCapture.handler,
-        ...buildThinkingOptions(options),
-        ...buildSessionOptions(),
-        ...(abortController ? { abortController } : {}),
-        ...(options.sdkHooks ? { hooks: options.sdkHooks } : {}),
-        ...(options.sdkSessionId ? { resume: options.sdkSessionId } : {}),
-      },
-    })) {
-      captureSessionId(
-        message as Record<string, unknown>,
-        sessionCapture,
-        options.onSdkSessionId,
-      );
-
-      if (message.type === "result") {
-        usage = extractUsageFromResult(
+    try {
+      for await (const message of query({
+        prompt: enrichedPrompt,
+        options: {
+          model: options.model,
+          systemPrompt: buildSystemPromptOption(options.systemPrompt),
+          cwd: options.cwd ?? process.cwd(),
+          maxTurns: 1,
+          permissionMode: "bypassPermissions",
+          allowDangerouslySkipPermissions: true,
+          stderr: stderrCapture.handler,
+          ...buildThinkingOptions(options),
+          ...buildSessionOptions(),
+          ...(abortController ? { abortController } : {}),
+          ...(options.sdkHooks ? { hooks: options.sdkHooks } : {}),
+          ...(options.sdkSessionId ? { resume: options.sdkSessionId } : {}),
+        },
+      })) {
+        captureSessionId(
           message as Record<string, unknown>,
-          usage,
+          sessionCapture,
+          options.onSdkSessionId,
         );
 
-        if (message.subtype === "success") {
-          resultText = message.result;
+        if (message.type === "result") {
+          usage = extractUsageFromResult(
+            message as Record<string, unknown>,
+            usage,
+          );
+
+          if (message.subtype === "success") {
+            resultText = message.result;
+          }
         }
+      }
+    } catch (streamError) {
+      if (resultText.trim()) {
+        log.warn("SDK subprocess crashed after producing results — recovering", {
+          agentId,
+          resultLength: resultText.length,
+          error: streamError instanceof Error ? streamError.message : String(streamError),
+        });
+      } else {
+        throw streamError;
       }
     }
 
@@ -244,154 +256,178 @@ async function runQuery(
     ? abortSignalToController(options.abortSignal)
     : undefined;
 
-  for await (const message of query({
-    prompt: enrichedPrompt,
-    options: {
-      model: options.model,
-      systemPrompt: buildSystemPromptOption(options.systemPrompt),
-      cwd: options.cwd ?? process.cwd(),
-      maxTurns,
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      mcpServers: buildMcpServers(options, opencrowMcp),
-      disallowedTools: buildDisallowedTools(options),
-      stderr: stderrCapture.handler,
-      ...buildThinkingOptions(options),
-      ...buildSessionOptions(),
-      ...(abortController ? { abortController } : {}),
-      ...(options.sdkHooks ? { hooks: options.sdkHooks } : {}),
-      ...(sessionId ? { resume: sessionId } : {}),
-    },
-  })) {
-    // Capture session ID for resume
-    if (!sessionCapture.done) {
-      const msg = message as Record<string, unknown>;
-      if ("session_id" in msg && msg.session_id) {
-        sessionCapture.done = true;
-        capturedSessionId = msg.session_id as string;
-        options.onSdkSessionId?.(capturedSessionId);
-      }
-    }
-
-    // Track tool usage and emit progress from assistant messages
-    if (message.type === "assistant") {
-      const msg = message as Record<string, unknown>;
-      const content = (msg.message as Record<string, unknown>)?.content as
-        | ReadonlyArray<Record<string, unknown>>
-        | undefined;
-      if (content) {
-        let hasToolUseInMessage = false;
-        for (const block of content) {
-          if (block.type === "thinking" && block.thinking) {
-            onProgress?.({
-              type: "thinking",
-              agentId,
-              summary: summarizeThinking(String(block.thinking)),
-            });
-          } else if (block.type === "text" && block.text) {
-            lastAssistantText = String(block.text);
-            onProgress?.({
-              type: "text_output",
-              agentId,
-              preview: truncate(lastAssistantText, MAX_THINKING_SUMMARY),
-            });
-          } else if (block.type === "tool_use") {
-            hasToolUseInMessage = true;
-            toolUseCount++;
-            const toolName = block.name as string;
-            pendingToolNames.push(toolName);
-            const toolInput = (block.input as Record<string, unknown>) ?? {};
-            const display = formatToolProgress(toolName, toolInput);
-            onProgress?.({ type: "tool_start", agentId, tool: display });
-          }
-        }
-        // Text in a message that also contains tool_use is planning/reasoning
-        // text, not a final user-facing response — clear it so auto-continuation
-        // can kick in and request a proper summary.
-        if (hasToolUseInMessage) {
-          lastAssistantText = "";
+  // The for-await loop can throw when the Claude Code subprocess exits with a
+  // non-zero code (e.g. exit 1 from a built-in hook crash).  If we already
+  // captured a result or assistant text before the crash, treat the run as
+  // successful — the agent completed its work; the crash happened during
+  // cleanup (e.g. the skill improvement hook).
+  try {
+    for await (const message of query({
+      prompt: enrichedPrompt,
+      options: {
+        model: options.model,
+        systemPrompt: buildSystemPromptOption(options.systemPrompt),
+        cwd: options.cwd ?? process.cwd(),
+        maxTurns,
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        mcpServers: buildMcpServers(options, opencrowMcp),
+        disallowedTools: buildDisallowedTools(options),
+        stderr: stderrCapture.handler,
+        ...buildThinkingOptions(options),
+        ...buildSessionOptions(),
+        ...(abortController ? { abortController } : {}),
+        ...(options.sdkHooks ? { hooks: options.sdkHooks } : {}),
+        ...(sessionId ? { resume: sessionId } : {}),
+      },
+    })) {
+      // Capture session ID for resume
+      if (!sessionCapture.done) {
+        const msg = message as Record<string, unknown>;
+        if ("session_id" in msg && msg.session_id) {
+          sessionCapture.done = true;
+          capturedSessionId = msg.session_id as string;
+          options.onSdkSessionId?.(capturedSessionId);
         }
       }
-    }
 
-    if (message.type === "tool_use_summary") {
-      const msg = message as Record<string, unknown>;
-      onProgress?.({
-        type: "tool_done",
-        agentId,
-        tool: truncate(String(msg.summary ?? ""), MAX_THINKING_SUMMARY),
-        result: truncate(String(msg.summary ?? ""), MAX_DETAIL_LENGTH),
-      });
-    }
-
-    if (message.type === "user") {
-      const msg = message as Record<string, unknown>;
-      const userContent = (msg.message as Record<string, unknown>)?.content as
-        | ReadonlyArray<Record<string, unknown>>
-        | undefined;
-      if (userContent) {
-        for (const block of userContent) {
-          if (block.type === "tool_result") {
-            const isErr = block.is_error === true;
-            const resultContent = block.content;
-            let resultStr = "";
-            if (typeof resultContent === "string") {
-              resultStr = resultContent;
-            } else if (Array.isArray(resultContent)) {
-              const textBlock = resultContent.find(
-                (b: Record<string, unknown>) => b.type === "text",
-              );
-              if (textBlock)
-                resultStr = String(
-                  (textBlock as Record<string, unknown>).text ?? "",
-                );
+      // Track tool usage and emit progress from assistant messages
+      if (message.type === "assistant") {
+        const msg = message as Record<string, unknown>;
+        const content = (msg.message as Record<string, unknown>)?.content as
+          | ReadonlyArray<Record<string, unknown>>
+          | undefined;
+        if (content) {
+          let hasToolUseInMessage = false;
+          for (const block of content) {
+            if (block.type === "thinking" && block.thinking) {
+              onProgress?.({
+                type: "thinking",
+                agentId,
+                summary: summarizeThinking(String(block.thinking)),
+              });
+            } else if (block.type === "text" && block.text) {
+              lastAssistantText = String(block.text);
+              onProgress?.({
+                type: "text_output",
+                agentId,
+                preview: truncate(lastAssistantText, MAX_THINKING_SUMMARY),
+              });
+            } else if (block.type === "tool_use") {
+              hasToolUseInMessage = true;
+              toolUseCount++;
+              const toolName = block.name as string;
+              pendingToolNames.push(toolName);
+              const toolInput = (block.input as Record<string, unknown>) ?? {};
+              const display = formatToolProgress(toolName, toolInput);
+              onProgress?.({ type: "tool_start", agentId, tool: display });
             }
-            const matchedToolName = pendingToolNames.shift() ?? "unknown";
-            onProgress?.({
-              type: "tool_done",
-              agentId,
-              tool: matchedToolName,
-              result: truncate(resultStr, MAX_DETAIL_LENGTH),
-              isError: isErr,
-            });
+          }
+          // Text in a message that also contains tool_use is planning/reasoning
+          // text, not a final user-facing response — clear it so auto-continuation
+          // can kick in and request a proper summary.
+          if (hasToolUseInMessage) {
+            lastAssistantText = "";
           }
         }
       }
-    }
 
-    if (
-      message.type === "system" &&
-      (message as Record<string, unknown>).subtype === "task_started"
-    ) {
-      const msg = message as Record<string, unknown>;
-      onProgress?.({
-        type: "subagent_start",
-        agentId,
-        childAgent: truncate(String(msg.description ?? "agent"), 40),
-        task: truncate(String(msg.description ?? ""), MAX_DETAIL_LENGTH),
-      });
-    }
-
-    if (
-      message.type === "system" &&
-      (message as Record<string, unknown>).subtype === "task_notification"
-    ) {
-      const msg = message as Record<string, unknown>;
-      onProgress?.({
-        type: "subagent_done",
-        agentId,
-        childAgent: truncate(String(msg.summary ?? "agent"), 40),
-      });
-    }
-
-    if (message.type === "result") {
-      usage = extractUsageFromResult(message as Record<string, unknown>, usage);
-
-      if (message.subtype === "success") {
-        resultText = message.result;
-        // Don't emit "complete" here — agenticChat emits it once after
-        // all auto-continuations finish to avoid premature "Done" in the log.
+      if (message.type === "tool_use_summary") {
+        const msg = message as Record<string, unknown>;
+        onProgress?.({
+          type: "tool_done",
+          agentId,
+          tool: truncate(String(msg.summary ?? ""), MAX_THINKING_SUMMARY),
+          result: truncate(String(msg.summary ?? ""), MAX_DETAIL_LENGTH),
+        });
       }
+
+      if (message.type === "user") {
+        const msg = message as Record<string, unknown>;
+        const userContent = (msg.message as Record<string, unknown>)?.content as
+          | ReadonlyArray<Record<string, unknown>>
+          | undefined;
+        if (userContent) {
+          for (const block of userContent) {
+            if (block.type === "tool_result") {
+              const isErr = block.is_error === true;
+              const resultContent = block.content;
+              let resultStr = "";
+              if (typeof resultContent === "string") {
+                resultStr = resultContent;
+              } else if (Array.isArray(resultContent)) {
+                const textBlock = resultContent.find(
+                  (b: Record<string, unknown>) => b.type === "text",
+                );
+                if (textBlock)
+                  resultStr = String(
+                    (textBlock as Record<string, unknown>).text ?? "",
+                  );
+              }
+              const matchedToolName = pendingToolNames.shift() ?? "unknown";
+              onProgress?.({
+                type: "tool_done",
+                agentId,
+                tool: matchedToolName,
+                result: truncate(resultStr, MAX_DETAIL_LENGTH),
+                isError: isErr,
+              });
+            }
+          }
+        }
+      }
+
+      if (
+        message.type === "system" &&
+        (message as Record<string, unknown>).subtype === "task_started"
+      ) {
+        const msg = message as Record<string, unknown>;
+        onProgress?.({
+          type: "subagent_start",
+          agentId,
+          childAgent: truncate(String(msg.description ?? "agent"), 40),
+          task: truncate(String(msg.description ?? ""), MAX_DETAIL_LENGTH),
+        });
+      }
+
+      if (
+        message.type === "system" &&
+        (message as Record<string, unknown>).subtype === "task_notification"
+      ) {
+        const msg = message as Record<string, unknown>;
+        onProgress?.({
+          type: "subagent_done",
+          agentId,
+          childAgent: truncate(String(msg.summary ?? "agent"), 40),
+        });
+      }
+
+      if (message.type === "result") {
+        usage = extractUsageFromResult(message as Record<string, unknown>, usage);
+
+        if (message.subtype === "success") {
+          resultText = message.result;
+          // Don't emit "complete" here — agenticChat emits it once after
+          // all auto-continuations finish to avoid premature "Done" in the log.
+        }
+      }
+    }
+  } catch (streamError) {
+    const hasUsableResult = Boolean(resultText.trim() || lastAssistantText.trim());
+    if (hasUsableResult) {
+      // The agent produced output before the subprocess crashed (e.g. a
+      // built-in hook like skill improvement crashed during teardown).
+      // Treat this as a successful run with a warning.
+      log.warn("SDK subprocess crashed after producing results — recovering", {
+        agentId,
+        resultLength: resultText.length,
+        lastAssistantLength: lastAssistantText.length,
+        toolUseCount,
+        error: streamError instanceof Error ? streamError.message : String(streamError),
+      });
+    } else {
+      // No results captured — this is a genuine failure, re-throw.
+      throw streamError;
     }
   }
 
