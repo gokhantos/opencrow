@@ -6,6 +6,9 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentOptions } from "./types";
 import type { createOpenCrowMcpServer } from "./mcp-bridge";
 import { createLogger } from "../logger";
+import { join } from "path";
+import { homedir } from "os";
+import { mkdirSync, symlinkSync, existsSync } from "fs";
 
 /**
  * Build thinking/effort/beta options from AgentOptions.
@@ -265,6 +268,27 @@ function resolveExecutable(): "bun" | "node" {
 const RESOLVED_EXECUTABLE: "bun" | "node" = resolveExecutable();
 
 /**
+ * Create an isolated Claude config directory for SDK subprocesses.
+ * Contains only the credentials symlink — no skills, hooks, plugins, or
+ * settings that can interfere with headless execution.
+ * Memoised so the directory is created once per process.
+ */
+const ISOLATED_CONFIG_DIR = (() => {
+  const dir = join(homedir(), ".claude-sdk-isolated");
+  try {
+    mkdirSync(dir, { recursive: true });
+    const credsSource = join(homedir(), ".claude", ".credentials.json");
+    const credsDest = join(dir, ".credentials.json");
+    if (existsSync(credsSource) && !existsSync(credsDest)) {
+      symlinkSync(credsSource, credsDest);
+    }
+  } catch {
+    // Fall back to default config dir if we can't create the isolated one
+  }
+  return dir;
+})();
+
+/**
  * Build session-level options that apply to all SDK queries.
  */
 export function buildSessionOptions(): Record<string, unknown> {
@@ -280,6 +304,9 @@ export function buildSessionOptions(): Record<string, unknown> {
       // which can cause exit code 1 in subprocess contexts.
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+      // Point to an isolated config dir so the subprocess has no user-level
+      // skills, hooks, or settings that can interfere with headless execution.
+      CLAUDE_CONFIG_DIR: ISOLATED_CONFIG_DIR,
     },
   };
 }
