@@ -19,6 +19,7 @@ import {
   buildDisallowedTools,
   buildSessionOptions,
   buildStderrHandler,
+  type StderrCapture,
 } from "./sdk-options";
 import {
   type SdkUsage,
@@ -36,6 +37,13 @@ import {
 
 
 const log = createLogger("agent-sdk");
+
+/** Format captured stderr lines into a suffix for error messages. */
+function formatStderrContext(capture: StderrCapture): string {
+  if (capture.lines.length === 0) return "";
+  const joined = capture.lines.join("\n").trim().slice(0, 1000);
+  return ` | stderr: ${joined}`;
+}
 
 /**
  * Wrap an AbortSignal into an AbortController that the SDK expects.
@@ -129,6 +137,9 @@ export async function chat(
     hasCrossSessionContext: options.sdkSessionId !== undefined,
   });
 
+  const agentId = options.agentId ?? "default";
+  const stderrCapture = buildStderrHandler(agentId);
+
   try {
     let resultText = "";
     const sessionCapture = { done: false };
@@ -137,8 +148,6 @@ export async function chat(
     const abortController = options.abortSignal
       ? abortSignalToController(options.abortSignal)
       : undefined;
-
-    const agentId = options.agentId ?? "default";
 
     for await (const message of query({
       prompt: enrichedPrompt,
@@ -149,7 +158,7 @@ export async function chat(
         maxTurns: 1,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
-        stderr: buildStderrHandler(agentId),
+        stderr: stderrCapture.handler,
         ...buildThinkingOptions(options),
         ...buildSessionOptions(),
         ...(abortController ? { abortController } : {}),
@@ -190,8 +199,11 @@ export async function chat(
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    log.error("Agent SDK chat error", { error: msg });
-    throw new Error(`Agent SDK error: ${msg}`);
+    log.error("Agent SDK chat error", {
+      error: msg,
+      stderr: stderrCapture.lines,
+    });
+    throw new Error(`Agent SDK error: ${msg}${formatStderrContext(stderrCapture)}`);
   }
 }
 
@@ -215,6 +227,7 @@ async function runQuery(
   agentId: string,
   sessionId: string | undefined,
   prev: QueryRunState,
+  stderrCapture: StderrCapture,
   onProgress?: (event: ProgressEvent) => void,
 ): Promise<QueryRunState> {
   const enrichedPrompt = await enrichPromptWithContext(prompt, sessionId);
@@ -242,7 +255,7 @@ async function runQuery(
       allowDangerouslySkipPermissions: true,
       mcpServers: buildMcpServers(options, opencrowMcp),
       disallowedTools: buildDisallowedTools(options),
-      stderr: buildStderrHandler(agentId),
+      stderr: stderrCapture.handler,
       ...buildThinkingOptions(options),
       ...buildSessionOptions(),
       ...(abortController ? { abortController } : {}),
@@ -405,6 +418,7 @@ export async function agenticChat(
   const prompt = buildPromptWithHistory(messages);
   const agentId = options.agentId ?? "default";
   const opencrowMcp = createOpenCrowMcpServer(registry);
+  const stderrCapture = buildStderrHandler(agentId);
 
   log.debug("Agent SDK agentic chat", {
     model: options.model,
@@ -430,6 +444,7 @@ export async function agenticChat(
       agentId,
       state.sessionId,
       state,
+      stderrCapture,
       onProgress,
     );
 
@@ -467,6 +482,7 @@ export async function agenticChat(
         agentId,
         state.sessionId,
         state,
+        stderrCapture,
         onProgress,
       );
     }
@@ -505,8 +521,9 @@ export async function agenticChat(
       provider: options.provider ?? "agent-sdk",
       error: msg,
       stack,
+      stderr: stderrCapture.lines,
     });
-    throw new Error(`Agent SDK agentic error: ${msg}`);
+    throw new Error(`Agent SDK agentic error: ${msg}${formatStderrContext(stderrCapture)}`);
   }
 }
 

@@ -252,24 +252,10 @@ export async function bootstrap(
   // Mutable ref for cronToolConfig — set by caller after cron is initialized
   let cronToolConfig: CronToolConfig | null = null;
 
-  // Per-agent tool registry cache — keyed by agent ID, toolFilter, and whether cron is active.
-  // Only populated for calls without an onProgress callback (high-frequency paths: message routing,
-  // cron jobs). Calls with onProgress (streaming UI) bypass the cache because the spawnAgent tool
-  // closes over the callback and must not be shared across callers.
-  const registryCache = new Map<string, ToolRegistry>();
+  // No-op: registry cache was removed; kept for interface compatibility.
+  function clearRegistryCache(): void {}
 
-  function registryCacheKey(agent: ResolvedAgent): string {
-    const filterKey = `${agent.toolFilter.mode}:${agent.toolFilter.tools.join(",")}`;
-    const hasCron = cronToolConfig !== null ? "1" : "0";
-    return `${agent.id}|${filterKey}|${hasCron}`;
-  }
-
-  function clearRegistryCache(): void {
-    registryCache.clear();
-    log.debug("Tool registry cache cleared");
-  }
-
-  // Wrap agentRegistry.reload so the cache is always invalidated on config reload.
+  // Wrap agentRegistry.reload so dependent state stays in sync on config reload.
   const originalReload = agentRegistry.reload.bind(agentRegistry);
   agentRegistry.reload = (agentConfigs, globalDefaults) => {
     originalReload(agentConfigs, globalDefaults);

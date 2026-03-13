@@ -5,7 +5,7 @@ import { cn } from "../lib/cn";
 import { Button, Input } from "../components";
 import {
   Clock, Users, Shield, Key, Send, MessageCircle, Zap,
-  Bot, Cpu, DollarSign, Database, Timer, Activity,
+  Bot, Cpu, DollarSign, Database, Timer,
   CheckCircle, AlertTriangle, XCircle,
 } from "lucide-react";
 import { useSystemEvents } from "../hooks/useSystemEvents";

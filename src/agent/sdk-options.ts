@@ -278,16 +278,29 @@ export function buildSessionOptions(): Record<string, unknown> {
 const stderrLog = createLogger("agent-sdk:stderr");
 
 /**
- * Build a stderr handler that logs SDK subprocess stderr output.
- * Useful for diagnosing Claude Code subprocess crashes.
+ * Captured stderr lines for a single SDK query lifecycle.
+ * The handler appends lines; callers can read `lines` after the query
+ * finishes (or errors) to include diagnostic info in error messages.
  */
-export function buildStderrHandler(
-  agentId: string,
-): (data: string) => void {
-  return (data: string) => {
+export interface StderrCapture {
+  readonly handler: (data: string) => void;
+  readonly lines: string[];
+}
+
+/**
+ * Build a stderr handler that both logs AND captures SDK subprocess stderr.
+ * Returns a StderrCapture so callers can include stderr in error messages
+ * when the Claude Code subprocess crashes.
+ */
+export function buildStderrHandler(agentId: string): StderrCapture {
+  const lines: string[] = [];
+  const handler = (data: string) => {
+    const trimmed = data.slice(0, 2000);
+    lines.push(trimmed);
     stderrLog.warn("SDK subprocess stderr", {
       agentId,
-      stderr: data.slice(0, 2000),
+      stderr: trimmed,
     });
   };
+  return { handler, lines };
 }
