@@ -23,6 +23,7 @@ const MAX_STEPS = 100;
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes — subprocess boot + MCP init + tool calls
 const MAX_RETRIES = 2;
 const BASE_DELAY_MS = 1000;
+const WORKFLOW_MAX_TURNS = 15; // Cap agent turns for workflow tasks — no need for 150
 
 /** MCP flag keys that can be overridden per workflow node. */
 const MCP_FLAGS = [
@@ -422,6 +423,7 @@ async function executeAgentNode(
     const workflowOptions = {
       ...options,
       ...mcpOverrides,
+      maxToolIterations: WORKFLOW_MAX_TURNS,
       abortSignal,
       usageContext: { channel: "workflow" as const, chatId: nodeId, source: "workflow" as const },
     };
