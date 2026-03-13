@@ -14,6 +14,7 @@ import { WorkflowList } from "./workflows/WorkflowList";
 import { RunControls } from "./workflows/RunControls";
 import { ExecutionHistory } from "./workflows/ExecutionHistory";
 import { StepOutputPreview } from "./workflows/StepOutputPreview";
+import { ExecutionPanel } from "./workflows/ExecutionPanel";
 import { useExecutionStream } from "./workflows/useExecutionStream";
 import type { Node, Edge } from "@xyflow/react";
 import type { WorkflowNodeData, ExecutionStepMap } from "./workflows/types";
@@ -34,6 +35,7 @@ export default function Workflows() {
   const [activeExecutionId, setActiveExecutionId] = useState<string | null>(null);
   const [historyStepStatuses, setHistoryStepStatuses] = useState<ExecutionStepMap | null>(null);
   const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
+  const [executionPanelOpen, setExecutionPanelOpen] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
   const [importJson, setImportJson] = useState("");
   const [importError, setImportError] = useState("");
@@ -48,11 +50,13 @@ export default function Workflows() {
   const handleLoadHistoryExecution = useCallback((statuses: ExecutionStepMap) => {
     setHistoryStepStatuses(statuses);
     setActiveExecutionId(null);
+    setExecutionPanelOpen(true);
   }, []);
 
   const handleExecutionStart = useCallback((executionId: string) => {
     setHistoryStepStatuses(null);
     setActiveExecutionId(executionId);
+    setExecutionPanelOpen(true);
   }, []);
 
   const selectedNode = state.selectedNodeId
@@ -299,6 +303,8 @@ export default function Workflows() {
             executionStatus={executionStatus}
             stepStatuses={stepStatuses}
             onExecutionStart={handleExecutionStart}
+            onTogglePanel={() => setExecutionPanelOpen((v) => !v)}
+            panelOpen={executionPanelOpen}
           />
         </div>
       </div>
@@ -317,10 +323,20 @@ export default function Workflows() {
             onViewportChange={(viewport) => dispatch({ type: "SET_VIEWPORT", viewport })}
           />
 
-          <ExecutionHistory
-            workflowId={state.id}
-            onLoadExecution={handleLoadHistoryExecution}
-          />
+          {executionPanelOpen ? (
+            <ExecutionPanel
+              onClose={() => setExecutionPanelOpen(false)}
+              executionStatus={executionStatus}
+              stepStatuses={stepStatuses}
+              nodes={state.nodes as ReadonlyArray<Node<WorkflowNodeData>>}
+              onStepClick={setPreviewNodeId}
+            />
+          ) : (
+            <ExecutionHistory
+              workflowId={state.id}
+              onLoadExecution={handleLoadHistoryExecution}
+            />
+          )}
 
           {previewNodeId && (
             <StepOutputPreview
