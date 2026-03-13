@@ -48,8 +48,6 @@ const ALLOWED_MODELS = [
   "claude-haiku-4-5",
 ] as const;
 
-/** Minimum seconds between runs of the same pipeline */
-const RUN_COOLDOWN_SECONDS = 300; // 5 minutes
 
 const runConfigSchema = z
   .object({
@@ -165,7 +163,7 @@ export function createPipelineRoutes(deps?: {
 
     // Atomic lock: try to insert a "running" row; fails if one already exists
     // Also enforces a cooldown period between runs
-    const lockResult = await acquirePipelineLock(id, RUN_COOLDOWN_SECONDS);
+    const lockResult = await acquirePipelineLock(id);
     if (!lockResult.acquired) {
       return c.json(
         {

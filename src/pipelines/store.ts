@@ -92,18 +92,15 @@ export interface LockResult {
 
 /**
  * Atomically check if a pipeline can run and create the run record.
- * Prevents race conditions by using INSERT ... WHERE NOT EXISTS.
- * Also enforces a cooldown between runs.
+ * Only blocks if the same pipeline is already running.
  */
 export async function acquirePipelineLock(
   pipelineId: string,
-  cooldownSeconds: number,
 ): Promise<LockResult> {
   const db = getDb();
   const ts = now();
-  const cooldownCutoff = ts - cooldownSeconds;
 
-  // Check for running pipeline (atomic read)
+  // Check for running pipeline
   const running = (await db`
     SELECT id FROM pipeline_runs
     WHERE pipeline_id = ${pipelineId} AND status = 'running'
@@ -118,27 +115,6 @@ export async function acquirePipelineLock(
     };
   }
 
-  // Check cooldown
-  const recent = (await db`
-    SELECT id, finished_at FROM pipeline_runs
-    WHERE pipeline_id = ${pipelineId}
-      AND status IN ('completed', 'failed')
-      AND finished_at > ${cooldownCutoff}
-    ORDER BY finished_at DESC
-    LIMIT 1
-  `) as Array<Record<string, unknown>>;
-
-  if (recent.length > 0) {
-    const finishedAt = Number(recent[0]!.finished_at);
-    const waitSeconds = cooldownSeconds - (ts - finishedAt);
-    return {
-      acquired: false,
-      reason: `Pipeline ran recently. Try again in ${Math.ceil(waitSeconds)}s.`,
-    };
-  }
-
-  // Create the run atomically — if another request slips through, the
-  // running check above will catch it on the next attempt
   const id = crypto.randomUUID();
   await db`
     INSERT INTO pipeline_runs (id, pipeline_id, status, category, config, started_at, created_at)
