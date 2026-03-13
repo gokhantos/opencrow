@@ -6,7 +6,7 @@
 
 import type { ToolDefinition } from "./types";
 import { createToolRegistry } from "./registry";
-import { createMemoryTools, createGetObservationsTool } from "./memory";
+import { createMemoryTools } from "./memory";
 import { createMarketTools } from "../sources/markets/tools";
 import { createNewsTools } from "./news";
 import { createPHTools } from "./ph";
@@ -16,17 +16,10 @@ import { createGithubTools } from "./github";
 import { createXTimelineTools } from "./x-timeline";
 import { createAppStoreTools } from "./appstore";
 import { createPlayStoreTools } from "./playstore";
-import { createCrossSourceSearchTool } from "./cross-search";
-import { createIdeaTools } from "./ideas";
-import { createSignalTools } from "./signals";
 import { createGetScraperStatusTool } from "./scraper-status";
 import { createGetSubagentRunsTool } from "./subagent-runs";
-import { createAnalyticsTools } from "./analytics";
-import { createRoutingDashboardTools } from "./routing-dashboard";
 import { createDbTools } from "./db-query";
 import { createProcessMonitorTools } from "./process-monitor";
-import { createLogCheckerTools } from "./log-checker";
-import { createMemoryStatsTools } from "./memory-stats";
 import { createEconomicCalendarTool } from "./economic-calendar";
 
 import { createProjectContextTool } from "./project-context";
@@ -55,8 +48,6 @@ export const CATEGORY_TO_FEATURE: Record<string, { type: "scraper"; id: string }
   appstore: { type: "scraper", id: "appstore" },
   playstore: { type: "scraper", id: "playstore" },
   news: { type: "scraper", id: "news" },
-  ideas: { type: "scraper", id: "ideas" },
-  signals: { type: "scraper", id: "ideas" },
   market: { type: "toggle", id: "market" },
 };
 
@@ -98,7 +89,6 @@ const CATEGORY_MAP: Record<string, string> = {
   fileops: "core",
   system: "system",
   memory: "memory",
-  ideas: "ideas",
   social: "social",
 };
 
@@ -127,12 +117,7 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
 
   // Memory
   remember: "memory",
-  recall: "memory",
   search_memory: "memory",
-  get_observations: "memory",
-  search_agent_observations: "memory",
-  get_memory_stats: "memory",
-  search_memory_sources: "memory",
 
   // News
   search_news: "news",
@@ -171,9 +156,6 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
   get_playstore_complaints: "playstore",
   search_playstore_reviews: "playstore",
 
-  // Cross-source
-  cross_source_search: "search",
-
   // Market
   get_price: "market",
   market_summary: "market",
@@ -185,67 +167,18 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
   funding_summary: "market",
   liquidations: "market",
 
-  // Ideas
-  save_idea: "ideas",
-  get_previous_ideas: "ideas",
-  get_idea_stats: "ideas",
-  update_idea_stage: "ideas",
-  query_ideas: "ideas",
-  search_similar_ideas: "ideas",
-  get_ideas_by_rating: "ideas",
-  get_ideas_trends: "ideas",
-  get_rating_insights: "ideas",
-
-  // Signals
-  save_signal: "signals",
-  get_signals: "signals",
-  consume_signals: "signals",
-  get_signal_themes: "signals",
-  get_cross_domain_signals: "signals",
-
   // Observability
   get_scraper_status: "observability",
   get_subagent_runs: "observability",
   get_scraper_runs: "observability",
 
-  // Analytics
-  search_observations: "analytics",
-  get_conversation_summaries: "analytics",
-  get_tool_usage: "analytics",
-  get_agent_performance: "analytics",
-  get_session_stats: "analytics",
-  get_cost_summary: "analytics",
-  get_error_summary: "analytics",
-  get_activity_timeline: "analytics",
-  get_user_activity: "analytics",
-  get_subagent_activity: "analytics",
-  get_session_analysis: "analytics",
-  get_health_dashboard: "analytics",
-  // Routing
-  get_routing_dashboard: "routing",
-  get_routing_stats: "routing",
-  get_mcp_health: "routing",
-  get_tool_performance: "routing",
-  get_cost_breakdown: "routing",
-  get_prewarm_stats: "routing",
-
   // Database
   db_query: "database",
-  db_list_tables: "database",
-  db_table_info: "database",
-  db_row_counts: "database",
 
   // Process monitoring
   get_process_logs: "process",
   get_process_health: "process",
   process_manage: "system",
-
-  // Log checker
-  search_logs: "logs",
-  aggregate_logs: "logs",
-  error_analysis: "logs",
-  log_timeline: "logs",
-  compare_periods: "logs",
 
   // MCP wrappers
   list_mcp_capabilities: "mcp",
@@ -282,16 +215,10 @@ export const CATEGORY_LABELS: Record<string, string> = {
   x_timeline: "X / Twitter",
   appstore: "App Store",
   playstore: "Play Store",
-  search: "Cross-Source",
   market: "Markets & Trading",
-  ideas: "Ideas",
-  signals: "Signals",
   observability: "Observability",
-  analytics: "Analytics",
-  routing: "Routing",
   database: "Database",
   process: "Process Monitor",
-  logs: "Log Analysis",
   mcp: "MCP Integrations",
   development: "Development",
   system: "System",
@@ -361,7 +288,6 @@ export function buildToolCatalog(): readonly ToolCatalogEntry[] {
 
   // Memory tools (use placeholder agentId)
   tools.push(...createMemoryTools("_catalog"));
-  tools.push(createGetObservationsTool("_catalog"));
 
   // Stub memoryManager — tools only need it at execution time, not for metadata
   const mm = {
@@ -375,35 +301,18 @@ export function buildToolCatalog(): readonly ToolCatalogEntry[] {
   tools.push(...createXTimelineTools(mm));
   tools.push(...createAppStoreTools(mm));
   tools.push(...createPlayStoreTools(mm));
-  tools.push(createCrossSourceSearchTool(mm));
-
   // Market tools
   tools.push(...createMarketTools(["BTCUSDT"], ["spot"]));
 
-  // Ideas, signals, validation
-  tools.push(...createIdeaTools("_catalog", mm));
-  tools.push(...createSignalTools("_catalog"));
   // Observability
   tools.push(createGetScraperStatusTool());
   tools.push(createGetSubagentRunsTool());
-
-  // Analytics
-  tools.push(...createAnalyticsTools("_catalog"));
-
-  // Routing
-  tools.push(...createRoutingDashboardTools());
 
   // Database
   tools.push(...createDbTools());
 
   // Process monitoring
   tools.push(...createProcessMonitorTools());
-
-  // Log checker
-  tools.push(...createLogCheckerTools());
-
-  // Memory stats
-  tools.push(...createMemoryStatsTools());
 
   // Economic calendar
   tools.push(...createEconomicCalendarTool());
@@ -446,16 +355,10 @@ const CATEGORY_ORDER = [
   "x_timeline",
   "appstore",
   "playstore",
-  "search",
   "market",
-  "ideas",
-  "signals",
   "observability",
-  "analytics",
-  "routing",
   "database",
   "process",
-  "logs",
   "mcp",
   "development",
   "system",

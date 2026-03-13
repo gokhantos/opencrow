@@ -21,8 +21,6 @@ import { createRedditRoutes } from "./routes/reddit";
 import { createGithubRoutes } from "./routes/github";
 import { createPHProductRoutes } from "./routes/ph-products";
 import { createNewsRoutes } from "./routes/news";
-import { createIdeasRoutes } from "./routes/ideas";
-import { createSignalsRoutes } from "./routes/signals";
 import { createSkillRoutes } from "./routes/skills";
 import { createUsageRoutes } from "./routes/usage";
 import { createToolsRoutes } from "./routes/tools";
@@ -333,12 +331,6 @@ export function createWebApp(deps: WebAppDeps): Hono {
     });
     app.route("/api", news);
   }
-
-  const ideas = createIdeasRoutes();
-  app.route("/api", ideas);
-
-  const signals = createSignalsRoutes();
-  app.route("/api", signals);
 
   const appStore = createAppStoreRoutes({ coreClient: cc });
   app.route("/api", appStore);

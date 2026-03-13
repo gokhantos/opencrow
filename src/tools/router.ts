@@ -206,11 +206,6 @@ export class ToolRouter {
       intent.push("memory");
     }
 
-    // Ideas
-    if (/idea|generate|create.*app|create.*project|suggest/.test(lower)) {
-      intent.push("ideas");
-    }
-
     // Social
     if (/twitter|x\.com|tweet|reddit post|discussion/.test(lower)) {
       intent.push("social");

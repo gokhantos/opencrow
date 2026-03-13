@@ -5,7 +5,6 @@ export type ToolCategory =
   | "fileops"
   | "system"
   | "memory"
-  | "ideas"
   | "social";
 
 export type ToolErrorCode =

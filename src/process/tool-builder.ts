@@ -21,20 +21,12 @@ import { createGithubTools } from "../tools/github";
 import { createXTimelineTools } from "../tools/x-timeline";
 import { createAppStoreTools } from "../tools/appstore";
 import { createPlayStoreTools } from "../tools/playstore";
-import { createCrossSourceSearchTool } from "../tools/cross-search";
 import { createGetScraperStatusTool } from "../tools/scraper-status";
 import { createGetSubagentRunsTool } from "../tools/subagent-runs";
-import { createGetObservationsTool } from "../tools/memory";
-import { createAnalyticsTools } from "../tools/analytics";
-import { createRoutingDashboardTools } from "../tools/routing-dashboard";
-import { createIdeaTools } from "../tools/ideas";
-import { createSignalTools } from "../tools/signals";
 import { createProjectContextTool } from "../tools/project-context";
 import { createValidateCodeTool } from "../tools/validate-code";
 import { createRunTestsTool } from "../tools/run-tests";
 import { createProcessMonitorTools } from "../tools/process-monitor";
-import { createLogCheckerTools } from "../tools/log-checker";
-import { createMemoryStatsTools } from "../tools/memory-stats";
 import { createEconomicCalendarTool } from "../tools/economic-calendar";
 import { createDbTools } from "../tools/db-query";
 
@@ -119,39 +111,8 @@ export function buildWorkflowToolRegistry(
       registry = registry.withTools(playStoreTools);
   }
 
-  if (memoryManager && allowsTool("cross_source_search")) {
-    registry = registry.withTools([createCrossSourceSearchTool(memoryManager)]);
-  }
-
-  {
-    const ideaTools = [...createIdeaTools("workflow", memoryManager)].filter(
-      (t) => allowsTool(t.name),
-    );
-    if (ideaTools.length > 0) registry = registry.withTools(ideaTools);
-
-    const signalTools = [...createSignalTools("workflow")].filter((t) =>
-      allowsTool(t.name),
-    );
-    if (signalTools.length > 0) registry = registry.withTools(signalTools);
-  }
-
   if (allowsTool("get_scraper_status")) {
     registry = registry.withTools([createGetScraperStatusTool()]);
-  }
-
-  {
-    const analyticsTools = createAnalyticsTools("workflow").filter((t) =>
-      allowsTool(t.name),
-    );
-    if (analyticsTools.length > 0)
-      registry = registry.withTools(analyticsTools);
-  }
-
-  {
-    const routingTools = createRoutingDashboardTools().filter((t) =>
-      allowsTool(t.name),
-    );
-    if (routingTools.length > 0) registry = registry.withTools(routingTools);
   }
 
   {
@@ -164,21 +125,6 @@ export function buildWorkflowToolRegistry(
       allowsTool(t.name),
     );
     if (processTools.length > 0) registry = registry.withTools(processTools);
-  }
-
-  {
-    const logTools = createLogCheckerTools().filter((t) =>
-      allowsTool(t.name),
-    );
-    if (logTools.length > 0) registry = registry.withTools(logTools);
-  }
-
-  {
-    const memoryStatsTools = createMemoryStatsTools().filter((t) =>
-      allowsTool(t.name),
-    );
-    if (memoryStatsTools.length > 0)
-      registry = registry.withTools(memoryStatsTools);
   }
 
   {
@@ -358,47 +304,12 @@ export function buildRegistryForAgent(
       registry = registry.withTools(playStoreTools);
   }
 
-  if (memoryManager && allowsTool("cross_source_search")) {
-    registry = registry.withTools([createCrossSourceSearchTool(memoryManager)]);
-  }
-
-  if (scraperEnabled("ideas")) {
-    const ideaTools = [...createIdeaTools(agent.id, memoryManager)].filter(
-      (t) => allowsTool(t.name),
-    );
-    if (ideaTools.length > 0) registry = registry.withTools(ideaTools);
-
-    const signalTools = [...createSignalTools(agent.id)].filter((t) =>
-      allowsTool(t.name),
-    );
-    if (signalTools.length > 0) registry = registry.withTools(signalTools);
-  }
-
   if (allowsTool("get_scraper_status")) {
     registry = registry.withTools([createGetScraperStatusTool()]);
   }
 
-  if (allowsTool("get_observations")) {
-    registry = registry.withTools([createGetObservationsTool(agent.id)]);
-  }
-
   if (allowsTool("get_subagent_runs")) {
     registry = registry.withTools([createGetSubagentRunsTool()]);
-  }
-
-  {
-    const analyticsTools = createAnalyticsTools(agent.id).filter((t) =>
-      allowsTool(t.name),
-    );
-    if (analyticsTools.length > 0)
-      registry = registry.withTools(analyticsTools);
-  }
-
-  {
-    const routingTools = createRoutingDashboardTools().filter((t) =>
-      allowsTool(t.name),
-    );
-    if (routingTools.length > 0) registry = registry.withTools(routingTools);
   }
 
   {
@@ -411,21 +322,6 @@ export function buildRegistryForAgent(
       allowsTool(t.name),
     );
     if (processTools.length > 0) registry = registry.withTools(processTools);
-  }
-
-  {
-    const logTools = createLogCheckerTools().filter((t) =>
-      allowsTool(t.name),
-    );
-    if (logTools.length > 0) registry = registry.withTools(logTools);
-  }
-
-  {
-    const memoryStatsTools = createMemoryStatsTools().filter((t) =>
-      allowsTool(t.name),
-    );
-    if (memoryStatsTools.length > 0)
-      registry = registry.withTools(memoryStatsTools);
   }
 
   {
