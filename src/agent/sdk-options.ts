@@ -273,6 +273,14 @@ export function buildSessionOptions(): Record<string, unknown> {
     settingSources: [],
     plugins: [],
     executable: RESOLVED_EXECUTABLE,
+    env: {
+      ...process.env,
+      // Suppress built-in Claude Code features that crash in headless SDK mode.
+      // The skill improvement hook makes API calls and tries to write files,
+      // which can cause exit code 1 in subprocess contexts.
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+    },
   };
 }
 
