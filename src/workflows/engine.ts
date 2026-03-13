@@ -20,7 +20,7 @@ import { executionEvents } from "./events";
 const log = createLogger("workflows:engine");
 
 const MAX_STEPS = 100;
-const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes — agentic tasks need subprocess boot + MCP init + tool calls
 const MAX_RETRIES = 2;
 const BASE_DELAY_MS = 1000;
 
@@ -44,6 +44,7 @@ function isRetryableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return (
     msg.includes("process exited") ||
+    msg.includes("process aborted") ||
     msg.includes("ECONNRESET") ||
     msg.includes("overloaded")
   );
