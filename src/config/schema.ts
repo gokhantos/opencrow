@@ -206,26 +206,17 @@ export const qdrantConfigSchema = z.object({
 
 export const embeddingsConfigSchema = z
   .object({
-    provider: z.enum(["local", "openrouter"]).default("local"),
-    /** Model name — used for display and OpenRouter routing */
-    model: z.string().default("Qwen/Qwen3-Embedding-0.6B"),
+    provider: z.enum(["openrouter"]).default("openrouter"),
     /** Embedding vector dimensions */
-    dimensions: z.number().int().min(32).max(4096).default(512),
-    /** URL of the local embedding server (when provider=local) */
-    localUrl: z
-      .string()
-      .url()
-      .default("http://127.0.0.1:8901"),
-    /** OpenRouter model to use (when provider=openrouter) */
+    dimensions: z.number().int().min(32).max(4096).default(1536),
+    /** OpenRouter model to use */
     openrouterModel: z.string().default("openai/text-embedding-3-small"),
     /** Max texts per API batch */
     batchSize: z.number().int().min(1).default(64),
   })
   .default({
-    provider: "local",
-    model: "Qwen/Qwen3-Embedding-0.6B",
-    dimensions: 512,
-    localUrl: "http://127.0.0.1:8901",
+    provider: "openrouter",
+    dimensions: 1536,
     openrouterModel: "openai/text-embedding-3-small",
     batchSize: 64,
   });

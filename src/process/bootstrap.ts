@@ -161,12 +161,12 @@ export async function bootstrap(
     const embeddingsConfig = embeddingsConfigSchema.parse(
       embeddingsOverride ?? mergedConfig.embeddings ?? {},
     );
-    let apiKey: string | undefined;
-    if (embeddingsConfig.provider === "openrouter") {
-      apiKey =
-        (await getSecret("OPENROUTER_API_KEY")) ?? (await getSecret("VOYAGE_API_KEY")) ?? undefined;
-    }
-    const embeddingProvider = createEmbeddingProviderFromConfig(embeddingsConfig, apiKey);
+    const apiKey =
+      (await getSecret("OPENROUTER_API_KEY")) ?? (await getSecret("VOYAGE_API_KEY")) ?? undefined;
+    const embeddingProvider = createEmbeddingProviderFromConfig(
+      embeddingsConfig,
+      apiKey,
+    );
 
     const memSearch = mergedConfig.memorySearch!;
     const qdrantUrl = (await getSecret("QDRANT_URL")) ?? memSearch.qdrant.url;

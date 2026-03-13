@@ -116,10 +116,8 @@ function getDefaults(scraperId: string): Record<string, number> {
 }
 
 interface EmbeddingsConfig {
-  readonly provider: "local" | "openrouter";
-  readonly model: string;
+  readonly provider: "openrouter";
   readonly dimensions: number;
-  readonly localUrl: string;
   readonly openrouterModel: string;
   readonly batchSize: number;
 }
@@ -466,40 +464,6 @@ function TextConfigField({
   );
 }
 
-/* ── Select config field ── */
-function SelectConfigField({
-  label,
-  description,
-  value,
-  options,
-  onChange,
-}: {
-  readonly label: string;
-  readonly description: string;
-  readonly value: string;
-  readonly options: readonly { readonly value: string; readonly label: string }[];
-  readonly onChange: (v: string) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4">
-      <div className="min-w-0">
-        <div className="text-xs font-medium text-foreground">{label}</div>
-        <div className="text-xs text-muted mt-0.5">{description}</div>
-      </div>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-40 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground focus:outline-none focus:border-accent"
-      >
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
-            {opt.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
 
 /* ── Embeddings config section (shown under Qdrant card when expanded) ── */
 function EmbeddingsSection({
@@ -562,47 +526,13 @@ function EmbeddingsSection({
 
       {expanded && (
         <div className="mt-2 bg-bg-2 border border-border rounded-lg p-3 flex flex-col gap-3">
-          <SelectConfigField
-            label="Provider"
-            description="Embedding provider to use"
-            value={draft.provider}
-            options={[
-              { value: "local", label: "Local (Self-hosted)" },
-              { value: "openrouter", label: "OpenRouter" },
-            ]}
-            onChange={(v) =>
-              update("provider", v as "local" | "openrouter")
-            }
+          <TextConfigField
+            label="OpenRouter Model"
+            description="Model ID on OpenRouter"
+            value={draft.openrouterModel}
+            onChange={(v) => update("openrouterModel", v)}
+            placeholder="openai/text-embedding-3-small"
           />
-
-          {draft.provider === "local" && (
-            <>
-              <TextConfigField
-                label="Model"
-                description="HuggingFace model ID for local server"
-                value={draft.model}
-                onChange={(v) => update("model", v)}
-                placeholder="Qwen/Qwen3-Embedding-0.6B"
-              />
-              <TextConfigField
-                label="Server URL"
-                description="Local embedding server address"
-                value={draft.localUrl}
-                onChange={(v) => update("localUrl", v)}
-                placeholder="http://127.0.0.1:8901"
-              />
-            </>
-          )}
-
-          {draft.provider === "openrouter" && (
-            <TextConfigField
-              label="OpenRouter Model"
-              description="Model ID on OpenRouter"
-              value={draft.openrouterModel}
-              onChange={(v) => update("openrouterModel", v)}
-              placeholder="openai/text-embedding-3-small"
-            />
-          )}
 
           <ConfigField
             label="Dimensions"
