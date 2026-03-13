@@ -82,11 +82,15 @@ export function createSemanticSearchTool(
 
       try {
         const fetchLimit = Math.ceil(limit * fetchMultiplier);
-        const results = await config.memoryManager.search(
+        const searchPromise = config.memoryManager.search(
           config.agentId,
           query,
           { limit: fetchLimit, kinds: config.kinds as MemorySourceKind[] },
         );
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Search timed out (30s)")), 30_000),
+        );
+        const results = await Promise.race([searchPromise, timeoutPromise]);
 
         const filtered = config.postFilter
           ? config.postFilter(results, input)
