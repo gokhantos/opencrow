@@ -423,6 +423,12 @@ async function executeAgentNode(
     const workflowOptions = {
       ...options,
       ...mcpOverrides,
+      // Disable SDK hooks for workflow execution — hook callbacks use IPC
+      // between the CLI subprocess and the SDK host, and the round-trip can
+      // trigger built-in CLI hooks (like skill improvement) that crash the
+      // subprocess with exit code 1.  Workflow agents don't need audit/session
+      // tracking; the workflow engine handles its own logging.
+      sdkHooks: undefined,
       maxToolIterations: WORKFLOW_MAX_TURNS,
       abortSignal,
       usageContext: { channel: "workflow" as const, chatId: nodeId, source: "workflow" as const },
