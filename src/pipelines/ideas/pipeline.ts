@@ -10,6 +10,7 @@
  */
 
 import { createLogger } from "../../logger";
+import type { MemoryManager } from "../../memory/types";
 import { insertIdea, getRecentIdeaTitles } from "../../sources/ideas/store";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
 import {
@@ -101,6 +102,7 @@ export async function runIdeasPipeline(
   _pipelineId: string,
   config: PipelineConfig,
   runId: string,
+  memoryManager?: MemoryManager | null,
 ): Promise<PipelineRunResult> {
   const startTime = nowMs();
 
@@ -168,11 +170,12 @@ export async function runIdeasPipeline(
       maxIdeas: config.maxIdeas,
       existingTitles,
       model,
+      memoryManager,
     });
 
     await updatePipelineStep(synthesizeStep.id, {
       status: "completed",
-      outputSummary: `${synthOutput.signalCount} signals, ${synthOutput.themeCount} themes, ${synthOutput.synthesis.totalGenerated} ideas generated`,
+      outputSummary: `${synthOutput.signalCount} signals, ${synthOutput.themeCount} themes, ${synthOutput.deepSearchResultCount} deep search results, ${synthOutput.synthesis.totalGenerated} ideas generated`,
       durationMs: nowMs() - synthesizeStart,
     });
 

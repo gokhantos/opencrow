@@ -333,7 +333,7 @@ export function createWebApp(deps: WebAppDeps): Hono {
     app.route("/api", news);
   }
 
-  const pipelines = createPipelineRoutes();
+  const pipelines = createPipelineRoutes({ memoryManager: deps.memoryManager });
   app.route("/api", pipelines);
 
   const appStore = createAppStoreRoutes({ coreClient: cc });

@@ -8,6 +8,7 @@
 
 import { chat } from "../../agent/chat";
 import type { ConversationMessage, AgentOptions } from "../../agent/types";
+import type { MemoryManager, SearchResult } from "../../memory/types";
 import { createLogger } from "../../logger";
 import type { IdeaCategory } from "../types";
 import type {
@@ -138,17 +139,23 @@ async function analyzeSignals(
   signals: readonly ExtractedSignal[],
   category: IdeaCategory,
   model: string,
+  deepSearchContext?: string,
 ): Promise<AnalysisResult> {
   if (signals.length === 0) {
     return { signals: [], themes: [], gaps: [], totalSignals: 0 };
   }
 
-  const prompt = `You are a strategic analyst. Given these extracted signals, perform cross-reference analysis.
+  const deepSearchSection = deepSearchContext
+    ? `\n\nADDITIONAL EVIDENCE FROM SEMANTIC SEARCH (searched the full indexed corpus for each theme):\n${deepSearchContext}`
+    : "";
+
+  const prompt = `You are a strategic analyst. Given these extracted signals AND the deep search results, perform cross-reference analysis.
 
 ${CATEGORY_CONTEXT[category]}
 
 SIGNALS:
 ${JSON.stringify(signals, null, 2)}
+${deepSearchSection}
 
 Analyze these signals and:
 
@@ -200,13 +207,18 @@ async function generateIdeas(
   maxIdeas: number,
   existingTitles: readonly string[],
   model: string,
+  deepSearchContext?: string,
 ): Promise<SynthesisResult> {
   const existingList =
     existingTitles.length > 0
       ? `\n\nEXISTING IDEAS (DO NOT duplicate these):\n${existingTitles.map((t) => `- ${t}`).join("\n")}`
       : "";
 
-  const prompt = `You are a visionary product strategist and serial entrepreneur. Based on the following market analysis, generate ${maxIdeas} specific, actionable product ideas.
+  const deepSearchSection = deepSearchContext
+    ? `\n\nDEEP SEARCH EVIDENCE (from semantic search across full corpus — use these URLs as source links):\n${deepSearchContext}`
+    : "";
+
+  const prompt = `You are a visionary product strategist and serial entrepreneur. Based on the following market analysis AND deep search evidence, generate ${maxIdeas} specific, actionable product ideas.
 
 ${CATEGORY_CONTEXT[category]}
 
@@ -214,6 +226,7 @@ ANALYSIS:
 Top Themes: ${analysis.themes.join(", ")}
 Market Gaps: ${analysis.gaps.join("; ")}
 Key Signals: ${JSON.stringify(analysis.signals.slice(0, 15), null, 2)}
+${deepSearchSection}
 ${existingList}
 
 For each idea, provide ALL of these fields:
@@ -273,6 +286,92 @@ Return ONLY a JSON array:
   };
 }
 
+// ── Semantic Deep Search ─────────────────────────────────────────────────
+
+/**
+ * After Pass 1 extracts themes from fresh data, do semantic search
+ * across the ENTIRE indexed corpus (Qdrant) to find deeper evidence,
+ * historical patterns, and supporting data the initial collection missed.
+ */
+async function deepSearch(
+  signals: readonly ExtractedSignal[],
+  memoryManager: MemoryManager,
+): Promise<string> {
+  if (signals.length === 0) return "";
+
+  // Build search queries from the top themes/signals
+  const searchQueries = signals
+    .slice(0, 8)
+    .map((s) => `${s.theme}: ${s.description}`);
+
+  // Search across all indexed source types in parallel
+  const allKinds = [
+    "hackernews_story",
+    "reddit_post",
+    "producthunt_product",
+    "github_repo",
+    "x_post",
+    "reuters_news",
+    "cointelegraph_news",
+    "cryptopanic_news",
+    "investingnews_news",
+    "appstore_review",
+    "appstore_app",
+    "playstore_review",
+    "playstore_app",
+  ] as const;
+
+  const searchPromises = searchQueries.map((query) =>
+    memoryManager
+      .search("shared", query, {
+        limit: 5,
+        minScore: 0.3,
+        kinds: [...allKinds],
+      })
+      .catch(() => [] as readonly SearchResult[]),
+  );
+
+  const results = await Promise.all(searchPromises);
+
+  // Deduplicate by source ID and format
+  const seen = new Set<string>();
+  const entries: string[] = [];
+
+  for (let i = 0; i < searchQueries.length; i++) {
+    const theme = signals[i]?.theme ?? "unknown";
+    const hits = results[i] ?? [];
+    const uniqueHits = hits.filter((h) => {
+      const key = h.source.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    if (uniqueHits.length === 0) continue;
+
+    const formatted = uniqueHits.map((h) => {
+      const meta = h.source.metadata;
+      const title = meta.title ?? meta.name ?? "";
+      const url = meta.url ?? meta.hn_url ?? meta.store_url ?? "";
+      const kind = h.source.kind;
+      const score = h.score.toFixed(2);
+      const content = h.chunk.content.slice(0, 300);
+      return `  [${kind}, relevance: ${score}] ${title}${url ? `\n    URL: ${url}` : ""}\n    ${content}`;
+    });
+
+    entries.push(`--- Deep search: "${theme}" ---\n${formatted.join("\n")}`);
+  }
+
+  if (entries.length === 0) return "";
+
+  log.info("Deep search complete", {
+    queries: searchQueries.length,
+    totalResults: seen.size,
+  });
+
+  return `\n\n=== DEEP SEARCH RESULTS (semantic search across full indexed corpus) ===\n${entries.join("\n\n")}`;
+}
+
 // ── Main synthesizer entry point ────────────────────────────────────────
 
 export interface SynthesizerInput {
@@ -281,6 +380,7 @@ export interface SynthesizerInput {
   readonly maxIdeas: number;
   readonly existingTitles: readonly string[];
   readonly model: string;
+  readonly memoryManager?: MemoryManager | null;
 }
 
 export interface SynthesizerOutput {
@@ -288,34 +388,47 @@ export interface SynthesizerOutput {
   readonly synthesis: SynthesisResult;
   readonly signalCount: number;
   readonly themeCount: number;
+  readonly deepSearchResultCount: number;
 }
 
 export async function synthesize(
   input: SynthesizerInput,
 ): Promise<SynthesizerOutput> {
-  const { aggregatedContext, category, maxIdeas, existingTitles, model } = input;
+  const { aggregatedContext, category, maxIdeas, existingTitles, model, memoryManager } = input;
 
-  // Pass 1: Extract signals
+  // Pass 1: Extract signals from fresh collected data
   log.info("Pass 1: Extracting signals from collected data");
   const signals = await extractSignals(aggregatedContext, category, model);
   log.info("Signal extraction complete", { count: signals.length });
 
-  // Pass 2: Cross-reference analysis
-  log.info("Pass 2: Cross-referencing signals");
-  const analysis = await analyzeSignals(signals, category, model);
+  // Pass 1.5: Semantic deep search — use extracted themes to search
+  // the ENTIRE indexed corpus for deeper evidence and patterns
+  let deepSearchContext = "";
+  let deepSearchResultCount = 0;
+  if (memoryManager && signals.length > 0) {
+    log.info("Pass 1.5: Deep semantic search across indexed corpus");
+    deepSearchContext = await deepSearch(signals, memoryManager);
+    deepSearchResultCount = (deepSearchContext.match(/\[.*?, relevance:/g) ?? []).length;
+    log.info("Deep search complete", { resultsFound: deepSearchResultCount });
+  }
+
+  // Pass 2: Cross-reference analysis (now enriched with deep search evidence)
+  log.info("Pass 2: Cross-referencing signals + deep search results");
+  const analysis = await analyzeSignals(signals, category, model, deepSearchContext || undefined);
   log.info("Analysis complete", {
     themes: analysis.themes.length,
     gaps: analysis.gaps.length,
   });
 
-  // Pass 3: Generate ideas
-  log.info("Pass 3: Generating ideas from analysis");
+  // Pass 3: Generate ideas (with deep search context for source links)
+  log.info("Pass 3: Generating ideas from analysis + deep evidence");
   const synthesis = await generateIdeas(
     analysis,
     category,
     maxIdeas,
     existingTitles,
     model,
+    deepSearchContext || undefined,
   );
   log.info("Synthesis complete", { ideas: synthesis.totalGenerated });
 
@@ -324,5 +437,6 @@ export async function synthesize(
     synthesis,
     signalCount: signals.length,
     themeCount: analysis.themes.length,
+    deepSearchResultCount,
   };
 }

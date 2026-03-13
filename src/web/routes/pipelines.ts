@@ -19,6 +19,7 @@ import {
 } from "../../pipelines/store";
 import { updateIdeaStage } from "../../sources/ideas/store";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
+import type { MemoryManager } from "../../memory/types";
 import { createLogger } from "../../logger";
 
 const log = createLogger("routes:pipelines");
@@ -82,7 +83,9 @@ function projectRunForApi(run: {
   };
 }
 
-export function createPipelineRoutes(): Hono {
+export function createPipelineRoutes(deps?: {
+  readonly memoryManager?: MemoryManager | null;
+}): Hono {
   const app = new Hono();
 
   // List available pipelines with their latest run info
@@ -181,7 +184,7 @@ export function createPipelineRoutes(): Hono {
       category: config.category,
     });
 
-    runIdeasPipeline(id, config, lockResult.runId!).catch((err) => {
+    runIdeasPipeline(id, config, lockResult.runId!, deps?.memoryManager).catch((err) => {
       log.error("Pipeline run failed", { pipelineId: id, err });
     });
 
