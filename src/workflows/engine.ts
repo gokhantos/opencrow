@@ -502,7 +502,19 @@ async function executeToolNode(
     throw new Error(`Tool node "${nodeId}" is missing toolName`);
   }
 
-  const rawInput = (data.input as Record<string, unknown> | undefined) ?? {};
+  // UI stores tool params in `inputMapping` (Record or legacy JSON string).
+  // Fall back to `input` for backward compatibility with older workflow JSON.
+  let rawInput: Record<string, unknown> = {};
+  const mapping = data.inputMapping ?? data.input;
+  if (typeof mapping === "string") {
+    try {
+      rawInput = JSON.parse(mapping) as Record<string, unknown>;
+    } catch {
+      rawInput = {};
+    }
+  } else if (mapping && typeof mapping === "object") {
+    rawInput = mapping as Record<string, unknown>;
+  }
   const interpolatedInput = interpolateObject(rawInput, outputs) as Record<
     string,
     unknown

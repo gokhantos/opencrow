@@ -31,7 +31,7 @@ export interface AgentNodeData extends BaseNodeData {
 export interface ToolNodeData extends BaseNodeData {
   readonly nodeType: "tool";
   readonly toolName: string;
-  readonly inputMapping?: string;
+  readonly inputMapping?: Record<string, unknown>;
 }
 
 export interface SkillNodeData extends BaseNodeData {
@@ -98,6 +98,8 @@ export interface SkillOption {
 export interface ToolOption {
   readonly name: string;
   readonly description: string;
+  readonly category?: string;
+  readonly inputSchema?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
