@@ -46,13 +46,12 @@ export function buildWorkflowToolRegistry(
   memoryManager: MemoryManager | null,
   disabledTools: Set<string>,
 ): ToolRegistry {
-  const enabledScrapers = new Set(
-    config.processes.scraperProcesses.scraperIds ?? [],
-  );
-  const scraperEnabled = (id: string) => enabledScrapers.has(id);
   const allowsTool = (name: string): boolean => !disabledTools.has(name);
 
   let registry = base;
+
+  // Workflows get ALL tools unconditionally — no scraper-enabled gating.
+  // Scraper toggles control whether background scraping runs, not tool availability.
 
   if (config.market) {
     const marketTools = createMarketTools(
@@ -62,42 +61,42 @@ export function buildWorkflowToolRegistry(
     if (marketTools.length > 0) registry = registry.withTools(marketTools);
   }
 
-  if (scraperEnabled("news")) {
+  {
     const newsTools = createNewsTools(memoryManager).filter((t) =>
       allowsTool(t.name),
     );
     if (newsTools.length > 0) registry = registry.withTools(newsTools);
   }
 
-  if (scraperEnabled("producthunt")) {
+  {
     const phTools = createPHTools(memoryManager).filter((t) =>
       allowsTool(t.name),
     );
     if (phTools.length > 0) registry = registry.withTools(phTools);
   }
 
-  if (scraperEnabled("hackernews")) {
+  {
     const hnTools = createHNTools(memoryManager).filter((t) =>
       allowsTool(t.name),
     );
     if (hnTools.length > 0) registry = registry.withTools(hnTools);
   }
 
-  if (scraperEnabled("reddit")) {
+  {
     const redditTools = createRedditTools(memoryManager).filter((t) =>
       allowsTool(t.name),
     );
     if (redditTools.length > 0) registry = registry.withTools(redditTools);
   }
 
-  if (scraperEnabled("github")) {
+  {
     const githubTools = createGithubTools(memoryManager).filter((t) =>
       allowsTool(t.name),
     );
     if (githubTools.length > 0) registry = registry.withTools(githubTools);
   }
 
-  if (scraperEnabled("x")) {
+  {
     const xTimelineTools = createXTimelineTools(memoryManager).filter((t) =>
       allowsTool(t.name),
     );
@@ -105,14 +104,14 @@ export function buildWorkflowToolRegistry(
       registry = registry.withTools(xTimelineTools);
   }
 
-  if (scraperEnabled("appstore")) {
+  {
     const appStoreTools = createAppStoreTools(memoryManager).filter((t) =>
       allowsTool(t.name),
     );
     if (appStoreTools.length > 0) registry = registry.withTools(appStoreTools);
   }
 
-  if (scraperEnabled("playstore")) {
+  {
     const playStoreTools = createPlayStoreTools(memoryManager).filter((t) =>
       allowsTool(t.name),
     );
@@ -124,7 +123,7 @@ export function buildWorkflowToolRegistry(
     registry = registry.withTools([createCrossSourceSearchTool(memoryManager)]);
   }
 
-  if (scraperEnabled("ideas")) {
+  {
     const ideaTools = [...createIdeaTools("workflow", memoryManager)].filter(
       (t) => allowsTool(t.name),
     );
