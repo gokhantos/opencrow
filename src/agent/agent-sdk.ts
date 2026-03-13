@@ -174,6 +174,15 @@ export async function chat(
           options.onSdkSessionId,
         );
 
+        // Debug: log all message types to diagnose capture issue
+        const msgType = message.type;
+        const msgSubtype = (message as Record<string, unknown>).subtype;
+        if (agentId === "idea-pipeline") {
+          const msg = message as Record<string, unknown>;
+          const keys = Object.keys(msg).join(",");
+          log.debug("SDK message stream", { type: msgType, subtype: msgSubtype, keys });
+        }
+
         // Capture assistant text blocks (where actual generated content lives)
         // SDK wraps content at message.message.content (not message.content)
         if (message.type === "assistant") {
