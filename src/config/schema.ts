@@ -208,16 +208,16 @@ export const embeddingsConfigSchema = z
   .object({
     provider: z.enum(["openrouter"]).default("openrouter"),
     /** Embedding vector dimensions */
-    dimensions: z.number().int().min(32).max(4096).default(1536),
+    dimensions: z.number().int().min(32).max(4096).default(4096),
     /** OpenRouter model to use */
-    openrouterModel: z.string().default("openai/text-embedding-3-small"),
+    openrouterModel: z.string().default("qwen/qwen3-embedding-8b"),
     /** Max texts per API batch */
     batchSize: z.number().int().min(1).default(64),
   })
   .default({
     provider: "openrouter",
-    dimensions: 1536,
-    openrouterModel: "openai/text-embedding-3-small",
+    dimensions: 4096,
+    openrouterModel: "qwen/qwen3-embedding-8b",
     batchSize: 64,
   });
 

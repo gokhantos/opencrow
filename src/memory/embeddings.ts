@@ -163,8 +163,8 @@ export function createEmbeddingProviderFromConfig(
 export function createEmbeddingProvider(apiKey: string): EmbeddingProvider {
   return createOpenRouterEmbeddingProvider(
     apiKey,
-    "openai/text-embedding-3-small",
-    1536,
+    "qwen/qwen3-embedding-8b",
+    4096,
     100,
   );
 }
