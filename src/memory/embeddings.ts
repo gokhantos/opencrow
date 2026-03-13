@@ -60,6 +60,7 @@ function createLocalEmbeddingProvider(
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ texts, dimensions }),
+          signal: AbortSignal.timeout(15_000),
         });
 
         if (!response.ok) {
