@@ -197,7 +197,7 @@ export default function Workflows() {
   );
 
   return (
-    <div className="flex flex-col h-[calc(100vh-56px)] max-md:h-[calc(100vh-108px)] -mx-8 -my-7 max-lg:-mx-6 max-lg:-my-6 max-md:-mx-4 max-md:-my-5">
+    <div className="flex flex-col h-screen max-md:h-[calc(100vh-52px)] -mx-8 -my-7 max-lg:-mx-6 max-lg:-my-6 max-md:-mx-4 max-md:-my-5">
       {/* Top bar */}
       <div className="flex items-center gap-3 px-4 py-3 bg-bg-1 border-b border-border shrink-0">
         <div className="flex items-center gap-1.5 mr-2">
