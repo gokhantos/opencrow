@@ -1,20 +1,18 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { createToolRegistry } from "./registry";
-import { createToolRouter } from "./router";
-import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
+import type { ToolDefinition, ToolResult } from "./types";
 import type { ToolsConfig } from "../config/schema";
 
 // Mock tools for testing
 function createMockTool(
   name: string,
   description: string,
-  categories: readonly ToolCategory[],
   executeFn?: (input: Record<string, unknown>) => Promise<ToolResult>,
 ): ToolDefinition {
   return {
     name,
     description,
-    categories,
+    categories: [],
     inputSchema: { type: "object", properties: {} },
     execute: executeFn ?? (async () => ({ output: `mock ${name}`, isError: false })),
   };
@@ -152,80 +150,11 @@ describe("createToolRegistry", () => {
   describe("withTools", () => {
     it("should add extra tools to registry", () => {
       const registry = createToolRegistry(config);
-      const extraTool = createMockTool("custom_tool", "Custom tool", ["code"]);
+      const extraTool = createMockTool("custom_tool", "Custom tool");
       const extended = registry.withTools([extraTool]);
 
       const toolNames = extended.definitions.map(t => t.name);
       expect(toolNames).toContain("custom_tool");
     });
-  });
-
-  describe("withRouter", () => {
-    it("should set up tool router for smart routing", () => {
-      const registry = createToolRegistry(config);
-      const router = createToolRouter(registry.definitions);
-      const result = registry.withRouter(router);
-
-      expect(result).toBeDefined();
-    });
-
-    it("should record tool execution via router", async () => {
-      const registry = createToolRegistry(config);
-      const router = createToolRouter(registry.definitions);
-      registry.withRouter(router);
-
-      await registry.executeTool("bash", { command: "echo test" });
-
-      // Router should have recorded the execution
-      const tools = router.getRelevantTools(["code"], ["bash"], 10);
-      expect(tools.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe("getRelevantTools", () => {
-    it("should return relevant tools using router", () => {
-      const registry = createToolRegistry(config);
-
-      // First call creates the router internally
-      const tools = registry.getRelevantTools(["code"], ["file"], 5);
-
-      expect(tools.length).toBeGreaterThan(0);
-      expect(tools.length).toBeLessThanOrEqual(5);
-    });
-
-    it("should use default limit when not specified", () => {
-      const registry = createToolRegistry(config);
-      const tools = registry.getRelevantTools(["code"], []);
-
-      expect(tools.length).toBeLessThanOrEqual(15);
-    });
-  });
-
-  describe("recordToolExecution", () => {
-    it("should record tool execution for router", () => {
-      const registry = createToolRegistry(config);
-
-      registry.recordToolExecution("bash", true);
-      registry.recordToolExecution("grep", false);
-
-      // Should not throw
-      expect(registry).toBeDefined();
-    });
-
-    it("should create router if not exists", () => {
-      const registry = createToolRegistry(config);
-      registry.recordToolExecution("bash", true);
-
-      // Now getRelevantTools should use the router with history
-      const tools = registry.getRelevantTools([], ["bash"], 10);
-      expect(tools.length).toBeGreaterThan(0);
-    });
-  });
-});
-
-describe("buildRegistry (internal)", () => {
-  it("should build registry from tool definitions", () => {
-    // Note: buildRegistry is internal, but we test via createToolRegistry
-    // This is a placeholder for when we export it for testing
   });
 });

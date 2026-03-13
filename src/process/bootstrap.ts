@@ -6,7 +6,6 @@ import type { MemoryManager } from "../memory/types";
 import type { CronToolConfig } from "../tools/cron";
 import { initDb } from "../store/db";
 import { createToolRegistry } from "../tools/registry";
-import { createToolRouter } from "../tools/router";
 import { createAgentRegistry, type AgentRegistry } from "../agents/registry";
 import { loadConfigWithOverrides } from "../config/loader";
 import { createSubAgentTracker } from "../agents/tracker";
@@ -136,18 +135,14 @@ export async function bootstrap(
   const subAgentTracker = createSubAgentTracker();
 
   let baseToolRegistry: ToolRegistry | null = null;
-  let toolRouter: ReturnType<typeof createToolRouter> | null = null;
   if (config.tools !== undefined) {
-    const registry = createToolRegistry(config.tools).withTools([
+    baseToolRegistry = createToolRegistry(config.tools).withTools([
       createListSkillsTool(),
       createUseSkillTool(),
     ]);
-    toolRouter = createToolRouter(registry.definitions);
-    baseToolRegistry = registry.withRouter(toolRouter);
     log.info("Tool registry initialized", {
       toolCount: baseToolRegistry.definitions.length,
       allowedDirs: config.tools.allowedDirectories,
-      smartRouting: true,
     });
   }
 
@@ -199,25 +194,6 @@ export async function bootstrap(
       autoIndex: memSearch.autoIndex,
     });
 
-    if (baseToolRegistry && embeddingProvider && qdrantClient.available) {
-      try {
-        baseToolRegistry = await baseToolRegistry.withSemanticIndex(
-          embeddingProvider,
-          qdrantClient,
-          embeddingsConfig.dimensions,
-        );
-      } catch (err) {
-        log.warn("Semantic tool index init failed — using keyword routing", {
-          error: err,
-        });
-      }
-    } else {
-      log.warn("Semantic tool routing disabled", {
-        hasEmbeddings: Boolean(embeddingProvider),
-        qdrantAvailable: qdrantClient.available,
-        hasToolRegistry: Boolean(baseToolRegistry),
-      });
-    }
   }
 
   let observationHook: ObservationHook | null = null;
