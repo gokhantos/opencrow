@@ -72,12 +72,9 @@ async function main(): Promise<void> {
 
   const mergedConfig = ctx.config;
 
-  // Build the full tool registry (including agent-specific tools like search_x_timeline,
-  // analytics, memory, etc.) so that workflow tool nodes can access all tools,
-  // not just the base 11.
-  const defaultAgent = ctx.agentRegistry.getDefault();
-  const fullToolRegistry =
-    ctx.buildRegistryForAgent(defaultAgent) ?? ctx.baseToolRegistry;
+  // Use the workflow tool registry which includes ALL enabled scraper tools
+  // without agent-specific tool filters that would exclude some tools.
+  const fullToolRegistry = ctx.workflowToolRegistry ?? ctx.baseToolRegistry;
 
   const webApp = createWebApp({
     config: mergedConfig,
