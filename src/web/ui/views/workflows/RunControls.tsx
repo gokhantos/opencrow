@@ -19,12 +19,6 @@ interface RunControlsProps {
   readonly panelOpen: boolean;
 }
 
-const TERMINAL_STATUSES: ReadonlySet<ExecutionStatus> = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-]);
-
 const statusConfig: Record<ExecutionStatus, { label: string; color: string; bg: string }> = {
   pending: { label: "pending", color: "text-zinc-400", bg: "bg-zinc-500/10" },
   running: { label: "running", color: "text-blue-400", bg: "bg-blue-500/15" },
