@@ -226,8 +226,8 @@ function CanvasInner({ state, dispatch, validationErrors, stepStatuses = new Map
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1} className="opacity-20" />
           <MiniMap
-            nodeColor={(node: any) => MINIMAP_COLORS[node.type ?? ""] ?? "#6366f1"}
-            maskColor="rgba(0,0,0,0.6)"
+            nodeColor={(node) => MINIMAP_COLORS[node.type ?? ""] ?? "#6366f1"}
+            maskColor="rgba(0,0,0,0.3)"
             style={{ width: 160, height: 100, right: 16, bottom: 16 }}
             className="!bg-bg-1 !border !border-border !rounded-lg"
           />

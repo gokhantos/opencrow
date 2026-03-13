@@ -33,7 +33,7 @@ export interface Workflow {
   readonly updatedAt: number;
 }
 
-export function parseJsonColumn<T>(val: unknown, fallback: T): T {
+function parseJsonColumn<T>(val: unknown, fallback: T): T {
   if (val === null || val === undefined) return fallback;
   if (typeof val === "string") {
     try { return JSON.parse(val) as T; } catch { return fallback; }
