@@ -271,6 +271,7 @@ export function buildSessionOptions(): Record<string, unknown> {
   return {
     persistSession: false,
     settingSources: [],
+    plugins: [],
     executable: RESOLVED_EXECUTABLE,
   };
 }
