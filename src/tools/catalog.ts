@@ -41,6 +41,7 @@ export interface ToolCatalogEntry {
   readonly category: string;
   readonly description: string;
   readonly params: readonly string[];
+  readonly inputSchema?: Record<string, unknown>;
   readonly enabled: boolean;
 }
 
@@ -326,6 +327,7 @@ function toEntry(tool: ToolDefinition): ToolCatalogEntry {
     category: resolveCategory(tool),
     description: tool.description,
     params: extractParams(tool),
+    inputSchema: tool.inputSchema as Record<string, unknown> | undefined,
     enabled: true,
   };
 }

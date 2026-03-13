@@ -201,6 +201,92 @@ function AgentProperties({
   );
 }
 
+interface SchemaProperty {
+  readonly type?: string;
+  readonly description?: string;
+  readonly enum?: readonly string[];
+  readonly default?: unknown;
+}
+
+function SchemaField({
+  name,
+  schema,
+  value,
+  required,
+  onChange,
+}: {
+  name: string;
+  schema: SchemaProperty;
+  value: unknown;
+  required: boolean;
+  onChange: (v: unknown) => void;
+}) {
+  const label = name.replace(/_/g, " ");
+
+  if (schema.enum && schema.enum.length > 0) {
+    const options = schema.enum.map((v) => ({ value: String(v), label: String(v) }));
+    return (
+      <div className="mb-3">
+        <Label>{label}{required ? " *" : ""}</Label>
+        <FieldSelect
+          value={String(value ?? "")}
+          onChange={(v) => onChange(v)}
+          options={options}
+          placeholder={`Select ${label}...`}
+        />
+        {schema.description && (
+          <p className="text-[11px] text-faint mt-0.5 leading-relaxed">{schema.description}</p>
+        )}
+      </div>
+    );
+  }
+
+  if (schema.type === "boolean") {
+    return (
+      <div className="mb-3">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={Boolean(value)}
+            onChange={(e) => onChange(e.target.checked)}
+            className="rounded border-border-2 bg-bg accent-accent cursor-pointer"
+          />
+          <span className="text-xs font-semibold text-muted uppercase tracking-wider">
+            {label}{required ? " *" : ""}
+          </span>
+        </label>
+        {schema.description && (
+          <p className="text-[11px] text-faint mt-0.5 leading-relaxed">{schema.description}</p>
+        )}
+      </div>
+    );
+  }
+
+  const isNumeric = schema.type === "number" || schema.type === "integer";
+
+  return (
+    <div className="mb-3">
+      <Label>{label}{required ? " *" : ""}</Label>
+      <FieldInput
+        value={value !== undefined && value !== null ? String(value) : ""}
+        onChange={(v) => {
+          if (isNumeric && v !== "") {
+            const num = Number(v);
+            onChange(Number.isNaN(num) ? v : num);
+          } else {
+            onChange(v === "" ? undefined : v);
+          }
+        }}
+        placeholder={schema.description ?? `Enter ${label}...`}
+        type={isNumeric ? "number" : "text"}
+      />
+      {schema.description && (
+        <p className="text-[11px] text-faint mt-0.5 leading-relaxed">{schema.description}</p>
+      )}
+    </div>
+  );
+}
+
 function ToolProperties({
   data,
   onChange,
@@ -209,6 +295,7 @@ function ToolProperties({
   onChange: (partial: Partial<ToolNodeData>) => void;
 }) {
   const [tools, setTools] = useState<ToolOption[]>([]);
+  const [showRawJson, setShowRawJson] = useState(false);
 
   useEffect(() => {
     apiFetch<{ data: ToolOption[]; success: boolean }>("/api/tools")
@@ -216,7 +303,55 @@ function ToolProperties({
       .catch(() => setTools([]));
   }, []);
 
+  // Migrate legacy string inputMapping to Record
+  useEffect(() => {
+    if (typeof data.inputMapping === "string") {
+      try {
+        const parsed = JSON.parse(data.inputMapping) as Record<string, unknown>;
+        onChange({ inputMapping: parsed });
+      } catch {
+        onChange({ inputMapping: {} });
+      }
+    }
+  }, []);
+
   const toolOptions = tools.map((t) => ({ value: t.name, label: t.name }));
+  const selectedTool = tools.find((t) => t.name === data.toolName);
+  const inputMapping = (typeof data.inputMapping === "object" && data.inputMapping !== null)
+    ? data.inputMapping
+    : {};
+
+  // Extract schema properties
+  const schemaProps = (selectedTool?.inputSchema as Record<string, unknown>)?.properties as
+    | Record<string, SchemaProperty>
+    | undefined;
+  const requiredFields = new Set(
+    (selectedTool?.inputSchema as Record<string, unknown>)?.required as string[] ?? [],
+  );
+  const paramEntries = schemaProps ? Object.entries(schemaProps) : [];
+
+  const handleToolChange = (toolName: string) => {
+    onChange({ toolName, inputMapping: {} });
+  };
+
+  const handleParamChange = (paramName: string, value: unknown) => {
+    const updated = { ...inputMapping };
+    if (value === undefined || value === "") {
+      delete (updated as Record<string, unknown>)[paramName];
+    } else {
+      (updated as Record<string, unknown>)[paramName] = value;
+    }
+    onChange({ inputMapping: updated });
+  };
+
+  const handleRawJsonChange = (jsonStr: string) => {
+    try {
+      const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+      onChange({ inputMapping: parsed });
+    } catch {
+      // Don't update until valid JSON
+    }
+  };
 
   return (
     <>
@@ -225,7 +360,7 @@ function ToolProperties({
         {toolOptions.length > 0 ? (
           <FieldSelect
             value={data.toolName}
-            onChange={(v) => onChange({ toolName: v })}
+            onChange={handleToolChange}
             options={toolOptions}
             placeholder="Select tool..."
           />
@@ -237,15 +372,55 @@ function ToolProperties({
           />
         )}
       </div>
-      <div className="mb-4">
-        <Label>Input Mapping (JSON)</Label>
-        <FieldTextarea
-          value={data.inputMapping ?? ""}
-          onChange={(v) => onChange({ inputMapping: v })}
-          placeholder='{"query": "{{input}}"}'
-          rows={3}
-        />
-      </div>
+
+      {selectedTool?.description && (
+        <div className="mb-4 px-2.5 py-2 bg-bg-2 rounded-md border border-border">
+          <p className="text-[11px] text-muted leading-relaxed">{selectedTool.description}</p>
+        </div>
+      )}
+
+      {paramEntries.length > 0 && !showRawJson && (
+        <div className="mb-4">
+          <Label>Parameters</Label>
+          <div className="mt-1">
+            {paramEntries.map(([name, schema]) => (
+              <SchemaField
+                key={name}
+                name={name}
+                schema={schema}
+                value={(inputMapping as Record<string, unknown>)[name]}
+                required={requiredFields.has(name)}
+                onChange={(v) => handleParamChange(name, v)}
+              />
+            ))}
+          </div>
+          <p className="text-[11px] text-faint mt-1">
+            Use <code className="font-mono text-accent bg-bg-2 px-0.5 rounded">{"{{nodeId.output}}"}</code> to reference other nodes.
+          </p>
+        </div>
+      )}
+
+      {(showRawJson || paramEntries.length === 0) && data.toolName && (
+        <div className="mb-4">
+          <Label>Input (JSON)</Label>
+          <FieldTextarea
+            value={JSON.stringify(inputMapping, null, 2)}
+            onChange={handleRawJsonChange}
+            placeholder='{"query": "{{trigger.output}}"}'
+            rows={4}
+          />
+        </div>
+      )}
+
+      {paramEntries.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowRawJson((v) => !v)}
+          className="text-[11px] text-faint hover:text-muted transition-colors cursor-pointer mb-4"
+        >
+          {showRawJson ? "Switch to form" : "Edit as JSON"}
+        </button>
+      )}
     </>
   );
 }
