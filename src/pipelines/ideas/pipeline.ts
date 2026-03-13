@@ -161,7 +161,7 @@ export async function runIdeasPipeline(
     const existingIdeas = await getRecentIdeaTitles(AGENT_ID, 100);
     const existingTitles = existingIdeas.map((i) => i.title);
 
-    const model = config.model ?? "claude-sonnet-4-5-20250514";
+    const model = config.model ?? "claude-sonnet-4-5";
     const synthOutput = await synthesize({
       aggregatedContext: collectionResult.aggregatedContext,
       category: config.category,

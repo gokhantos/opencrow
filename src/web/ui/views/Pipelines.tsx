@@ -67,6 +67,17 @@ interface PipelineDefinition {
   readonly latestRun: PipelineRunRow | null;
 }
 
+interface RunIdea {
+  readonly id: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly reasoning: string;
+  readonly category: string;
+  readonly quality_score: number | null;
+  readonly sources_used: string;
+  readonly created_at: number;
+}
+
 interface RunDetail extends PipelineRunRow {
   readonly steps: readonly PipelineStep[];
 }
@@ -190,7 +201,9 @@ function StatCard({
 function RunRow({ run }: { readonly run: PipelineRunRow }) {
   const [expanded, setExpanded] = useState(run.status === "running");
   const [detail, setDetail] = useState<RunDetail | null>(null);
+  const [ideas, setIdeas] = useState<readonly RunIdea[]>([]);
   const [loadError, setLoadError] = useState(false);
+  const [expandedIdeaId, setExpandedIdeaId] = useState<string | null>(null);
   const StatusIcon = STATUS_ICONS[run.status] ?? Clock;
 
   // Single fetch for both progress bar and detail panel
@@ -217,6 +230,24 @@ function RunRow({ run }: { readonly run: PipelineRunRow }) {
       if (interval) clearInterval(interval);
     };
   }, [run.id, run.status]);
+
+  // Fetch ideas when expanded and run is completed
+  useEffect(() => {
+    if (!expanded || run.status === "running") return;
+    let active = true;
+    async function loadIdeas() {
+      try {
+        const res = await apiFetch<{ success: boolean; data: readonly RunIdea[] }>(
+          `/api/pipelines-runs/${run.id}/ideas`,
+        );
+        if (active && res.success) setIdeas(res.data);
+      } catch {
+        // ignore
+      }
+    }
+    loadIdeas();
+    return () => { active = false; };
+  }, [run.id, expanded, run.status]);
 
   const steps = detail?.steps ?? [];
 
@@ -395,6 +426,82 @@ function RunRow({ run }: { readonly run: PipelineRunRow }) {
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Generated Ideas */}
+              {ideas.length > 0 && (
+                <div className="p-4 bg-bg rounded-md border border-border">
+                  <h4 className="text-sm font-semibold text-strong mb-3">
+                    Generated Ideas ({ideas.length})
+                  </h4>
+                  <div className="space-y-2">
+                    {ideas.map((idea) => (
+                      <div
+                        key={idea.id}
+                        className="p-3 bg-bg-1 rounded-md border border-border hover:border-border-2 transition-colors"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <button
+                              className="text-left w-full cursor-pointer bg-transparent border-none p-0"
+                              onClick={() =>
+                                setExpandedIdeaId(
+                                  expandedIdeaId === idea.id
+                                    ? null
+                                    : idea.id,
+                                )
+                              }
+                            >
+                              <div className="flex items-center gap-2">
+                                <h5 className="text-sm font-semibold text-strong">
+                                  {idea.title}
+                                </h5>
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-accent-subtle text-accent border border-accent/20 capitalize shrink-0">
+                                  {idea.category.replace(/_/g, " ")}
+                                </span>
+                                {idea.quality_score !== null && (
+                                  <span
+                                    className={cn(
+                                      "px-2 py-0.5 rounded-full text-[10px] font-semibold font-mono shrink-0",
+                                      idea.quality_score >= 4
+                                        ? "bg-success-subtle text-success border border-success/20"
+                                        : idea.quality_score >= 3
+                                          ? "bg-warning-subtle text-warning border border-warning/20"
+                                          : "bg-bg-3 text-muted border border-border",
+                                    )}
+                                  >
+                                    {idea.quality_score.toFixed(1)}
+                                  </span>
+                                )}
+                                <ChevronRight
+                                  size={12}
+                                  className={cn(
+                                    "text-faint transition-transform shrink-0 ml-auto",
+                                    expandedIdeaId === idea.id &&
+                                      "rotate-90",
+                                  )}
+                                />
+                              </div>
+                            </button>
+                            <p className="text-xs text-muted mt-1 leading-relaxed">
+                              {idea.summary}
+                            </p>
+                            {idea.sources_used && (
+                              <p className="text-[10px] text-faint mt-1 italic">
+                                Sources: {idea.sources_used}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        {expandedIdeaId === idea.id && idea.reasoning && (
+                          <div className="mt-3 px-4 py-3 bg-accent-subtle border-l-2 border-l-accent rounded-r-md text-xs text-muted leading-relaxed whitespace-pre-wrap">
+                            {idea.reasoning}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 

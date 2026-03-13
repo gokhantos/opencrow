@@ -36,7 +36,7 @@ export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
     "news",
     "x",
   ],
-  model: "claude-sonnet-4-5-20250514",
+  model: "claude-sonnet-4-5",
 };
 
 export interface PipelineRun {

@@ -39,8 +39,8 @@ const VALID_CATEGORIES = [
 ] as const;
 
 const ALLOWED_MODELS = [
-  "claude-sonnet-4-5-20250514",
-  "claude-haiku-4-5-20251001",
+  "claude-sonnet-4-5",
+  "claude-haiku-4-5",
 ] as const;
 
 /** Minimum seconds between runs of the same pipeline */

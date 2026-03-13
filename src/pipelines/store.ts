@@ -281,26 +281,12 @@ export async function getStepsForRun(
 
 export async function getIdeasForRun(
   runId: string,
-): Promise<
-  readonly {
-    id: string;
-    title: string;
-    category: string;
-    quality_score: number | null;
-  }[]
-> {
+): Promise<readonly Record<string, unknown>[]> {
   const db = getDb();
   return db`
-    SELECT id, title, category, quality_score
+    SELECT id, title, summary, reasoning, category, quality_score, sources_used, created_at
     FROM generated_ideas
     WHERE pipeline_run_id = ${runId}
     ORDER BY quality_score DESC NULLS LAST
-  ` as Promise<
-    {
-      id: string;
-      title: string;
-      category: string;
-      quality_score: number | null;
-    }[]
-  >;
+  ` as Promise<Record<string, unknown>[]>;
 }
