@@ -142,6 +142,7 @@ export async function chat(
 
   try {
     let resultText = "";
+    let lastAssistantText = "";
     const sessionCapture = { done: false };
     let usage: SdkUsage = createEmptyUsage();
 
@@ -173,6 +174,31 @@ export async function chat(
           options.onSdkSessionId,
         );
 
+        // Debug: log all message types to diagnose capture issue
+        const msgType = message.type;
+        const msgSubtype = (message as Record<string, unknown>).subtype;
+        if (agentId === "idea-pipeline") {
+          const msg = message as Record<string, unknown>;
+          const keys = Object.keys(msg).join(",");
+          log.debug("SDK message stream", { type: msgType, subtype: msgSubtype, keys });
+        }
+
+        // Capture assistant text blocks (where actual generated content lives)
+        // SDK wraps content at message.message.content (not message.content)
+        if (message.type === "assistant") {
+          const msg = message as Record<string, unknown>;
+          const content = (msg.message as Record<string, unknown>)?.content as
+            | ReadonlyArray<Record<string, unknown>>
+            | undefined;
+          if (content) {
+            for (const block of content) {
+              if (block.type === "text" && block.text) {
+                lastAssistantText = String(block.text);
+              }
+            }
+          }
+        }
+
         if (message.type === "result") {
           usage = extractUsageFromResult(
             message as Record<string, unknown>,
@@ -185,10 +211,12 @@ export async function chat(
         }
       }
     } catch (streamError) {
-      if (resultText.trim()) {
+      const hasUsable = Boolean(resultText.trim() || lastAssistantText.trim());
+      if (hasUsable) {
         log.warn("SDK subprocess crashed after producing results — recovering", {
           agentId,
           resultLength: resultText.length,
+          lastAssistantLength: lastAssistantText.length,
           error: streamError instanceof Error ? streamError.message : String(streamError),
         });
       } else {
@@ -196,16 +224,20 @@ export async function chat(
       }
     }
 
+    // Fall back to assistant text if result is a short summary (not the actual JSON)
+    const finalText = resultText || lastAssistantText;
+
     log.info("Agent SDK chat complete", {
       model: options.model,
-      resultLength: resultText.length,
+      resultLength: finalText.length,
+      usedFallback: !resultText && !!lastAssistantText,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       costUsd: usage.costUsd,
     });
 
     return {
-      text: resultText,
+      text: finalText,
       provider: "agent-sdk",
       usage: { ...usage },
     };

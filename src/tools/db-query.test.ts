@@ -1,14 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { initDb, closeDb, getDb } from "../store/db";
 
-// Note: No database mocking - using real DB for integration testing
-// Mocks in test files pollute the module cache and break other tests
-
 import {
   createDbQueryTool,
-  createDbListTablesTool,
-  createDbTableInfoTool,
-  createDbRowCountTool,
   createDbTools,
 } from "./db-query";
 
@@ -213,7 +207,6 @@ describe("db-query tools", () => {
     it("should add LIMIT when not present", async () => {
       const tool = createDbQueryTool();
       await tool.execute({ query: "SELECT 1" });
-      // Just verify it doesn't throw - the query should execute successfully
     });
 
     it("should not add LIMIT when already present", async () => {
@@ -244,7 +237,6 @@ describe("db-query tools", () => {
   describe("createDbQueryTool - result formatting", () => {
     it("should show no rows message for empty results", async () => {
       const db = getDb();
-      // Create a temp table that will be empty
       await db.unsafe("CREATE TEMP TABLE IF NOT EXISTS _test_empty (id serial PRIMARY KEY)");
 
       const tool = createDbQueryTool();
@@ -255,7 +247,6 @@ describe("db-query tools", () => {
 
     it("should format rows as a table", async () => {
       const db = getDb();
-      // Create a temp table with data
       await db.unsafe("CREATE TEMP TABLE IF NOT EXISTS _test_users (id serial PRIMARY KEY, name TEXT)");
       await db.unsafe("INSERT INTO _test_users (name) VALUES ('alice'), ('bob')");
 
@@ -288,68 +279,15 @@ describe("db-query tools", () => {
   });
 
   describe("createDbTools - factory", () => {
-    it("should return 4 tools", () => {
+    it("should return 1 tool", () => {
       const tools = createDbTools();
-      expect(tools.length).toBe(4);
+      expect(tools.length).toBe(1);
     });
 
     it("should return tools with correct names", () => {
       const tools = createDbTools();
       const names = tools.map((t) => t.name);
       expect(names).toContain("db_query");
-      expect(names).toContain("db_list_tables");
-      expect(names).toContain("db_table_info");
-      expect(names).toContain("db_row_counts");
-    });
-  });
-
-  describe("createDbListTablesTool - definition", () => {
-    it("should have correct name", () => {
-      const tool = createDbListTablesTool();
-      expect(tool.name).toBe("db_list_tables");
-    });
-
-    it("should have no required fields", () => {
-      const tool = createDbListTablesTool();
-      expect(tool.inputSchema.required).toEqual([]);
-    });
-
-    it("should list tables successfully", async () => {
-      const tool = createDbListTablesTool();
-      const result = await tool.execute({});
-      expect(result.isError).toBe(false);
-      expect(result.output).toBeTruthy();
-    });
-  });
-
-  describe("createDbTableInfoTool - definition", () => {
-    it("should have correct name", () => {
-      const tool = createDbTableInfoTool();
-      expect(tool.name).toBe("db_table_info");
-    });
-
-    it("should require table parameter", () => {
-      const tool = createDbTableInfoTool();
-      expect(tool.inputSchema.required).toEqual(["table"]);
-    });
-
-    it("should return error for non-existent table", async () => {
-      const tool = createDbTableInfoTool();
-      const result = await tool.execute({ table: "nonexistent_table_xyz" });
-      expect(result.isError).toBe(true);
-    });
-  });
-
-  describe("createDbRowCountTool - definition", () => {
-    it("should have correct name", () => {
-      const tool = createDbRowCountTool();
-      expect(tool.name).toBe("db_row_counts");
-    });
-
-    it("should require tables parameter or use default", () => {
-      const tool = createDbRowCountTool();
-      // tables is not required
-      expect(tool.inputSchema.required).not.toContain("tables");
     });
   });
 });

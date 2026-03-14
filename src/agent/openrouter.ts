@@ -5,8 +5,7 @@ import type {
   OpenAIMessage,
   OpenAIToolCall,
 } from "./types";
-import type { ToolRegistry, OpenAITool } from "../tools/registry";
-import type { ToolDefinition } from "../tools/types";
+import type { ToolRegistry } from "../tools/registry";
 import { retryAsync } from "../infra/retry";
 import { createLogger } from "../logger";
 import { createLoopDetector } from "./loop-detection";
@@ -189,71 +188,6 @@ export async function chat(
   }
 }
 
-/** Tool names that must always be available regardless of semantic score. */
-const CORE_TOOL_NAMES = new Set([
-  "search_memory",
-  "send_message",
-  "bash",
-  "read_file",
-  "write_file",
-  "edit_file",
-]);
-
-/** Extract the last user message text from conversation history. */
-function extractLastUserMessage(
-  messages: readonly ConversationMessage[],
-): string | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg && msg.role === "user" && typeof msg.content === "string") {
-      return msg.content;
-    }
-  }
-  return null;
-}
-
-/** Build a filtered OpenAI tools list using semantic routing when available. */
-async function buildFilteredTools(
-  registry: ToolRegistry,
-  lastUserMessage: string | null,
-  semanticLimit: number,
-): Promise<readonly OpenAITool[]> {
-  if (!lastUserMessage) {
-    return registry.getOpenAITools();
-  }
-
-  let filteredDefs: readonly ToolDefinition[];
-  try {
-    filteredDefs = await registry.getRelevantToolsForMessage(
-      lastUserMessage,
-      semanticLimit,
-    );
-  } catch (err) {
-    log.warn("Semantic tool routing failed, using full tool list", { error: String(err) });
-    return registry.getOpenAITools();
-  }
-
-  // Always include core tools
-  const filteredNames = new Set(filteredDefs.map((t) => t.name));
-  const allDefs = registry.definitions;
-  const coreAdded = allDefs.filter(
-    (t) => CORE_TOOL_NAMES.has(t.name) && !filteredNames.has(t.name),
-  );
-
-  const finalDefs = [...filteredDefs, ...coreAdded];
-
-  return finalDefs.map((tool) => ({
-    type: "function" as const,
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema,
-    },
-  }));
-}
-
-const SEMANTIC_TOOL_LIMIT = 25;
-
 export async function agenticChat(
   messages: readonly ConversationMessage[],
   options: AgentOptions,
@@ -261,12 +195,7 @@ export async function agenticChat(
   maxIterations: number,
   onProgress?: (event: import("./types").ProgressEvent) => void,
 ): Promise<AgentResponse> {
-  const lastUserMessage = extractLastUserMessage(messages);
-  const tools = await buildFilteredTools(
-    registry,
-    lastUserMessage,
-    SEMANTIC_TOOL_LIMIT,
-  );
+  const tools = registry.getOpenAITools();
   const budget = computeToolResultBudget(DEFAULT_CONTEXT_WINDOW);
   const loopDetector = createLoopDetector();
 

@@ -13,7 +13,6 @@ import {
   GraduationCap,
   Newspaper,
   TrendingUp,
-  Lightbulb,
   Clock,
   Activity,
   FileText,
@@ -26,6 +25,8 @@ import {
   MessagesSquare,
   Workflow,
   Swords,
+  Zap,
+  Lightbulb,
 } from "lucide-react";
 
 export type Tab =
@@ -44,7 +45,6 @@ export type Tab =
   | "playstore"
   | "news"
   | "markets"
-  | "ideas"
   | "cron"
   | "processes"
   | "system"
@@ -55,7 +55,9 @@ export type Tab =
   | "logs"
   | "settings"
   | "workflows"
-  | "sige";
+  | "sige"
+  | "pipelines"
+  | "pipeline-ideas";
 
 export interface NavItem {
   readonly id: Tab;
@@ -73,9 +75,9 @@ export const VALID_TABS = new Set<Tab>([
   "overview", "chat", "agents", "skills", "sessions", "channels",
   "x-accounts", "producthunt", "hackernews", "reddit",
   "github", "appstore", "playstore",
-  "news", "markets", "ideas", "cron",
+  "news", "markets", "cron",
   "processes", "system", "tools", "agent-metrics", "routing",
-  "memory", "logs", "settings", "workflows", "sige",
+  "memory", "logs", "settings", "workflows", "sige", "pipelines", "pipeline-ideas",
 ]);
 
 export const TAB_TITLES: Record<Tab, string> = {
@@ -94,7 +96,6 @@ export const TAB_TITLES: Record<Tab, string> = {
   playstore: "Play Store",
   news: "News Feed",
   markets: "Markets",
-  ideas: "Ideas",
   cron: "Cron",
   processes: "Processes",
   system: "Metrics",
@@ -106,6 +107,8 @@ export const TAB_TITLES: Record<Tab, string> = {
   settings: "Settings",
   workflows: "Workflows",
   sige: "SIGE",
+  pipelines: "Pipelines",
+  "pipeline-ideas": "Pipeline Ideas",
 };
 
 export const NAV_SECTIONS: readonly NavSection[] = [
@@ -148,7 +151,8 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     items: [
       { id: "news", label: "News Feed", Icon: Newspaper },
       { id: "markets", label: "Markets", Icon: TrendingUp },
-      { id: "ideas", label: "Ideas", Icon: Lightbulb },
+      { id: "pipelines", label: "Pipelines", Icon: Zap },
+      { id: "pipeline-ideas", label: "Pipeline Ideas", Icon: Lightbulb },
       { id: "sige", label: "SIGE", Icon: Swords },
       { id: "memory", label: "Memory", Icon: Brain },
     ],

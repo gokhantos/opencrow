@@ -1,13 +1,7 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import {
-  getAgentMemories,
   setMemory,
-  formatMemoryBlock,
 } from "../store/memory";
-import {
-  getRecentObservations,
-  formatObservationBlock,
-} from "../store/observations";
 import type { MemoryManager } from "../memory/types";
 import { MEMORY_SOURCE_KINDS } from "../memory/types";
 import type { MemorySourceKind } from "../memory/types";
@@ -117,92 +111,6 @@ export function createMemoryTools(agentId: string): ToolDefinition[] {
     },
   };
 
-  const recall: ToolDefinition = {
-    name: "recall",
-    description:
-      "Retrieve memory entries. Pass a key to get a specific entry, or omit key to get all stored memories. Useful mid-conversation to re-check a memory after it was updated.",
-    categories: ["memory"] as readonly ToolCategory[],
-    inputSchema: {
-      type: "object",
-      properties: {
-        key: {
-          type: "string",
-          description: "The key to retrieve. Omit to return all memories.",
-        },
-      },
-      required: [],
-    },
-    async execute(input): Promise<{ output: string; isError: boolean }> {
-      const key = input.key as string | undefined;
-      try {
-        const entries = await getAgentMemories(agentId);
-        if (key) {
-          const entry = entries.find((e) => e.key === key);
-          if (!entry) {
-            return {
-              output: `No memory found for key: ${key}`,
-              isError: false,
-            };
-          }
-          return { output: `${entry.key}: ${entry.value}`, isError: false };
-        }
-        const block = formatMemoryBlock(entries);
-        return {
-          output: block || "No memories stored yet.",
-          isError: false,
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return {
-          output: `Error retrieving memory: ${message}`,
-          isError: true,
-        };
-      }
-    },
-  };
-
-  return [remember, recall];
+  return [remember];
 }
 
-export function createGetObservationsTool(
-  agentId: string,
-): ToolDefinition {
-  return {
-    name: "get_observations",
-    description:
-      "Retrieve your past observations — learnings extracted from previous conversations. Types: preference, decision, capability, context, task, discovery. Use for self-reflection and continuity across sessions.",
-    categories: ["memory"] as readonly ToolCategory[],
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: {
-          type: "number",
-          description: "Max observations to return (default 20, max 50).",
-        },
-      },
-      required: [],
-    },
-    async execute(input): Promise<{ output: string; isError: boolean }> {
-      const limit = Math.min((input.limit as number) || 20, 50);
-
-      try {
-        const observations = await getRecentObservations(agentId, limit);
-
-        if (observations.length === 0) {
-          return {
-            output: "No observations found yet.",
-            isError: false,
-          };
-        }
-
-        return {
-          output: formatObservationBlock(observations),
-          isError: false,
-        };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Error fetching observations: ${msg}`, isError: true };
-      }
-    },
-  };
-}

@@ -21,8 +21,6 @@ import { createRedditRoutes } from "./routes/reddit";
 import { createGithubRoutes } from "./routes/github";
 import { createPHProductRoutes } from "./routes/ph-products";
 import { createNewsRoutes } from "./routes/news";
-import { createIdeasRoutes } from "./routes/ideas";
-import { createSignalsRoutes } from "./routes/signals";
 import { createSkillRoutes } from "./routes/skills";
 import { createUsageRoutes } from "./routes/usage";
 import { createToolsRoutes } from "./routes/tools";
@@ -33,6 +31,7 @@ import { createAppStoreRoutes } from "./routes/appstore";
 import { createPlayStoreRoutes } from "./routes/playstore";
 import { createWorkflowRoutes } from "./routes/workflows";
 import { createSigeRoutes } from "./routes/sige";
+import { createPipelineRoutes } from "./routes/pipelines";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
 import type { AutofollowProcessor } from "../sources/x/follow/processor";
@@ -335,11 +334,8 @@ export function createWebApp(deps: WebAppDeps): Hono {
     app.route("/api", news);
   }
 
-  const ideas = createIdeasRoutes();
-  app.route("/api", ideas);
-
-  const signals = createSignalsRoutes();
-  app.route("/api", signals);
+  const pipelines = createPipelineRoutes({ memoryManager: deps.memoryManager });
+  app.route("/api", pipelines);
 
   const appStore = createAppStoreRoutes({ coreClient: cc });
   app.route("/api", appStore);
