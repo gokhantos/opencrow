@@ -250,9 +250,9 @@ async function collectXTimeline(): Promise<CollectedData> {
     const { getDb } = await import("../../store/db");
     const db = getDb();
     const tweets = (await db`
-      SELECT author_username, text, like_count, retweet_count, reply_count, created_at
+      SELECT author_username, text, likes, retweets, replies, views, scraped_at
       FROM x_scraped_tweets
-      ORDER BY created_at DESC
+      ORDER BY scraped_at DESC
       LIMIT 30
     `) as Array<Record<string, unknown>>;
 
@@ -263,7 +263,7 @@ async function collectXTimeline(): Promise<CollectedData> {
     const summary = tweets
       .map(
         (t) =>
-          `@${t.author_username}: ${(t.text as string)?.slice(0, 250)} (${t.like_count} likes, ${t.retweet_count} RTs)`,
+          `@${t.author_username}: ${(t.text as string)?.slice(0, 250)} (${t.likes} likes, ${t.retweets} RTs, ${t.views} views)`,
       )
       .join("\n");
 
