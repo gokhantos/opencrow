@@ -213,49 +213,57 @@ export async function generateIdeas(
     ? `\n\nSATURATED THEMES — these have been explored extensively, DO NOT generate ideas in these areas:\n${saturatedThemes}\n\nYou MUST find COMPLETELY DIFFERENT angles. Think about underserved niches, emerging markets, and problems nobody is solving yet.`
     : "";
 
-  const prompt = `You are a visionary product strategist and serial entrepreneur. Based on the following market analysis, generate ${maxIdeas} specific, actionable product ideas.
+  const prompt = `You are a world-class entrepreneur who has built multiple $100M+ companies. You think INDEPENDENTLY — you don't just react to data, you see the future.
+
+Your task: Invent ${maxIdeas} genuinely creative, original product ideas that could become real businesses.
 
 ${CATEGORY_CONTEXT[category]}
 
-ANALYSIS:
-Top Themes: ${analysis.themes.join(", ")}
-Market Gaps: ${(analysis.gaps ?? []).join("; ")}
-Key Signals: ${JSON.stringify(analysis.signals.slice(0, 10), null, 2)}
+IMPORTANT: Do NOT just react to the data below. The data is context — it shows you what's happening in the market right now. Use it to VALIDATE your thinking, not to SOURCE your ideas. The best ideas come from YOUR creative insight about human needs, emerging behaviors, and technology intersections that nobody else sees yet.
+
+Think about:
+- What human behaviors are changing RIGHT NOW that create new needs?
+- What's about to become possible that wasn't possible 6 months ago?
+- What do people waste time/money on that could be 10x better?
+- What problems do specific PROFESSIONS have that nobody builds for?
+- What would you build if you had $500K and 6 months?
+
+MARKET CONTEXT (use for validation, NOT as idea source):
+Emerging themes: ${analysis.themes.join(", ")}
+Unmet needs: ${(analysis.gaps ?? []).join("; ")}
 ${saturatedSection}
 
-CRITICAL DIVERSITY RULES:
-- Each idea MUST target a completely different market, user persona, and problem space
-- No two ideas should use the same core technology or solve adjacent problems
-- Avoid generic app categories (voice assistants, subscription trackers, security scanners)
-- Think about UNIQUE intersections: combine signals from different sources in unexpected ways
-- Prefer ideas that could NOT have been generated from app store complaints alone
+RULES:
+- Each idea must be SURPRISING — if it's obvious from reading app store complaints, it's not good enough
+- Each idea must target a SPECIFIC person (not "users" or "professionals" — name the exact job title, life situation, or demographic)
+- Each idea must have a clear "why now" — what changed recently that makes this possible/necessary?
+- NO generic tool/utility apps (no "tracker", "scanner", "guard", "monitor" apps)
+- NO ideas that are just "existing thing but with AI"
+- Each idea should make someone say "why doesn't this exist yet?"
 
-For each idea, provide ALL of these fields:
-- title: A catchy, memorable product name (2-4 words)
-- summary: A full paragraph (4-6 sentences) describing what the product does, the core problem it solves, who it's for, and why it matters NOW. Be specific — don't be generic.
-- reasoning: Detailed analysis (5-8 sentences): which specific signals and data points led to this idea, what trends converge here, why the timing is right, and what's the competitive advantage over existing solutions.
-- designDescription: A full paragraph (4-6 sentences) describing the UX/UI vision: what does the app look like? What are the key screens? What's the user journey from first open to daily use? Describe the visual style, interaction patterns, and what makes it delightful to use.
-- monetizationDetail: A full paragraph (3-5 sentences) on the business model: pricing tiers with specific dollar amounts, expected conversion rates, comparable apps and their revenue, estimated TAM (total addressable market), and path to profitability.
-- sourceLinks: An array of 3-8 specific references from the data that inspired this idea. Each link must have "title" (descriptive label), "url" (the actual URL from the data), and "source" (which platform: hackernews, reddit, producthunt, github, appstore, playstore, news). ONLY use real URLs that appear in the data above — do NOT make up URLs.
-- sourcesUsed: Comma-separated list of data source names
+For each idea provide:
+- title: Memorable 2-3 word product name (creative, not descriptive)
+- summary: Full paragraph (4-6 sentences). What is it? Who is it for specifically? What's the core insight? Why now?
+- reasoning: Full paragraph (5-8 sentences). What creative insight led here? What's the "why now"? What's the unfair advantage? Why will this win?
+- designDescription: Full paragraph (4-6 sentences). Key screens, user journey, visual style, what makes it delightful.
+- monetizationDetail: Full paragraph (3-5 sentences). Pricing with specific dollar amounts, TAM, comparable revenue benchmarks, path to $1M ARR.
+- sourceLinks: Array of references (can be empty if idea comes from creative insight rather than specific data). Each: {"title": "string", "url": "string", "source": "string"}
+- sourcesUsed: Comma-separated source names that provided supporting context
 - category: "${category}"
-- qualityScore: Quality score (1.0-5.0) based on: market demand, trend alignment, feasibility, competition gap, uniqueness
-- targetAudience: Who is this for? Be specific (age range, profession, pain level).
-- keyFeatures: 5-7 key features as an array — be specific, not generic
-- revenueModel: One-line summary of the primary revenue model
-
-Generate DIVERSE ideas across different themes. Each idea should feel like a real product pitch, not a vague concept.
+- qualityScore: 1.0-5.0 (be honest — 5.0 means "this is a unicorn idea")
+- targetAudience: One specific sentence — name the person, not a category
+- keyFeatures: 5-7 specific features
+- revenueModel: One-line summary
 
 Return ONLY a JSON array:
-\`\`\`json
 [
   {
     "title": "string",
-    "summary": "string (full paragraph)",
-    "reasoning": "string (detailed analysis)",
-    "designDescription": "string (UX/UI vision paragraph)",
-    "monetizationDetail": "string (business model paragraph)",
-    "sourceLinks": [{"title": "string", "url": "string", "source": "string"}],
+    "summary": "string",
+    "reasoning": "string",
+    "designDescription": "string",
+    "monetizationDetail": "string",
+    "sourceLinks": [],
     "sourcesUsed": "string",
     "category": "${category}",
     "qualityScore": number,
@@ -263,8 +271,7 @@ Return ONLY a JSON array:
     "keyFeatures": ["string"],
     "revenueModel": "string"
   }
-]
-\`\`\``;
+]`;
 
   const messages: ConversationMessage[] = [
     { role: "user", content: prompt, timestamp: Date.now() },
