@@ -32,6 +32,7 @@ import { createRoutingRulesRoutes } from "./routes/routing-rules";
 import { createAppStoreRoutes } from "./routes/appstore";
 import { createPlayStoreRoutes } from "./routes/playstore";
 import { createWorkflowRoutes } from "./routes/workflows";
+import { createSigeRoutes } from "./routes/sige";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
 import type { AutofollowProcessor } from "../sources/x/follow/processor";
@@ -382,6 +383,11 @@ export function createWebApp(deps: WebAppDeps): Hono {
       { coreClient: deps.coreClient },
     );
     app.route("/api", market);
+  }
+
+  if (deps.config.sige?.enabled) {
+    const sige = createSigeRoutes();
+    app.route("/api", sige);
   }
 
   return app;

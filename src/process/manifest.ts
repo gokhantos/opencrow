@@ -51,6 +51,17 @@ export function resolveManifest(
     });
   }
 
+  // SIGE process only if sige section is present and enabled
+  if (config.sige !== undefined && config.sige.enabled) {
+    builtins.push({
+      name: "sige",
+      entry: "src/entries/sige.ts",
+      restartPolicy: "always",
+      maxRestarts: 10,
+      restartWindowSec: 300,
+    });
+  }
+
   for (const b of builtins) {
     // Skip if already defined in static (user override)
     if (!specs.some((s) => s.name === b.name)) {

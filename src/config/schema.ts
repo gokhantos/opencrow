@@ -325,6 +325,66 @@ export const rateLimitConfigSchema = z
   })
   .optional();
 
+export const sigeConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  zep: z.object({
+    apiKey: z.string(),
+    baseUrl: z.string().url().default("https://api.getzep.com"),
+  }),
+  simulation: z
+    .object({
+      expertRounds: z.number().int().min(1).max(10).default(4),
+      socialAgentCount: z.number().int().min(10).max(500).default(50),
+      socialRounds: z.number().int().min(1).max(20).default(5),
+      maxConcurrentAgents: z.number().int().min(1).max(20).default(10),
+      alpha: z.number().min(0).max(1).default(0.6),
+    })
+    .default({
+      expertRounds: 4,
+      socialAgentCount: 50,
+      socialRounds: 5,
+      maxConcurrentAgents: 10,
+      alpha: 0.6,
+    }),
+  incentives: z
+    .object({
+      diversityWeight: z.number().min(0).max(1).default(0.15),
+      buildingWeight: z.number().min(0).max(1).default(0.1),
+      surpriseWeight: z.number().min(0).max(1).default(0.1),
+      accuracyPenaltyWeight: z.number().min(0).max(1).default(0.05),
+      socialViabilityWeight: z.number().min(0).max(1).default(0.2),
+      memoryRewardWeight: z.number().min(0).max(1).default(0.1),
+      coalitionStabilityWeight: z.number().min(0).max(1).default(0.1),
+      signalCredibilityWeight: z.number().min(0).max(1).default(0.1),
+    })
+    .default({
+      diversityWeight: 0.15,
+      buildingWeight: 0.1,
+      surpriseWeight: 0.1,
+      accuracyPenaltyWeight: 0.05,
+      socialViabilityWeight: 0.2,
+      memoryRewardWeight: 0.1,
+      coalitionStabilityWeight: 0.1,
+      signalCredibilityWeight: 0.1,
+    }),
+  provider: z.enum(["openrouter", "agent-sdk", "alibaba"]).default("alibaba"),
+  model: z.string().default("qwen/qwen3.5-plus"),
+  agentModel: z.string().default("qwen/qwen3.5-plus"),
+  workflow: z
+    .object({
+      topology: z
+        .enum(["pipeline", "feedback_loop", "star", "parallel", "hybrid"])
+        .default("pipeline"),
+      maxFeedbackIterations: z.number().int().min(1).max(10).default(3),
+      convergenceThreshold: z.number().min(0).max(1).default(0.85),
+    })
+    .default({
+      topology: "pipeline",
+      maxFeedbackIterations: 3,
+      convergenceThreshold: 0.85,
+    }),
+});
+
 export const opencrowConfigSchema = z.object({
   agent: agentConfigSchema.default({
     model: "claude-sonnet-4-6",
@@ -381,6 +441,7 @@ export const opencrowConfigSchema = z.object({
   processes: processesConfigSchema,
   rateLimit: rateLimitConfigSchema,
   memoryEviction: memoryEvictionConfigSchema.optional(),
+  sige: sigeConfigSchema.optional(),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
@@ -413,3 +474,4 @@ export type ModelParams = z.infer<typeof modelParamsSchema>;
 export type RateLimitConfig = z.infer<typeof rateLimitConfigSchema>;
 export type RateLimitPerSenderConfig = z.infer<typeof rateLimitPerSenderSchema>;
 export type MemoryEvictionConfig = z.infer<typeof memoryEvictionConfigSchema>;
+export type SigeConfig = z.infer<typeof sigeConfigSchema>;

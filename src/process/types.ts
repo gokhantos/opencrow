@@ -3,6 +3,7 @@ export type ProcessName =
   | "cron"
   | "web"
   | "market"
+  | "sige"
   | `agent:${string}`
   | `scraper:${string}`;
 

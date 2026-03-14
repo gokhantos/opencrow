@@ -37,6 +37,7 @@ import { createLogCheckerTools } from "../tools/log-checker";
 import { createMemoryStatsTools } from "../tools/memory-stats";
 import { createEconomicCalendarTool } from "../tools/economic-calendar";
 import { createDbTools } from "../tools/db-query";
+import { createSigeTools } from "../tools/sige-tools";
 
 const log = createLogger("tool-builder");
 
@@ -198,6 +199,14 @@ export function buildWorkflowToolRegistry(
     if (allowsTool("run_tests")) {
       registry = registry.withTools([createRunTestsTool(config.tools)]);
     }
+  }
+
+  if (config.sige?.enabled) {
+    const sigeTools = createSigeTools("workflow", {
+      generateId: () => crypto.randomUUID(),
+      defaultConfigJson: () => JSON.stringify({}),
+    }).filter((t) => allowsTool(t.name));
+    if (sigeTools.length > 0) registry = registry.withTools(sigeTools);
   }
 
   log.info("Workflow tool registry built", {
@@ -443,6 +452,14 @@ export function buildRegistryForAgent(
   }
   if (allowsTool("run_tests")) {
     registry = registry.withTools([createRunTestsTool(config.tools)]);
+  }
+
+  if (config.sige?.enabled) {
+    const sigeTools = createSigeTools(agent.id, {
+      generateId: () => crypto.randomUUID(),
+      defaultConfigJson: () => JSON.stringify({}),
+    }).filter((t) => allowsTool(t.name));
+    if (sigeTools.length > 0) registry = registry.withTools(sigeTools);
   }
 
   return registry;
