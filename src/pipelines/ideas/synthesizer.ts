@@ -206,13 +206,12 @@ export async function generateIdeas(
   analysis: AnalysisResult,
   category: IdeaCategory,
   maxIdeas: number,
-  existingTitles: readonly string[],
+  saturatedThemes: string,
   model: string,
 ): Promise<SynthesisResult> {
-  const existingList =
-    existingTitles.length > 0
-      ? `\n\nEXISTING IDEAS (DO NOT duplicate these):\n${existingTitles.map((t) => `- ${t}`).join("\n")}`
-      : "";
+  const saturatedSection = saturatedThemes
+    ? `\n\nSATURATED THEMES — these have been explored extensively, DO NOT generate ideas in these areas:\n${saturatedThemes}\n\nYou MUST find COMPLETELY DIFFERENT angles. Think about underserved niches, emerging markets, and problems nobody is solving yet.`
+    : "";
 
   const prompt = `You are a visionary product strategist and serial entrepreneur. Based on the following market analysis, generate ${maxIdeas} specific, actionable product ideas.
 
@@ -220,9 +219,16 @@ ${CATEGORY_CONTEXT[category]}
 
 ANALYSIS:
 Top Themes: ${analysis.themes.join(", ")}
-Market Gaps: ${analysis.gaps.join("; ")}
+Market Gaps: ${(analysis.gaps ?? []).join("; ")}
 Key Signals: ${JSON.stringify(analysis.signals.slice(0, 10), null, 2)}
-${existingList}
+${saturatedSection}
+
+CRITICAL DIVERSITY RULES:
+- Each idea MUST target a completely different market, user persona, and problem space
+- No two ideas should use the same core technology or solve adjacent problems
+- Avoid generic app categories (voice assistants, subscription trackers, security scanners)
+- Think about UNIQUE intersections: combine signals from different sources in unexpected ways
+- Prefer ideas that could NOT have been generated from app store complaints alone
 
 For each idea, provide ALL of these fields:
 - title: A catchy, memorable product name (2-4 words)
@@ -426,7 +432,7 @@ export interface SynthesizerOutput {
 export async function synthesize(
   input: SynthesizerInput,
 ): Promise<SynthesizerOutput> {
-  const { aggregatedContext, category, maxIdeas, existingTitles, model, memoryManager } = input;
+  const { aggregatedContext, category, maxIdeas, model, memoryManager } = input;
 
   // Pass 1: Extract signals from fresh collected data
   log.info("Pass 1: Extracting signals from collected data");
@@ -458,7 +464,7 @@ export async function synthesize(
     analysis,
     category,
     maxIdeas,
-    existingTitles,
+    "", // no saturated themes when called via synthesize()
     model,
   );
   log.info("Synthesis complete", { ideas: synthesis.totalGenerated });

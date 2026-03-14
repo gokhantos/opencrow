@@ -1,7 +1,7 @@
 /**
  * Smart data collectors for the idea generation pipeline.
- * Each collector fetches data from a specific source and formats it
- * into a compact text summary with URLs for AI analysis.
+ * Each collector fetches data with randomization so each run
+ * sees different items, preventing repetitive ideas.
  */
 
 import {
@@ -23,14 +23,27 @@ import type { CollectedData, CollectionResult } from "./types";
 
 const log = createLogger("pipeline:collectors");
 
-// ── Individual collectors ───────────────────────────────────────────────
+/** Shuffle an array using Fisher-Yates and return first N items. */
+function sampleRandom<T>(items: readonly T[], n: number): readonly T[] {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+  }
+  return arr.slice(0, n);
+}
+
+// ── Individual collectors (with randomization) ──────────────────────────
 
 async function collectAppStore(): Promise<CollectedData> {
   try {
-    const [rankings, complaints] = await Promise.all([
+    const [rankings, allComplaints] = await Promise.all([
       getAppStoreRankings(undefined, 30),
-      getAppStoreComplaints(80),
+      getAppStoreComplaints(200), // fetch more, then sample randomly
     ]);
+
+    // Randomly sample complaints so each run sees different ones
+    const complaints = sampleRandom(allComplaints, 60);
 
     const rankingSummary = rankings
       .slice(0, 20)
@@ -51,7 +64,7 @@ async function collectAppStore(): Promise<CollectedData> {
       `=== APP STORE RANKINGS (${rankings.length} apps) ===`,
       rankingSummary,
       "",
-      `=== APP STORE COMPLAINTS (${complaints.length} low-rated reviews) ===`,
+      `=== APP STORE COMPLAINTS (${complaints.length} randomly sampled low-rated reviews) ===`,
       complaintSummary,
     ].join("\n");
 
@@ -68,10 +81,12 @@ async function collectAppStore(): Promise<CollectedData> {
 
 async function collectPlayStore(): Promise<CollectedData> {
   try {
-    const [rankings, complaints] = await Promise.all([
+    const [rankings, allComplaints] = await Promise.all([
       getPlayStoreRankings(undefined, 30),
-      getPlayStoreComplaints(80),
+      getPlayStoreComplaints(200),
     ]);
+
+    const complaints = sampleRandom(allComplaints, 60);
 
     const rankingSummary = rankings
       .slice(0, 20)
@@ -92,7 +107,7 @@ async function collectPlayStore(): Promise<CollectedData> {
       `=== PLAY STORE RANKINGS (${rankings.length} apps) ===`,
       rankingSummary,
       "",
-      `=== PLAY STORE COMPLAINTS (${complaints.length} low-rated reviews) ===`,
+      `=== PLAY STORE COMPLAINTS (${complaints.length} randomly sampled reviews) ===`,
       complaintSummary,
     ].join("\n");
 
@@ -109,7 +124,8 @@ async function collectPlayStore(): Promise<CollectedData> {
 
 async function collectProductHunt(): Promise<CollectedData> {
   try {
-    const products = await getProducts(30);
+    const allProducts = await getProducts(50);
+    const products = sampleRandom(allProducts, 25);
 
     const summary = products
       .map(
@@ -121,7 +137,7 @@ async function collectProductHunt(): Promise<CollectedData> {
     return {
       source: "producthunt",
       itemCount: products.length,
-      summary: `=== PRODUCT HUNT LAUNCHES (${products.length} recent) ===\n${summary}`,
+      summary: `=== PRODUCT HUNT LAUNCHES (${products.length} randomly sampled) ===\n${summary}`,
     };
   } catch (err) {
     log.warn("Product Hunt collection failed", { err });
@@ -131,7 +147,8 @@ async function collectProductHunt(): Promise<CollectedData> {
 
 async function collectHackerNews(): Promise<CollectedData> {
   try {
-    const stories = await getStories(undefined, 30);
+    const allStories = await getStories(undefined, 50);
+    const stories = sampleRandom(allStories, 25);
 
     const summary = stories
       .map((s) => {
@@ -146,7 +163,7 @@ async function collectHackerNews(): Promise<CollectedData> {
     return {
       source: "hackernews",
       itemCount: stories.length,
-      summary: `=== HACKER NEWS TOP STORIES (${stories.length}) ===\n${summary}`,
+      summary: `=== HACKER NEWS STORIES (${stories.length} randomly sampled) ===\n${summary}`,
     };
   } catch (err) {
     log.warn("Hacker News collection failed", { err });
@@ -156,7 +173,8 @@ async function collectHackerNews(): Promise<CollectedData> {
 
 async function collectReddit(): Promise<CollectedData> {
   try {
-    const posts = await getPosts(undefined, 30);
+    const allPosts = await getPosts(undefined, 50);
+    const posts = sampleRandom(allPosts, 25);
 
     const summary = posts
       .map((p) => {
@@ -172,7 +190,7 @@ async function collectReddit(): Promise<CollectedData> {
     return {
       source: "reddit",
       itemCount: posts.length,
-      summary: `=== REDDIT TOP POSTS (${posts.length}) ===\n${summary}`,
+      summary: `=== REDDIT POSTS (${posts.length} randomly sampled) ===\n${summary}`,
     };
   } catch (err) {
     log.warn("Reddit collection failed", { err });
@@ -182,7 +200,8 @@ async function collectReddit(): Promise<CollectedData> {
 
 async function collectGitHub(): Promise<CollectedData> {
   try {
-    const repos = await getRepos(undefined, undefined, 30);
+    const allRepos = await getRepos(undefined, undefined, 50);
+    const repos = sampleRandom(allRepos, 25);
 
     const summary = repos
       .map((r) => {
@@ -196,7 +215,7 @@ async function collectGitHub(): Promise<CollectedData> {
     return {
       source: "github",
       itemCount: repos.length,
-      summary: `=== GITHUB TRENDING REPOS (${repos.length}) ===\n${summary}`,
+      summary: `=== GITHUB TRENDING REPOS (${repos.length} randomly sampled) ===\n${summary}`,
     };
   } catch (err) {
     log.warn("GitHub collection failed", { err });
@@ -274,7 +293,8 @@ const COLLECTORS: Record<string, () => Promise<CollectedData>> = {
 
 /**
  * Collect data from all specified sources in parallel.
- * Returns a combined context string suitable for AI analysis.
+ * Each collector randomly samples from a larger pool to ensure
+ * different runs see different data.
  */
 export async function collectAll(
   sourcesToInclude: readonly string[],
