@@ -368,8 +368,8 @@ export const sigeConfigSchema = z.object({
       signalCredibilityWeight: 0.1,
     }),
   provider: z.enum(["openrouter", "agent-sdk", "alibaba"]).default("alibaba"),
-  model: z.string().default("qwen/qwen3.5-plus"),
-  agentModel: z.string().default("qwen/qwen3.5-plus"),
+  model: z.string().default("qwen3.5-plus"),
+  agentModel: z.string().default("qwen3.5-plus"),
   workflow: z
     .object({
       topology: z

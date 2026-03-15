@@ -71,8 +71,8 @@ const DEFAULT_CONFIG: SigeSessionConfig = {
     socialViability: 0.3,
   },
   provider: "alibaba",
-  model: "qwen/qwen3.5-plus",
-  agentModel: "qwen/qwen3.5-plus",
+  model: "qwen3.5-plus",
+  agentModel: "qwen3.5-plus",
 };
 
 function mergeConfig(

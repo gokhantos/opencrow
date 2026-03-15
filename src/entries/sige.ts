@@ -27,6 +27,7 @@ import {
   saveIdeaScore,
 } from "../sige/store";
 import type { SigeSession, SigeReport, ScoredIdea, FusedScore } from "../sige/types";
+import { enrichSeedWithProjectData } from "../sige/seed-enricher";
 import { createLogger } from "../logger";
 
 const log = createLogger("sige-entry");
@@ -51,16 +52,19 @@ async function runSession(
   await updateSessionStatus(sessionId, "knowledge_construction");
   log.info("Status → knowledge_construction", { sessionId });
 
+  // Enrich seed with existing project data before knowledge construction
+  const enrichedSeed = await enrichSeedWithProjectData(seedInput);
+
   await zep.ensureUser(userId);
 
-  // Add seed input as an initial episode
+  // Add enriched seed as an initial episode
   await zep.addEpisodes(userId, [
-    { content: seedInput, source: "seed_input", sourceDescription: "session seed" },
+    { content: enrichedSeed, source: "seed_input", sourceDescription: "session seed" },
   ]);
 
-  const ontology = await generateOntology(seedInput, { model: config.model, provider: config.provider });
+  const ontology = await generateOntology(enrichedSeed, { model: config.model, provider: config.provider });
 
-  const extraction = await processDocument(seedInput, ontology, {
+  const extraction = await processDocument(enrichedSeed, ontology, {
     model: config.model,
     provider: config.provider,
     maxConcurrent: config.maxConcurrentAgents,
@@ -81,7 +85,7 @@ async function runSession(
 
   const graphView = await getFullGraph(zep, userId);
 
-  const gameFormulation = await formulateGame(graphView, seedInput, {
+  const gameFormulation = await formulateGame(graphView, enrichedSeed, {
     model: config.model,
     provider: config.provider,
     sessionId,

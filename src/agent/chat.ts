@@ -7,6 +7,7 @@ import {
   agenticChat as agenticChatAgentSdk,
   withAlibabaEnv,
 } from "./agent-sdk";
+import { chat as chatAlibabaDirect } from "./alibaba-direct";
 import type { AgentOptions, AgentResponse, ConversationMessage } from "./types";
 import { recordTokenUsage } from "../store/token-usage";
 import { createLogger } from "../logger";
@@ -86,8 +87,8 @@ export async function chat(
       response = await chatAgentSdk(messages, options);
     }
   } else if (provider === "alibaba") {
-    // Route through Agent SDK with Alibaba ModelStudio env vars
     if (options.toolsEnabled && options.toolRegistry) {
+      // Agentic Alibaba calls still route through Agent SDK with env shim
       log.debug("Routing to agentic Alibaba ModelStudio (tools enabled)", {
         agentId: options.agentId,
         model: options.model,
@@ -101,15 +102,16 @@ export async function chat(
           options.onProgress,
         ),
       );
+      // Tag as alibaba provider in the response
+      response = { ...response, provider: "alibaba" as const };
     } else {
-      log.debug("Routing to Alibaba ModelStudio", {
+      // Non-agentic Alibaba calls use direct HTTP to the OpenAI-compatible endpoint
+      log.debug("Routing to Alibaba direct (no tools)", {
         agentId: options.agentId,
         model: options.model,
       });
-      response = await withAlibabaEnv(() => chatAgentSdk(messages, options));
+      response = await chatAlibabaDirect(messages, options);
     }
-    // Tag as alibaba provider in the response
-    response = { ...response, provider: "alibaba" as const };
   } else {
     throw new Error(`Unknown AI provider: ${provider}`);
   }
