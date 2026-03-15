@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, X } from "lucide-react";
 import { Button, LoadingState } from "../../components";
 import { cn } from "../../lib/cn";
-import { getToken } from "../../api";
 import { ProgressBar } from "./ProgressBar";
 import { SigeStatusBadge } from "./SigeStatusBadge";
 import { ReportTab } from "./ReportTab";
@@ -11,7 +10,7 @@ import { GameTab } from "./GameTab";
 import { PopulationTab } from "./PopulationTab";
 import { TERMINAL_STATUSES } from "./statusConfig";
 import { fetchSession, cancelSession } from "./api";
-import type { SigeSessionDetail, SigeSessionStatus, SseStatusEvent } from "./types";
+import type { SigeSessionDetail } from "./types";
 
 type DetailTab = "report" | "ideas" | "game" | "population";
 
@@ -33,7 +32,6 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<DetailTab>("report");
   const [cancelling, setCancelling] = useState(false);
-  const sseRef = useRef<EventSource | null>(null);
 
   const loadSession = useCallback(async () => {
     try {
@@ -48,66 +46,25 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
     }
   }, [sessionId]);
 
-  // Open SSE stream for in-progress sessions
-  const openStream = useCallback(
-    (currentStatus: SigeSessionStatus) => {
-      if (TERMINAL_STATUSES.has(currentStatus)) return;
-
-      // Close any existing stream
-      if (sseRef.current) {
-        sseRef.current.close();
-        sseRef.current = null;
-      }
-
-      const token = getToken();
-      const url = token
-        ? `/api/sige/sessions/${sessionId}/stream?token=${encodeURIComponent(token)}`
-        : `/api/sige/sessions/${sessionId}/stream`;
-
-      const es = new EventSource(url);
-      sseRef.current = es;
-
-      es.onmessage = (evt) => {
-        try {
-          const event: SseStatusEvent = JSON.parse(evt.data);
-          if (event.type === "status" && event.status) {
-            setSession((prev) =>
-              prev ? { ...prev, status: event.status as SigeSessionStatus } : prev,
-            );
-            // When we reach a terminal status, reload full session for results
-            if (TERMINAL_STATUSES.has(event.status)) {
-              es.close();
-              sseRef.current = null;
-              loadSession();
-            }
-          }
-        } catch {
-          // ignore malformed SSE frames
-        }
-      };
-
-      es.onerror = () => {
-        es.close();
-        sseRef.current = null;
-      };
-    },
-    [sessionId, loadSession],
-  );
-
+  // Poll for status updates every 3 seconds while session is in progress
   useEffect(() => {
-    loadSession().then((data) => {
-      if (data && !TERMINAL_STATUSES.has(data.status)) {
-        openStream(data.status);
-      }
-    });
+    loadSession();
 
-    return () => {
-      if (sseRef.current) {
-        sseRef.current.close();
-        sseRef.current = null;
+    const interval = setInterval(async () => {
+      try {
+        const data = await fetchSession(sessionId);
+        if (!data) return;
+        setSession(data);
+        if (TERMINAL_STATUSES.has(data.status)) {
+          clearInterval(interval);
+        }
+      } catch {
+        // silently retry on next interval
       }
-    };
-  }, [loadSession, openStream]);
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [sessionId, loadSession]);
 
   async function handleCancel() {
     if (!session || cancelling) return;
