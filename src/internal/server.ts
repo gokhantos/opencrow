@@ -411,21 +411,28 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
           if (id !== "whatsapp") {
             return c.json({ error: "Pair only supported for WhatsApp" }, 400);
           }
-          if (!deps.channelManager) {
-            return c.json({ error: "Channel manager not available — enable WhatsApp first, then wait for agent to connect" }, 500);
-          }
           const body = await c.req.json();
           const phoneNumber = body.phoneNumber as string | undefined;
           if (!phoneNumber || !/^\d{7,15}$/.test(phoneNumber)) {
             return c.json({ error: "Invalid phone number" }, 400);
           }
-          const channel = deps.channelManager.getChannel("whatsapp") as
+
+          // Try channelManager first (agent process)
+          let waChannel = deps.channelManager?.getChannel("whatsapp") as
             | WhatsAppChannel
             | undefined;
-          if (!channel) {
-            return c.json({ error: "WhatsApp channel is not running" }, 400);
+
+          // If no channelManager (core process), create a temporary channel for pairing
+          if (!waChannel) {
+            const { createWhatsAppChannel } = await import("../channels/whatsapp/client");
+            const tempChannel = createWhatsAppChannel("pairing");
+            await tempChannel.connect();
+            const code = await tempChannel.requestPairingCode(phoneNumber);
+            // Don't disconnect — keep auth session alive for agent to pick up
+            return c.json({ data: { code } });
           }
-          const code = await channel.requestPairingCode(phoneNumber);
+
+          const code = await waChannel.requestPairingCode(phoneNumber);
           return c.json({ data: { code } });
         }
         default:
