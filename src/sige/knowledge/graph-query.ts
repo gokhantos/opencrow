@@ -1,21 +1,44 @@
 import { createLogger } from "../../logger";
 import type { KnowledgeFilter, StrategicAgentRole } from "../types";
-import type { ZepClient, ZepEdge, ZepNode } from "./zep-client";
+import type { Mem0Client, Mem0Memory, Mem0Relation } from "./mem0-client";
 
 const log = createLogger("sige:graph-query");
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
+/**
+ * Graph node derived from a Mem0 memory item.
+ * Each memory fact about an entity becomes a node.
+ */
+export interface GraphNode {
+  readonly uuid: string;
+  readonly name: string;
+  readonly entityType: string;
+  readonly summary?: string;
+}
+
+/**
+ * Graph edge derived from a Mem0 relation triple.
+ */
+export interface GraphEdge {
+  readonly uuid: string;
+  readonly sourceNodeUuid: string;
+  readonly targetNodeUuid: string;
+  readonly relationType: string;
+  readonly fact: string;
+  /** Optional relevance weight. Mem0 does not provide this; field may be undefined. */
+  readonly weight?: number;
+}
+
 export interface GraphView {
-  readonly nodes: readonly ZepNode[];
-  readonly edges: readonly ZepEdge[];
+  readonly nodes: readonly GraphNode[];
+  readonly edges: readonly GraphEdge[];
   readonly summary: string;
 }
 
 export interface GraphQueryOptions {
   readonly maxNodes?: number;
   readonly maxEdges?: number;
-  readonly includeWeights?: boolean;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -24,10 +47,71 @@ const DEFAULT_MAX_NODES = 100;
 const DEFAULT_MAX_EDGES = 200;
 const PROMPT_MAX_NODES = 15;
 const PROMPT_MAX_EDGES = 20;
+const BROAD_GRAPH_QUERY = "key entities relationships concepts";
+
+// ─── Mem0 → GraphView Conversion ──────────────────────────────────────────────
+
+/**
+ * Converts Mem0 search results into a GraphView.
+ *
+ * Each Mem0 memory item becomes a GraphNode. The `memory` text is used as the
+ * node name (truncated) and summary. The `metadata.entityType` field is used
+ * when present, otherwise "Fact" is the default type.
+ *
+ * Each Mem0 relation triple becomes a GraphEdge. Source and target strings are
+ * matched against node names to resolve UUIDs; unresolvable endpoints are given
+ * synthetic UUIDs so no data is silently dropped.
+ */
+export function mem0ResultToGraphView(
+  memories: readonly Mem0Memory[],
+  relations: readonly Mem0Relation[],
+): GraphView {
+  // Build nodes from memories
+  const nodes: GraphNode[] = memories.map((m) => ({
+    uuid: m.id,
+    name: truncateName(m.memory),
+    entityType:
+      typeof m.metadata?.entityType === "string" ? m.metadata.entityType : "Fact",
+    summary: m.memory,
+  }));
+
+  // Build a name → uuid lookup for edge resolution
+  const nameToUuid = new Map<string, string>();
+  for (const node of nodes) {
+    nameToUuid.set(node.name.toLowerCase(), node.uuid);
+  }
+
+  // Build edges from relations
+  const edges: GraphEdge[] = relations.map((r, i) => {
+    const sourceKey = r.source.toLowerCase();
+    const targetKey = r.target.toLowerCase();
+
+    // Best-effort UUID resolution: exact match first, then substring match
+    const sourceUuid =
+      nameToUuid.get(sourceKey) ??
+      findBestMatchUuid(nameToUuid, sourceKey) ??
+      `synthetic:src:${i}`;
+    const targetUuid =
+      nameToUuid.get(targetKey) ??
+      findBestMatchUuid(nameToUuid, targetKey) ??
+      `synthetic:tgt:${i}`;
+
+    return {
+      uuid: `rel:${i}:${r.source}:${r.target}`,
+      sourceNodeUuid: sourceUuid,
+      targetNodeUuid: targetUuid,
+      relationType: r.relationship,
+      fact: `${r.source} ${r.relationship} ${r.target}`,
+    };
+  });
+
+  const summary = buildSummary(nodes, edges);
+  return { nodes, edges, summary };
+}
 
 // ─── Scoring ──────────────────────────────────────────────────────────────────
 
-function nodeMatchesTerms(node: ZepNode, terms: readonly string[]): boolean {
+function nodeMatchesTerms(node: GraphNode, terms: readonly string[]): boolean {
   if (terms.length === 0) return false;
   const haystack =
     `${node.name} ${node.entityType} ${node.summary ?? ""}`.toLowerCase();
@@ -36,15 +120,13 @@ function nodeMatchesTerms(node: ZepNode, terms: readonly string[]): boolean {
 
 /**
  * Computes a relevance score for a node against a KnowledgeFilter.
- * Higher score = higher priority in filtered results.
  *
  * Score bands:
  *   +10 per amplified match
- *    0  neutral (no match to any list)
+ *    0  neutral
  *   -5  per attenuated match
- *   -∞  (excluded — caller handles removal)
  */
-function scoreNode(node: ZepNode, filter: KnowledgeFilter): number {
+function scoreNode(node: GraphNode, filter: KnowledgeFilter): number {
   let score = 0;
 
   if (nodeMatchesTerms(node, filter.amplifiedEntities)) {
@@ -59,7 +141,7 @@ function scoreNode(node: ZepNode, filter: KnowledgeFilter): number {
 
 // ─── Summary Generation ───────────────────────────────────────────────────────
 
-function buildSummary(nodes: readonly ZepNode[], edges: readonly ZepEdge[]): string {
+function buildSummary(nodes: readonly GraphNode[], edges: readonly GraphEdge[]): string {
   if (nodes.length === 0) {
     return "No entities found in the knowledge graph.";
   }
@@ -74,24 +156,21 @@ function buildSummary(nodes: readonly ZepNode[], edges: readonly ZepEdge[]): str
 
 // ─── Truncation ───────────────────────────────────────────────────────────────
 
-/**
- * Retains only edges where both endpoints are present in the node set.
- */
 function retainConnectedEdges(
-  edges: readonly ZepEdge[],
+  edges: readonly GraphEdge[],
   nodeUuids: ReadonlySet<string>,
-): readonly ZepEdge[] {
+): readonly GraphEdge[] {
   return edges.filter(
     (e) => nodeUuids.has(e.sourceNodeUuid) && nodeUuids.has(e.targetNodeUuid),
   );
 }
 
 function truncateGraph(
-  nodes: readonly ZepNode[],
-  edges: readonly ZepEdge[],
+  nodes: readonly GraphNode[],
+  edges: readonly GraphEdge[],
   maxNodes: number,
   maxEdges: number,
-): { readonly nodes: readonly ZepNode[]; readonly edges: readonly ZepEdge[] } {
+): { readonly nodes: readonly GraphNode[]; readonly edges: readonly GraphEdge[] } {
   const truncatedNodes = nodes.slice(0, maxNodes);
   const nodeUuids = new Set(truncatedNodes.map((n) => n.uuid));
   const connectedEdges = retainConnectedEdges(edges, nodeUuids);
@@ -102,36 +181,44 @@ function truncateGraph(
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Fetches and returns the complete knowledge graph for a user, truncated to
- * the configured limits.
+ * Fetches the complete knowledge graph for a user from Mem0 and returns a
+ * truncated GraphView. Uses a broad query with graph enabled to retrieve as
+ * many relations as possible.
+ *
+ * Degrades gracefully — an empty GraphView is returned if Mem0 is unavailable.
  */
 export async function getFullGraph(
-  zep: ZepClient,
+  mem0: Mem0Client,
   userId: string,
   options?: GraphQueryOptions,
 ): Promise<GraphView> {
   const maxNodes = options?.maxNodes ?? DEFAULT_MAX_NODES;
   const maxEdges = options?.maxEdges ?? DEFAULT_MAX_EDGES;
 
-  let rawNodes: readonly ZepNode[];
-  let rawEdges: readonly ZepEdge[];
+  let memories: readonly Mem0Memory[];
+  let relations: readonly Mem0Relation[];
 
   try {
-    const result = await zep.getFullGraph(userId);
-    rawNodes = result.nodes;
-    rawEdges = result.edges;
+    const result = await mem0.search({
+      query: BROAD_GRAPH_QUERY,
+      userId,
+      limit: maxNodes,
+      enableGraph: true,
+    });
+    memories = result.memories;
+    relations = result.relations;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error("getFullGraph: zep.getFullGraph failed", { err, userId });
-    throw new Error(`Failed to fetch knowledge graph for user ${userId}: ${msg}`);
+    log.error("getFullGraph: mem0.search failed — returning empty graph", { err, userId });
+    return { nodes: [], edges: [], summary: "No entities found in the knowledge graph." };
   }
 
-  if (rawNodes.length === 0) {
+  if (memories.length === 0 && relations.length === 0) {
     log.debug("getFullGraph: empty graph", { userId });
     return { nodes: [], edges: [], summary: "No entities found in the knowledge graph." };
   }
 
-  const { nodes, edges } = truncateGraph(rawNodes, rawEdges, maxNodes, maxEdges);
+  const raw = mem0ResultToGraphView(memories, relations);
+  const { nodes, edges } = truncateGraph(raw.nodes, raw.edges, maxNodes, maxEdges);
   const summary = buildSummary(nodes, edges);
 
   log.debug("getFullGraph: done", { userId, nodeCount: nodes.length, edgeCount: edges.length });
@@ -142,9 +229,11 @@ export async function getFullGraph(
 /**
  * Returns a role-specific filtered view of the knowledge graph, sorted by
  * relevance score derived from the provided KnowledgeFilter.
+ *
+ * Degrades gracefully — an empty GraphView is returned if Mem0 is unavailable.
  */
 export async function getFilteredGraphView(
-  zep: ZepClient,
+  mem0: Mem0Client,
   userId: string,
   role: StrategicAgentRole,
   filter: KnowledgeFilter,
@@ -153,32 +242,42 @@ export async function getFilteredGraphView(
   const maxNodes = options?.maxNodes ?? DEFAULT_MAX_NODES;
   const maxEdges = options?.maxEdges ?? DEFAULT_MAX_EDGES;
 
-  let rawNodes: readonly ZepNode[];
-  let rawEdges: readonly ZepEdge[];
+  let memories: readonly Mem0Memory[];
+  let relations: readonly Mem0Relation[];
 
   try {
-    const result = await zep.getFullGraph(userId);
-    rawNodes = result.nodes;
-    rawEdges = result.edges;
+    const result = await mem0.search({
+      query: BROAD_GRAPH_QUERY,
+      userId,
+      limit: maxNodes,
+      enableGraph: true,
+    });
+    memories = result.memories;
+    relations = result.relations;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error("getFilteredGraphView: zep.getFullGraph failed", { err, userId, role });
-    throw new Error(`Failed to fetch knowledge graph for user ${userId}: ${msg}`);
+    log.error("getFilteredGraphView: mem0.search failed — returning empty graph", {
+      err,
+      userId,
+      role,
+    });
+    return { nodes: [], edges: [], summary: "No entities found in the knowledge graph." };
   }
 
-  if (rawNodes.length === 0) {
+  const raw = mem0ResultToGraphView(memories, relations);
+
+  if (raw.nodes.length === 0) {
     log.debug("getFilteredGraphView: empty graph", { userId, role });
     return { nodes: [], edges: [], summary: "No entities found in the knowledge graph." };
   }
 
   // Step 1 — apply includedTopics filter (keep all if no inclusions specified)
-  const afterInclude: readonly ZepNode[] =
+  const afterInclude: readonly GraphNode[] =
     filter.includedTopics.length > 0
-      ? rawNodes.filter((n) => nodeMatchesTerms(n, filter.includedTopics))
-      : rawNodes;
+      ? raw.nodes.filter((n) => nodeMatchesTerms(n, filter.includedTopics))
+      : raw.nodes;
 
   // Step 2 — apply excludedTopics filter
-  const afterExclude: readonly ZepNode[] =
+  const afterExclude: readonly GraphNode[] =
     filter.excludedTopics.length > 0
       ? afterInclude.filter((n) => !nodeMatchesTerms(n, filter.excludedTopics))
       : afterInclude;
@@ -191,7 +290,7 @@ export async function getFilteredGraphView(
   const sortedNodes = scored.map((s) => s.node);
 
   // Step 4 — truncate and retain connected edges
-  const { nodes, edges } = truncateGraph(sortedNodes, rawEdges, maxNodes, maxEdges);
+  const { nodes, edges } = truncateGraph(sortedNodes, raw.edges, maxNodes, maxEdges);
   const summary = buildSummary(nodes, edges);
 
   log.debug("getFilteredGraphView: done", {
@@ -205,71 +304,7 @@ export async function getFilteredGraphView(
 }
 
 /**
- * Searches the graph with a semantic query and returns the relevant subgraph
- * formed by the matched nodes and edges.
- */
-export async function searchSubgraph(
-  zep: ZepClient,
-  userId: string,
-  query: string,
-  options?: GraphQueryOptions & { readonly limit?: number },
-): Promise<GraphView> {
-  const maxNodes = options?.maxNodes ?? DEFAULT_MAX_NODES;
-  const maxEdges = options?.maxEdges ?? DEFAULT_MAX_EDGES;
-  const limit = options?.limit ?? maxNodes;
-
-  let results: Awaited<ReturnType<ZepClient["searchGraph"]>>;
-
-  try {
-    results = await zep.searchGraph(userId, query, { limit });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error("searchSubgraph: zep.searchGraph failed", { err, userId, query });
-    throw new Error(`Failed to search graph for user ${userId}: ${msg}`);
-  }
-
-  if (results.length === 0) {
-    log.debug("searchSubgraph: no results", { userId, query });
-    return { nodes: [], edges: [], summary: "No matching entities found for the query." };
-  }
-
-  // Collect nodes from results (deduplicated by uuid)
-  const nodeMap = new Map<string, ZepNode>();
-  const edgeMap = new Map<string, ZepEdge>();
-
-  for (const result of results) {
-    if (result.node) {
-      nodeMap.set(result.node.uuid, result.node);
-    }
-    if (result.edge) {
-      edgeMap.set(result.edge.uuid, result.edge);
-    }
-  }
-
-  const nodes = Array.from(nodeMap.values()).slice(0, maxNodes);
-  const nodeUuids = new Set(nodes.map((n) => n.uuid));
-
-  // Retain only edges whose endpoints are both in our node set
-  const edges = Array.from(edgeMap.values())
-    .filter((e) => nodeUuids.has(e.sourceNodeUuid) && nodeUuids.has(e.targetNodeUuid))
-    .slice(0, maxEdges);
-
-  const summary = buildSummary(nodes, edges);
-
-  log.debug("searchSubgraph: done", {
-    userId,
-    query,
-    nodeCount: nodes.length,
-    edgeCount: edges.length,
-  });
-
-  return { nodes, edges, summary };
-}
-
-/**
  * Returns the default KnowledgeFilter for a given strategic agent role.
- * Each role amplifies entities relevant to its strategic perspective and
- * attenuates entities that are less relevant or opposing.
  */
 export function getDefaultKnowledgeFilter(role: StrategicAgentRole): KnowledgeFilter {
   switch (role) {
@@ -437,4 +472,24 @@ export function graphViewToPromptContext(view: GraphView): string {
   sections.push(``, `### Summary`, view.summary);
 
   return sections.join("\n");
+}
+
+// ─── Internal Utilities ───────────────────────────────────────────────────────
+
+function truncateName(text: string): string {
+  // Use up to the first sentence or 80 chars as the node name
+  const firstSentence = text.split(/[.!?]/)[0] ?? text;
+  return firstSentence.trim().slice(0, 80);
+}
+
+function findBestMatchUuid(
+  nameToUuid: Map<string, string>,
+  key: string,
+): string | undefined {
+  for (const [name, uuid] of nameToUuid) {
+    if (name.includes(key) || key.includes(name)) {
+      return uuid;
+    }
+  }
+  return undefined;
 }

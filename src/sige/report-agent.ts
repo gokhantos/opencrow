@@ -2,7 +2,7 @@ import { createLogger } from "../logger"
 import { chat } from "../agent/chat"
 import type { ConversationMessage } from "../agent/types"
 import { insightForge, quickSearch } from "./memory/retrieval-modes"
-import type { ZepClient } from "./knowledge/zep-client"
+import type { Mem0Client } from "./knowledge/mem0-client"
 import { getAgentActions, getIdeaScores } from "./store"
 import { createSemaphore } from "./simulation/concurrency"
 import type {
@@ -23,7 +23,7 @@ const log = createLogger("sige:report-agent")
 export interface GenerateReportParams {
   readonly session: SigeSession
   readonly fusedScores: readonly FusedScore[]
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly model: string
   readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
@@ -32,7 +32,7 @@ export interface GenerateReportParams {
 export async function generateReport(
   params: GenerateReportParams,
 ): Promise<SigeReport> {
-  const { session, fusedScores, zep, userId, model, provider } = params
+  const { session, fusedScores, mem0, userId, model, provider } = params
 
   log.info("generateReport: starting", {
     sessionId: session.id,
@@ -73,10 +73,10 @@ export async function generateReport(
     throttled(() => generateExecutiveSummary({ session, topScores, topIdeas, model, provider })),
     throttled(() => generateTopIdeasSection({ topIdeas, topScores, allActions, model, provider })),
     throttled(() => generatePerIdeaAnalysis({ session, topIdeas, topScores, allActions, model, provider })),
-    throttled(() => generateOpportunityMap({ session, effectiveScores, zep, userId, model, provider })),
+    throttled(() => generateOpportunityMap({ session, effectiveScores, mem0, userId, model, provider })),
     throttled(() => generateRiskAssessment({ session, allActions, topScores, model, provider })),
     throttled(() => generateMetaGameHealthSection({ session, model, provider })),
-    throttled(() => generateRecommendedNextSession({ session, topScores, zep, userId, model, provider })),
+    throttled(() => generateRecommendedNextSession({ session, topScores, mem0, userId, model, provider })),
   ])
 
   const [
@@ -324,15 +324,15 @@ Produce the analysis JSON.`
 async function generateOpportunityMap(params: {
   readonly session: SigeSession
   readonly effectiveScores: readonly FusedScore[]
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly model: string
   readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
 }): Promise<string> {
-  const { session, effectiveScores, zep, userId, model, provider } = params
+  const { session, effectiveScores, mem0, userId, model, provider } = params
 
   const forgeResult = await insightForge(
-    zep,
+    mem0,
     userId,
     `unexplored strategy space around: ${session.seedInput}`,
     { maxResults: 12 },
@@ -484,15 +484,15 @@ Produce the meta-game health JSON.`
 async function generateRecommendedNextSession(params: {
   readonly session: SigeSession
   readonly topScores: readonly FusedScore[]
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly model: string
   readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
 }): Promise<string> {
-  const { session, topScores, zep, userId, model, provider } = params
+  const { session, topScores, mem0, userId, model, provider } = params
 
   const adjacentQuery = `strategic follow-up to: ${session.seedInput}`
-  const adjacentResult = await quickSearch(zep, userId, adjacentQuery, {
+  const adjacentResult = await quickSearch(mem0, userId, adjacentQuery, {
     maxResults: 8,
   }).catch((err) => {
     log.warn("generateRecommendedNextSession: quickSearch failed", { err })

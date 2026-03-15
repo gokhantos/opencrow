@@ -11,9 +11,9 @@
 import { loadConfig, loadConfigWithOverrides } from "../config/loader";
 import { bootstrap } from "../process/bootstrap";
 import { createProcessSupervisor } from "../process/supervisor";
-import { ZepClient } from "../sige/knowledge/zep-client";
+import { Mem0Client } from "../sige/knowledge/mem0-client";
 import { generateOntology } from "../sige/knowledge/ontology-generator";
-import { processDocument, toZepEpisodes } from "../sige/knowledge/entity-extractor";
+import { processDocument, toMemoryItems } from "../sige/knowledge/entity-extractor";
 import { getFullGraph } from "../sige/knowledge/graph-query";
 import { formulateGame } from "../sige/game-formulation";
 import { runExpertGame } from "../sige/simulation/expert-game";
@@ -33,19 +33,19 @@ import { createLogger } from "../logger";
 const log = createLogger("sige-entry");
 
 const POLL_INTERVAL_MS = 5_000;
-const ZEP_INGEST_WAIT_MS = 1_500;
+const MEM0_MAX_CHARS = 9_500;
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 
 async function runSession(
   session: SigeSession,
-  zep: ZepClient,
+  mem0: Mem0Client,
+  userId: string,
   signal: AbortSignal,
 ): Promise<void> {
   const { id: sessionId, seedInput, config } = session;
-  const userId = `sige:${sessionId}`;
 
-  log.info("Starting SIGE session pipeline", { sessionId });
+  log.info("Starting SIGE session pipeline", { sessionId, userId });
 
   // ── Step 1: Knowledge construction ──────────────────────────────────────────
 
@@ -55,17 +55,17 @@ async function runSession(
   // Enrich seed with existing project data before knowledge construction
   const enrichedSeed = await enrichSeedWithProjectData(seedInput);
 
-  await zep.ensureUser(userId);
-
-  // Add enriched seed as episodes — chunk to stay under Zep's 10K char limit
-  const ZEP_MAX_CHARS = 9500;
+  // Add enriched seed to Mem0 — chunk to avoid large single payloads
   const seedSections = enrichedSeed.split(/\n## /).filter(Boolean);
-  const seedEpisodes = seedSections.map((section, i) => ({
-    content: (i > 0 ? "## " : "") + section.slice(0, ZEP_MAX_CHARS),
-    source: "seed_input",
-    sourceDescription: `session seed section ${i + 1}`,
-  }));
-  await zep.addEpisodes(userId, seedEpisodes);
+  await mem0.addMemories({
+    items: seedSections.map((section, i) => ({
+      content: (i > 0 ? "## " : "") + section.slice(0, MEM0_MAX_CHARS),
+      metadata: { source: "seed_input", section: i + 1, sessionId },
+    })),
+    userId,
+    enableGraph: true,
+    maxConcurrent: 3,
+  });
 
   const ontology = await generateOntology(enrichedSeed, { model: config.model, provider: config.provider });
 
@@ -75,20 +75,26 @@ async function runSession(
     maxConcurrent: config.maxConcurrentAgents,
   });
 
-  const entityEpisodes = toZepEpisodes(extraction, "entity_extraction");
+  // Convert extracted entities/relationships to memory items and ingest
+  const entityEpisodes = toMemoryItems(extraction, "entity_extraction");
   if (entityEpisodes.length > 0) {
-    await zep.addEpisodes(userId, entityEpisodes);
+    await mem0.addMemories({
+      items: entityEpisodes.map((ep) => ({
+        content: ep.content.slice(0, MEM0_MAX_CHARS),
+        metadata: { source: ep.source ?? "entity_extraction", sessionId },
+      })),
+      userId,
+      enableGraph: true,
+      maxConcurrent: 3,
+    });
   }
-
-  // Brief wait for Zep to process ingested episodes before querying the graph
-  await Bun.sleep(ZEP_INGEST_WAIT_MS);
 
   // ── Step 2: Game formulation ─────────────────────────────────────────────────
 
   await updateSessionStatus(sessionId, "game_formulation");
   log.info("Status → game_formulation", { sessionId });
 
-  const graphView = await getFullGraph(zep, userId);
+  const graphView = await getFullGraph(mem0, userId);
 
   const gameFormulation = await formulateGame(graphView, enrichedSeed, {
     model: config.model,
@@ -109,7 +115,7 @@ async function runSession(
     sessionId,
     gameFormulation,
     graphView,
-    zep,
+    mem0,
     userId,
     config,
     signal,
@@ -200,6 +206,23 @@ async function runSession(
   await updateSessionStatus(sessionId, "report_generation");
   log.info("Status → report_generation", { sessionId });
 
+  // ── Cross-session write-back: persist top ideas to Mem0 for future sessions ─
+
+  const topIdeasForMemory = enrichedRankedIdeas.slice(0, 5);
+  await mem0
+    .addMemories({
+      items: topIdeasForMemory.map((idea) => ({
+        content: `SIGE finding: "${idea.title}" — ${idea.description}. Score: ${idea.fusedScore?.toFixed(3) ?? "N/A"}`,
+        metadata: { source: "sige_session", sessionId, ideaId: idea.id },
+      })),
+      userId,
+      enableGraph: true,
+      maxConcurrent: 2,
+    })
+    .catch((err) => {
+      log.warn("Failed to write top ideas back to Mem0 (non-fatal)", { sessionId, err });
+    });
+
   const report = await generateReport({
     session: {
       ...session,
@@ -209,7 +232,7 @@ async function runSession(
       fusedScores,
     },
     fusedScores,
-    zep,
+    mem0,
     userId,
     model: config.model,
     provider: config.provider,
@@ -263,7 +286,8 @@ function reportToMarkdown(report: SigeReport): string {
 // ─── Polling Loop ─────────────────────────────────────────────────────────────
 
 async function pollAndProcess(
-  zep: ZepClient,
+  mem0: Mem0Client,
+  userId: string,
   signal: AbortSignal,
 ): Promise<void> {
   if (signal.aborted) return;
@@ -284,7 +308,7 @@ async function pollAndProcess(
     if (signal.aborted) break;
 
     try {
-      await runSession(session, zep, signal);
+      await runSession(session, mem0, userId, signal);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error("SIGE session pipeline failed", { sessionId: session.id, err });
@@ -321,13 +345,10 @@ async function main(): Promise<void> {
   }
 
   const sigeConfig = config.sige;
+  const mem0 = new Mem0Client({ baseUrl: sigeConfig.mem0.baseUrl });
+  const userId = sigeConfig.mem0.userId;
 
-  const zep = new ZepClient({
-    apiKey: sigeConfig.zep.apiKey,
-    baseUrl: sigeConfig.zep.baseUrl,
-  });
-
-  log.info("SIGE process started");
+  log.info("SIGE process started", { mem0BaseUrl: sigeConfig.mem0.baseUrl, userId });
 
   const supervisor = createProcessSupervisor("sige", { type: "sige" });
 
@@ -345,10 +366,10 @@ async function main(): Promise<void> {
   });
 
   // Run an immediate first poll, then schedule subsequent polls
-  await pollAndProcess(zep, signal);
+  await pollAndProcess(mem0, userId, signal);
 
   pollTimer = setInterval(() => {
-    pollAndProcess(zep, signal).catch((err) => {
+    pollAndProcess(mem0, userId, signal).catch((err) => {
       log.error("Unexpected error in poll cycle", { err });
     });
   }, POLL_INTERVAL_MS);

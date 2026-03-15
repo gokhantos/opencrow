@@ -327,9 +327,12 @@ export const rateLimitConfigSchema = z
 
 export const sigeConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  zep: z.object({
-    apiKey: z.string(),
-    baseUrl: z.string().url().default("https://api.getzep.com"),
+  mem0: z.object({
+    baseUrl: z.string().url().default("http://127.0.0.1:8050"),
+    userId: z.string().default("sige-global"),
+  }).default({
+    baseUrl: "http://127.0.0.1:8050",
+    userId: "sige-global",
   }),
   simulation: z
     .object({

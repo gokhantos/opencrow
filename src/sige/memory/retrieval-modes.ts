@@ -1,14 +1,15 @@
-import { createLogger } from "../../logger"
-import type { ZepClient, ZepNode, ZepSearchResult } from "../knowledge/zep-client"
+import { createLogger } from "../../logger";
+import type { Mem0Client, Mem0Memory, Mem0Relation } from "../knowledge/mem0-client";
+import type { GraphNode } from "../knowledge/graph-query";
 
-const log = createLogger("sige:retrieval-modes")
+const log = createLogger("sige:retrieval-modes");
 
 // ─── Result Type ──────────────────────────────────────────────────────────────
 
 export interface RetrievalResult {
-  readonly facts: readonly string[]
-  readonly nodes: readonly ZepNode[]
-  readonly score: number
+  readonly facts: readonly string[];
+  readonly nodes: readonly GraphNode[];
+  readonly score: number;
 }
 
 // ─── Internal Helpers ─────────────────────────────────────────────────────────
@@ -21,66 +22,93 @@ function decomposeQuery(query: string): readonly string[] {
   const clauses = query
     .split(/\band\b|\bor\b|[,;?]|\bthen\b|\bbut\b/i)
     .map((c) => c.trim())
-    .filter((c) => c.length > 3)
+    .filter((c) => c.length > 3);
 
   // Cap at 3 sub-questions to limit API calls
-  const subQuestions = clauses.slice(0, 3)
-  return subQuestions.length > 0 ? subQuestions : [query]
+  const subQuestions = clauses.slice(0, 3);
+  return subQuestions.length > 0 ? subQuestions : [query];
 }
 
-function extractFacts(results: readonly ZepSearchResult[]): readonly string[] {
-  const seen = new Set<string>()
-  const facts: string[] = []
+function memoriesToFacts(memories: readonly Mem0Memory[]): readonly string[] {
+  const seen = new Set<string>();
+  const facts: string[] = [];
 
-  for (const r of results) {
-    const fact = r.fact ?? r.edge?.fact
-    if (fact && !seen.has(fact)) {
-      seen.add(fact)
-      facts.push(fact)
+  for (const m of memories) {
+    if (m.memory && !seen.has(m.memory)) {
+      seen.add(m.memory);
+      facts.push(m.memory);
     }
   }
 
-  return facts
+  return facts;
 }
 
-function extractNodes(results: readonly ZepSearchResult[]): readonly ZepNode[] {
-  const seen = new Set<string>()
-  const nodes: ZepNode[] = []
+function relationsToFacts(relations: readonly Mem0Relation[]): readonly string[] {
+  return relations.map((r) => `${r.source} ${r.relationship} ${r.target}`);
+}
 
-  for (const r of results) {
-    if (r.node && !seen.has(r.node.uuid)) {
-      seen.add(r.node.uuid)
-      nodes.push(r.node)
+function memoriesToNodes(memories: readonly Mem0Memory[]): readonly GraphNode[] {
+  const seen = new Set<string>();
+  const nodes: GraphNode[] = [];
+
+  for (const m of memories) {
+    if (!seen.has(m.id)) {
+      seen.add(m.id);
+      nodes.push({
+        uuid: m.id,
+        name: m.memory.slice(0, 80),
+        entityType:
+          typeof m.metadata?.entityType === "string" ? m.metadata.entityType : "Fact",
+        summary: m.memory,
+      });
     }
   }
 
-  return nodes
+  return nodes;
 }
 
-function mergeResults(
-  ...batches: readonly (readonly ZepSearchResult[])[]
-): readonly ZepSearchResult[] {
-  const seen = new Set<string>()
-  const merged: ZepSearchResult[] = []
+function aggregateScore(memories: readonly Mem0Memory[]): number {
+  if (memories.length === 0) return 0;
+  const total = memories.reduce((sum, m) => sum + (m.score ?? 0), 0);
+  const avg = total / memories.length;
+  return Math.max(0, Math.min(1, avg));
+}
+
+function mergeMemories(
+  ...batches: readonly (readonly Mem0Memory[])[]
+): readonly Mem0Memory[] {
+  const seen = new Set<string>();
+  const merged: Mem0Memory[] = [];
 
   for (const batch of batches) {
-    for (const r of batch) {
-      const key = r.node?.uuid ?? r.edge?.uuid ?? r.fact ?? ""
-      if (key && !seen.has(key)) {
-        seen.add(key)
-        merged.push(r)
+    for (const m of batch) {
+      if (!seen.has(m.id)) {
+        seen.add(m.id);
+        merged.push(m);
       }
     }
   }
 
-  return merged
+  return merged;
 }
 
-function aggregateScore(results: readonly ZepSearchResult[]): number {
-  if (results.length === 0) return 0
-  const total = results.reduce((sum, r) => sum + r.score, 0)
-  const avg = total / results.length
-  return Math.max(0, Math.min(1, avg))
+function mergeRelations(
+  ...batches: readonly (readonly Mem0Relation[])[]
+): readonly Mem0Relation[] {
+  const seen = new Set<string>();
+  const merged: Mem0Relation[] = [];
+
+  for (const batch of batches) {
+    for (const r of batch) {
+      const key = `${r.source}|${r.relationship}|${r.target}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(r);
+      }
+    }
+  }
+
+  return merged;
 }
 
 // ─── Retrieval Modes ──────────────────────────────────────────────────────────
@@ -89,136 +117,160 @@ function aggregateScore(results: readonly ZepSearchResult[]): number {
  * Deep multi-hop retrieval for complex strategic questions.
  *
  * Decomposes the query into sub-questions, retrieves results for each,
- * then expands each result node by one additional hop to surface connected entities.
+ * then expands each result by searching on the top memory content strings
+ * to surface connected entities (one-hop expansion).
  */
 export async function insightForge(
-  zep: ZepClient,
+  mem0: Mem0Client,
   userId: string,
   query: string,
-  options?: { readonly maxHops?: number; readonly maxResults?: number },
+  options?: { readonly maxResults?: number },
 ): Promise<RetrievalResult> {
-  const maxResults = options?.maxResults ?? 15
-  const subQuestions = decomposeQuery(query)
+  const maxResults = options?.maxResults ?? 15;
+  const subQuestions = decomposeQuery(query);
 
   log.debug("insightForge: starting multi-hop retrieval", {
     userId,
     subQuestions: subQuestions.length,
-  })
+  });
 
   // Retrieve results for each sub-question in parallel
-  const firstHopBatches = await Promise.all(
-    subQuestions.map((q) => zep.searchGraph(userId, q, { limit: 10 }).catch(() => [])),
-  )
-
-  const firstHopAll = mergeResults(...firstHopBatches)
-
-  // One-hop expansion: for each node found, search using its name as query
-  const nodeNames = firstHopAll
-    .flatMap((r) => (r.node ? [r.node.name] : []))
-    .slice(0, 10) // cap to avoid explosion
-
-  const secondHopBatches = await Promise.all(
-    nodeNames.map((name) =>
-      zep.searchGraph(userId, name, { limit: 5 }).catch(() => []),
+  const firstHopResults = await Promise.all(
+    subQuestions.map((q) =>
+      mem0
+        .search({ query: q, userId, limit: 10, enableGraph: true })
+        .catch(() => ({ memories: [] as Mem0Memory[], relations: [] as Mem0Relation[] })),
     ),
-  )
+  );
 
-  const allResults = mergeResults(firstHopAll, ...secondHopBatches)
-  const topResults = [...allResults]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxResults)
+  const firstHopMemories = mergeMemories(...firstHopResults.map((r) => r.memories));
+  const firstHopRelations = mergeRelations(...firstHopResults.map((r) => r.relations));
+
+  // One-hop expansion: search using top memory content as queries
+  const expansionQueries = firstHopMemories
+    .slice(0, 10)
+    .map((m) => m.memory.slice(0, 100));
+
+  const secondHopResults = await Promise.all(
+    expansionQueries.map((q) =>
+      mem0
+        .search({ query: q, userId, limit: 5, enableGraph: false })
+        .catch(() => ({ memories: [] as Mem0Memory[], relations: [] as Mem0Relation[] })),
+    ),
+  );
+
+  const allMemories = mergeMemories(
+    firstHopMemories,
+    ...secondHopResults.map((r) => r.memories),
+  );
+  const allRelations = mergeRelations(
+    firstHopRelations,
+    ...secondHopResults.map((r) => r.relations),
+  );
+
+  // Sort by score descending and cap
+  const topMemories = [...allMemories]
+    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+    .slice(0, maxResults);
+
+  const graphFacts = memoriesToFacts(topMemories);
+  const relationFacts = relationsToFacts(allRelations.slice(0, maxResults));
+  const facts = Array.from(new Set([...graphFacts, ...relationFacts]));
 
   log.debug("insightForge: complete", {
     userId,
-    firstHop: firstHopAll.length,
-    total: allResults.length,
-    returned: topResults.length,
-  })
+    firstHop: firstHopMemories.length,
+    total: allMemories.length,
+    returned: topMemories.length,
+  });
 
   return {
-    facts: extractFacts(topResults),
-    nodes: extractNodes(topResults),
-    score: aggregateScore(topResults),
-  }
+    facts,
+    nodes: memoriesToNodes(topMemories),
+    score: aggregateScore(topMemories),
+  };
 }
 
 /**
- * Broad retrieval showing evolution over time.
+ * Broad retrieval showing the full picture.
  *
- * Queries both the graph and memory stores to capture current structure
- * and historical facts. Breadth over precision — no filtering applied.
+ * Fetches all memories for a user to capture the entire knowledge store.
+ * Breadth over precision — no filtering applied.
  */
 export async function panoramaSearch(
-  zep: ZepClient,
+  mem0: Mem0Client,
   userId: string,
   query: string,
-  options?: { readonly maxResults?: number; readonly includeExpired?: boolean },
+  options?: { readonly maxResults?: number },
 ): Promise<RetrievalResult> {
-  const maxResults = options?.maxResults ?? 50
+  const maxResults = options?.maxResults ?? 50;
 
-  log.debug("panoramaSearch: starting broad retrieval", { userId })
+  log.debug("panoramaSearch: starting broad retrieval", { userId });
 
-  const [graphResults, memoryResults] = await Promise.allSettled([
-    zep.searchGraph(userId, query, { limit: maxResults }),
-    zep.searchMemory(userId, query, { limit: maxResults }),
-  ])
+  const [allResult, searchResult] = await Promise.allSettled([
+    mem0.getAll({ userId, limit: maxResults }),
+    mem0.search({ query, userId, limit: maxResults, enableGraph: true }),
+  ]);
 
-  const graphItems: readonly ZepSearchResult[] =
-    graphResults.status === "fulfilled" ? graphResults.value : []
+  const allMemories: readonly Mem0Memory[] =
+    allResult.status === "fulfilled" ? allResult.value : [];
 
-  // Convert memory results into a unified shape for fact extraction
-  const memoryFacts: readonly string[] =
-    memoryResults.status === "fulfilled"
-      ? memoryResults.value.map((r) => r.fact)
-      : []
+  const searchMemories: readonly Mem0Memory[] =
+    searchResult.status === "fulfilled" ? searchResult.value.memories : [];
+  const searchRelations: readonly Mem0Relation[] =
+    searchResult.status === "fulfilled" ? searchResult.value.relations : [];
 
-  // Sort graph results by score (spread first since graphItems is readonly)
-  // panorama intentionally returns all, no slice
-  const sortedGraph = [...graphItems].sort((a, b) => b.score - a.score)
-
-  // Merge memory facts with graph-derived facts, deduplicated
-  const graphFacts = extractFacts(sortedGraph)
-  const allFacts = Array.from(new Set([...graphFacts, ...memoryFacts]))
+  const merged = mergeMemories(allMemories, searchMemories);
+  const allFacts = Array.from(
+    new Set([...memoriesToFacts(merged), ...relationsToFacts(searchRelations)]),
+  );
 
   log.debug("panoramaSearch: complete", {
     userId,
-    graphItems: graphItems.length,
-    memoryFacts: memoryFacts.length,
+    allMemories: allMemories.length,
+    searchMemories: searchMemories.length,
     totalFacts: allFacts.length,
-  })
+  });
 
   return {
     facts: allFacts,
-    nodes: extractNodes(sortedGraph),
-    score: aggregateScore(sortedGraph),
-  }
+    nodes: memoriesToNodes(merged),
+    score: aggregateScore(searchMemories),
+  };
 }
 
 /**
  * Fast direct semantic search.
  *
- * Single graph query with minimal post-processing. Optimised for latency.
+ * Single Mem0 search with minimal post-processing. Optimised for latency.
  */
 export async function quickSearch(
-  zep: ZepClient,
+  mem0: Mem0Client,
   userId: string,
   query: string,
   options?: { readonly maxResults?: number },
 ): Promise<RetrievalResult> {
-  const maxResults = options?.maxResults ?? 10
+  const maxResults = options?.maxResults ?? 10;
 
-  log.debug("quickSearch: starting fast retrieval", { userId })
+  log.debug("quickSearch: starting fast retrieval", { userId });
 
-  const results = await zep
-    .searchGraph(userId, query, { limit: maxResults })
+  const result = await mem0
+    .search({ query, userId, limit: maxResults, enableGraph: true })
     .catch((err: unknown) => {
-      log.warn("quickSearch: graph search failed, returning empty result", { err })
-      return []
-    })
+      log.warn("quickSearch: mem0.search failed, returning empty result", { err });
+      return { memories: [] as Mem0Memory[], relations: [] as Mem0Relation[] };
+    });
+
+  const facts = Array.from(
+    new Set([
+      ...memoriesToFacts(result.memories),
+      ...relationsToFacts(result.relations),
+    ]),
+  );
 
   return {
-    facts: extractFacts(results),
-    nodes: extractNodes(results),
-    score: aggregateScore(results),
-  }
+    facts,
+    nodes: memoriesToNodes(result.memories),
+    score: aggregateScore(result.memories),
+  };
 }

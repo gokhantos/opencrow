@@ -2,7 +2,11 @@ import { chat } from "../../agent/chat";
 import type { ConversationMessage } from "../../agent/types";
 import { createLogger } from "../../logger";
 import type { Ontology, EntityType, RelationshipType } from "./ontology-generator";
-import type { ZepEpisode } from "./zep-client";
+interface MemoryItem {
+  readonly content: string;
+  readonly source?: string;
+  readonly sourceDescription?: string;
+}
 
 const log = createLogger("sige:entity-extractor");
 
@@ -469,11 +473,11 @@ export async function processDocument(
   return merged;
 }
 
-export function toZepEpisodes(
+export function toMemoryItems(
   result: ExtractionResult,
   source: string,
-): readonly ZepEpisode[] {
-  const episodes: ZepEpisode[] = [];
+): readonly MemoryItem[] {
+  const episodes: MemoryItem[] = [];
 
   for (const entity of result.entities) {
     const attrParts = Object.entries(entity.attributes)

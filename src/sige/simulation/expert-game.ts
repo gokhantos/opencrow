@@ -12,7 +12,7 @@ import {
   graphViewToPromptContext,
   type GraphView,
 } from "../knowledge/graph-query"
-import type { ZepClient } from "../knowledge/zep-client"
+import type { Mem0Client } from "../knowledge/mem0-client"
 import type { GameFormulation } from "../types"
 import { runWithConcurrency } from "./concurrency"
 import { saveAgentAction, saveSimulationResult } from "../store"
@@ -62,12 +62,12 @@ export async function runExpertGame(params: {
   readonly sessionId: string
   readonly gameFormulation: GameFormulation
   readonly graphView: GraphView
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
 }): Promise<ExpertGameResult> {
-  const { sessionId, gameFormulation, zep, userId, config, signal } = params
+  const { sessionId, gameFormulation, mem0, userId, config, signal } = params
 
   log.info("Expert game starting", { sessionId })
 
@@ -76,7 +76,7 @@ export async function runExpertGame(params: {
   const round1 = await runDivergentGeneration({
     sessionId,
     gameFormulation,
-    zep,
+    mem0,
     userId,
     config,
     signal,
@@ -94,7 +94,7 @@ export async function runExpertGame(params: {
     sessionId,
     gameFormulation,
     round1Results: round1,
-    zep,
+    mem0,
     userId,
     config,
     signal,
@@ -113,7 +113,7 @@ export async function runExpertGame(params: {
     sessionId,
     gameFormulation,
     round2Results: round2,
-    zep,
+    mem0,
     userId,
     config,
     signal,
@@ -134,7 +134,7 @@ export async function runExpertGame(params: {
     gameFormulation,
     round3Results: round3,
     allRounds,
-    zep,
+    mem0,
     userId,
     config,
     signal,
@@ -168,12 +168,12 @@ export async function runExpertGame(params: {
 async function runDivergentGeneration(params: {
   readonly sessionId: string
   readonly gameFormulation: GameFormulation
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
 }): Promise<SimulationRound> {
-  const { sessionId, gameFormulation, zep, userId, config, signal } = params
+  const { sessionId, gameFormulation, mem0, userId, config, signal } = params
   const definitions = getAllDefinitions()
 
   log.info("Round 1: divergent generation", {
@@ -188,7 +188,7 @@ async function runDivergentGeneration(params: {
       round: 1,
       sessionId,
       gameFormulation,
-      zep,
+      mem0,
       userId,
       config,
       roundContext: undefined,
@@ -224,12 +224,12 @@ async function runStrategicInteraction(params: {
   readonly sessionId: string
   readonly gameFormulation: GameFormulation
   readonly round1Results: SimulationRound
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
 }): Promise<SimulationRound> {
-  const { sessionId, gameFormulation, round1Results, zep, userId, config, signal } = params
+  const { sessionId, gameFormulation, round1Results, mem0, userId, config, signal } = params
   const definitions = getAllDefinitions()
 
   const roundContext = formatIdeasForPrompt(round1Results.outcomes.selectedIdeas)
@@ -246,7 +246,7 @@ async function runStrategicInteraction(params: {
       round: 2,
       sessionId,
       gameFormulation,
-      zep,
+      mem0,
       userId,
       config,
       roundContext,
@@ -285,12 +285,12 @@ async function runEvolutionaryTournament(params: {
   readonly sessionId: string
   readonly gameFormulation: GameFormulation
   readonly round2Results: SimulationRound
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
 }): Promise<SimulationRound> {
-  const { sessionId, gameFormulation, round2Results, zep, userId, config, signal } = params
+  const { sessionId, gameFormulation, round2Results, mem0, userId, config, signal } = params
 
   const topIdeas = round2Results.outcomes.selectedIdeas.slice(0, 15)
   log.info("Round 3: evolutionary tournament", {
@@ -308,7 +308,7 @@ async function runEvolutionaryTournament(params: {
       population,
       sessionId,
       gameFormulation,
-      zep,
+      mem0,
       userId,
       config,
       signal,
@@ -337,12 +337,12 @@ async function runEquilibriumAnalysis(params: {
   readonly gameFormulation: GameFormulation
   readonly round3Results: SimulationRound
   readonly allRounds: readonly SimulationRound[]
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
 }): Promise<SimulationRound> {
-  const { sessionId, gameFormulation, round3Results, zep, userId, config, signal } = params
+  const { sessionId, gameFormulation, round3Results, mem0, userId, config, signal } = params
 
   const analyzerRoles: readonly StrategicAgentRole[] = [
     "rational_player",
@@ -365,7 +365,7 @@ async function runEquilibriumAnalysis(params: {
       round: 4,
       sessionId,
       gameFormulation,
-      zep,
+      mem0,
       userId,
       config,
       roundContext,
@@ -400,15 +400,15 @@ async function runSingleAgent(params: {
   readonly round: RoundNumber
   readonly sessionId: string
   readonly gameFormulation: GameFormulation
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly roundContext: string | undefined
 }): Promise<AgentAction> {
-  const { def, round, sessionId, gameFormulation, zep, userId, config, roundContext } = params
+  const { def, round, sessionId, gameFormulation, mem0, userId, config, roundContext } = params
 
   const filter = def.defaultKnowledgeFilter
-  const agentGraphView = await getFilteredGraphView(zep, userId, def.role, filter)
+  const agentGraphView = await getFilteredGraphView(mem0, userId, def.role, filter)
   const graphContext = graphViewToPromptContext(agentGraphView)
 
   const systemPrompt = buildStrategicPrompt(
@@ -445,7 +445,7 @@ async function runEvolutionaryGeneration(params: {
   readonly population: readonly ScoredIdea[]
   readonly sessionId: string
   readonly gameFormulation: GameFormulation
-  readonly zep: ZepClient
+  readonly mem0: Mem0Client
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
@@ -454,7 +454,7 @@ async function runEvolutionaryGeneration(params: {
   readonly actions: readonly AgentAction[]
   readonly evolved: readonly ScoredIdea[]
 }> {
-  const { gen, population, sessionId, gameFormulation, zep, userId, config, signal } = params
+  const { gen, population, sessionId, gameFormulation, mem0, userId, config, signal } = params
 
   const allDefs = getAllDefinitions()
   const roundContext = formatIdeasForPrompt(population)
@@ -467,7 +467,7 @@ async function runEvolutionaryGeneration(params: {
       round: 3,
       sessionId,
       gameFormulation,
-      zep,
+      mem0,
       userId,
       config,
       roundContext,
@@ -502,7 +502,7 @@ async function runEvolutionaryGeneration(params: {
       round: 3,
       sessionId,
       gameFormulation,
-      zep,
+      mem0,
       userId,
       config,
       roundContext: `## Generation ${gen} — Propose mutations of the surviving ideas:\n\n${mutatorContext}`,
@@ -523,7 +523,7 @@ async function runEvolutionaryGeneration(params: {
       round: 3,
       sessionId,
       gameFormulation,
-      zep,
+      mem0,
       userId,
       config,
       roundContext: `## Generation ${gen} — Combine pairs of ideas into hybrids:\n\n${mutatorContext}`,
