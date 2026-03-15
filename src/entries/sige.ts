@@ -12,8 +12,6 @@ import { loadConfig, loadConfigWithOverrides } from "../config/loader";
 import { bootstrap } from "../process/bootstrap";
 import { createProcessSupervisor } from "../process/supervisor";
 import { Mem0Client } from "../sige/knowledge/mem0-client";
-import { generateOntology } from "../sige/knowledge/ontology-generator";
-import { processDocument, toMemoryItems } from "../sige/knowledge/entity-extractor";
 import { getFullGraph } from "../sige/knowledge/graph-query";
 import { formulateGame } from "../sige/game-formulation";
 import { runExpertGame } from "../sige/simulation/expert-game";
@@ -33,7 +31,6 @@ import { createLogger } from "../logger";
 const log = createLogger("sige-entry");
 
 const POLL_INTERVAL_MS = 5_000;
-const MEM0_MAX_CHARS = 9_500;
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 
@@ -55,39 +52,8 @@ async function runSession(
   // Enrich seed with existing project data before knowledge construction
   const enrichedSeed = await enrichSeedWithProjectData(seedInput);
 
-  // Add enriched seed to Mem0 — non-blocking, pipeline continues if this fails
-  const seedSections = enrichedSeed.split(/\n## /).filter(Boolean);
-  await mem0.addMemories({
-    items: seedSections.map((section, i) => ({
-      content: (i > 0 ? "## " : "") + section.slice(0, MEM0_MAX_CHARS),
-      metadata: { source: "seed_input", section: i + 1, sessionId },
-    })),
-    userId,
-    enableGraph: true,
-    maxConcurrent: 1,
-  }).catch((err) => log.warn("Mem0 seed ingestion failed (non-fatal)", { err, sessionId }));
-
-  const ontology = await generateOntology(enrichedSeed, { model: config.model, provider: config.provider });
-
-  const extraction = await processDocument(enrichedSeed, ontology, {
-    model: config.model,
-    provider: config.provider,
-    maxConcurrent: config.maxConcurrentAgents,
-  });
-
-  // Convert extracted entities/relationships to memory items — non-blocking
-  const entityEpisodes = toMemoryItems(extraction, "entity_extraction");
-  if (entityEpisodes.length > 0) {
-    await mem0.addMemories({
-      items: entityEpisodes.map((ep) => ({
-        content: ep.content.slice(0, MEM0_MAX_CHARS),
-        metadata: { source: ep.source ?? "entity_extraction", sessionId },
-      })),
-      userId,
-      enableGraph: true,
-      maxConcurrent: 1,
-    }).catch((err) => log.warn("Mem0 entity ingestion failed (non-fatal)", { err, sessionId }));
-  }
+  // Knowledge graph comes from Mem0 (built by background ingestion cron).
+  // No LLM extraction during session — just query what's already in the graph.
 
   // ── Step 2: Game formulation ─────────────────────────────────────────────────
 
