@@ -322,7 +322,7 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
     const id = c.req.param("id");
     const action = c.req.param("action");
 
-    if (!deps.channelRegistry || !deps.channelManager) {
+    if (!deps.channelRegistry) {
       return c.json({ error: "Channel system not initialized" }, 500);
     }
 
@@ -336,6 +336,9 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
 
       switch (action) {
         case "restart": {
+          if (!deps.channelManager) {
+            return c.json({ error: "Channel manager not available in this process" }, 500);
+          }
           await deps.channelManager.stopChannel(id);
           await deps.channelManager.startChannel(
             id,
@@ -354,14 +357,14 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
           const channelDiff = extractChannelDiff(currentConfig, applied, id);
           await setOverride("channels", id, channelDiff);
           const updated = await loadConfigWithOverrides();
-          if (plugin.config.isConfigured(updated)) {
+          if (deps.channelManager && plugin.config.isConfigured(updated)) {
             await deps.channelManager.startChannel(
               id,
               updated,
               deps.messageHandler!,
             );
           }
-          const channel = deps.channelManager.getChannel(id);
+          const channel = deps.channelManager?.getChannel(id);
           const snapshot = plugin.config.getSnapshot(updated, channel);
           return c.json({ data: { snapshot } });
         }
@@ -372,7 +375,9 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
           });
           const channelDiff = extractChannelDiff(currentConfig, applied, id);
           await setOverride("channels", id, channelDiff);
-          await deps.channelManager.stopChannel(id);
+          if (deps.channelManager) {
+            await deps.channelManager.stopChannel(id);
+          }
           const updated = await loadConfigWithOverrides();
           const snapshot = plugin.config.getSnapshot(updated, undefined);
           return c.json({ data: { snapshot } });
@@ -390,7 +395,7 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
           const updated = await loadConfigWithOverrides();
           const shouldRestart =
             input.enabled !== undefined || input.botToken !== undefined;
-          if (shouldRestart && plugin.config.isEnabled(updated)) {
+          if (deps.channelManager && shouldRestart && plugin.config.isEnabled(updated)) {
             await deps.channelManager.stopChannel(id);
             await deps.channelManager.startChannel(
               id,
@@ -398,13 +403,16 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
               deps.messageHandler!,
             );
           }
-          const channel = deps.channelManager.getChannel(id);
+          const channel = deps.channelManager?.getChannel(id);
           const snapshot = plugin.config.getSnapshot(updated, channel);
           return c.json({ data: { snapshot } });
         }
         case "pair": {
           if (id !== "whatsapp") {
             return c.json({ error: "Pair only supported for WhatsApp" }, 400);
+          }
+          if (!deps.channelManager) {
+            return c.json({ error: "Channel manager not available — enable WhatsApp first, then wait for agent to connect" }, 500);
           }
           const body = await c.req.json();
           const phoneNumber = body.phoneNumber as string | undefined;
