@@ -218,26 +218,22 @@ function validateRelationshipType(raw: unknown, index: number): RelationshipType
 }
 
 function validateOntology(raw: RawOntology): Ontology {
-  if (typeof raw.domain !== "string" || !raw.domain) {
-    throw new Error('Ontology "domain" field must be a non-empty string');
-  }
+  const domain = typeof raw.domain === "string" && raw.domain
+    ? raw.domain
+    : "general";
 
-  if (!Array.isArray(raw.entityTypes)) {
-    throw new Error('Ontology "entityTypes" must be an array');
-  }
-  if (!Array.isArray(raw.relationshipTypes)) {
-    throw new Error('Ontology "relationshipTypes" must be an array');
-  }
+  const entityTypes = Array.isArray(raw.entityTypes) ? raw.entityTypes : [];
+  const relationshipTypes = Array.isArray(raw.relationshipTypes) ? raw.relationshipTypes : [];
 
   const categories = toStringArray(raw.categories ?? [], "categories");
-  const entityTypes = (raw.entityTypes as unknown[]).map(validateEntityType);
-  const relationshipTypes = (raw.relationshipTypes as unknown[]).map(validateRelationshipType);
+  const validatedEntityTypes = (entityTypes as unknown[]).map(validateEntityType);
+  const validatedRelationshipTypes = (relationshipTypes as unknown[]).map(validateRelationshipType);
 
   return {
-    domain: raw.domain,
+    domain,
     categories,
-    entityTypes,
-    relationshipTypes,
+    entityTypes: validatedEntityTypes,
+    relationshipTypes: validatedRelationshipTypes,
   };
 }
 
