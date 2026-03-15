@@ -31,7 +31,7 @@ const CURSOR_NAMESPACE = "sige-ingestion";
 // ─── Source Row Types ─────────────────────────────────────────────────────────
 
 interface AppStoreReviewRow {
-  readonly id: number;
+  readonly id: string;
   readonly app_name: string;
   readonly title: string | null;
   readonly content: string | null;
@@ -39,7 +39,7 @@ interface AppStoreReviewRow {
 }
 
 interface PlayStoreReviewRow {
-  readonly id: number;
+  readonly id: string;
   readonly app_name: string;
   readonly title: string | null;
   readonly content: string | null;
@@ -48,7 +48,7 @@ interface PlayStoreReviewRow {
 }
 
 interface RedditPostRow {
-  readonly id: number;
+  readonly id: string;
   readonly subreddit: string;
   readonly title: string;
   readonly selftext: string | null;
@@ -57,7 +57,7 @@ interface RedditPostRow {
 }
 
 interface PhProductRow {
-  readonly id: number;
+  readonly id: string;
   readonly name: string;
   readonly tagline: string | null;
   readonly description: string | null;
@@ -65,7 +65,7 @@ interface PhProductRow {
 }
 
 interface HnStoryRow {
-  readonly id: number;
+  readonly id: string;
   readonly title: string;
   readonly points: number;
   readonly comment_count: number;
@@ -73,7 +73,7 @@ interface HnStoryRow {
 }
 
 interface NewsArticleRow {
-  readonly id: number;
+  readonly id: string;
   readonly title: string;
   readonly summary: string | null;
   readonly category: string | null;
@@ -81,14 +81,14 @@ interface NewsArticleRow {
 }
 
 interface AppStoreAppRow {
-  readonly id: number;
+  readonly id: string;
   readonly name: string;
   readonly category: string | null;
   readonly description: string | null;
 }
 
 interface PlayStoreAppRow {
-  readonly id: number;
+  readonly id: string;
   readonly name: string;
   readonly category: string | null;
   readonly description: string | null;
@@ -98,22 +98,22 @@ interface PlayStoreAppRow {
 
 // ─── Source Definitions ───────────────────────────────────────────────────────
 
-interface SourceDefinition<T extends { readonly id: number }> {
+interface SourceDefinition<T extends { readonly id: string }> {
   readonly name: string;
   readonly priority: number;
-  fetchBatch(cursorId: number, limit: number): Promise<readonly T[]>;
+  fetchBatch(cursorId: string, limit: number): Promise<readonly T[]>;
   toText(row: T): string;
   toMetadata(row: T): Record<string, unknown>;
   getContent(row: T): string;
 }
 
-function makeSource<T extends { readonly id: number }>(
+function makeSource<T extends { readonly id: string }>(
   def: SourceDefinition<T>,
 ): SourceDefinition<T> {
   return def;
 }
 
-const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: number }>> = [
+const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
   makeSource<AppStoreReviewRow>({
     name: "appstore_reviews",
     priority: 1,
@@ -311,7 +311,7 @@ const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: number }>> = [
       return `${r.name} ${r.description ?? ""}`;
     },
   }),
-] as ReadonlyArray<SourceDefinition<{ readonly id: number }>>;
+] as ReadonlyArray<SourceDefinition<{ readonly id: string }>>;
 
 // ─── Cursor helpers ───────────────────────────────────────────────────────────
 
@@ -319,14 +319,14 @@ function cursorKey(sourceName: string): string {
   return `cursor:${sourceName}`;
 }
 
-async function readCursor(sourceName: string): Promise<number> {
+async function readCursor(sourceName: string): Promise<string> {
   const stored = await getOverride(CURSOR_NAMESPACE, cursorKey(sourceName));
-  if (typeof stored === "number") return stored;
-  if (typeof stored === "string") return parseInt(stored, 10) || 0;
-  return 0;
+  if (typeof stored === "string") return stored;
+  if (typeof stored === "number") return String(stored);
+  return "";
 }
 
-async function writeCursor(sourceName: string, lastId: number): Promise<void> {
+async function writeCursor(sourceName: string, lastId: string): Promise<void> {
   await setOverride(CURSOR_NAMESPACE, cursorKey(sourceName), lastId);
 }
 
@@ -340,13 +340,13 @@ interface SourceRunResult {
 }
 
 async function ingestSource(
-  source: SourceDefinition<{ readonly id: number }>,
+  source: SourceDefinition<{ readonly id: string }>,
   mem0: Mem0Client,
   userId: string,
 ): Promise<SourceRunResult> {
   const cursorId = await readCursor(source.name);
 
-  let rows: ReadonlyArray<{ readonly id: number }>;
+  let rows: ReadonlyArray<{ readonly id: string }>;
   try {
     rows = await source.fetchBatch(cursorId, BATCH_SIZE);
   } catch (err) {
