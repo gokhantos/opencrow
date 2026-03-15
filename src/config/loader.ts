@@ -106,10 +106,11 @@ function mergeChannelOverrides(
 async function mergeFeatureOverrides(
   base: OpenCrowConfig,
 ): Promise<OpenCrowConfig> {
-  const [enabledScrapers, qdrantEnabled, marketEnabled] = await Promise.all([
+  const [enabledScrapers, qdrantEnabled, marketEnabled, sigeOverride] = await Promise.all([
     getOverride("features", "enabledScrapers"),
     getOverride("features", "qdrantEnabled"),
     getOverride("features", "marketEnabled"),
+    getOverride("config", "sige"),
   ]);
 
   let result: Record<string, unknown> = { ...base };
@@ -151,6 +152,10 @@ async function mergeFeatureOverrides(
       > & { market?: unknown };
       result = rest;
     }
+  }
+
+  if (sigeOverride !== null && typeof sigeOverride === "object") {
+    result = { ...result, sige: sigeOverride };
   }
 
   return opencrowConfigSchema.parse(result);
