@@ -55,7 +55,7 @@ async function runSession(
   // Enrich seed with existing project data before knowledge construction
   const enrichedSeed = await enrichSeedWithProjectData(seedInput);
 
-  // Add enriched seed to Mem0 — chunk to avoid large single payloads
+  // Add enriched seed to Mem0 — non-blocking, pipeline continues if this fails
   const seedSections = enrichedSeed.split(/\n## /).filter(Boolean);
   await mem0.addMemories({
     items: seedSections.map((section, i) => ({
@@ -64,8 +64,8 @@ async function runSession(
     })),
     userId,
     enableGraph: true,
-    maxConcurrent: 3,
-  });
+    maxConcurrent: 1,
+  }).catch((err) => log.warn("Mem0 seed ingestion failed (non-fatal)", { err, sessionId }));
 
   const ontology = await generateOntology(enrichedSeed, { model: config.model, provider: config.provider });
 
@@ -75,7 +75,7 @@ async function runSession(
     maxConcurrent: config.maxConcurrentAgents,
   });
 
-  // Convert extracted entities/relationships to memory items and ingest
+  // Convert extracted entities/relationships to memory items — non-blocking
   const entityEpisodes = toMemoryItems(extraction, "entity_extraction");
   if (entityEpisodes.length > 0) {
     await mem0.addMemories({
@@ -85,8 +85,8 @@ async function runSession(
       })),
       userId,
       enableGraph: true,
-      maxConcurrent: 3,
-    });
+      maxConcurrent: 1,
+    }).catch((err) => log.warn("Mem0 entity ingestion failed (non-fatal)", { err, sessionId }));
   }
 
   // ── Step 2: Game formulation ─────────────────────────────────────────────────
