@@ -5,11 +5,10 @@ import { cn } from "../../lib/cn";
 import type { SigeCreateConfig } from "./api";
 
 const DEFAULT_MODELS = [
-  "claude-opus-4-5",
-  "claude-sonnet-4-5",
-  "claude-haiku-4-5",
-  "gpt-4o",
-  "gpt-4o-mini",
+  "qwen3.5-plus",
+  "qwen-plus",
+  "qwen-turbo",
+  "qwen-max",
 ] as const;
 
 interface NewSessionFormProps {
@@ -22,7 +21,7 @@ export function NewSessionForm({ onSubmit, submitting }: NewSessionFormProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [alpha, setAlpha] = useState(0.5);
   const [socialAgentCount, setSocialAgentCount] = useState(20);
-  const [model, setModel] = useState("claude-opus-4-5");
+  const [model, setModel] = useState("qwen3.5-plus");
   const [error, setError] = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
