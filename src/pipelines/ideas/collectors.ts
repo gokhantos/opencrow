@@ -317,7 +317,7 @@ export async function clusterReviews(
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
-          WHERE r.rating <= 2 AND a.category = ANY(${focusCategories as string[]})
+          WHERE r.rating <= 2 AND a.category IN ${db(focusCategories as string[])}
           ORDER BY r.first_seen_at DESC LIMIT 400
         `) as Array<Record<string, unknown>>
       : (await db`
@@ -334,7 +334,7 @@ export async function clusterReviews(
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
-          WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category = ANY(${focusCategories as string[]})
+          WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category IN ${db(focusCategories as string[])}
           ORDER BY r.first_seen_at DESC LIMIT 200
         `) as Array<Record<string, unknown>>
       : (await db`
