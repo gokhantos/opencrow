@@ -40,7 +40,7 @@ export function buildChatOptions(model: string) {
   return {
     systemPrompt: "",
     model,
-    provider: "openrouter" as const,
+    provider: "anthropic" as const,
     agentId: "idea-pipeline",
     usageContext: { channel: "pipeline" as const, chatId: "ideas", source: "workflow" as const },
   };
