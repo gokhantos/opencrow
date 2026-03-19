@@ -316,7 +316,13 @@ signalStrength is 0.0-1.0: how strongly the data supports this intersection (not
     preview: response.text.slice(0, 200),
   });
 
-  const intersections = parseJsonFromResponse<IntersectionHypothesis[]>(response.text, []);
+  const rawIntersections = parseJsonFromResponse<IntersectionHypothesis[]>(response.text, []);
+
+  // Clamp signalStrength to 0-1 to handle LLM non-compliance
+  const intersections = rawIntersections.map((h) => ({
+    ...h,
+    signalStrength: Math.min(1, Math.max(0, Number(h.signalStrength) || 0)),
+  }));
 
   log.info("Pass 1 complete", { count: intersections.length });
   return intersections;
@@ -519,7 +525,10 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       continue;
     }
 
-    const { scores, avgScore } = critique;
+    const { scores } = critique;
+
+    // Recompute avgScore from individual dimensions (don't trust LLM's self-reported average)
+    const avgScore = (scores.specificity + scores.signalGrounding + scores.differentiation + scores.buildability) / 4;
 
     // Kill if average < 0.5 or any single dimension <= 0.2
     const minScore = Math.min(scores.specificity, scores.signalGrounding, scores.differentiation, scores.buildability);
@@ -683,8 +692,8 @@ export async function synthesizeFromTrends(input: {
   try {
     rawCandidates = await developIdeas(topIntersections, category, saturatedThemes, deepSearchContext, model);
   } catch (err) {
-    log.error("Pass 2 failed, returning empty result", { err });
-    return { candidates: [], totalGenerated: 0 };
+    log.error("Pass 2 failed, falling back to single-pass synthesis", { err });
+    return singlePassSynthesis(input);
   }
 
   if (rawCandidates.length === 0) {
