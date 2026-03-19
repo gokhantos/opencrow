@@ -253,33 +253,31 @@ export async function runIdeasPipeline(
   try {
     const model = config.model ?? "claude-sonnet-4-6";
 
-    // ── Step 1: Analyze app landscape ───────────────────────────────────
-    const trends = await runStep(
-      runId,
-      "landscape",
-      () => analyzeAppLandscape(model),
-      (t) => `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points${t.insights ? " (with LLM insights)" : ""}`,
-    );
-
-    // ── Step 2: Cluster reviews (complaints + praises) ────────────────
-    const focusCategories = trends.trendingCategories.length > 0
-      ? trends.trendingCategories.map((c) => c.category)
-      : undefined;
-
-    const pains = await runStep(
-      runId,
-      "reviews",
-      () => clusterReviews(focusCategories, model),
-      (p) => `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)${p.insights ? " (with LLM insights)" : ""}`,
-    );
-
-    // ── Step 3: Scan capabilities ─────────────────────────────────────
-    const capabilities = await runStep(
-      runId,
-      "capabilities",
-      () => scanCapabilities(model),
-      (c) => `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
-    );
+    // ── Steps 1-3: Run collectors in parallel (no inter-dependencies) ───
+    // clusterReviews accepts an optional focusCategories filter derived from
+    // landscape results, but its undefined fallback is fully functional — the
+    // reviews and capabilities collectors have zero dependency on each other
+    // or on the landscape step, so all three can run concurrently.
+    const [trends, pains, capabilities] = await Promise.all([
+      runStep(
+        runId,
+        "landscape",
+        () => analyzeAppLandscape(model),
+        (t) => `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points${t.insights ? " (with LLM insights)" : ""}`,
+      ),
+      runStep(
+        runId,
+        "reviews",
+        () => clusterReviews(undefined, model),
+        (p) => `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)${p.insights ? " (with LLM insights)" : ""}`,
+      ),
+      runStep(
+        runId,
+        "capabilities",
+        () => scanCapabilities(model),
+        (c) => `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
+      ),
+    ]);
 
     // ── Step 4: Deep search (optional) ────────────────────────────────
     let deepSearchContext = "";

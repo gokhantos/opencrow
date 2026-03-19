@@ -312,55 +312,64 @@ export async function clusterReviews(
 
   try {
     // NEGATIVE reviews — what's broken
-    const negativeReviews = focusCategories?.length
-      ? (await db`
+    // POSITIVE reviews — what people love
+    // Play Store negative + positive
+    // All four queries are fully independent — run in parallel.
+    const negativeQuery = focusCategories?.length
+      ? db`
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating <= 2 AND a.category IN ${db(focusCategories as string[])}
           ORDER BY r.first_seen_at DESC LIMIT 400
-        `) as Array<Record<string, unknown>>
-      : (await db`
+        `
+      : db`
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating <= 2
           ORDER BY r.first_seen_at DESC LIMIT 400
-        `) as Array<Record<string, unknown>>;
+        `;
 
-    // POSITIVE reviews — what people love
-    const positiveReviews = focusCategories?.length
-      ? (await db`
+    const positiveQuery = focusCategories?.length
+      ? db`
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category IN ${db(focusCategories as string[])}
           ORDER BY r.first_seen_at DESC LIMIT 200
-        `) as Array<Record<string, unknown>>
-      : (await db`
+        `
+      : db`
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating >= 4 AND LENGTH(r.content) > 30
           ORDER BY r.first_seen_at DESC LIMIT 200
-        `) as Array<Record<string, unknown>>;
+        `;
 
-    // Play Store negative + positive
-    const playNegative = (await db`
-      SELECT a.category, a.name as app_name, r.title, r.content, r.rating
-      FROM playstore_reviews r
-      JOIN playstore_apps a ON a.id = r.app_id
-      WHERE r.rating <= 2 AND a.category != ''
-      ORDER BY r.first_seen_at DESC LIMIT 400
-    `) as Array<Record<string, unknown>>;
-
-    const playPositive = (await db`
-      SELECT a.category, a.name as app_name, r.title, r.content, r.rating
-      FROM playstore_reviews r
-      JOIN playstore_apps a ON a.id = r.app_id
-      WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category != ''
-      ORDER BY r.first_seen_at DESC LIMIT 200
-    `) as Array<Record<string, unknown>>;
+    const [negativeReviews, positiveReviews, playNegative, playPositive] = (await Promise.all([
+      negativeQuery,
+      positiveQuery,
+      db`
+        SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+        FROM playstore_reviews r
+        JOIN playstore_apps a ON a.id = r.app_id
+        WHERE r.rating <= 2 AND a.category != ''
+        ORDER BY r.first_seen_at DESC LIMIT 400
+      `,
+      db`
+        SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+        FROM playstore_reviews r
+        JOIN playstore_apps a ON a.id = r.app_id
+        WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category != ''
+        ORDER BY r.first_seen_at DESC LIMIT 200
+      `,
+    ])) as [
+      Array<Record<string, unknown>>,
+      Array<Record<string, unknown>>,
+      Array<Record<string, unknown>>,
+      Array<Record<string, unknown>>,
+    ];
 
     // Group by category
     const byCat = new Map<string, { negative: Array<Record<string, unknown>>; positive: Array<Record<string, unknown>> }>();
