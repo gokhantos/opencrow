@@ -476,8 +476,9 @@ async function runSingleAgent(params: {
   const response = await chat(messages, {
     systemPrompt,
     model: config.agentModel,
-    provider: config.provider ?? "anthropic",
+    provider: config.provider ?? "agent-sdk",
     agentId: `sige:${def.role}`,
+    rawSystemPrompt: true,
   })
 
   const agentId = `${def.role}:${sessionId}`

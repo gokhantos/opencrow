@@ -155,7 +155,9 @@ export async function chat(
         prompt: enrichedPrompt,
         options: {
           model: options.model,
-          systemPrompt: buildSystemPromptOption(options.systemPrompt),
+          systemPrompt: options.rawSystemPrompt
+            ? options.systemPrompt
+            : buildSystemPromptOption(options.systemPrompt),
           cwd: options.cwd ?? process.cwd(),
           maxTurns: 1,
           permissionMode: "bypassPermissions",
@@ -298,7 +300,9 @@ async function runQuery(
       prompt: enrichedPrompt,
       options: {
         model: options.model,
-        systemPrompt: buildSystemPromptOption(options.systemPrompt),
+        systemPrompt: options.rawSystemPrompt
+          ? options.systemPrompt
+          : buildSystemPromptOption(options.systemPrompt),
         cwd: options.cwd ?? process.cwd(),
         maxTurns,
         permissionMode: "bypassPermissions",

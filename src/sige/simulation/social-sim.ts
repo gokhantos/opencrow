@@ -215,8 +215,9 @@ Return JSON only, no markdown:
   const response = await chat(messages, {
     systemPrompt,
     model,
-    provider: provider ?? "anthropic",
+    provider: provider ?? "agent-sdk",
     abortSignal: signal,
+    rawSystemPrompt: true,
   })
 
   return parseBatchResponse(response.text)

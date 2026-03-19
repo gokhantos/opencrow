@@ -70,7 +70,7 @@ const DEFAULT_CONFIG: SigeSessionConfig = {
     accuracyPenalty: 0.1,
     socialViability: 0.3,
   },
-  provider: "anthropic",
+  provider: "agent-sdk",
   model: "claude-sonnet-4-6",
   agentModel: "claude-sonnet-4-6",
 };

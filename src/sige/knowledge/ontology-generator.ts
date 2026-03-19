@@ -269,7 +269,8 @@ export async function generateOntology(
     const response = await chat(messages, {
       systemPrompt: SYSTEM_PROMPT,
       model: options.model,
-      provider: options.provider ?? "anthropic",
+      provider: options.provider ?? "agent-sdk",
+      rawSystemPrompt: true,
     });
     responseText = response.text;
   } catch (err) {

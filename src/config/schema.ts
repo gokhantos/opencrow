@@ -370,7 +370,7 @@ export const sigeConfigSchema = z.object({
       coalitionStabilityWeight: 0.1,
       signalCredibilityWeight: 0.1,
     }),
-  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic"]).default("anthropic"),
+  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic"]).default("agent-sdk"),
   model: z.string().default("claude-sonnet-4-6"),
   agentModel: z.string().default("claude-sonnet-4-6"),
   workflow: z

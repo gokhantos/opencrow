@@ -152,6 +152,10 @@ export interface AgentOptions {
   readonly abortSignal?: AbortSignal;
   readonly usageContext?: UsageContext;
   readonly maxPromptHistory?: number;
+  /** When true, pass systemPrompt as a plain string to the Agent SDK instead
+   *  of wrapping it in the claude_code preset. Used by SIGE and other non-coding
+   *  workloads that need a clean system prompt without coding instructions. */
+  readonly rawSystemPrompt?: boolean;
 }
 
 // ─── OpenAI / OpenRouter message format ──────────────────────────────────────
