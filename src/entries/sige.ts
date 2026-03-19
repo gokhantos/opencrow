@@ -53,28 +53,28 @@ async function runSession(
   // Enrich seed with existing project data before knowledge construction
   const enrichedSeed = await enrichSeedWithProjectData(seedInput);
 
-  // Synthesize structured insights from the raw enriched seed (graceful degradation)
-  let signalsContext: string | undefined;
-  try {
-    const signals = await synthesizeSignals(enrichedSeed, {
-      model: config.model,
-      provider: config.provider,
+  // Run signal synthesis (LLM) and graph query (Mem0) in parallel — they're independent
+  const signalSynthesisPromise = synthesizeSignals(enrichedSeed, {
+    model: config.model,
+    provider: config.provider,
+  })
+    .then((signals) => signalsToPromptContext(signals))
+    .catch((err) => {
+      log.warn("Signal synthesis failed — continuing without synthesized signals", { sessionId, err });
+      return undefined;
     });
-    signalsContext = signalsToPromptContext(signals);
-  } catch (err) {
-    log.warn("Signal synthesis failed — continuing without synthesized signals", { sessionId, err });
-    signalsContext = undefined;
-  }
 
-  // Knowledge graph comes from Mem0 (built by background ingestion cron).
-  // No LLM extraction during session — just query what's already in the graph.
+  const graphViewPromise = getFullGraph(mem0, userId);
+
+  const [signalsContext, graphView] = await Promise.all([
+    signalSynthesisPromise,
+    graphViewPromise,
+  ]);
 
   // ── Step 2: Game formulation ─────────────────────────────────────────────────
 
   await updateSessionStatus(sessionId, "game_formulation");
   log.info("Status → game_formulation", { sessionId });
-
-  const graphView = await getFullGraph(mem0, userId);
 
   const gameFormulation = await formulateGame(graphView, enrichedSeed, {
     model: config.model,

@@ -91,29 +91,13 @@ export interface LockResult {
 }
 
 /**
- * Atomically check if a pipeline can run and create the run record.
- * Only blocks if the same pipeline is already running.
+ * Create a new pipeline run record. Multiple concurrent runs are allowed.
  */
 export async function acquirePipelineLock(
   pipelineId: string,
 ): Promise<LockResult> {
   const db = getDb();
   const ts = now();
-
-  // Check for running pipeline
-  const running = (await db`
-    SELECT id FROM pipeline_runs
-    WHERE pipeline_id = ${pipelineId} AND status = 'running'
-    LIMIT 1
-  `) as Array<Record<string, unknown>>;
-
-  if (running.length > 0) {
-    return {
-      acquired: false,
-      reason: "Pipeline is already running",
-      existingRunId: running[0]!.id as string,
-    };
-  }
 
   const id = crypto.randomUUID();
   await db`

@@ -162,21 +162,10 @@ export function createPipelineRoutes(deps?: {
       ...(overrides.model && { model: overrides.model }),
     };
 
-    // Atomic lock: try to insert a "running" row; fails if one already exists
-    // Also enforces a cooldown period between runs
+    // Create run record — multiple concurrent runs are allowed
     const lockResult = await acquirePipelineLock(id);
-    if (!lockResult.acquired) {
-      return c.json(
-        {
-          success: false,
-          error: lockResult.reason,
-          runId: lockResult.existingRunId ?? undefined,
-        },
-        409,
-      );
-    }
 
-    // Start pipeline in background using the pre-created run ID
+    // Start pipeline in background
     log.info("Starting pipeline run", {
       pipelineId: id,
       runId: lockResult.runId,
