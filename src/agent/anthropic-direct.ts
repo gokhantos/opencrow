@@ -15,16 +15,15 @@ const OUTPUT_COST_PER_TOKEN = 15 / 1_000_000;
 let _client: Anthropic | undefined;
 
 /**
- * Read the OAuth access token from ~/.claude/.credentials.json.
- * Falls back to ANTHROPIC_API_KEY env var if credentials file is unavailable.
+ * Resolve auth credentials. Prefers ANTHROPIC_API_KEY (x-api-key header),
+ * falls back to OAuth token from ~/.claude/.credentials.json (Bearer header).
  */
-function resolveApiKey(): string {
-  // Env var takes priority
+function resolveAuth(): { apiKey: string } | { authToken: string } {
   if (process.env.ANTHROPIC_API_KEY) {
-    return process.env.ANTHROPIC_API_KEY;
+    return { apiKey: process.env.ANTHROPIC_API_KEY };
   }
 
-  // Read OAuth token from Claude CLI credentials
+  // Read OAuth token from Claude CLI credentials (uses Bearer auth)
   try {
     const credsPath = join(homedir(), ".claude", ".credentials.json");
     const raw = readFileSync(credsPath, "utf-8");
@@ -33,13 +32,13 @@ function resolveApiKey(): string {
     };
     const oauth = creds.claudeAiOauth;
     if (oauth?.accessToken) {
-      // Check if expired
       if (oauth.expiresAt && oauth.expiresAt < Date.now()) {
-        log.warn("OAuth token expired, SDK may fail", {
+        log.warn("OAuth token expired", {
           expiresAt: new Date(oauth.expiresAt).toISOString(),
         });
       }
-      return oauth.accessToken;
+      log.info("Using OAuth token from Claude credentials");
+      return { authToken: oauth.accessToken };
     }
   } catch (err) {
     log.debug("Could not read Claude credentials file", { error: err });
@@ -52,7 +51,12 @@ function resolveApiKey(): string {
 
 function getClient(): Anthropic {
   if (!_client) {
-    _client = new Anthropic({ apiKey: resolveApiKey() });
+    const auth = resolveAuth();
+    _client = new Anthropic(
+      "apiKey" in auth
+        ? { apiKey: auth.apiKey }
+        : { authToken: auth.authToken, apiKey: null },
+    );
   }
   return _client;
 }
