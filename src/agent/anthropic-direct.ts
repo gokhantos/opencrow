@@ -1,8 +1,24 @@
-import Anthropic from "@anthropic-ai/sdk";
+/**
+ * Anthropic provider using pi-ai — same library OpenClaw uses.
+ *
+ * Features (matching OpenClaw):
+ * - Streaming via pi-ai's completeSimple (streams internally, returns complete)
+ * - OAuth token auto-refresh via pi-ai's getOAuthApiKey
+ * - Prompt caching via cacheRetention: "short"
+ * - Proper Anthropic beta headers for OAuth
+ */
+import {
+  completeSimple,
+  getOAuthApiKey,
+  type AssistantMessage,
+  type Model,
+  type SimpleStreamOptions,
+  type OAuthCredentials,
+  type UserMessage,
+} from "@mariozechner/pi-ai";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { retryAsync } from "../infra/retry";
 import { createLogger } from "../logger";
 import type { AgentOptions, AgentResponse, ConversationMessage } from "./types";
 
@@ -12,198 +28,168 @@ const log = createLogger("anthropic-direct");
 const INPUT_COST_PER_TOKEN = 3 / 1_000_000;
 const OUTPUT_COST_PER_TOKEN = 15 / 1_000_000;
 
-/** Claude Code identity prefix — required by Anthropic for OAuth API access. */
-const CLAUDE_CODE_IDENTITY =
-  "You are Claude Code, Anthropic's official CLI for Claude.";
-
 const CREDS_PATH = join(homedir(), ".claude", ".credentials.json");
 
-// ─── OAuth Token Management ──────────────────────────────────────────────────
+// OAuth beta headers — same as OpenClaw's PI_AI_OAUTH_ANTHROPIC_BETAS
+const OAUTH_BETA_HEADERS = [
+  "claude-code-20250219",
+  "oauth-2025-04-20",
+  "prompt-caching-2024-07-31",
+  "fine-grained-tool-streaming-2025-05-14",
+  "interleaved-thinking-2025-05-14",
+].join(",");
 
-let _client: Anthropic | undefined;
-let _tokenExpiresAt: number | undefined;
+// ─── OAuth Credential Management ─────────────────────────────────────────────
 
-/**
- * Read the OAuth access token from ~/.claude/.credentials.json.
- * Uses async file read to avoid blocking the event loop.
- * Re-reads on every call if the cached token is expired.
- */
-async function readOAuthToken(): Promise<string> {
+let _cachedCreds: OAuthCredentials | undefined;
+
+async function readOAuthCredentials(): Promise<OAuthCredentials> {
   const raw = await readFile(CREDS_PATH, "utf-8");
-  const creds = JSON.parse(raw) as {
-    claudeAiOauth?: { accessToken?: string; expiresAt?: number };
+  const parsed = JSON.parse(raw) as {
+    claudeAiOauth?: {
+      accessToken?: string;
+      refreshToken?: string;
+      expiresAt?: number;
+    };
   };
-  const oauth = creds.claudeAiOauth;
+  const oauth = parsed.claudeAiOauth;
   if (!oauth?.accessToken) {
     throw new Error(
       "No OAuth token in ~/.claude/.credentials.json. Run 'claude login' first.",
     );
   }
-  _tokenExpiresAt = oauth.expiresAt;
-  return oauth.accessToken;
+  return {
+    access: oauth.accessToken,
+    refresh: oauth.refreshToken ?? "",
+    expires: oauth.expiresAt ?? 0,
+  };
 }
 
-function isTokenExpired(): boolean {
-  if (_tokenExpiresAt === undefined) return false;
-  // Refresh 60s before actual expiry to avoid mid-request failures
-  return Date.now() > _tokenExpiresAt - 60_000;
+/**
+ * Get a valid API key using pi-ai's OAuth token refresh.
+ * If the token is expired, pi-ai will refresh it automatically using
+ * the same endpoint and client ID that OpenClaw uses.
+ */
+async function getApiKey(): Promise<string> {
+  // Re-read credentials if we don't have them or they're about to expire
+  if (!_cachedCreds || Date.now() > _cachedCreds.expires - 60_000) {
+    _cachedCreds = await readOAuthCredentials();
+  }
+
+  try {
+    // pi-ai getOAuthApiKey takes Record<string, OAuthCredentials>
+    const result = await getOAuthApiKey("anthropic", {
+      default: _cachedCreds,
+    });
+
+    if (result) {
+      // Update cached credentials with refreshed ones
+      _cachedCreds = result.newCredentials;
+      return result.apiKey;
+    }
+
+    // Fallback: use access token directly
+    return _cachedCreds.access;
+  } catch (err) {
+    // If refresh fails, re-read credentials (another process may have refreshed)
+    log.warn("OAuth token refresh failed, re-reading credentials", { err });
+    _cachedCreds = await readOAuthCredentials();
+    return _cachedCreds.access;
+  }
 }
 
-async function getClient(): Promise<Anthropic> {
-  // Recreate client if token is expired or about to expire
-  if (_client && !isTokenExpired()) {
-    return _client;
-  }
+// ─── Model Builder ───────────────────────────────────────────────────────────
 
-  if (_client && isTokenExpired()) {
-    log.info("OAuth token expired or expiring soon, refreshing client");
-    _client = undefined;
-  }
-
-  const token = await readOAuthToken();
-  _client = new Anthropic({
-    authToken: token,
-    apiKey: null,
-    defaultHeaders: {
-      accept: "application/json",
-      "anthropic-beta":
-        "claude-code-20250219,oauth-2025-04-20,prompt-caching-2024-07-31,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14",
+function buildModel(modelId: string): Model<"anthropic-messages"> {
+  return {
+    id: modelId,
+    name: modelId,
+    api: "anthropic-messages",
+    provider: "anthropic",
+    baseUrl: "https://api.anthropic.com",
+    reasoning: false,
+    input: ["text", "image"],
+    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+    contextWindow: 200_000,
+    maxTokens: 16384,
+    headers: {
+      "anthropic-beta": OAUTH_BETA_HEADERS,
       "anthropic-dangerous-direct-browser-access": "true",
       "user-agent": "claude-cli/1.0.0 (external, cli)",
       "x-app": "cli",
     },
-  });
-  log.info("Anthropic client initialized with OAuth token", {
-    expiresAt: _tokenExpiresAt
-      ? new Date(_tokenExpiresAt).toISOString()
-      : "unknown",
-  });
-
-  return _client;
-}
-
-// ─── Message Helpers ─────────────────────────────────────────────────────────
-
-function toAnthropicMessages(
-  messages: readonly ConversationMessage[],
-): Array<{ role: "user" | "assistant"; content: string }> {
-  return messages.map((msg) => ({
-    role: msg.role,
-    content: msg.content,
-  }));
-}
-
-function isRetryable(err: unknown): boolean {
-  if (err instanceof Anthropic.APIError) {
-    // Refresh client on 401 (expired token)
-    if (err.status === 401) {
-      _client = undefined;
-      return true;
-    }
-    return err.status === 429 || err.status === 529 || err.status >= 500;
-  }
-  if (err instanceof Error) {
-    const msg = err.message;
-    if (msg.includes("ECONNREFUSED") || msg.includes("ETIMEDOUT")) return true;
-  }
-  return false;
-}
-
-// ─── Streaming API Call ──────────────────────────────────────────────────────
-
-async function callAnthropicStreaming(
-  client: Anthropic,
-  options: AgentOptions,
-  messages: Array<{ role: "user" | "assistant"; content: string }>,
-): Promise<{ text: string; inputTokens: number; outputTokens: number }> {
-  // System prompt blocks with prompt caching enabled
-  const system: Anthropic.Messages.TextBlockParam[] = [
-    {
-      type: "text",
-      text: CLAUDE_CODE_IDENTITY,
-      cache_control: { type: "ephemeral" },
-    } as Anthropic.Messages.TextBlockParam,
-    ...(options.systemPrompt
-      ? [
-          {
-            type: "text" as const,
-            text: options.systemPrompt,
-            cache_control: { type: "ephemeral" as const },
-          } as Anthropic.Messages.TextBlockParam,
-        ]
-      : []),
-  ];
-
-  // Use contextual max_tokens: lower for simple tasks, higher for generation
-  const maxTokens = options.maxOutputTokens ?? 16384;
-
-  const stream = client.messages.stream({
-    model: options.model,
-    max_tokens: maxTokens,
-    system,
-    messages,
-    service_tier: "auto",
-  });
-
-  // Collect streamed text chunks
-  const chunks: string[] = [];
-
-  for await (const event of stream) {
-    if (
-      event.type === "content_block_delta" &&
-      event.delta.type === "text_delta"
-    ) {
-      chunks.push(event.delta.text);
-    }
-  }
-
-  const finalMessage = await stream.finalMessage();
-
-  return {
-    text: chunks.join(""),
-    inputTokens: finalMessage.usage.input_tokens,
-    outputTokens: finalMessage.usage.output_tokens,
   };
 }
 
+// ─── Message Conversion ──────────────────────────────────────────────────────
+
+function toPiMessages(
+  messages: readonly ConversationMessage[],
+): UserMessage[] {
+  // pi-ai expects Message[] but we only send user messages for simple chat
+  return messages.map((msg) => ({
+    role: "user" as const,
+    content: msg.content,
+    timestamp: msg.timestamp,
+  }));
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
+
+function isTextBlock(
+  block: AssistantMessage["content"][number],
+): block is { type: "text"; text: string } {
+  return block.type === "text";
+}
 
 export async function chat(
   messages: readonly ConversationMessage[],
   options: AgentOptions,
 ): Promise<AgentResponse> {
-  log.debug("Sending message to Anthropic direct (streaming)", {
+  log.debug("Sending message to Anthropic via pi-ai", {
     model: options.model,
     messageCount: messages.length,
   });
 
-  const anthropicMessages = toAnthropicMessages(messages);
+  const apiKey = await getApiKey();
+  const model = buildModel(options.model);
+  const piMessages = toPiMessages(messages);
+
+  const streamOptions: SimpleStreamOptions = {
+    apiKey,
+    maxTokens: options.maxOutputTokens ?? 16384,
+    cacheRetention: "short",
+  };
 
   try {
-    const { text, inputTokens, outputTokens } = await retryAsync(
-      async () => {
-        // Re-acquire client on retry (handles token refresh on 401)
-        const c = await getClient();
-        return callAnthropicStreaming(c, options, anthropicMessages);
-      },
+    const response: AssistantMessage = await completeSimple(
+      model,
       {
-        label: "anthropic.chat",
-        shouldRetry: isRetryable,
+        systemPrompt: options.systemPrompt ?? undefined,
+        messages: piMessages,
       },
+      streamOptions,
     );
+
+    const textBlocks = response.content.filter(isTextBlock);
+    const text = textBlocks.map((b) => b.text).join("");
 
     if (!text) {
       throw new Error("Anthropic response contained no text");
     }
 
+    const inputTokens = response.usage?.input ?? 0;
+    const outputTokens = response.usage?.output ?? 0;
+    const cacheReadTokens = response.usage?.cacheRead ?? 0;
     const costUsd =
       inputTokens * INPUT_COST_PER_TOKEN +
       outputTokens * OUTPUT_COST_PER_TOKEN;
 
-    log.info("Anthropic direct response received", {
+    log.info("Anthropic pi-ai response received", {
       model: options.model,
       inputTokens,
       outputTokens,
+      cacheReadTokens,
       costUsd: costUsd.toFixed(4),
     });
 
@@ -217,7 +203,7 @@ export async function chat(
       },
     };
   } catch (error) {
-    log.error("Anthropic direct API error", { error });
+    log.error("Anthropic pi-ai API error", { error });
     throw new Error(
       `Anthropic API error: ${error instanceof Error ? error.message : String(error)}`,
     );

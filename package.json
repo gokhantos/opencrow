@@ -71,6 +71,7 @@
     "@clack/prompts": "^1.1.0",
     "@grammyjs/runner": "^2.0.3",
     "@hookform/resolvers": "^5.2.2",
+    "@mariozechner/pi-ai": "0.54.0",
     "@playwright/mcp": "^0.0.68",
     "@questdb/nodejs-client": "^4.0.3",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
