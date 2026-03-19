@@ -215,7 +215,7 @@ Return JSON only, no markdown:
   const response = await chat(messages, {
     systemPrompt,
     model,
-    provider: provider ?? "agent-sdk",
+    provider: provider ?? "anthropic",
     abortSignal: signal,
     rawSystemPrompt: true,
   })

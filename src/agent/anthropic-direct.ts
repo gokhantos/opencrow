@@ -1,4 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { retryAsync } from "../infra/retry";
 import { createLogger } from "../logger";
 import type { AgentOptions, AgentResponse, ConversationMessage } from "./types";
@@ -11,9 +14,45 @@ const OUTPUT_COST_PER_TOKEN = 15 / 1_000_000;
 
 let _client: Anthropic | undefined;
 
+/**
+ * Read the OAuth access token from ~/.claude/.credentials.json.
+ * Falls back to ANTHROPIC_API_KEY env var if credentials file is unavailable.
+ */
+function resolveApiKey(): string {
+  // Env var takes priority
+  if (process.env.ANTHROPIC_API_KEY) {
+    return process.env.ANTHROPIC_API_KEY;
+  }
+
+  // Read OAuth token from Claude CLI credentials
+  try {
+    const credsPath = join(homedir(), ".claude", ".credentials.json");
+    const raw = readFileSync(credsPath, "utf-8");
+    const creds = JSON.parse(raw) as {
+      claudeAiOauth?: { accessToken?: string; expiresAt?: number };
+    };
+    const oauth = creds.claudeAiOauth;
+    if (oauth?.accessToken) {
+      // Check if expired
+      if (oauth.expiresAt && oauth.expiresAt < Date.now()) {
+        log.warn("OAuth token expired, SDK may fail", {
+          expiresAt: new Date(oauth.expiresAt).toISOString(),
+        });
+      }
+      return oauth.accessToken;
+    }
+  } catch (err) {
+    log.debug("Could not read Claude credentials file", { error: err });
+  }
+
+  throw new Error(
+    "No Anthropic API key found. Set ANTHROPIC_API_KEY or authenticate via 'claude login'.",
+  );
+}
+
 function getClient(): Anthropic {
   if (!_client) {
-    _client = new Anthropic();
+    _client = new Anthropic({ apiKey: resolveApiKey() });
   }
   return _client;
 }

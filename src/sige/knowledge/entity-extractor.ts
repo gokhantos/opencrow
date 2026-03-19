@@ -359,7 +359,7 @@ export async function extractEntities(
     const response = await chat(messages, {
       systemPrompt: SYSTEM_PROMPT,
       model: options.model,
-      provider: options.provider ?? "agent-sdk",
+      provider: options.provider ?? "anthropic",
       rawSystemPrompt: true,
     });
     responseText = response.text;

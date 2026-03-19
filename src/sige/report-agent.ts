@@ -190,7 +190,7 @@ Write the executive summary.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "agent-sdk", rawSystemPrompt: true })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "executive_summary")
 }
 
@@ -241,7 +241,7 @@ Write the top ideas analysis.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "agent-sdk", rawSystemPrompt: true })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "top_ideas")
 }
 
@@ -305,7 +305,7 @@ Produce the analysis JSON.`
         { role: "user", content: userMessage, timestamp: Date.now() },
       ]
 
-      const response = await chat(messages, { systemPrompt, model, provider: provider ?? "agent-sdk", rawSystemPrompt: true })
+      const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
       const parsed = parseIdeaAnalysisJson(response.text, idea, allActions)
       return parsed
     }),
@@ -370,7 +370,7 @@ Describe the unexplored opportunities.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "agent-sdk", rawSystemPrompt: true })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "opportunity_map")
 }
 
@@ -424,7 +424,7 @@ Write the risk assessment with mitigation strategies.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "agent-sdk", rawSystemPrompt: true })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "risk_assessment")
 }
 
@@ -477,7 +477,7 @@ Produce the meta-game health JSON.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "agent-sdk", rawSystemPrompt: true })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseMetaGameHealthJson(response.text)
 }
 
@@ -532,7 +532,7 @@ Write the recommended next session plan.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "agent-sdk", rawSystemPrompt: true })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "recommended_next_session")
 }
 
