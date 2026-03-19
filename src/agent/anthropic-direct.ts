@@ -52,11 +52,19 @@ function resolveAuth(): { apiKey: string } | { authToken: string } {
 function getClient(): Anthropic {
   if (!_client) {
     const auth = resolveAuth();
-    _client = new Anthropic(
-      "apiKey" in auth
-        ? { apiKey: auth.apiKey }
-        : { authToken: auth.authToken, apiKey: null },
-    );
+    if ("apiKey" in auth) {
+      _client = new Anthropic({ apiKey: auth.apiKey });
+    } else {
+      // OAuth requires beta headers: oauth-2025-04-20, claude-code-20250219
+      _client = new Anthropic({
+        authToken: auth.authToken,
+        apiKey: null,
+        defaultHeaders: {
+          "anthropic-beta": "oauth-2025-04-20,claude-code-20250219",
+        },
+      });
+      log.info("Anthropic client initialized with OAuth token");
+    }
   }
   return _client;
 }
