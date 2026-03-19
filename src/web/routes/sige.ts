@@ -71,8 +71,8 @@ const DEFAULT_CONFIG: SigeSessionConfig = {
     socialViability: 0.3,
   },
   provider: "anthropic",
-  model: "claude-haiku-4-5-20251001",
-  agentModel: "claude-haiku-4-5-20251001",
+  model: "claude-sonnet-4-6",
+  agentModel: "claude-sonnet-4-6",
 };
 
 function mergeConfig(

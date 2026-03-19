@@ -12,59 +12,54 @@ const log = createLogger("anthropic-direct");
 const INPUT_COST_PER_TOKEN = 3 / 1_000_000;
 const OUTPUT_COST_PER_TOKEN = 15 / 1_000_000;
 
+/** Claude Code identity prefix — required by Anthropic for OAuth API access. */
+const CLAUDE_CODE_IDENTITY =
+  "You are Claude Code, Anthropic's official CLI for Claude.";
+
 let _client: Anthropic | undefined;
 
 /**
- * Resolve auth credentials. Prefers ANTHROPIC_API_KEY (x-api-key header),
- * falls back to OAuth token from ~/.claude/.credentials.json (Bearer header).
+ * Read the OAuth access token from ~/.claude/.credentials.json.
+ * This uses the Claude subscription (Pro/Max) — no API credits needed.
  */
-function resolveAuth(): { apiKey: string } | { authToken: string } {
-  if (process.env.ANTHROPIC_API_KEY) {
-    return { apiKey: process.env.ANTHROPIC_API_KEY };
+function readOAuthToken(): string {
+  const credsPath = join(homedir(), ".claude", ".credentials.json");
+  const raw = readFileSync(credsPath, "utf-8");
+  const creds = JSON.parse(raw) as {
+    claudeAiOauth?: { accessToken?: string; expiresAt?: number };
+  };
+  const oauth = creds.claudeAiOauth;
+  if (!oauth?.accessToken) {
+    throw new Error(
+      "No OAuth token in ~/.claude/.credentials.json. Run 'claude login' first.",
+    );
   }
-
-  // Read OAuth token from Claude CLI credentials (uses Bearer auth)
-  try {
-    const credsPath = join(homedir(), ".claude", ".credentials.json");
-    const raw = readFileSync(credsPath, "utf-8");
-    const creds = JSON.parse(raw) as {
-      claudeAiOauth?: { accessToken?: string; expiresAt?: number };
-    };
-    const oauth = creds.claudeAiOauth;
-    if (oauth?.accessToken) {
-      if (oauth.expiresAt && oauth.expiresAt < Date.now()) {
-        log.warn("OAuth token expired", {
-          expiresAt: new Date(oauth.expiresAt).toISOString(),
-        });
-      }
-      log.info("Using OAuth token from Claude credentials");
-      return { authToken: oauth.accessToken };
-    }
-  } catch (err) {
-    log.debug("Could not read Claude credentials file", { error: err });
+  if (oauth.expiresAt && oauth.expiresAt < Date.now()) {
+    log.warn("OAuth token expired", {
+      expiresAt: new Date(oauth.expiresAt).toISOString(),
+    });
   }
-
-  throw new Error(
-    "No Anthropic API key found. Set ANTHROPIC_API_KEY or authenticate via 'claude login'.",
-  );
+  return oauth.accessToken;
 }
 
 function getClient(): Anthropic {
   if (!_client) {
-    const auth = resolveAuth();
-    if ("apiKey" in auth) {
-      _client = new Anthropic({ apiKey: auth.apiKey });
-    } else {
-      // OAuth requires beta headers: oauth-2025-04-20, claude-code-20250219
-      _client = new Anthropic({
-        authToken: auth.authToken,
-        apiKey: null,
-        defaultHeaders: {
-          "anthropic-beta": "oauth-2025-04-20,claude-code-20250219",
-        },
-      });
-      log.info("Anthropic client initialized with OAuth token");
-    }
+    const token = readOAuthToken();
+    // OAuth requires: Bearer auth, beta headers, and Claude Code identity headers.
+    // Reverse-engineered from pi-ai's Anthropic provider (used by OpenClaw).
+    _client = new Anthropic({
+      authToken: token,
+      apiKey: null,
+      defaultHeaders: {
+        accept: "application/json",
+        "anthropic-beta":
+          "claude-code-20250219,oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "user-agent": "claude-cli/1.0.0 (external, cli)",
+        "x-app": "cli",
+      },
+    });
+    log.info("Anthropic client initialized with OAuth token");
   }
   return _client;
 }
@@ -94,10 +89,18 @@ async function callAnthropic(
   options: AgentOptions,
   messages: Array<{ role: "user" | "assistant"; content: string }>,
 ): Promise<Anthropic.Message> {
+  // OAuth requires Claude Code identity as the first system prompt block
+  const system: Anthropic.Messages.TextBlockParam[] = [
+    { type: "text", text: CLAUDE_CODE_IDENTITY },
+    ...(options.systemPrompt
+      ? [{ type: "text" as const, text: options.systemPrompt }]
+      : []),
+  ];
+
   return client.messages.create({
     model: options.model,
     max_tokens: options.maxOutputTokens ?? 16384,
-    system: options.systemPrompt,
+    system,
     messages,
   });
 }
