@@ -279,26 +279,28 @@ export async function runIdeasPipeline(
       ),
     ]);
 
-    // ── Step 4: Deep search (optional) ────────────────────────────────
-    let deepSearchContext = "";
-    if (memoryManager && trends.trendingCategories.length > 0) {
-      const searchThemes = trends.trendingCategories
-        .slice(0, 6)
-        .map((c) => `${c.category} mobile app opportunity`);
+    // ── Step 4+5: Deep search + saturated themes in parallel ──────────
+    const deepSearchPromise =
+      memoryManager && trends.trendingCategories.length > 0
+        ? runStep(
+            runId,
+            "deep_search",
+            () =>
+              deepSearch(
+                trends.trendingCategories.slice(0, 6).map((c) => `${c.category} mobile app opportunity`),
+                memoryManager,
+              ),
+            (ctx) => {
+              const count = (ctx.match(/\[.*?\]/g) ?? []).length;
+              return `Found ${count} supporting results for ${trends.trendingCategories.length} themes`;
+            },
+          )
+        : Promise.resolve("");
 
-      deepSearchContext = await runStep(
-        runId,
-        "deep_search",
-        () => deepSearch(searchThemes, memoryManager),
-        (ctx) => {
-          const count = (ctx.match(/\[.*?\]/g) ?? []).length;
-          return `Found ${count} supporting results for ${searchThemes.length} themes`;
-        },
-      );
-    }
-
-    // ── Step 5: Synthesize ideas at trend intersections ───────────────
-    const saturatedThemes = await buildSaturatedThemes(memoryManager);
+    const [deepSearchContext, saturatedThemes] = await Promise.all([
+      deepSearchPromise,
+      buildSaturatedThemes(memoryManager),
+    ]);
 
     const synthesis = await runStep(
       runId,

@@ -683,8 +683,8 @@ export async function synthesizeFromTrends(input: {
   try {
     rawCandidates = await developIdeas(topIntersections, category, saturatedThemes, deepSearchContext, model);
   } catch (err) {
-    log.error("Pass 2 failed, returning empty result", { err });
-    return { candidates: [], totalGenerated: 0 };
+    log.error("Pass 2 failed, falling back to single-pass synthesis", { err });
+    return singlePassSynthesis(input);
   }
 
   if (rawCandidates.length === 0) {
