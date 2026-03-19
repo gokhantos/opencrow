@@ -747,7 +747,7 @@ function extractJson(text: string): unknown {
     // fall through
   }
 
-  // Try extracting from a ```json ... ``` code block
+  // Try extracting from a ```json ... ``` code block (closed)
   const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fencedMatch?.[1]) {
     try {
@@ -757,19 +757,89 @@ function extractJson(text: string): unknown {
     }
   }
 
+  // Try extracting from an UNCLOSED ```json block (truncated response)
+  const unclosedFenced = trimmed.match(/```(?:json)?\s*([\s\S]+)/);
+  if (unclosedFenced?.[1]) {
+    const candidate = unclosedFenced[1].trim();
+    const repaired = repairTruncatedJson(candidate);
+    if (repaired) return repaired;
+  }
+
   // Try finding a bare {...} object
   const objectMatch = trimmed.match(/\{[\s\S]*\}/);
   if (objectMatch) {
     try {
       return JSON.parse(objectMatch[0]);
     } catch {
-      // fall through
+      // Try repairing truncated bare object
+      const repaired = repairTruncatedJson(objectMatch[0]);
+      if (repaired) return repaired;
     }
+  }
+
+  // Last resort: find the first { and try to repair from there
+  const firstBrace = trimmed.indexOf("{");
+  if (firstBrace >= 0) {
+    const repaired = repairTruncatedJson(trimmed.slice(firstBrace));
+    if (repaired) return repaired;
   }
 
   throw new Error(
     `Unable to extract JSON from agent output. Preview: ${trimmed.slice(0, 300)}`,
   );
+}
+
+/**
+ * Attempt to repair truncated JSON by closing open brackets/braces and
+ * trimming the last incomplete value.
+ */
+function repairTruncatedJson(text: string): unknown | undefined {
+  // Remove trailing incomplete string values (cut off mid-word)
+  let cleaned = text.replace(/,\s*"[^"]*":\s*"[^"]*$/, "");
+  // Remove trailing incomplete key-value pairs
+  cleaned = cleaned.replace(/,\s*"[^"]*":\s*[^,}\]]*$/, "");
+  // Remove trailing comma
+  cleaned = cleaned.replace(/,\s*$/, "");
+
+  // Count open/close brackets and braces
+  let openBraces = 0;
+  let openBrackets = 0;
+  let inString = false;
+  let escape = false;
+
+  for (const ch of cleaned) {
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escape = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (ch === "{") openBraces++;
+    else if (ch === "}") openBraces--;
+    else if (ch === "[") openBrackets++;
+    else if (ch === "]") openBrackets--;
+  }
+
+  // Close any unclosed strings
+  if (inString) cleaned += '"';
+
+  // Append missing closing brackets/braces
+  for (let i = 0; i < openBrackets; i++) cleaned += "]";
+  for (let i = 0; i < openBraces; i++) cleaned += "}";
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return undefined;
+  }
 }
 
 // ─── Round-Specific Parsers ───────────────────────────────────────────────────
