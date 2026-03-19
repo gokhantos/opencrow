@@ -316,20 +316,20 @@ export function getDefaultKnowledgeFilter(role: StrategicAgentRole): KnowledgeFi
         attenuatedEntities: [],
       };
 
-    case "boundedly_rational":
+    case "founder":
       return {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: [],
-        attenuatedEntities: [],
+        amplifiedEntities: ["user", "growth", "distribution", "market", "traction", "acquisition"],
+        attenuatedEntities: ["equilibrium", "payoff", "theoretical"],
       };
 
-    case "cooperative":
+    case "user_researcher":
       return {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: ["alliance", "partnership", "collaboration", "coalition", "agreement"],
-        attenuatedEntities: ["competition", "threat", "conflict", "rivalry", "dispute"],
+        amplifiedEntities: ["user", "pain", "review", "complaint", "behavior", "need", "workaround"],
+        attenuatedEntities: ["strategy", "equilibrium", "game"],
       };
 
     case "adversarial":
@@ -348,12 +348,12 @@ export function getDefaultKnowledgeFilter(role: StrategicAgentRole): KnowledgeFi
         attenuatedEntities: ["cooperation", "partnership", "alliance", "agreement"],
       };
 
-    case "evolutionary":
+    case "contrarian_investor":
       return {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: ["trend", "adoption", "market_share", "growth", "evolution", "fitness"],
-        attenuatedEntities: [],
+        amplifiedEntities: ["market", "timing", "trend", "shift", "regulation", "technology", "demographics"],
+        attenuatedEntities: ["equilibrium", "payoff"],
       };
 
     case "mechanism_designer":
@@ -380,50 +380,28 @@ export function getDefaultKnowledgeFilter(role: StrategicAgentRole): KnowledgeFi
         attenuatedEntities: ["established", "dominant", "incumbent", "legacy", "traditional"],
       };
 
-    case "contrarian":
+    case "technical_architect":
       return {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: [
-          "assumption",
-          "conventional",
-          "mainstream",
-          "consensus",
-          "dominant",
-          "orthodox",
-        ],
-        attenuatedEntities: [],
+        amplifiedEntities: ["technology", "api", "ai", "infrastructure", "github", "open source", "technical"],
+        attenuatedEntities: ["social", "sentiment", "coalition"],
       };
 
-    case "signaler":
+    case "designer":
       return {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: [
-          "communication",
-          "signal",
-          "announcement",
-          "reputation",
-          "credibility",
-          "perception",
-        ],
-        attenuatedEntities: [],
+        amplifiedEntities: ["user", "experience", "design", "app", "interface", "behavior", "friction"],
+        attenuatedEntities: ["equilibrium", "payoff", "coalition", "game"],
       };
 
-    case "abductive_reasoner":
+    case "domain_expert":
       return {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: [
-          "anomaly",
-          "unexplained",
-          "surprising",
-          "contradiction",
-          "paradox",
-          "outlier",
-          "exception",
-        ],
-        attenuatedEntities: [],
+        amplifiedEntities: ["industry", "regulation", "healthcare", "fintech", "education", "enterprise", "compliance"],
+        attenuatedEntities: ["evolutionary", "game", "nash"],
       };
   }
 }

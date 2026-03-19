@@ -12,16 +12,16 @@ export type GameType =
   | "mechanism_design";
 
 export type StrategicAgentRole =
-  | "rational_player"
-  | "boundedly_rational"
-  | "cooperative"
-  | "adversarial"
-  | "evolutionary"
-  | "mechanism_designer"
-  | "explorer"
-  | "contrarian"
-  | "signaler"
-  | "abductive_reasoner";
+  | "rational_player"       // equilibrium analysis
+  | "mechanism_designer"    // system design
+  | "explorer"              // divergent thinking
+  | "adversarial"           // stress testing
+  | "founder"               // distribution + MVP
+  | "user_researcher"       // pain-point grounding
+  | "contrarian_investor"   // market sizing + "why now?"
+  | "technical_architect"   // feasibility + moat
+  | "designer"              // UX + behavioral insight
+  | "domain_expert";        // vertical knowledge
 
 export type SigeSessionStatus =
   | "pending"

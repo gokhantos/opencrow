@@ -16,6 +16,7 @@ import type { Mem0Client } from "../knowledge/mem0-client"
 import type { GameFormulation } from "../types"
 import { runWithConcurrency } from "./concurrency"
 import { saveAgentAction, saveSimulationResult } from "../store"
+import { runTasteFilter } from "../taste-filter"
 import type {
   AgentAction,
   Coalition,
@@ -66,8 +67,10 @@ export async function runExpertGame(params: {
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
+  readonly signalsContext?: string
+  readonly enrichedSeed?: string
 }): Promise<ExpertGameResult> {
-  const { sessionId, gameFormulation, mem0, userId, config, signal } = params
+  const { sessionId, gameFormulation, mem0, userId, config, signal, signalsContext, enrichedSeed } = params
 
   log.info("Expert game starting", { sessionId })
 
@@ -80,6 +83,7 @@ export async function runExpertGame(params: {
     userId,
     config,
     signal,
+    signalsContext,
   })
 
   await persistRound(sessionId, round1)
@@ -98,6 +102,7 @@ export async function runExpertGame(params: {
     userId,
     config,
     signal,
+    signalsContext,
   })
 
   await persistRound(sessionId, round2)
@@ -109,14 +114,44 @@ export async function runExpertGame(params: {
 
   checkAborted(signal)
 
+  // ── Taste Filter: quality gate between Round 2 and Round 3 ──
+  let filteredRound2 = round2
+  if (!enrichedSeed) {
+    log.warn("Taste filter skipped — no enrichedSeed provided; Round 3 will use unfiltered Round 2 ideas", { sessionId })
+  } else {
+    const tasteResult = await runTasteFilter({
+      ideas: round2.outcomes.selectedIdeas,
+      enrichedSeed,
+      model: config.model,
+      provider: config.provider ?? "alibaba",
+      minPassCount: 5,
+    })
+    log.info("Taste filter applied", {
+      sessionId,
+      passed: tasteResult.filterStats.totalPassed,
+      eliminated: tasteResult.filterStats.totalEliminated,
+      avgSpecificity: tasteResult.filterStats.avgSpecificityScore,
+      avgSignalGrounding: tasteResult.filterStats.avgSignalGroundingScore,
+    })
+    filteredRound2 = {
+      ...round2,
+      outcomes: {
+        ...round2.outcomes,
+        selectedIdeas: tasteResult.passed,
+        eliminatedIdeas: tasteResult.eliminated.map((e) => e.idea.title),
+      },
+    }
+  }
+
   const round3 = await runEvolutionaryTournament({
     sessionId,
     gameFormulation,
-    round2Results: round2,
+    round2Results: filteredRound2,
     mem0,
     userId,
     config,
     signal,
+    signalsContext,
   })
 
   await persistRound(sessionId, round3)
@@ -138,6 +173,7 @@ export async function runExpertGame(params: {
     userId,
     config,
     signal,
+    signalsContext,
   })
 
   await persistRound(sessionId, round4)
@@ -172,8 +208,9 @@ async function runDivergentGeneration(params: {
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
+  readonly signalsContext?: string
 }): Promise<SimulationRound> {
-  const { sessionId, gameFormulation, mem0, userId, config, signal } = params
+  const { sessionId, gameFormulation, mem0, userId, config, signal, signalsContext } = params
   const definitions = getAllDefinitions()
 
   log.info("Round 1: divergent generation", {
@@ -192,6 +229,7 @@ async function runDivergentGeneration(params: {
       userId,
       config,
       roundContext: undefined,
+      signalsContext,
     })
   })
 
@@ -228,8 +266,9 @@ async function runStrategicInteraction(params: {
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
+  readonly signalsContext?: string
 }): Promise<SimulationRound> {
-  const { sessionId, gameFormulation, round1Results, mem0, userId, config, signal } = params
+  const { sessionId, gameFormulation, round1Results, mem0, userId, config, signal, signalsContext } = params
   const definitions = getAllDefinitions()
 
   const roundContext = formatIdeasForPrompt(round1Results.outcomes.selectedIdeas)
@@ -250,6 +289,7 @@ async function runStrategicInteraction(params: {
       userId,
       config,
       roundContext,
+      signalsContext,
     })
   })
 
@@ -289,8 +329,9 @@ async function runEvolutionaryTournament(params: {
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
+  readonly signalsContext?: string
 }): Promise<SimulationRound> {
-  const { sessionId, gameFormulation, round2Results, mem0, userId, config, signal } = params
+  const { sessionId, gameFormulation, round2Results, mem0, userId, config, signal, signalsContext } = params
 
   const topIdeas = round2Results.outcomes.selectedIdeas.slice(0, 15)
   log.info("Round 3: evolutionary tournament", {
@@ -312,6 +353,7 @@ async function runEvolutionaryTournament(params: {
       userId,
       config,
       signal,
+      signalsContext,
     })
     allActions.push(...actions)
     population = evolved.length > 0 ? evolved : survivors
@@ -341,8 +383,9 @@ async function runEquilibriumAnalysis(params: {
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
+  readonly signalsContext?: string
 }): Promise<SimulationRound> {
-  const { sessionId, gameFormulation, round3Results, mem0, userId, config, signal } = params
+  const { sessionId, gameFormulation, round3Results, mem0, userId, config, signal, signalsContext } = params
 
   const analyzerRoles: readonly StrategicAgentRole[] = [
     "rational_player",
@@ -369,6 +412,7 @@ async function runEquilibriumAnalysis(params: {
       userId,
       config,
       roundContext,
+      signalsContext,
     })
   })
 
@@ -404,8 +448,9 @@ async function runSingleAgent(params: {
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly roundContext: string | undefined
+  readonly signalsContext?: string
 }): Promise<AgentAction> {
-  const { def, round, sessionId, gameFormulation, mem0, userId, config, roundContext } = params
+  const { def, round, sessionId, gameFormulation, mem0, userId, config, roundContext, signalsContext } = params
 
   const filter = def.defaultKnowledgeFilter
   const agentGraphView = await getFilteredGraphView(mem0, userId, def.role, filter)
@@ -417,6 +462,7 @@ async function runSingleAgent(params: {
     graphContext,
     round,
     roundContext,
+    signalsContext,
   )
 
   const messages: readonly ConversationMessage[] = [
@@ -449,12 +495,13 @@ async function runEvolutionaryGeneration(params: {
   readonly userId: string
   readonly config: SigeSessionConfig
   readonly signal?: AbortSignal
+  readonly signalsContext?: string
 }): Promise<{
   readonly survivors: readonly ScoredIdea[]
   readonly actions: readonly AgentAction[]
   readonly evolved: readonly ScoredIdea[]
 }> {
-  const { gen, population, sessionId, gameFormulation, mem0, userId, config, signal } = params
+  const { gen, population, sessionId, gameFormulation, mem0, userId, config, signal, signalsContext } = params
 
   const allDefs = getAllDefinitions()
   const roundContext = formatIdeasForPrompt(population)
@@ -471,6 +518,7 @@ async function runEvolutionaryGeneration(params: {
       userId,
       config,
       roundContext,
+      signalsContext,
     })
   })
 
@@ -490,8 +538,8 @@ async function runEvolutionaryGeneration(params: {
     .slice(0, Math.max(1, Math.ceil(population.length / 2)))
     .map((s) => ({ ...s.idea, expertScore: s.fitness }))
 
-  // Mutation: Explorer + Contrarian propose variations
-  const mutatorRoles: readonly StrategicAgentRole[] = ["explorer", "contrarian"]
+  // Mutation: Explorer + Founder propose variations
+  const mutatorRoles: readonly StrategicAgentRole[] = ["explorer", "founder"]
   const mutatorDefs = allDefs.filter((d) => mutatorRoles.includes(d.role))
   const mutatorContext = formatIdeasForPrompt(survivors)
 
@@ -506,14 +554,15 @@ async function runEvolutionaryGeneration(params: {
       userId,
       config,
       roundContext: `## Generation ${gen} — Propose mutations of the surviving ideas:\n\n${mutatorContext}`,
+      signalsContext,
     })
   })
 
   const mutateResults = await runAgentTasks(mutateTasks, config.maxConcurrentAgents)
   const mutateActions = filterActions(mutateResults, sessionId, 3)
 
-  // Crossover: Cooperative + Abductive Reasoner combine pairs
-  const crossoverRoles: readonly StrategicAgentRole[] = ["cooperative", "abductive_reasoner"]
+  // Crossover: Designer + Domain Expert combine pairs
+  const crossoverRoles: readonly StrategicAgentRole[] = ["designer", "domain_expert"]
   const crossoverDefs = allDefs.filter((d) => crossoverRoles.includes(d.role))
 
   const crossoverTasks = crossoverDefs.map((def) => async () => {
@@ -527,6 +576,7 @@ async function runEvolutionaryGeneration(params: {
       userId,
       config,
       roundContext: `## Generation ${gen} — Combine pairs of ideas into hybrids:\n\n${mutatorContext}`,
+      signalsContext,
     })
   })
 

@@ -72,76 +72,69 @@ export const STRATEGIC_AGENT_DEFINITIONS: ReadonlyMap<
   ],
 
   [
-    "boundedly_rational",
+    "founder",
     {
-      role: "boundedly_rational",
-      name: "Practical Strategist",
+      role: "founder",
+      name: "Serial Founder",
       description:
-        "Satisfices with level-k reasoning to produce implementable solutions at realistic reasoning depths.",
+        "Focuses on distribution channels, MVP scope, first 100 users, and go-to-market wedge. Thinks about what you build first, not what you build eventually.",
       defaultPersona: {
-        name: "Practical Strategist",
+        name: "Serial Founder",
         background:
-          "A behavioral economist who understands that real decision-makers have limited computation, use heuristics, and reason only a few steps ahead of opponents.",
-        sentimentBias: 0,
-        influenceWeight: 0.9,
-        interestedTopics: ["heuristic", "satisficing", "level-k", "cognitive limit", "practical"],
+          "A 3x founder who has built and sold companies. Obsessed with finding the smallest possible wedge into a market and the distribution hack that makes the first 1000 users inevitable. Has seen hundreds of 'great ideas' die because they couldn't find users.",
+        sentimentBias: 0.2,
+        influenceWeight: 1.0,
+        interestedTopics: ["distribution", "mvp", "go-to-market", "users", "growth", "wedge", "traction"],
         cognitiveStyle:
-          "Pragmatic and realistic. Prefers good-enough solutions over theoretically perfect but impractical ones.",
+          "Ruthlessly practical. Asks 'who are the first 100 users and how do you reach them?' before anything else. Kills ideas that can't answer this.",
       },
-      strategicType: "Level-k reasoner",
+      strategicType: "Distribution-first thinker",
       reasoningPattern:
-        "Find good-enough strategies considering real-world constraints and bounded cognitive depth.",
+        "Start from the user and work backward to the product, not the other way around.",
       defaultEpistemicModel: {
         rationalityModel: "level_k",
-        beliefDistribution: {},
-        levelOfReasoning: 2,
-      },
-      defaultKnowledgeFilter: {
-        includedTopics: [],
-        excludedTopics: [],
-        amplifiedEntities: ["constraint", "heuristic", "practical", "feasible", "simple"],
-        attenuatedEntities: ["theoretical", "optimal", "idealized"],
-      },
-    },
-  ],
-
-  [
-    "cooperative",
-    {
-      role: "cooperative",
-      name: "Coalition Builder",
-      description:
-        "Identifies mutual benefit through coalition formation and fair allocation via Shapley value analysis.",
-      defaultPersona: {
-        name: "Coalition Builder",
-        background:
-          "A cooperative game theorist specializing in coalition formation, Shapley value computation, and the design of agreements that make all parties better off.",
-        sentimentBias: 0.4,
-        influenceWeight: 0.9,
-        interestedTopics: [
-          "coalition",
-          "cooperation",
-          "shapley value",
-          "mutual benefit",
-          "agreement",
-          "alliance",
-        ],
-        cognitiveStyle:
-          "Collaborative and integrative. Always looks for win-win structures and fair distribution of gains.",
-      },
-      strategicType: "Coalition and Shapley value analyst",
-      reasoningPattern:
-        "Form coalitions that create value, distribute gains fairly via Shapley values, and stabilize agreements.",
-      defaultEpistemicModel: {
-        rationalityModel: "cooperative_rationality",
         beliefDistribution: {},
         levelOfReasoning: 3,
       },
       defaultKnowledgeFilter: {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: ["alliance", "partnership", "collaboration", "coalition", "agreement"],
-        attenuatedEntities: ["competition", "threat", "conflict", "rivalry", "dispute"],
+        amplifiedEntities: ["user", "growth", "distribution", "market", "traction", "acquisition"],
+        attenuatedEntities: ["equilibrium", "payoff", "theoretical"],
+      },
+    },
+  ],
+
+  [
+    "user_researcher",
+    {
+      role: "user_researcher",
+      name: "User Research Lead",
+      description:
+        "Grounds every idea in observed user behavior and validated pain points. Rejects ideas based on assumed rather than evidenced needs.",
+      defaultPersona: {
+        name: "User Research Lead",
+        background:
+          "A senior UX researcher with 15 years studying how people actually behave vs. how they say they behave. Expert at identifying the gap between what users say they want and what they actually need. Has killed dozens of 'brilliant' product ideas by showing the underlying assumption was wrong.",
+        sentimentBias: -0.1,
+        influenceWeight: 0.95,
+        interestedTopics: ["pain point", "user behavior", "need", "frustration", "workaround", "complaint", "review"],
+        cognitiveStyle:
+          "Evidence-driven and skeptical. Every claim about users must be backed by observed behavior, not assumptions. Looks for workarounds people already use as signals of real demand.",
+      },
+      strategicType: "Evidence-based need validator",
+      reasoningPattern:
+        "Find the workaround people already use, then build something 10x better than that workaround.",
+      defaultEpistemicModel: {
+        rationalityModel: "bounded_rationality",
+        beliefDistribution: {},
+        levelOfReasoning: 2,
+      },
+      defaultKnowledgeFilter: {
+        includedTopics: [],
+        excludedTopics: [],
+        amplifiedEntities: ["user", "pain", "review", "complaint", "behavior", "need", "workaround"],
+        attenuatedEntities: ["strategy", "equilibrium", "game"],
       },
     },
   ],
@@ -196,42 +189,35 @@ export const STRATEGIC_AGENT_DEFINITIONS: ReadonlyMap<
   ],
 
   [
-    "evolutionary",
+    "contrarian_investor",
     {
-      role: "evolutionary",
-      name: "Market Dynamics Analyst",
+      role: "contrarian_investor",
+      name: "Contrarian VC Partner",
       description:
-        "Uses replicator dynamics to discover strategies that survive competitive pressure at population scale.",
+        "Evaluates ideas through market sizing, timing ('why now?'), defensibility, and what the crowd is missing. Looks for ideas that seem wrong but are right.",
       defaultPersona: {
-        name: "Market Dynamics Analyst",
+        name: "Contrarian VC Partner",
         background:
-          "An evolutionary game theorist and market analyst who models how strategies spread, compete, and stabilize across populations of agents over time.",
-        sentimentBias: 0,
-        influenceWeight: 0.85,
-        interestedTopics: [
-          "replicator dynamics",
-          "fitness",
-          "population",
-          "evolution",
-          "adoption",
-          "market share",
-        ],
+          "A venture partner who has evaluated 10,000+ pitches. Knows that the best investments look like bad ideas to most people. Obsessed with timing — why is NOW the right time for this? Looks for structural changes (regulation, technology shifts, demographic changes) that create new opportunities.",
+        sentimentBias: -0.2,
+        influenceWeight: 1.0,
+        interestedTopics: ["market size", "timing", "defensibility", "moat", "contrarian", "why now", "structural change"],
         cognitiveStyle:
-          "Dynamic and population-level. Thinks in terms of fitness landscapes and long-run selection pressure.",
+          "Contrarian by nature. If everyone thinks an idea is good, it's probably too late. Looks for ideas where the consensus is wrong and asks 'what has changed recently that makes this possible now?'",
       },
-      strategicType: "Replicator dynamics analyst",
+      strategicType: "Timing and market structure analyst",
       reasoningPattern:
-        "Identify which strategies proliferate in a competitive population over time via replicator dynamics.",
+        "Identify structural changes that create new opportunities, then find ideas that exploit those changes before the consensus catches up.",
       defaultEpistemicModel: {
-        rationalityModel: "evolutionary_stability",
+        rationalityModel: "full_rationality",
         beliefDistribution: {},
-        levelOfReasoning: 4,
+        levelOfReasoning: 5,
       },
       defaultKnowledgeFilter: {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: ["trend", "adoption", "market share", "growth", "evolution", "fitness"],
-        attenuatedEntities: [],
+        amplifiedEntities: ["market", "timing", "trend", "shift", "regulation", "technology", "demographics"],
+        attenuatedEntities: ["equilibrium", "payoff"],
       },
     },
   ],
@@ -329,148 +315,103 @@ export const STRATEGIC_AGENT_DEFINITIONS: ReadonlyMap<
   ],
 
   [
-    "contrarian",
+    "technical_architect",
     {
-      role: "contrarian",
-      name: "Assumption Challenger",
+      role: "technical_architect",
+      name: "Technical Architect",
       description:
-        "Inverts dominant assumptions and challenges premises that others take for granted.",
+        "Evaluates technical feasibility, identifies what technology enables now that wasn't possible before, and spots technical moats.",
       defaultPersona: {
-        name: "Assumption Challenger",
+        name: "Technical Architect",
         background:
-          "A critical epistemologist and devil's advocate trained to identify hidden assumptions, invert conventional wisdom, and expose the fragility of consensus views.",
-        sentimentBias: -0.2,
-        influenceWeight: 0.85,
-        interestedTopics: [
-          "assumption",
-          "consensus",
-          "conventional wisdom",
-          "inversion",
-          "contradiction",
-          "orthodoxy",
-        ],
+          "A senior engineer and CTO who has built products from 0 to millions of users. Understands what's technically hard vs. just tedious. Knows which emerging technologies (AI, edge computing, new APIs) unlock product categories that were previously impossible. Thinks about technical moats — what makes this hard to copy?",
+        sentimentBias: 0,
+        influenceWeight: 0.9,
+        interestedTopics: ["technology", "api", "infrastructure", "scalability", "moat", "feasibility", "ai", "open source"],
         cognitiveStyle:
-          "Skeptical and inversive. Systematically questions what is taken for granted.",
+          "Pragmatic and informed. Distinguishes between 'hard' and 'impossible'. Identifies technical enablers that make ideas newly feasible. Spots where a technical insight creates lasting competitive advantage.",
       },
-      strategicType: "Assumption inverter with adversarial epistemic lens",
+      strategicType: "Technical feasibility and moat assessor",
       reasoningPattern:
-        "Invert the dominant assumption — what if the opposite of the consensus view is true?",
+        "Identify what new technology makes possible today that was impossible 2 years ago, then build products on that frontier.",
       defaultEpistemicModel: {
-        rationalityModel: "adversarial_epistemic",
+        rationalityModel: "level_k",
+        beliefDistribution: {},
+        levelOfReasoning: 4,
+      },
+      defaultKnowledgeFilter: {
+        includedTopics: [],
+        excludedTopics: [],
+        amplifiedEntities: ["technology", "api", "ai", "infrastructure", "github", "open source", "technical"],
+        attenuatedEntities: ["social", "sentiment", "coalition"],
+      },
+    },
+  ],
+
+  [
+    "designer",
+    {
+      role: "designer",
+      name: "Product Designer",
+      description:
+        "Thinks about behavioral incentives, user experience friction, and how product design itself can be a competitive advantage.",
+      defaultPersona: {
+        name: "Product Designer",
+        background:
+          "A product designer who has shipped apps used by millions. Believes that the best products don't just solve problems — they create new behaviors. Expert at identifying friction points in existing solutions and designing around them. Knows that great UX is a moat because it's the hardest thing to copy.",
+        sentimentBias: 0.1,
+        influenceWeight: 0.85,
+        interestedTopics: ["ux", "design", "friction", "behavior", "habit", "onboarding", "retention", "delight"],
+        cognitiveStyle:
+          "User-centric and behavioral. Thinks about the entire user journey from first touch to daily habit. Identifies where existing products create unnecessary friction and how a 10x better experience could win.",
+      },
+      strategicType: "Behavioral design thinker",
+      reasoningPattern:
+        "Map the user's current journey, find the biggest friction points, then design an experience that eliminates them while creating a new habit loop.",
+      defaultEpistemicModel: {
+        rationalityModel: "bounded_rationality",
         beliefDistribution: {},
         levelOfReasoning: 3,
       },
       defaultKnowledgeFilter: {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: [
-          "assumption",
-          "conventional",
-          "mainstream",
-          "consensus",
-          "dominant",
-          "orthodox",
-        ],
-        attenuatedEntities: [],
+        amplifiedEntities: ["user", "experience", "design", "app", "interface", "behavior", "friction"],
+        attenuatedEntities: ["equilibrium", "payoff", "coalition", "game"],
       },
     },
   ],
 
   [
-    "signaler",
+    "domain_expert",
     {
-      role: "signaler",
-      name: "Strategic Communicator",
+      role: "domain_expert",
+      name: "Domain Expert",
       description:
-        "Applies Bayesian persuasion and strategic framing to test whether ideas survive misrepresentation.",
+        "Brings deep vertical knowledge and identifies opportunities that only someone immersed in the domain would see.",
       defaultPersona: {
-        name: "Strategic Communicator",
+        name: "Domain Expert",
         background:
-          "A signaling theorist and communications strategist who understands how information is framed, credibility is established, and persuasion operates in strategic environments.",
-        sentimentBias: 0.1,
-        influenceWeight: 0.9,
-        interestedTopics: [
-          "signal",
-          "framing",
-          "credibility",
-          "reputation",
-          "communication",
-          "persuasion",
-          "perception",
-        ],
-        cognitiveStyle:
-          "Rhetorical and multi-perspective. Analyzes how the same idea lands differently depending on who is framing it.",
-      },
-      strategicType: "Bayesian persuasion and strategic framing analyst",
-      reasoningPattern:
-        "Analyze how ideas would be framed strategically by supporters and opponents, and test credibility.",
-      defaultEpistemicModel: {
-        rationalityModel: "bayesian_persuasion",
-        beliefDistribution: {},
-        levelOfReasoning: 4,
-      },
-      defaultKnowledgeFilter: {
-        includedTopics: [],
-        excludedTopics: [],
-        amplifiedEntities: [
-          "communication",
-          "signal",
-          "announcement",
-          "reputation",
-          "credibility",
-          "perception",
-        ],
-        attenuatedEntities: [],
-      },
-    },
-  ],
-
-  [
-    "abductive_reasoner",
-    {
-      role: "abductive_reasoner",
-      name: "Pattern Detective",
-      description:
-        "Generates causal hypotheses and plausibility tests to explain why strategies succeed or fail.",
-      defaultPersona: {
-        name: "Pattern Detective",
-        background:
-          "A philosopher of science and pattern recognition specialist who uses abductive reasoning to construct the most plausible explanations for observed outcomes.",
+          "An industry analyst with deep expertise across multiple verticals (healthcare, fintech, education, enterprise SaaS). Understands the regulatory landscape, incumbent weaknesses, and where domain-specific knowledge creates an unfair advantage. Knows the difference between what sounds good in a pitch and what actually works in a specific industry.",
         sentimentBias: 0,
-        influenceWeight: 0.85,
-        interestedTopics: [
-          "anomaly",
-          "hypothesis",
-          "causal mechanism",
-          "explanation",
-          "pattern",
-          "paradox",
-          "outlier",
-        ],
+        influenceWeight: 0.9,
+        interestedTopics: ["industry", "regulation", "compliance", "vertical", "domain", "incumbent", "specialist"],
         cognitiveStyle:
-          "Inductive and explanatory. Works backwards from observations to underlying causal mechanisms.",
+          "Deep and nuanced. Understands that different industries have different rules, cycles, and buyer behaviors. Rejects ideas that ignore domain-specific constraints and rewards ideas that leverage domain-specific advantages.",
       },
-      strategicType: "Hypothesis generator and plausibility tester",
+      strategicType: "Vertical opportunity spotter",
       reasoningPattern:
-        "Identify the underlying mechanism that best explains the observed strategic patterns.",
+        "Identify which industries are undergoing structural change and where domain-specific knowledge creates an unfair advantage for new entrants.",
       defaultEpistemicModel: {
-        rationalityModel: "abductive_inference",
+        rationalityModel: "full_rationality",
         beliefDistribution: {},
         levelOfReasoning: 4,
       },
       defaultKnowledgeFilter: {
         includedTopics: [],
         excludedTopics: [],
-        amplifiedEntities: [
-          "anomaly",
-          "unexplained",
-          "surprising",
-          "contradiction",
-          "paradox",
-          "outlier",
-          "exception",
-        ],
-        attenuatedEntities: [],
+        amplifiedEntities: ["industry", "regulation", "healthcare", "fintech", "education", "enterprise", "compliance"],
+        attenuatedEntities: ["evolutionary", "game", "nash"],
       },
     },
   ],
@@ -552,17 +493,24 @@ function buildRoundInstructions(
       : "";
 
   const roundDescriptions: Record<RoundNumber, string> = {
-    1: `## Round 1 — Divergent Generation
+    1: `## Round 1 — Idea Generation
 
-Your task is to **propose 3–5 novel strategic ideas** relevant to this game formulation.
+Your task is to **propose 3–5 concrete project ideas** that address real problems you can identify in the data.
 
 Apply your reasoning pattern: "${definition.reasoningPattern}"
 
-Each idea should:
-- Be distinct and non-overlapping
-- Be grounded in the game structure and knowledge context
-- Reflect your strategic perspective as ${definition.name}
-- Push beyond the obvious`,
+Each idea MUST include:
+- **Signal grounding**: Which specific data point(s) from the briefing evidence this need? (cite the actual review, post, or trend)
+- **First 100 users**: Who exactly are the first users? Be specific — not "developers" but "solo developers building SaaS who currently waste 3+ hours/week on billing integration"
+- **Why existing solutions fail**: What do people use today and why is it inadequate? Point to evidence.
+- **The wedge**: What is the smallest, most focused version of this product that delivers immediate value?
+- **One-line pitch**: A single sentence a user would forward to a colleague: "It's like X but Y"
+
+CRITICAL QUALITY CRITERIA:
+- REJECT ideas that are generic enough that anyone could have proposed them without the data
+- REJECT ideas that describe a category ("an AI tool for X") rather than a specific product
+- REJECT ideas where the first 100 users are vague or undefined
+- Every idea must be traceable to a specific signal in the briefing data`,
 
     2: `## Round 2 — Strategic Interaction
 
@@ -619,11 +567,12 @@ export function buildStrategicPrompt(
   graphContext: string,
   round: RoundNumber,
   roundContext?: string,
+  signalsContext?: string,
 ): string {
   const gameSection = serializeGameFormulation(gameFormulation);
   const roundSection = buildRoundInstructions(round, definition, roundContext);
 
-  return [
+  const sections = [
     `# Strategic Agent: ${definition.name}`,
     ``,
     `## Your Role`,
@@ -643,6 +592,14 @@ export function buildStrategicPrompt(
     ``,
     `---`,
     ``,
+  ];
+
+  // Inject synthesized signals before game formulation if available
+  if (signalsContext) {
+    sections.push(signalsContext, ``, `---`, ``);
+  }
+
+  sections.push(
     gameSection,
     ``,
     `---`,
@@ -652,7 +609,9 @@ export function buildStrategicPrompt(
     `---`,
     ``,
     roundSection,
-  ].join("\n");
+  );
+
+  return sections.join("\n");
 }
 
 // ─── Action Schema Builder ────────────────────────────────────────────────────
@@ -662,18 +621,22 @@ export function buildActionSchema(round: RoundNumber): ActionSchema {
     case 1:
       return {
         description:
-          "A list of 3–5 strategic ideas, each with a title, description, rationale, and confidence score.",
+          "A list of 3–5 concrete project ideas, each grounded in specific data signals with a clear first-user profile.",
         format: JSON.stringify(
           {
             ideas: [
               {
-                title: "string — concise idea name",
-                description: "string — 1–3 sentence explanation",
-                rationale: "string — why this idea follows from your strategic reasoning",
+                title: "string — concise product name",
+                description: "string — 2-3 sentence product description",
+                signalGrounding: "string — which specific data points evidence this need (cite the review, post, or trend)",
+                firstUsers: "string — who exactly are the first 100 users and how do you reach them",
+                whyExistingFails: "string — what do people use today and why is it inadequate",
+                wedge: "string — the smallest focused version that delivers immediate value",
+                oneLiner: "string — a single sentence pitch a user would forward to a colleague",
                 confidence: "number 0.0–1.0",
               },
             ],
-            reasoning: "string — overall reasoning chain that led to these ideas",
+            reasoning: "string — overall reasoning chain connecting data signals to ideas",
           },
           null,
           2,
