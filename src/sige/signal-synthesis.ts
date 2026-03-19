@@ -324,7 +324,7 @@ export async function synthesizeSignals(
 
   log.info("Synthesizing signals from enriched seed", {
     model: options.model,
-    provider: options.provider ?? "alibaba",
+    provider: options.provider ?? "anthropic",
     seedLength: enrichedSeed.length,
     estimatedSignals: estimateRawSignalCount(enrichedSeed),
   });
@@ -335,7 +335,7 @@ export async function synthesizeSignals(
     const response = await chat(messages, {
       systemPrompt: SYSTEM_PROMPT,
       model: options.model,
-      provider: options.provider ?? "alibaba",
+      provider: options.provider ?? "anthropic",
     });
     responseText = response.text;
   } catch (err) {

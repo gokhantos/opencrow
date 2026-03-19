@@ -256,7 +256,7 @@ export async function runTasteFilter(params: {
   readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
   readonly minPassCount?: number;
 }): Promise<TasteFilterResult> {
-  const { ideas, enrichedSeed, model, provider = "alibaba" } = params;
+  const { ideas, enrichedSeed, model, provider = "anthropic" } = params;
   const minPassCount = params.minPassCount ?? DEFAULT_MIN_PASS_COUNT;
 
   log.info("Running taste filter", { ideaCount: ideas.length, model, provider, minPassCount });

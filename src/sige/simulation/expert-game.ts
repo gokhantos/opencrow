@@ -123,7 +123,7 @@ export async function runExpertGame(params: {
       ideas: round2.outcomes.selectedIdeas,
       enrichedSeed,
       model: config.model,
-      provider: config.provider ?? "alibaba",
+      provider: config.provider ?? "anthropic",
       minPassCount: 5,
     })
     log.info("Taste filter applied", {

@@ -1,4 +1,4 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { chat } from "../agent/chat";
 import type { Observation, ObservationType } from "../store/observations";
 import { createLogger } from "../logger";
 
@@ -91,22 +91,16 @@ ${conversationText}${toolsNote}
 Return the JSON array:`;
 
   try {
-    let resultText = "";
-
-    for await (const message of query({
-      prompt,
-      options: {
+    const response = await chat(
+      [{ role: "user", content: prompt, timestamp: Date.now() }],
+      {
         model: "claude-haiku-4-5",
+        provider: "anthropic",
         systemPrompt: "You extract structured observations from conversations. Return only valid JSON.",
-        maxTurns: 1,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
       },
-    })) {
-      if (message.type === "result" && message.subtype === "success") {
-        resultText = message.result;
-      }
-    }
+    );
+
+    const resultText = response.text;
 
     if (!resultText.trim()) {
       log.debug("Empty extraction result", { agentId, channel, chatId });

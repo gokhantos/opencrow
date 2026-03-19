@@ -42,7 +42,12 @@ export async function chat(
   messages: readonly ConversationMessage[],
   options: AgentOptions,
 ): Promise<AgentResponse> {
-  const provider = options.provider ?? "agent-sdk";
+  const requestedProvider = options.provider ?? "anthropic";
+  // Anthropic direct (pi-ai) doesn't support tools — fall back to agent-sdk for agentic calls
+  const provider =
+    requestedProvider === "anthropic" && options.toolsEnabled && options.toolRegistry
+      ? "agent-sdk"
+      : requestedProvider;
   const maxIterations = options.maxToolIterations ?? 100;
 
   let response: AgentResponse;
