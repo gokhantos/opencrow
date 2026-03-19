@@ -47,7 +47,7 @@ function buildChatOptions(model: string) {
   return {
     systemPrompt: "",
     model,
-    provider: "agent-sdk" as const,
+    provider: "openrouter" as const,
     agentId: "idea-pipeline",
     usageContext: { channel: "pipeline" as const, chatId: "ideas", source: "workflow" as const },
   };
