@@ -251,7 +251,7 @@ export async function runIdeasPipeline(
   });
 
   try {
-    const model = config.model ?? "claude-sonnet-4-5";
+    const model = config.model ?? "claude-sonnet-4-6";
 
     // ── Step 1: Analyze app landscape ───────────────────────────────────
     const trends = await runStep(

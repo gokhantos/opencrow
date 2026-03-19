@@ -29,7 +29,7 @@ import type {
 
 const log = createLogger("pipeline:collectors");
 
-const DEFAULT_MODEL = "claude-sonnet-4-5";
+const DEFAULT_MODEL = "claude-sonnet-4-6";
 
 // ── Shared utilities ─────────────────────────────────────────────────────────
 
