@@ -26,6 +26,7 @@ import {
 } from "../sige/store";
 import type { SigeSession, SigeReport, ScoredIdea, FusedScore } from "../sige/types";
 import { enrichSeedWithProjectData } from "../sige/seed-enricher";
+import { synthesizeSignals, signalsToPromptContext } from "../sige/signal-synthesis";
 import { createLogger } from "../logger";
 
 const log = createLogger("sige-entry");
@@ -51,6 +52,19 @@ async function runSession(
 
   // Enrich seed with existing project data before knowledge construction
   const enrichedSeed = await enrichSeedWithProjectData(seedInput);
+
+  // Synthesize structured insights from the raw enriched seed (graceful degradation)
+  let signalsContext: string | undefined;
+  try {
+    const signals = await synthesizeSignals(enrichedSeed, {
+      model: config.model,
+      provider: config.provider,
+    });
+    signalsContext = signalsToPromptContext(signals);
+  } catch (err) {
+    log.warn("Signal synthesis failed — continuing without synthesized signals", { sessionId, err });
+    signalsContext = undefined;
+  }
 
   // Knowledge graph comes from Mem0 (built by background ingestion cron).
   // No LLM extraction during session — just query what's already in the graph.
@@ -85,6 +99,8 @@ async function runSession(
     userId,
     config,
     signal,
+    signalsContext,
+    enrichedSeed,
   });
 
   await updateSessionStatus(sessionId, "expert_game", {

@@ -5,10 +5,16 @@
  * 1. analyzeAppLandscape() — what apps exist, what they do, where satisfaction is lowest
  * 2. clusterPainPoints() — what's broken + what people love (both negative AND positive reviews)
  * 3. scanCapabilities() — what new tech/shifts enable solutions (PH/HN/GitHub/Reddit/News/X)
+ *
+ * Each collector runs a single LLM pass after data collection to extract structured
+ * insights. If insight extraction fails the raw data is returned without insights
+ * (graceful degradation).
  */
 
 import { getDb } from "../../store/db";
 import { createLogger } from "../../logger";
+import { chat } from "../../agent/chat";
+import type { ConversationMessage } from "../../agent/types";
 import type {
   TrendData,
   CategoryTrend,
@@ -16,9 +22,16 @@ import type {
   PainCluster,
   CapabilityScan,
   Capability,
+  LandscapeInsight,
+  ReviewInsight,
+  CapabilityInsight,
 } from "./types";
 
 const log = createLogger("pipeline:collectors");
+
+const DEFAULT_MODEL = "claude-sonnet-4-5";
+
+// ── Shared utilities ─────────────────────────────────────────────────────────
 
 /** Shuffle array and return first N. */
 function sampleRandom<T>(items: readonly T[], n: number): readonly T[] {
@@ -30,7 +43,71 @@ function sampleRandom<T>(items: readonly T[], n: number): readonly T[] {
   return arr.slice(0, n);
 }
 
-// ── Step 1: App Landscape Analysis ──────────────────────────────────────
+function buildChatOptions(model: string) {
+  return {
+    systemPrompt: "",
+    model,
+    provider: "agent-sdk" as const,
+    agentId: "idea-pipeline",
+    usageContext: { channel: "pipeline" as const, chatId: "ideas", source: "workflow" as const },
+  };
+}
+
+function parseJsonFromResponse<T>(text: string, fallback: T): T {
+  const jsonMatch =
+    text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/) ??
+    text.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
+
+  if (!jsonMatch?.[1]) return fallback;
+
+  try {
+    return JSON.parse(jsonMatch[1].trim()) as T;
+  } catch {
+    log.warn("Failed to parse LLM insight response as JSON", {
+      preview: text.slice(0, 200),
+    });
+    return fallback;
+  }
+}
+
+function makeUserMessage(content: string): ConversationMessage {
+  return { role: "user", content, timestamp: Date.now() };
+}
+
+// ── Step 1: App Landscape Analysis ──────────────────────────────────────────
+
+async function extractLandscapeInsights(
+  rawSummary: string,
+  model: string,
+): Promise<LandscapeInsight | undefined> {
+  const systemPrompt =
+    "You are a market analyst. Extract structured insights from app store data. Return only valid JSON.";
+
+  const userContent = `Analyze this app store landscape data and return a JSON object with exactly these keys:
+
+{
+  "underservedSegments": [5-7 items, each: { "category": string, "gap": string, "evidence": string }],
+  "workingPatterns": [5 items, each: { "pattern": string, "evidence": string, "categories": string[] }],
+  "whiteSpaces": [3-5 items, each: { "description": string, "adjacentCategories": string[], "reason": string }]
+}
+
+underservedSegments: categories with high complaint ratios or low ratings — what specific user need is unmet?
+workingPatterns: features or product patterns that users consistently love across multiple apps.
+whiteSpaces: combinations of app categories or feature sets that do not currently exist but would be useful.
+
+APP STORE DATA:
+${rawSummary.slice(0, 60000)}`;
+
+  const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
+
+  try {
+    const response = await chat(messages, { ...buildChatOptions(model), systemPrompt });
+    return parseJsonFromResponse<LandscapeInsight | undefined>(response.text, undefined);
+  } catch (err) {
+    log.warn("Landscape insight extraction failed", { err });
+    return undefined;
+  }
+}
 
 /**
  * Analyze the FULL app landscape:
@@ -38,8 +115,9 @@ function sampleRandom<T>(items: readonly T[], n: number): readonly T[] {
  * - What existing apps offer (descriptions = feature landscape)
  * - Which categories are underserved (low satisfaction + many apps = opportunity)
  */
-export async function analyzeAppLandscape(): Promise<TrendData> {
+export async function analyzeAppLandscape(model?: string): Promise<TrendData> {
   const db = getDb();
+  const resolvedModel = model ?? DEFAULT_MODEL;
   const summaryLines: string[] = [];
 
   try {
@@ -156,10 +234,14 @@ export async function analyzeAppLandscape(): Promise<TrendData> {
       sampledApps: sampledApps.length + sampledPlayApps.length,
     });
 
+    // LLM insight extraction (graceful degradation on failure)
+    const insights = await extractLandscapeInsights(summaryLines.join("\n"), resolvedModel);
+
     return {
       risingApps: [],
       trendingCategories,
       summary: summaryLines.join("\n"),
+      insights,
     };
   } catch (err) {
     log.warn("App landscape analysis failed", { err });
@@ -167,7 +249,54 @@ export async function analyzeAppLandscape(): Promise<TrendData> {
   }
 }
 
-// ── Step 2: Pain Point Clustering (negative AND positive reviews) ────────
+// ── Step 2: Pain Point Clustering (negative AND positive reviews) ────────────
+
+async function extractReviewInsights(
+  rawSummary: string,
+  model: string,
+): Promise<ReviewInsight | undefined> {
+  const systemPrompt =
+    "You are a UX researcher. Extract structured insights from user reviews. Return only valid JSON.";
+
+  const userContent = `Analyze these user reviews from multiple app categories and return a JSON object with exactly these keys:
+
+{
+  "painThemes": [15-25 items, each: {
+    "name": string,
+    "description": string,
+    "frequency": "very_common" | "common" | "emerging",
+    "affectedApps": string[],
+    "sampleQuotes": string[] (2-3 direct quotes from reviews)
+  }],
+  "workaroundSignals": [5-10 items, each: {
+    "description": string,
+    "currentSolution": string,
+    "evidence": string
+  }],
+  "loveSignals": [10-15 items, each: {
+    "feature": string,
+    "whyUsersLoveIt": string,
+    "category": string
+  }]
+}
+
+painThemes: recurring problems that cut across multiple apps/categories — name them conceptually, not by app.
+workaroundSignals: users describing manual workarounds, switching tools, or DIY solutions to fill gaps.
+loveSignals: specific features or experiences that users explicitly praise or say they cannot live without.
+
+USER REVIEW DATA:
+${rawSummary.slice(0, 60000)}`;
+
+  const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
+
+  try {
+    const response = await chat(messages, { ...buildChatOptions(model), systemPrompt });
+    return parseJsonFromResponse<ReviewInsight | undefined>(response.text, undefined);
+  } catch (err) {
+    log.warn("Review insight extraction failed", { err });
+    return undefined;
+  }
+}
 
 /**
  * Cluster reviews by category — both COMPLAINTS (what's broken)
@@ -175,8 +304,10 @@ export async function analyzeAppLandscape(): Promise<TrendData> {
  */
 export async function clusterReviews(
   focusCategories?: readonly string[],
+  model?: string,
 ): Promise<ClusteredPains> {
   const db = getDb();
+  const resolvedModel = model ?? DEFAULT_MODEL;
   const clusters: PainCluster[] = [];
 
   try {
@@ -285,16 +416,73 @@ export async function clusterReviews(
 
   log.info("Review clustering complete", { clusters: clusters.length });
 
+  // LLM insight extraction (graceful degradation on failure)
+  const insights = await extractReviewInsights(summaryLines.join("\n\n"), resolvedModel);
+
   return {
     clusters: clusters.slice(0, 15),
     summary: summaryLines.join("\n\n"),
+    insights,
   };
 }
 
-// ── Step 3: Capability Scan ─────────────────────────────────────────────
+// ── Step 3: Capability Scan ──────────────────────────────────────────────────
 
-export async function scanCapabilities(): Promise<CapabilityScan> {
+async function extractCapabilityInsights(
+  capabilities: readonly import("./types").Capability[],
+  model: string,
+): Promise<CapabilityInsight | undefined> {
+  const lines: string[] = [];
+  for (const c of capabilities) {
+    lines.push(`[${c.source.toUpperCase()}] ${c.title}\n  ${c.description}`);
+  }
+  const rawText = lines.join("\n");
+
+  const systemPrompt =
+    "You are a technology analyst. Classify capabilities and find connections to user pain areas. Return only valid JSON.";
+
+  const userContent = `Analyze these technology signals and return a JSON object with exactly these keys:
+
+{
+  "genuinelyNew": [items, each: {
+    "title": string (exact title from input),
+    "source": string (exact source from input),
+    "classification": "breakthrough" | "enabler" | "incremental",
+    "whyNew": string (1-2 sentences)
+  }],
+  "technologyWaves": [3-6 items, each: {
+    "name": string (descriptive wave name),
+    "capabilities": string[] (titles of capabilities in this wave),
+    "implication": string (what this wave enables builders to create)
+  }],
+  "painCapabilityLinks": [10-20 items, each: {
+    "painTheme": string (a user pain area, e.g. "complex onboarding", "poor sync"),
+    "capability": string (capability title that could address it),
+    "connectionReason": string (how this capability solves the pain)
+  }]
+}
+
+genuinelyNew: classify EVERY item — breakthrough = category-defining, enabler = unlocks new product types, incremental = better version of existing.
+technologyWaves: group capabilities by the underlying technology shift they represent.
+painCapabilityLinks: cross-reference capabilities with common mobile app pain points — imagine which user frustrations each capability could finally solve.
+
+CAPABILITY DATA:
+${rawText.slice(0, 50000)}`;
+
+  const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
+
+  try {
+    const response = await chat(messages, { ...buildChatOptions(model), systemPrompt });
+    return parseJsonFromResponse<CapabilityInsight | undefined>(response.text, undefined);
+  } catch (err) {
+    log.warn("Capability insight extraction failed", { err });
+    return undefined;
+  }
+}
+
+export async function scanCapabilities(model?: string): Promise<CapabilityScan> {
   const db = getDb();
+  const resolvedModel = model ?? DEFAULT_MODEL;
   const capabilities: Capability[] = [];
 
   try {
@@ -425,5 +613,8 @@ export async function scanCapabilities(): Promise<CapabilityScan> {
 
   log.info("Capability scan complete", { capabilities: capabilities.length });
 
-  return { capabilities, summary: summaryLines.join("\n") };
+  // LLM insight extraction (graceful degradation on failure)
+  const insights = await extractCapabilityInsights(capabilities, resolvedModel);
+
+  return { capabilities, summary: summaryLines.join("\n"), insights };
 }

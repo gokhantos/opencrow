@@ -21,10 +21,37 @@ export interface CategoryTrend {
   readonly topApps: readonly string[];
 }
 
+// ── Landscape Insights ──────────────────────────────────────────────────
+
+export interface UnderservedSegment {
+  readonly category: string;
+  readonly gap: string;
+  readonly evidence: string;
+}
+
+export interface WorkingPattern {
+  readonly pattern: string;
+  readonly evidence: string;
+  readonly categories: readonly string[];
+}
+
+export interface WhiteSpace {
+  readonly description: string;
+  readonly adjacentCategories: readonly string[];
+  readonly reason: string;
+}
+
+export interface LandscapeInsight {
+  readonly underservedSegments: readonly UnderservedSegment[];
+  readonly workingPatterns: readonly WorkingPattern[];
+  readonly whiteSpaces: readonly WhiteSpace[];
+}
+
 export interface TrendData {
   readonly risingApps: readonly TrendingApp[];
   readonly trendingCategories: readonly CategoryTrend[];
   readonly summary: string;
+  readonly insights?: LandscapeInsight;
 }
 
 // ── Pain Point Clustering ───────────────────────────────────────────────
@@ -37,9 +64,38 @@ export interface PainCluster {
   readonly affectedApps: readonly string[];
 }
 
+// ── Review Insights ─────────────────────────────────────────────────────
+
+export interface PainTheme {
+  readonly name: string;
+  readonly description: string;
+  readonly frequency: "very_common" | "common" | "emerging";
+  readonly affectedApps: readonly string[];
+  readonly sampleQuotes: readonly string[];
+}
+
+export interface WorkaroundSignal {
+  readonly description: string;
+  readonly currentSolution: string;
+  readonly evidence: string;
+}
+
+export interface LoveSignal {
+  readonly feature: string;
+  readonly whyUsersLoveIt: string;
+  readonly category: string;
+}
+
+export interface ReviewInsight {
+  readonly painThemes: readonly PainTheme[];
+  readonly workaroundSignals: readonly WorkaroundSignal[];
+  readonly loveSignals: readonly LoveSignal[];
+}
+
 export interface ClusteredPains {
   readonly clusters: readonly PainCluster[];
   readonly summary: string;
+  readonly insights?: ReviewInsight;
 }
 
 // ── Capability Scan ─────────────────────────────────────────────────────
@@ -52,9 +108,48 @@ export interface Capability {
   readonly type: "new_tech" | "funding" | "regulation" | "behavior_shift" | "open_source";
 }
 
+// ── Capability Insights ─────────────────────────────────────────────────
+
+export interface ClassifiedCapability {
+  readonly title: string;
+  readonly source: string;
+  readonly classification: "breakthrough" | "enabler" | "incremental";
+  readonly whyNew: string;
+}
+
+export interface TechnologyWave {
+  readonly name: string;
+  readonly capabilities: readonly string[];
+  readonly implication: string;
+}
+
+export interface PainCapabilityLink {
+  readonly painTheme: string;
+  readonly capability: string;
+  readonly connectionReason: string;
+}
+
+export interface CapabilityInsight {
+  readonly genuinelyNew: readonly ClassifiedCapability[];
+  readonly technologyWaves: readonly TechnologyWave[];
+  readonly painCapabilityLinks: readonly PainCapabilityLink[];
+}
+
 export interface CapabilityScan {
   readonly capabilities: readonly Capability[];
   readonly summary: string;
+  readonly insights?: CapabilityInsight;
+}
+
+// ── Intersection Hypothesis ─────────────────────────────────────────────
+
+export interface IntersectionHypothesis {
+  readonly title: string;
+  readonly painSignal: string;
+  readonly capabilitySignal: string;
+  readonly marketSignal: string;
+  readonly hypothesis: string;
+  readonly signalStrength: number;
 }
 
 // ── Idea Generation ─────────────────────────────────────────────────────

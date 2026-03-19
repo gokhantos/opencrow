@@ -77,43 +77,127 @@ async function runStep<T>(
   }
 }
 
-async function buildSaturatedThemes(): Promise<string> {
+const STOP_WORDS = new Set([
+  "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+  "of", "with", "by", "from", "is", "it", "that", "this", "are", "was",
+  "be", "has", "had", "have", "will", "can", "do", "does", "your", "you",
+  "app", "tool", "platform", "system", "based", "using", "new", "smart",
+]);
+
+function tokenize(title: string): readonly string[] {
+  return title.toLowerCase().split(/\s+/).map((w) => w.replace(/[^a-z]/g, "")).filter((w) => w.length >= 3);
+}
+
+function extractThemesByNgrams(titles: readonly string[]): readonly string[] {
+  const bigramCounts = new Map<string, string[]>();
+  const trigramCounts = new Map<string, string[]>();
+
+  for (const title of titles) {
+    const tokens = tokenize(title);
+    const seen = new Set<string>();
+
+    for (let i = 0; i < tokens.length - 1; i++) {
+      const w1 = tokens[i]!;
+      const w2 = tokens[i + 1]!;
+      if (STOP_WORDS.has(w1) && STOP_WORDS.has(w2)) continue;
+      const bigram = `${w1} ${w2}`;
+      if (!seen.has(bigram)) {
+        seen.add(bigram);
+        const list = bigramCounts.get(bigram) ?? [];
+        list.push(title);
+        bigramCounts.set(bigram, list);
+      }
+    }
+
+    for (let i = 0; i < tokens.length - 2; i++) {
+      const w1 = tokens[i]!;
+      const w2 = tokens[i + 1]!;
+      const w3 = tokens[i + 2]!;
+      if (STOP_WORDS.has(w1) && STOP_WORDS.has(w2) && STOP_WORDS.has(w3)) continue;
+      const trigram = `${w1} ${w2} ${w3}`;
+      if (!seen.has(trigram)) {
+        seen.add(trigram);
+        const list = trigramCounts.get(trigram) ?? [];
+        list.push(title);
+        trigramCounts.set(trigram, list);
+      }
+    }
+  }
+
+  const allNgrams: Array<{ readonly phrase: string; readonly hits: readonly string[] }> = [];
+
+  for (const [phrase, hits] of trigramCounts) {
+    const unique = [...new Set(hits)];
+    if (unique.length >= 3) allNgrams.push({ phrase, hits: unique });
+  }
+
+  for (const [phrase, hits] of bigramCounts) {
+    const unique = [...new Set(hits)];
+    if (unique.length >= 3) allNgrams.push({ phrase, hits: unique });
+  }
+
+  allNgrams.sort((a, b) => b.hits.length - a.hits.length);
+
+  const lines: string[] = [];
+  for (const { phrase, hits } of allNgrams) {
+    lines.push(`- "${phrase}" theme (${hits.length} ideas): ${hits.slice(0, 3).join(", ")}`);
+    if (lines.length >= 15) break;
+  }
+
+  return lines;
+}
+
+async function extractSemanticThemes(
+  rows: ReadonlyArray<{ readonly title: string; readonly summary: string }>,
+  memoryManager: MemoryManager,
+): Promise<readonly string[]> {
+  const lines: string[] = [];
+
+  for (const row of rows) {
+    if (lines.length >= 5) break;
+    try {
+      const results = await memoryManager.search(
+        "shared",
+        `${row.title}: ${row.summary}`,
+        { limit: 3, minScore: 0.7, kinds: ["idea"] },
+      );
+      const matches = results.filter((r) => r.score >= 0.7);
+      if (matches.length >= 2) {
+        lines.push(`- Theme around "${row.title}" (similar to ${matches.length} existing ideas)`);
+      }
+    } catch {
+      // non-fatal: semantic search failure skips this row
+    }
+  }
+
+  return lines;
+}
+
+async function buildSaturatedThemes(memoryManager?: MemoryManager | null): Promise<string> {
   try {
     const db = getDb();
     const rows = (await db`
-      SELECT title FROM generated_ideas
+      SELECT title, summary FROM generated_ideas
       WHERE pipeline_run_id IS NOT NULL
         AND COALESCE(pipeline_stage, 'idea') != 'archived'
       ORDER BY created_at DESC
       LIMIT 500
-    `) as Array<{ title: string }>;
+    `) as Array<{ title: string; summary: string }>;
 
     if (rows.length === 0) return "";
 
-    const keywords: Record<string, string[]> = {};
-    for (const row of rows) {
-      const words = row.title.toLowerCase().split(/\s+/);
-      for (const word of words) {
-        if (word.length < 4) continue;
-        if (["mobile", "open", "source", "protocol", "smart", "data", "apps"].includes(word)) continue;
-        const list = keywords[word] ?? [];
-        list.push(row.title);
-        keywords[word] = list;
-      }
-    }
+    // Level 1: bigram/trigram theme detection (fast, no LLM)
+    const themeLines = extractThemesByNgrams(rows.map((r) => r.title));
 
-    const saturated: string[] = [];
-    const sorted = Object.entries(keywords)
-      .filter(([, titles]) => [...new Set(titles)].length >= 3)
-      .sort((a, b) => b[1].length - a[1].length);
+    // Level 2: semantic clustering via memory search (optional)
+    const semanticLines = memoryManager
+      ? await extractSemanticThemes(rows.slice(0, 50), memoryManager)
+      : [];
 
-    for (const [keyword, titles] of sorted) {
-      const unique = [...new Set(titles)];
-      saturated.push(`- "${keyword}" (${unique.length} ideas): ${unique.slice(0, 3).join(", ")}`);
-      if (saturated.length >= 10) break;
-    }
+    const combined = [...themeLines, ...semanticLines];
+    if (combined.length === 0) return "";
 
-    return saturated.join("\n");
+    return combined.join("\n");
   } catch {
     return "";
   }
@@ -173,8 +257,8 @@ export async function runIdeasPipeline(
     const trends = await runStep(
       runId,
       "landscape",
-      () => analyzeAppLandscape(),
-      (t) => `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points`,
+      () => analyzeAppLandscape(model),
+      (t) => `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points${t.insights ? " (with LLM insights)" : ""}`,
     );
 
     // ── Step 2: Cluster reviews (complaints + praises) ────────────────
@@ -185,16 +269,16 @@ export async function runIdeasPipeline(
     const pains = await runStep(
       runId,
       "reviews",
-      () => clusterReviews(focusCategories),
-      (p) => `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)`,
+      () => clusterReviews(focusCategories, model),
+      (p) => `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)${p.insights ? " (with LLM insights)" : ""}`,
     );
 
     // ── Step 3: Scan capabilities ─────────────────────────────────────
     const capabilities = await runStep(
       runId,
       "capabilities",
-      () => scanCapabilities(),
-      (c) => `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X`,
+      () => scanCapabilities(model),
+      (c) => `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
     );
 
     // ── Step 4: Deep search (optional) ────────────────────────────────
@@ -216,7 +300,7 @@ export async function runIdeasPipeline(
     }
 
     // ── Step 5: Synthesize ideas at trend intersections ───────────────
-    const saturatedThemes = await buildSaturatedThemes();
+    const saturatedThemes = await buildSaturatedThemes(memoryManager);
 
     const synthesis = await runStep(
       runId,
