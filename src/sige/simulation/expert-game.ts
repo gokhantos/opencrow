@@ -430,7 +430,7 @@ async function runSingleAgent(params: {
   const response = await chat(messages, {
     systemPrompt,
     model: config.agentModel,
-    provider: config.provider ?? "alibaba",
+    provider: config.provider ?? "anthropic",
     agentId: `sige:${def.role}`,
   })
 

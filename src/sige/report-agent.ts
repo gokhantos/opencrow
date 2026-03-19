@@ -26,7 +26,7 @@ export interface GenerateReportParams {
   readonly mem0: Mem0Client
   readonly userId: string
   readonly model: string
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic"
 }
 
 export async function generateReport(
@@ -156,7 +156,7 @@ async function generateExecutiveSummary(params: {
   readonly topScores: readonly FusedScore[]
   readonly topIdeas: readonly ScoredIdea[]
   readonly model: string
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic"
 }): Promise<string> {
   const { session, topScores, topIdeas, model, provider } = params
 
@@ -190,7 +190,7 @@ Write the executive summary.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "alibaba" })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "executive_summary")
 }
 
@@ -199,7 +199,7 @@ async function generateTopIdeasSection(params: {
   readonly topScores: readonly FusedScore[]
   readonly allActions: readonly AgentAction[]
   readonly model: string
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic"
 }): Promise<string> {
   const { topIdeas, topScores, allActions, model, provider } = params
 
@@ -241,7 +241,7 @@ Write the top ideas analysis.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "alibaba" })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "top_ideas")
 }
 
@@ -251,7 +251,7 @@ async function generatePerIdeaAnalysis(params: {
   readonly topScores: readonly FusedScore[]
   readonly allActions: readonly AgentAction[]
   readonly model: string
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic"
 }): Promise<readonly IdeaAnalysis[]> {
   const { session, topIdeas, topScores, allActions, model, provider } = params
 
@@ -305,7 +305,7 @@ Produce the analysis JSON.`
         { role: "user", content: userMessage, timestamp: Date.now() },
       ]
 
-      const response = await chat(messages, { systemPrompt, model, provider: provider ?? "alibaba" })
+      const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
       const parsed = parseIdeaAnalysisJson(response.text, idea, allActions)
       return parsed
     }),
@@ -327,7 +327,7 @@ async function generateOpportunityMap(params: {
   readonly mem0: Mem0Client
   readonly userId: string
   readonly model: string
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic"
 }): Promise<string> {
   const { session, effectiveScores, mem0, userId, model, provider } = params
 
@@ -370,7 +370,7 @@ Describe the unexplored opportunities.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "alibaba" })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "opportunity_map")
 }
 
@@ -379,7 +379,7 @@ async function generateRiskAssessment(params: {
   readonly allActions: readonly AgentAction[]
   readonly topScores: readonly FusedScore[]
   readonly model: string
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic"
 }): Promise<string> {
   const { session, allActions, topScores, model, provider } = params
 
@@ -424,14 +424,14 @@ Write the risk assessment with mitigation strategies.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "alibaba" })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "risk_assessment")
 }
 
 async function generateMetaGameHealthSection(params: {
   readonly session: SigeSession
   readonly model: string
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic"
 }): Promise<MetaGameHealth> {
   const { session, model, provider } = params
 
@@ -477,7 +477,7 @@ Produce the meta-game health JSON.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "alibaba" })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseMetaGameHealthJson(response.text)
 }
 
@@ -487,7 +487,7 @@ async function generateRecommendedNextSession(params: {
   readonly mem0: Mem0Client
   readonly userId: string
   readonly model: string
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba"
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic"
 }): Promise<string> {
   const { session, topScores, mem0, userId, model, provider } = params
 
@@ -532,7 +532,7 @@ Write the recommended next session plan.`
     { role: "user", content: userMessage, timestamp: Date.now() },
   ]
 
-  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "alibaba" })
+  const response = await chat(messages, { systemPrompt, model, provider: provider ?? "anthropic" })
   return parseReportSection(response.text, "recommended_next_session")
 }
 

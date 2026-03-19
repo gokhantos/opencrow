@@ -8,6 +8,7 @@ import {
   withAlibabaEnv,
 } from "./agent-sdk";
 import { chat as chatAlibabaDirect } from "./alibaba-direct";
+import { chat as chatAnthropicDirect } from "./anthropic-direct";
 import type { AgentOptions, AgentResponse, ConversationMessage } from "./types";
 import { recordTokenUsage } from "../store/token-usage";
 import { createLogger } from "../logger";
@@ -112,6 +113,12 @@ export async function chat(
       });
       response = await chatAlibabaDirect(messages, options);
     }
+  } else if (provider === "anthropic") {
+    log.debug("Routing to Anthropic direct", {
+      agentId: options.agentId,
+      model: options.model,
+    });
+    response = await chatAnthropicDirect(messages, options);
   } else {
     throw new Error(`Unknown AI provider: ${provider}`);
   }

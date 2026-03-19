@@ -84,7 +84,7 @@ export const agentDefinitionSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   default: z.boolean().optional(),
-  provider: z.enum(["openrouter", "agent-sdk", "alibaba"]).optional(),
+  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic"]).optional(),
   model: z.string().optional(),
   systemPrompt: z.string().optional(),
   maxIterations: z.number().int().min(1).optional(),
@@ -370,7 +370,7 @@ export const sigeConfigSchema = z.object({
       coalitionStabilityWeight: 0.1,
       signalCredibilityWeight: 0.1,
     }),
-  provider: z.enum(["openrouter", "agent-sdk", "alibaba"]).default("agent-sdk"),
+  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic"]).default("anthropic"),
   model: z.string().default("claude-sonnet-4-6"),
   agentModel: z.string().default("claude-sonnet-4-6"),
   workflow: z

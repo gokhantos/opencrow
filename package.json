@@ -67,6 +67,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.74",
+    "@anthropic-ai/sdk": "^0.80.0",
     "@clack/prompts": "^1.1.0",
     "@grammyjs/runner": "^2.0.3",
     "@hookform/resolvers": "^5.2.2",

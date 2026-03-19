@@ -359,7 +359,7 @@ export async function extractEntities(
     const response = await chat(messages, {
       systemPrompt: SYSTEM_PROMPT,
       model: options.model,
-      provider: options.provider ?? "alibaba",
+      provider: options.provider ?? "anthropic",
     });
     responseText = response.text;
   } catch (err) {
@@ -399,7 +399,7 @@ export async function processDocument(
   ontology: Ontology,
   options: {
     readonly model: string;
-    readonly provider?: "openrouter" | "agent-sdk" | "alibaba";
+    readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
     readonly chunkSize?: number;
     readonly chunkOverlap?: number;
     readonly maxConcurrent?: number;

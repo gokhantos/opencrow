@@ -524,7 +524,7 @@ export async function formulateGame(
   seedInput: string,
   options: {
     readonly model: string;
-    readonly provider?: "openrouter" | "agent-sdk" | "alibaba";
+    readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
     readonly sessionId: string;
     readonly preferredGameType?: GameType;
   },
@@ -554,7 +554,7 @@ export async function formulateGame(
     const response = await chat(messages, {
       systemPrompt: SYSTEM_PROMPT,
       model: options.model,
-      provider: options.provider ?? "alibaba",
+      provider: options.provider ?? "anthropic",
     });
     responseText = response.text;
   } catch (err) {

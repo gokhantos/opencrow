@@ -30,7 +30,7 @@ export interface Ontology {
 
 export interface GenerateOntologyOptions {
   readonly model: string;
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba";
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
   readonly maxEntityTypes?: number;
   readonly maxRelationshipTypes?: number;
 }
@@ -269,7 +269,7 @@ export async function generateOntology(
     const response = await chat(messages, {
       systemPrompt: SYSTEM_PROMPT,
       model: options.model,
-      provider: options.provider ?? "alibaba",
+      provider: options.provider ?? "anthropic",
     });
     responseText = response.text;
   } catch (err) {

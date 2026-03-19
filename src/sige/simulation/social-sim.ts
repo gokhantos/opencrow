@@ -145,7 +145,7 @@ async function simulateBatch(
   ideas: readonly ScoredIdea[],
   priorContext: string,
   model: string,
-  provider?: "openrouter" | "agent-sdk" | "alibaba",
+  provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic",
   signal?: AbortSignal,
 ): Promise<BatchLlmResponse> {
   const citizenList = citizens
@@ -215,7 +215,7 @@ Return JSON only, no markdown:
   const response = await chat(messages, {
     systemPrompt,
     model,
-    provider: provider ?? "alibaba",
+    provider: provider ?? "anthropic",
     abortSignal: signal,
   })
 
