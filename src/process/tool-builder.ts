@@ -150,7 +150,16 @@ export function buildWorkflowToolRegistry(
   if (config.sige?.enabled) {
     const sigeTools = createSigeTools("workflow", {
       generateId: () => crypto.randomUUID(),
-      defaultConfigJson: () => JSON.stringify({}),
+      defaultConfigJson: () => JSON.stringify({
+        expertRounds: config.sige!.simulation.expertRounds,
+        socialAgentCount: config.sige!.simulation.socialAgentCount,
+        socialRounds: config.sige!.simulation.socialRounds,
+        maxConcurrentAgents: config.sige!.simulation.maxConcurrentAgents,
+        alpha: config.sige!.simulation.alpha,
+        provider: config.sige!.provider,
+        model: config.sige!.model,
+        agentModel: config.sige!.agentModel,
+      }),
     }).filter((t) => allowsTool(t.name));
     if (sigeTools.length > 0) registry = registry.withTools(sigeTools);
   }
@@ -353,7 +362,16 @@ export function buildRegistryForAgent(
   if (config.sige?.enabled) {
     const sigeTools = createSigeTools(agent.id, {
       generateId: () => crypto.randomUUID(),
-      defaultConfigJson: () => JSON.stringify({}),
+      defaultConfigJson: () => JSON.stringify({
+        expertRounds: config.sige!.simulation.expertRounds,
+        socialAgentCount: config.sige!.simulation.socialAgentCount,
+        socialRounds: config.sige!.simulation.socialRounds,
+        maxConcurrentAgents: config.sige!.simulation.maxConcurrentAgents,
+        alpha: config.sige!.simulation.alpha,
+        provider: config.sige!.provider,
+        model: config.sige!.model,
+        agentModel: config.sige!.agentModel,
+      }),
     }).filter((t) => allowsTool(t.name));
     if (sigeTools.length > 0) registry = registry.withTools(sigeTools);
   }

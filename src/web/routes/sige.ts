@@ -70,9 +70,9 @@ const DEFAULT_CONFIG: SigeSessionConfig = {
     accuracyPenalty: 0.1,
     socialViability: 0.3,
   },
-  provider: "alibaba",
-  model: "qwen3.5-plus",
-  agentModel: "qwen3.5-plus",
+  provider: "agent-sdk",
+  model: "claude-sonnet-4-6",
+  agentModel: "claude-sonnet-4-6",
 };
 
 function mergeConfig(
