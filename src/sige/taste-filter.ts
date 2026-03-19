@@ -253,7 +253,7 @@ export async function runTasteFilter(params: {
   readonly ideas: readonly ScoredIdea[];
   readonly enrichedSeed: string;
   readonly model: string;
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba";
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
   readonly minPassCount?: number;
 }): Promise<TasteFilterResult> {
   const { ideas, enrichedSeed, model, provider = "alibaba" } = params;
