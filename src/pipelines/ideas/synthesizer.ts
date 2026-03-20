@@ -341,6 +341,12 @@ async function developIdeas(
 
   const prompt = `You are developing the following validated market intersection hypotheses into concrete product ideas.
 
+DIVERSITY REQUIREMENT (CRITICAL):
+- Each idea MUST target a DIFFERENT market category and user segment
+- No two ideas should address the same pain point or use the same technology
+- If two ideas sound similar, DISCARD the weaker one and think of something completely different
+- Spread across: consumer apps, B2B tools, developer tools, health/wellness, education, finance, creative tools, logistics
+
 ${CATEGORY_CONTEXT[category]}
 
 === VALIDATED INTERSECTION HYPOTHESES (ranked by signal strength) ===
@@ -667,8 +673,31 @@ export async function synthesizeFromTrends(input: {
     return singlePassSynthesis(input);
   }
 
-  // Take top 10 by signal strength
-  const topIntersections = [...intersections]
+  // Deduplicate by capabilitySignal — if 3+ hypotheses cite the same capability, keep only the best
+  const capabilityCounts = new Map<string, number>();
+  for (const h of intersections) {
+    const key = h.capabilitySignal.toLowerCase().trim();
+    capabilityCounts.set(key, (capabilityCounts.get(key) ?? 0) + 1);
+  }
+
+  const dedupedIntersections = intersections.filter((h) => {
+    const key = h.capabilitySignal.toLowerCase().trim();
+    const count = capabilityCounts.get(key) ?? 0;
+    if (count <= 2) return true;
+    // Keep only the highest signalStrength for over-represented capabilities
+    const best = intersections
+      .filter((x) => x.capabilitySignal.toLowerCase().trim() === key)
+      .sort((a, b) => b.signalStrength - a.signalStrength)[0];
+    return h === best;
+  });
+
+  log.info("Capability dedup complete", {
+    before: intersections.length,
+    after: dedupedIntersections.length,
+  });
+
+  // Take top 10 by signal strength from deduped set
+  const topIntersections = [...dedupedIntersections]
     .sort((a, b) => b.signalStrength - a.signalStrength)
     .slice(0, Math.min(maxIdeas * 2, 10));
 

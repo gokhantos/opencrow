@@ -88,11 +88,13 @@ function tokenize(title: string): readonly string[] {
   return title.toLowerCase().split(/\s+/).map((w) => w.replace(/[^a-z]/g, "")).filter((w) => w.length >= 3);
 }
 
-function extractThemesByNgrams(titles: readonly string[]): readonly string[] {
+function extractThemesByNgrams(
+  rows: ReadonlyArray<{ readonly title: string; readonly summary: string }>,
+): readonly string[] {
   const bigramCounts = new Map<string, string[]>();
   const trigramCounts = new Map<string, string[]>();
 
-  for (const title of titles) {
+  for (const { title } of rows) {
     const tokens = tokenize(title);
     const seen = new Set<string>();
 
@@ -124,11 +126,17 @@ function extractThemesByNgrams(titles: readonly string[]): readonly string[] {
     }
   }
 
+  // Build a title → summary lookup for enriched output
+  const summaryByTitle = new Map<string, string>();
+  for (const { title, summary } of rows) {
+    summaryByTitle.set(title, summary);
+  }
+
   const allNgrams: Array<{ readonly phrase: string; readonly hits: readonly string[] }> = [];
 
   for (const [phrase, hits] of trigramCounts) {
     const unique = [...new Set(hits)];
-    if (unique.length >= 3) allNgrams.push({ phrase, hits: unique });
+    if (unique.length >= 2) allNgrams.push({ phrase, hits: unique });
   }
 
   for (const [phrase, hits] of bigramCounts) {
@@ -140,7 +148,12 @@ function extractThemesByNgrams(titles: readonly string[]): readonly string[] {
 
   const lines: string[] = [];
   for (const { phrase, hits } of allNgrams) {
-    lines.push(`- "${phrase}" theme (${hits.length} ideas): ${hits.slice(0, 3).join(", ")}`);
+    const exampleTitle = hits[0] ?? "";
+    const exampleSummary = summaryByTitle.get(exampleTitle);
+    const note = exampleSummary
+      ? ` — e.g. "${exampleTitle}" (${exampleSummary.slice(0, 80).trim()}…)`
+      : ` — e.g. ${hits.slice(0, 2).join(", ")}`;
+    lines.push(`- "${phrase}" theme (${hits.length} ideas)${note}`);
     if (lines.length >= 15) break;
   }
 
@@ -187,7 +200,7 @@ async function buildSaturatedThemes(memoryManager?: MemoryManager | null): Promi
     if (rows.length === 0) return "";
 
     // Level 1: bigram/trigram theme detection (fast, no LLM)
-    const themeLines = extractThemesByNgrams(rows.map((r) => r.title));
+    const themeLines = extractThemesByNgrams(rows);
 
     // Level 2: semantic clustering via memory search (optional)
     const semanticLines = memoryManager

@@ -495,13 +495,27 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
   const capabilities: Capability[] = [];
 
   try {
-    // Product Hunt: high engagement launches
-    const ph = (await db`
+    // Product Hunt: recent high-engagement launches (30-day window)
+    // first_seen_at is a unix epoch integer
+    const cutoff30d = Math.floor(Date.now() / 1000) - 30 * 24 * 3600;
+    let ph = (await db`
       SELECT name, tagline, description, url, website_url, votes_count, comments_count
       FROM ph_products
+      WHERE first_seen_at >= ${cutoff30d}
       ORDER BY (votes_count + comments_count * 3) DESC
       LIMIT 15
     `) as Array<Record<string, unknown>>;
+
+    // Fallback: all-time with random offset to ensure variation across runs
+    if (ph.length < 5) {
+      ph = (await db`
+        SELECT name, tagline, description, url, website_url, votes_count, comments_count
+        FROM ph_products
+        ORDER BY (votes_count + comments_count * 3) DESC
+        LIMIT 15
+        OFFSET floor(random() * 10)::int
+      `) as Array<Record<string, unknown>>;
+    }
 
     for (const p of ph) {
       capabilities.push({
@@ -513,10 +527,11 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // HN: what tech community cares about
+    // HN: what tech community cares about in the last 7 days
     const hn = (await db`
       SELECT title, url, hn_url, points, comment_count
       FROM hn_stories
+      WHERE updated_at >= NOW() - INTERVAL '7 days'
       ORDER BY updated_at DESC, (points + comment_count * 2) DESC
       LIMIT 15
     `) as Array<Record<string, unknown>>;
@@ -531,13 +546,25 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // GitHub: trending repos = building blocks
-    const repos = (await db`
+    // GitHub: actively trending repos (stars gained today)
+    let repos = (await db`
       SELECT full_name, description, language, stars, stars_today, url
       FROM github_repos
+      WHERE stars_today > 0
       ORDER BY stars_today DESC, stars DESC
       LIMIT 15
     `) as Array<Record<string, unknown>>;
+
+    // Fallback: all-time with random offset if no active trending data
+    if (repos.length < 5) {
+      repos = (await db`
+        SELECT full_name, description, language, stars, stars_today, url
+        FROM github_repos
+        ORDER BY stars DESC
+        LIMIT 15
+        OFFSET floor(random() * 10)::int
+      `) as Array<Record<string, unknown>>;
+    }
 
     for (const r of repos) {
       capabilities.push({
@@ -549,10 +576,11 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // Reddit
+    // Reddit: posts from the last 7 days
     const posts = (await db`
       SELECT title, selftext, subreddit, score, num_comments, permalink
       FROM reddit_posts
+      WHERE updated_at >= NOW() - INTERVAL '7 days'
       ORDER BY updated_at DESC, (score + num_comments * 3) DESC
       LIMIT 10
     `) as Array<Record<string, unknown>>;
@@ -567,7 +595,7 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // News
+    // News: 72h window (already well-filtered — keep as-is)
     const cutoff72h = Math.floor(Date.now() / 1000) - 72 * 3600;
     const articles = (await db`
       SELECT title, url, source_name, summary
@@ -585,10 +613,11 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // X/Twitter
+    // X/Twitter: last 7 days
     const tweets = (await db`
       SELECT author_username, text, likes, retweets, views
       FROM x_scraped_tweets
+      WHERE scraped_at >= NOW() - INTERVAL '7 days'
       ORDER BY scraped_at DESC LIMIT 10
     `) as Array<Record<string, unknown>>;
 
