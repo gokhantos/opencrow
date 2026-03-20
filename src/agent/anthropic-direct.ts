@@ -78,8 +78,9 @@ async function getApiKey(): Promise<string> {
 
   try {
     // pi-ai getOAuthApiKey takes Record<string, OAuthCredentials>
+    // Key MUST match the providerId ("anthropic") — getOAuthApiKey does credentials[providerId]
     const result = await getOAuthApiKey("anthropic", {
-      default: _cachedCreds,
+      anthropic: _cachedCreds,
     });
 
     if (result) {
