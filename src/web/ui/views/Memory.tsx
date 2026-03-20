@@ -173,6 +173,7 @@ export default function Memory() {
   const [searching, setSearching] = useState(false);
   const [chunkAgent, setChunkAgent] = useState("");
   const [kvAgent, setKvAgent] = useState("");
+  const [deletingChunks, setDeletingChunks] = useState<ReadonlySet<string>>(new Set());
 
   const fetchStats = useCallback(async () => {
     try {
@@ -256,6 +257,28 @@ export default function Memory() {
     },
     [handleSearch],
   );
+
+  const handleDeleteChunk = useCallback(async (chunkId: string) => {
+    setDeletingChunks((prev) => new Set([...prev, chunkId]));
+    try {
+      const res = await apiFetch<{ success: boolean }>(
+        `/api/memory/debug/chunks/${chunkId}`,
+        { method: "DELETE" },
+      );
+      if (res.success) {
+        setChunks((prev) => prev.filter((c) => c.id !== chunkId));
+        fetchStats();
+      }
+    } catch {
+      // ignore
+    } finally {
+      setDeletingChunks((prev) => {
+        const next = new Set([...prev]);
+        next.delete(chunkId);
+        return next;
+      });
+    }
+  }, [fetchStats]);
 
   const agentIds = stats?.byAgent.map((a) => a.agentId) ?? [];
 
@@ -454,6 +477,7 @@ export default function Memory() {
                       <th className="text-left py-2.5 px-3 text-xs font-semibold uppercase tracking-wide text-faint">
                         Time
                       </th>
+                      <th className="py-2.5 px-3 w-[50px]" />
                     </tr>
                   </thead>
                   <tbody>
@@ -479,6 +503,22 @@ export default function Memory() {
                         </td>
                         <td className="py-2.5 px-3 text-xs text-faint whitespace-nowrap">
                           {relativeTime(chunk.createdAt)}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <button
+                            type="button"
+                            className={cn(
+                              "px-2 py-1 rounded text-xs font-medium border-none cursor-pointer transition-colors",
+                              deletingChunks.has(chunk.id)
+                                ? "bg-bg-3 text-faint cursor-not-allowed"
+                                : "bg-transparent text-faint hover:text-danger hover:bg-danger/10",
+                            )}
+                            disabled={deletingChunks.has(chunk.id)}
+                            onClick={() => handleDeleteChunk(chunk.id)}
+                            title="Delete this memory chunk"
+                          >
+                            {deletingChunks.has(chunk.id) ? "..." : "\u2715"}
+                          </button>
                         </td>
                       </tr>
                     ))}

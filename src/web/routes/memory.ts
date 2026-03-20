@@ -181,6 +181,22 @@ export function createMemoryDebugRoutes(): Hono {
     });
   });
 
+  app.delete("/memory/debug/chunks/:id", async (c) => {
+    const db = getDb();
+    const chunkId = c.req.param("id");
+
+    const [chunk] = await db`
+      SELECT source_id FROM memory_chunks WHERE id = ${chunkId}
+    `;
+    if (!chunk) {
+      return c.json({ success: false, error: "Chunk not found" }, 404);
+    }
+
+    const sourceId = (chunk as { source_id: string }).source_id;
+    await db`DELETE FROM memory_sources WHERE id = ${sourceId}`;
+    return c.json({ success: true, deletedSourceId: sourceId });
+  });
+
   return app;
 }
 
