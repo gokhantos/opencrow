@@ -258,19 +258,21 @@ export default function Memory() {
     [handleSearch],
   );
 
-  const handleDeleteChunk = useCallback(async (chunkId: string) => {
+  const handleDeleteChunk = useCallback(async (chunkId: string, sourceId: string) => {
     setDeletingChunks((prev) => new Set([...prev, chunkId]));
     try {
-      const res = await apiFetch<{ success: boolean }>(
+      const res = await apiFetch<{ success: boolean; deletedSourceId?: string }>(
         `/api/memory/debug/chunks/${chunkId}`,
         { method: "DELETE" },
       );
       if (res.success) {
-        setChunks((prev) => prev.filter((c) => c.id !== chunkId));
+        // Remove all chunks from this source (cascade deletes siblings)
+        setChunks((prev) => prev.filter((c) => c.sourceId !== sourceId));
         fetchStats();
       }
     } catch {
-      // ignore
+      // Chunk may already be gone (sibling cascade) — remove from UI
+      setChunks((prev) => prev.filter((c) => c.id !== chunkId));
     } finally {
       setDeletingChunks((prev) => {
         const next = new Set([...prev]);
@@ -514,7 +516,7 @@ export default function Memory() {
                                 : "bg-transparent text-faint hover:text-danger hover:bg-danger/10",
                             )}
                             disabled={deletingChunks.has(chunk.id)}
-                            onClick={() => handleDeleteChunk(chunk.id)}
+                            onClick={() => handleDeleteChunk(chunk.id, chunk.sourceId)}
                             title="Delete this memory chunk"
                           >
                             {deletingChunks.has(chunk.id) ? "..." : "\u2715"}
