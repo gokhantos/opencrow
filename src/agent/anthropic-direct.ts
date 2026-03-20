@@ -126,12 +126,35 @@ function buildModel(modelId: string): Model<"anthropic-messages"> {
 function toPiMessages(
   messages: readonly ConversationMessage[],
 ): UserMessage[] {
-  // pi-ai expects Message[] but we only send user messages for simple chat
-  return messages.map((msg) => ({
+  // For simple chat completions, all messages are sent as user messages.
+  // Multi-turn conversations with assistant context are flattened into the
+  // system prompt or handled by the caller before reaching here.
+  // If there ARE assistant messages, we include them as context in the last
+  // user message to avoid pi-ai type mismatches.
+  if (messages.length <= 1 || messages.every((m) => m.role === "user")) {
+    return messages.map((msg) => ({
+      role: "user" as const,
+      content: msg.content,
+      timestamp: msg.timestamp,
+    }));
+  }
+
+  // Flatten multi-turn into a single user message with conversation context
+  const contextLines: string[] = [];
+  for (const msg of messages.slice(0, -1)) {
+    const prefix = msg.role === "assistant" ? "Assistant" : "User";
+    contextLines.push(`${prefix}: ${msg.content}`);
+  }
+  const lastMsg = messages[messages.length - 1]!;
+  const flattenedContent = contextLines.length > 0
+    ? `Previous conversation:\n${contextLines.join("\n")}\n\nUser: ${lastMsg.content}`
+    : lastMsg.content;
+
+  return [{
     role: "user" as const,
-    content: msg.content,
-    timestamp: msg.timestamp,
-  }));
+    content: flattenedContent,
+    timestamp: lastMsg.timestamp,
+  }];
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -175,7 +198,17 @@ export async function chat(
     const text = textBlocks.map((b) => b.text).join("");
 
     if (!text) {
-      throw new Error("Anthropic response contained no text");
+      const blockTypes = response.content.map((b) => b.type).join(", ");
+      log.error("Anthropic response contained no text blocks", {
+        model: options.model,
+        blockTypes: blockTypes || "empty",
+        contentLength: response.content.length,
+        stopReason: response.stopReason,
+        usage: response.usage,
+      });
+      throw new Error(
+        `Anthropic response contained no text (blocks: [${blockTypes || "none"}], stopReason: ${response.stopReason ?? "unknown"})`,
+      );
     }
 
     const inputTokens = response.usage?.input ?? 0;
