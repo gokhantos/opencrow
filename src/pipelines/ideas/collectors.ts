@@ -31,6 +31,20 @@ const log = createLogger("pipeline:collectors");
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
+// ── Collector context for consumed-signal tracking ───────────────────────────
+
+/**
+ * Passed into each collector. Provides the set of already-consumed source IDs
+ * (per table) and accumulates the IDs selected by this run so pipeline.ts can
+ * mark them consumed after the store step.
+ */
+export interface CollectorContext {
+  /** Table name → set of IDs already consumed in prior runs (within 30-day window). */
+  readonly consumed: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Accumulates: table name → IDs selected by collectors in the current run. */
+  readonly selected: Map<string, string[]>;
+}
+
 // ── Shared utilities ─────────────────────────────────────────────────────────
 
 /** Shuffle array and return first N. */
@@ -43,11 +57,45 @@ function sampleRandom<T>(items: readonly T[], n: number): readonly T[] {
   return arr.slice(0, n);
 }
 
+/**
+ * Partition rows into fresh (not yet consumed) vs stale (already consumed).
+ * Returns up to `target` rows, preferring fresh ones. Falls back to stale
+ * rows if there are fewer than `minFresh` fresh ones so a run always gets data.
+ */
+function excludeConsumed<T>(
+  rows: readonly T[],
+  consumed: ReadonlySet<string>,
+  idExtractor: (row: T) => string,
+  target: number,
+  minFresh = 5,
+): { readonly selected: readonly T[]; readonly selectedIds: readonly string[] } {
+  const fresh: T[] = [];
+  const stale: T[] = [];
+
+  for (const row of rows) {
+    const id = idExtractor(row);
+    if (consumed.has(id)) {
+      stale.push(row);
+    } else {
+      fresh.push(row);
+    }
+  }
+
+  // Use fresh data first; backfill with random stale rows if not enough fresh ones
+  const selected =
+    fresh.length >= minFresh
+      ? fresh.slice(0, target)
+      : [...fresh, ...sampleRandom(stale, target - fresh.length)].slice(0, target);
+
+  const selectedIds = selected.map(idExtractor);
+  return { selected, selectedIds };
+}
+
 function buildChatOptions(model: string) {
   return {
     systemPrompt: "",
     model,
-    provider: "anthropic" as const,
+    provider: "agent-sdk" as const,
     agentId: "idea-pipeline",
     usageContext: { channel: "pipeline" as const, chatId: "ideas", source: "workflow" as const },
   };
@@ -115,7 +163,7 @@ ${rawSummary.slice(0, 60000)}`;
  * - What existing apps offer (descriptions = feature landscape)
  * - Which categories are underserved (low satisfaction + many apps = opportunity)
  */
-export async function analyzeAppLandscape(model?: string): Promise<TrendData> {
+export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContext): Promise<TrendData> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
   const summaryLines: string[] = [];
@@ -305,6 +353,7 @@ ${rawSummary.slice(0, 60000)}`;
 export async function clusterReviews(
   focusCategories?: readonly string[],
   model?: string,
+  _ctx?: CollectorContext,
 ): Promise<ClusteredPains> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
@@ -312,64 +361,55 @@ export async function clusterReviews(
 
   try {
     // NEGATIVE reviews — what's broken
-    // POSITIVE reviews — what people love
-    // Play Store negative + positive
-    // All four queries are fully independent — run in parallel.
-    const negativeQuery = focusCategories?.length
-      ? db`
+    const negativeReviews = focusCategories?.length
+      ? (await db`
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
-          WHERE r.rating <= 2 AND a.category IN ${db(focusCategories as string[])}
+          WHERE r.rating <= 2 AND a.category = ANY(${focusCategories as string[]})
           ORDER BY r.first_seen_at DESC LIMIT 400
-        `
-      : db`
+        `) as Array<Record<string, unknown>>
+      : (await db`
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating <= 2
           ORDER BY r.first_seen_at DESC LIMIT 400
-        `;
+        `) as Array<Record<string, unknown>>;
 
-    const positiveQuery = focusCategories?.length
-      ? db`
+    // POSITIVE reviews — what people love
+    const positiveReviews = focusCategories?.length
+      ? (await db`
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
-          WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category IN ${db(focusCategories as string[])}
+          WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category = ANY(${focusCategories as string[]})
           ORDER BY r.first_seen_at DESC LIMIT 200
-        `
-      : db`
+        `) as Array<Record<string, unknown>>
+      : (await db`
           SELECT a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating >= 4 AND LENGTH(r.content) > 30
           ORDER BY r.first_seen_at DESC LIMIT 200
-        `;
+        `) as Array<Record<string, unknown>>;
 
-    const [negativeReviews, positiveReviews, playNegative, playPositive] = (await Promise.all([
-      negativeQuery,
-      positiveQuery,
-      db`
-        SELECT a.category, a.name as app_name, r.title, r.content, r.rating
-        FROM playstore_reviews r
-        JOIN playstore_apps a ON a.id = r.app_id
-        WHERE r.rating <= 2 AND a.category != ''
-        ORDER BY r.first_seen_at DESC LIMIT 400
-      `,
-      db`
-        SELECT a.category, a.name as app_name, r.title, r.content, r.rating
-        FROM playstore_reviews r
-        JOIN playstore_apps a ON a.id = r.app_id
-        WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category != ''
-        ORDER BY r.first_seen_at DESC LIMIT 200
-      `,
-    ])) as [
-      Array<Record<string, unknown>>,
-      Array<Record<string, unknown>>,
-      Array<Record<string, unknown>>,
-      Array<Record<string, unknown>>,
-    ];
+    // Play Store negative + positive
+    const playNegative = (await db`
+      SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+      FROM playstore_reviews r
+      JOIN playstore_apps a ON a.id = r.app_id
+      WHERE r.rating <= 2 AND a.category != ''
+      ORDER BY r.first_seen_at DESC LIMIT 400
+    `) as Array<Record<string, unknown>>;
+
+    const playPositive = (await db`
+      SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+      FROM playstore_reviews r
+      JOIN playstore_apps a ON a.id = r.app_id
+      WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category != ''
+      ORDER BY r.first_seen_at DESC LIMIT 200
+    `) as Array<Record<string, unknown>>;
 
     // Group by category
     const byCat = new Map<string, { negative: Array<Record<string, unknown>>; positive: Array<Record<string, unknown>> }>();
@@ -489,33 +529,52 @@ ${rawText.slice(0, 50000)}`;
   }
 }
 
-export async function scanCapabilities(model?: string): Promise<CapabilityScan> {
+export async function scanCapabilities(model?: string, ctx?: CollectorContext): Promise<CapabilityScan> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
   const capabilities: Capability[] = [];
 
+  // Helper to retrieve the consumed set for a given table (empty set if not provided).
+  const consumedFor = (table: string): ReadonlySet<string> =>
+    ctx?.consumed.get(table) ?? new Set<string>();
+
+  // Helper to register selected IDs into the context so pipeline.ts can mark them.
+  const registerSelected = (table: string, ids: readonly string[]): void => {
+    if (!ctx || ids.length === 0) return;
+    const existing = ctx.selected.get(table) ?? [];
+    ctx.selected.set(table, [...existing, ...ids]);
+  };
+
   try {
-    // Product Hunt: recent high-engagement launches (30-day window)
-    // first_seen_at is a unix epoch integer
+    // ── Product Hunt ──────────────────────────────────────────────────────────
+    // Fetch 50 rows so we have enough fresh ones after filtering consumed.
     const cutoff30d = Math.floor(Date.now() / 1000) - 30 * 24 * 3600;
-    let ph = (await db`
-      SELECT name, tagline, description, url, website_url, votes_count, comments_count
+    let phRaw = (await db`
+      SELECT id, name, tagline, description, url, website_url, votes_count, comments_count
       FROM ph_products
       WHERE first_seen_at >= ${cutoff30d}
       ORDER BY (votes_count + comments_count * 3) DESC
-      LIMIT 15
+      LIMIT 50
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset to ensure variation across runs
-    if (ph.length < 5) {
-      ph = (await db`
-        SELECT name, tagline, description, url, website_url, votes_count, comments_count
+    if (phRaw.length < 5) {
+      phRaw = (await db`
+        SELECT id, name, tagline, description, url, website_url, votes_count, comments_count
         FROM ph_products
         ORDER BY (votes_count + comments_count * 3) DESC
-        LIMIT 15
+        LIMIT 50
         OFFSET floor(random() * 10)::int
       `) as Array<Record<string, unknown>>;
     }
+
+    const { selected: ph, selectedIds: phIds } = excludeConsumed(
+      phRaw,
+      consumedFor("ph_products"),
+      (r) => r.id as string,
+      15,
+    );
+    registerSelected("ph_products", phIds);
 
     for (const p of ph) {
       capabilities.push({
@@ -527,14 +586,22 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // HN: what tech community cares about in the last 7 days
-    const hn = (await db`
-      SELECT title, url, hn_url, points, comment_count
+    // ── Hacker News ───────────────────────────────────────────────────────────
+    const hnRaw = (await db`
+      SELECT id, title, url, hn_url, points, comment_count
       FROM hn_stories
       WHERE updated_at >= NOW() - INTERVAL '7 days'
       ORDER BY updated_at DESC, (points + comment_count * 2) DESC
-      LIMIT 15
+      LIMIT 50
     `) as Array<Record<string, unknown>>;
+
+    const { selected: hn, selectedIds: hnIds } = excludeConsumed(
+      hnRaw,
+      consumedFor("hn_stories"),
+      (r) => r.id as string,
+      15,
+    );
+    registerSelected("hn_stories", hnIds);
 
     for (const s of hn) {
       capabilities.push({
@@ -546,25 +613,33 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // GitHub: actively trending repos (stars gained today)
-    let repos = (await db`
-      SELECT full_name, description, language, stars, stars_today, url
+    // ── GitHub ────────────────────────────────────────────────────────────────
+    let reposRaw = (await db`
+      SELECT id, full_name, description, language, stars, stars_today, url
       FROM github_repos
       WHERE stars_today > 0
       ORDER BY stars_today DESC, stars DESC
-      LIMIT 15
+      LIMIT 50
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset if no active trending data
-    if (repos.length < 5) {
-      repos = (await db`
-        SELECT full_name, description, language, stars, stars_today, url
+    if (reposRaw.length < 5) {
+      reposRaw = (await db`
+        SELECT id, full_name, description, language, stars, stars_today, url
         FROM github_repos
         ORDER BY stars DESC
-        LIMIT 15
+        LIMIT 50
         OFFSET floor(random() * 10)::int
       `) as Array<Record<string, unknown>>;
     }
+
+    const { selected: repos, selectedIds: repoIds } = excludeConsumed(
+      reposRaw,
+      consumedFor("github_repos"),
+      (r) => r.id as string,
+      15,
+    );
+    registerSelected("github_repos", repoIds);
 
     for (const r of repos) {
       capabilities.push({
@@ -576,14 +651,22 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // Reddit: posts from the last 7 days
-    const posts = (await db`
-      SELECT title, selftext, subreddit, score, num_comments, permalink
+    // ── Reddit ────────────────────────────────────────────────────────────────
+    const postsRaw = (await db`
+      SELECT id, title, selftext, subreddit, score, num_comments, permalink
       FROM reddit_posts
       WHERE updated_at >= NOW() - INTERVAL '7 days'
       ORDER BY updated_at DESC, (score + num_comments * 3) DESC
-      LIMIT 10
+      LIMIT 50
     `) as Array<Record<string, unknown>>;
+
+    const { selected: posts, selectedIds: postIds } = excludeConsumed(
+      postsRaw,
+      consumedFor("reddit_posts"),
+      (r) => r.id as string,
+      10,
+    );
+    registerSelected("reddit_posts", postIds);
 
     for (const p of posts) {
       capabilities.push({
@@ -595,13 +678,21 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // News: 72h window (already well-filtered — keep as-is)
+    // ── News ──────────────────────────────────────────────────────────────────
     const cutoff72h = Math.floor(Date.now() / 1000) - 72 * 3600;
-    const articles = (await db`
-      SELECT title, url, source_name, summary
+    const articlesRaw = (await db`
+      SELECT id, title, url, source_name, summary
       FROM news_articles WHERE scraped_at >= ${cutoff72h}
-      ORDER BY scraped_at DESC LIMIT 10
+      ORDER BY scraped_at DESC LIMIT 50
     `) as Array<Record<string, unknown>>;
+
+    const { selected: articles, selectedIds: articleIds } = excludeConsumed(
+      articlesRaw,
+      consumedFor("news_articles"),
+      (r) => r.id as string,
+      10,
+    );
+    registerSelected("news_articles", articleIds);
 
     for (const a of articles) {
       capabilities.push({
@@ -613,13 +704,21 @@ export async function scanCapabilities(model?: string): Promise<CapabilityScan> 
       });
     }
 
-    // X/Twitter: last 7 days
-    const tweets = (await db`
-      SELECT author_username, text, likes, retweets, views
+    // ── X / Twitter ───────────────────────────────────────────────────────────
+    const tweetsRaw = (await db`
+      SELECT id, author_username, text, likes, retweets, views
       FROM x_scraped_tweets
       WHERE scraped_at >= NOW() - INTERVAL '7 days'
-      ORDER BY scraped_at DESC LIMIT 10
+      ORDER BY scraped_at DESC LIMIT 50
     `) as Array<Record<string, unknown>>;
+
+    const { selected: tweets, selectedIds: tweetIds } = excludeConsumed(
+      tweetsRaw,
+      consumedFor("x_scraped_tweets"),
+      (r) => r.id as string,
+      10,
+    );
+    registerSelected("x_scraped_tweets", tweetIds);
 
     for (const t of tweets) {
       capabilities.push({

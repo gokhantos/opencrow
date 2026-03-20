@@ -22,7 +22,9 @@ import {
   updatePipelineStep,
 } from "../store";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
+import type { CollectorContext } from "./collectors";
 import { synthesizeFromTrends, deepSearch } from "./synthesizer";
+import { getConsumedIds, markConsumed } from "./consumption";
 import type { GeneratedIdeaCandidate } from "./types";
 
 const log = createLogger("pipeline:ideas");
@@ -266,54 +268,72 @@ export async function runIdeasPipeline(
   try {
     const model = config.model ?? "claude-sonnet-4-6";
 
-    // ── Steps 1-3: Run collectors in parallel (no inter-dependencies) ───
-    // clusterReviews accepts an optional focusCategories filter derived from
-    // landscape results, but its undefined fallback is fully functional — the
-    // reviews and capabilities collectors have zero dependency on each other
-    // or on the landscape step, so all three can run concurrently.
-    const [trends, pains, capabilities] = await Promise.all([
-      runStep(
-        runId,
-        "landscape",
-        () => analyzeAppLandscape(model),
-        (t) => `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points${t.insights ? " (with LLM insights)" : ""}`,
-      ),
-      runStep(
-        runId,
-        "reviews",
-        () => clusterReviews(undefined, model),
-        (p) => `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)${p.insights ? " (with LLM insights)" : ""}`,
-      ),
-      runStep(
-        runId,
-        "capabilities",
-        () => scanCapabilities(model),
-        (c) => `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
-      ),
-    ]);
+    // ── Pre-collectors: load consumed signals for all capability source tables ─
+    const capabilityTables = [
+      "ph_products",
+      "hn_stories",
+      "github_repos",
+      "reddit_posts",
+      "news_articles",
+      "x_scraped_tweets",
+    ] as const;
 
-    // ── Step 4+5: Deep search + saturated themes in parallel ──────────
-    const deepSearchPromise =
-      memoryManager && trends.trendingCategories.length > 0
-        ? runStep(
-            runId,
-            "deep_search",
-            () =>
-              deepSearch(
-                trends.trendingCategories.slice(0, 6).map((c) => `${c.category} mobile app opportunity`),
-                memoryManager,
-              ),
-            (ctx) => {
-              const count = (ctx.match(/\[.*?\]/g) ?? []).length;
-              return `Found ${count} supporting results for ${trends.trendingCategories.length} themes`;
-            },
-          )
-        : Promise.resolve("");
+    const consumedEntries = await Promise.all(
+      capabilityTables.map(async (table) => [table, await getConsumedIds(table)] as const),
+    );
+    const collectorCtx: CollectorContext = {
+      consumed: new Map(consumedEntries),
+      selected: new Map(),
+    };
 
-    const [deepSearchContext, saturatedThemes] = await Promise.all([
-      deepSearchPromise,
-      buildSaturatedThemes(memoryManager),
-    ]);
+    // ── Step 1: Analyze app landscape ───────────────────────────────────
+    const trends = await runStep(
+      runId,
+      "landscape",
+      () => analyzeAppLandscape(model, collectorCtx),
+      (t) => `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points${t.insights ? " (with LLM insights)" : ""}`,
+    );
+
+    // ── Step 2: Cluster reviews (complaints + praises) ────────────────
+    const focusCategories = trends.trendingCategories.length > 0
+      ? trends.trendingCategories.map((c) => c.category)
+      : undefined;
+
+    const pains = await runStep(
+      runId,
+      "reviews",
+      () => clusterReviews(focusCategories, model, collectorCtx),
+      (p) => `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)${p.insights ? " (with LLM insights)" : ""}`,
+    );
+
+    // ── Step 3: Scan capabilities ─────────────────────────────────────
+    const capabilities = await runStep(
+      runId,
+      "capabilities",
+      () => scanCapabilities(model, collectorCtx),
+      (c) => `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
+    );
+
+    // ── Step 4: Deep search (optional) ────────────────────────────────
+    let deepSearchContext = "";
+    if (memoryManager && trends.trendingCategories.length > 0) {
+      const searchThemes = trends.trendingCategories
+        .slice(0, 6)
+        .map((c) => `${c.category} mobile app opportunity`);
+
+      deepSearchContext = await runStep(
+        runId,
+        "deep_search",
+        () => deepSearch(searchThemes, memoryManager),
+        (ctx) => {
+          const count = (ctx.match(/\[.*?\]/g) ?? []).length;
+          return `Found ${count} supporting results for ${searchThemes.length} themes`;
+        },
+      );
+    }
+
+    // ── Step 5: Synthesize ideas at trend intersections ───────────────
+    const saturatedThemes = await buildSaturatedThemes(memoryManager);
 
     const synthesis = await runStep(
       runId,
@@ -425,6 +445,12 @@ export async function runIdeasPipeline(
       },
       (ids) => `Stored ${ids.length} ideas`,
     );
+
+    // ── Mark consumed signals ─────────────────────────────────────────
+    // Run sequentially to avoid overwhelming the database with parallel writes.
+    for (const [table, ids] of collectorCtx.selected) {
+      await markConsumed(runId, table, ids);
+    }
 
     // ── Finalize ──────────────────────────────────────────────────────
     const summary: PipelineResultSummary = {
