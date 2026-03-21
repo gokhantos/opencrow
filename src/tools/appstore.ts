@@ -16,7 +16,7 @@ import { getEnum } from "./input-helpers";
 import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
 
-const log = createLogger("tool:search-appstore-apps");
+const log = createLogger("tool:appstore");
 
 function formatRanking(r: AppRankingRow, i: number): string {
   const price =
@@ -46,6 +46,8 @@ interface ItunesSearchResult {
   readonly description?: string;
   readonly formattedPrice?: string;
   readonly price?: number;
+  readonly bundleId?: string;
+  readonly releaseDate?: string;
 }
 
 interface ItunesReviewEntry {
@@ -73,8 +75,8 @@ function mapItunesResultToAppRow(r: ItunesSearchResult): AppRow {
     store_url: String(r.trackViewUrl ?? ""),
     description: String(r.description ?? "").slice(0, 2000),
     price: rawPrice,
-    bundle_id: "",
-    release_date: "",
+    bundle_id: String(r.bundleId ?? ""),
+    release_date: String(r.releaseDate ?? ""),
     updated_at: now,
     indexed_at: null,
   };
@@ -228,12 +230,20 @@ export function createAppStoreTools(
 
         try {
           const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=software&limit=${limit}&country=us`;
-          const response = await fetch(url, {
-            headers: {
-              "User-Agent": "OpenCrow/1.0 (App Store Tool)",
-              Accept: "application/json",
-            },
-          });
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 10_000);
+          let response: Response;
+          try {
+            response = await fetch(url, {
+              signal: controller.signal,
+              headers: {
+                "User-Agent": "OpenCrow/1.0 (App Store Tool)",
+                Accept: "application/json",
+              },
+            });
+          } finally {
+            clearTimeout(timeoutId);
+          }
 
           if (!response.ok) {
             throw new Error(`iTunes API returned HTTP ${response.status}`);
@@ -265,12 +275,20 @@ export function createAppStoreTools(
               await delay(2_000);
               try {
                 const reviewsUrl = `https://itunes.apple.com/us/rss/customerreviews/id=${app.id}/sortBy=mostRecent/json`;
-                const reviewResp = await fetch(reviewsUrl, {
-                  headers: {
-                    "User-Agent": "OpenCrow/1.0 (App Store Tool)",
-                    Accept: "application/json",
-                  },
-                });
+                const reviewController = new AbortController();
+                const reviewTimeoutId = setTimeout(() => reviewController.abort(), 10_000);
+                let reviewResp: Response;
+                try {
+                  reviewResp = await fetch(reviewsUrl, {
+                    signal: reviewController.signal,
+                    headers: {
+                      "User-Agent": "OpenCrow/1.0 (App Store Tool)",
+                      Accept: "application/json",
+                    },
+                  });
+                } finally {
+                  clearTimeout(reviewTimeoutId);
+                }
                 if (reviewResp.ok) {
                   const reviewData = await reviewResp.json();
                   const reviews = parseItunesReviews(reviewData, app.id, app.name);
@@ -297,7 +315,7 @@ export function createAppStoreTools(
           return { output: header + lines.join("\n\n"), isError: false };
         } catch (err) {
           const msg = getErrorMessage(err);
-          log.error("search_appstore_apps failed", { query, err });
+          log.error("search_appstore_apps failed", { query, error: msg });
           return { output: `Error searching App Store: ${msg}`, isError: true };
         }
       },

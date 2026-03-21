@@ -16,7 +16,7 @@ import { getEnum } from "./input-helpers";
 import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
 
-const log = createLogger("tool:search-playstore-apps");
+const log = createLogger("tool:playstore");
 
 function formatRanking(r: PlayRankingRow, i: number): string {
   const price =
@@ -66,6 +66,13 @@ interface GPlayReviewsResult {
   readonly data: readonly GPlayReview[];
 }
 
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms),
+  );
+  return Promise.race([p, timeout]);
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -81,7 +88,7 @@ function mapGPlayAppToPlayAppRow(app: GPlaySearchApp): PlayAppRow {
     store_url: app.url ?? "",
     description: (app.description ?? app.summary ?? "").slice(0, 2000),
     price: app.free || app.price === 0 ? "Free" : `$${app.price}`,
-    rating: app.score ?? null,
+    rating: app.score ?? (app.scoreText ? parseFloat(app.scoreText) || null : null),
     installs: app.installs ?? "",
     updated_at: now,
     indexed_at: null,
@@ -209,12 +216,15 @@ export function createPlayStoreTools(
             }
           ).default;
 
-          const results = await gplay.search({
-            term: query,
-            num: limit,
-            country: "us",
-            lang: "en",
-          });
+          const results = await withTimeout(
+            gplay.search({
+              term: query,
+              num: limit,
+              country: "us",
+              lang: "en",
+            }),
+            15_000,
+          );
 
           if (results.length === 0) {
             return {
@@ -236,13 +246,16 @@ export function createPlayStoreTools(
               if (!app.id) continue;
               await delay(4_000);
               try {
-                const reviewResult = await gplay.reviews({
-                  appId: app.id,
-                  sort: gplay.sort.NEWEST,
-                  num: 50,
-                  country: "us",
-                  lang: "en",
-                });
+                const reviewResult = await withTimeout(
+                  gplay.reviews({
+                    appId: app.id,
+                    sort: gplay.sort.NEWEST,
+                    num: 50,
+                    country: "us",
+                    lang: "en",
+                  }),
+                  15_000,
+                );
 
                 const now = Math.floor(Date.now() / 1000);
                 const reviews: readonly PlayReviewRow[] = reviewResult.data.map(
@@ -283,7 +296,7 @@ export function createPlayStoreTools(
           return { output: header + lines.join("\n\n"), isError: false };
         } catch (err) {
           const msg = getErrorMessage(err);
-          log.error("search_playstore_apps failed", { query, err });
+          log.error("search_playstore_apps failed", { query, error: msg });
           return { output: `Error searching Play Store: ${msg}`, isError: true };
         }
       },
