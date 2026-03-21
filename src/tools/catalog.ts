@@ -150,11 +150,13 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
   get_appstore_rankings: "appstore",
   get_appstore_complaints: "appstore",
   search_appstore_reviews: "appstore",
+  search_appstore_apps: "appstore",
 
   // Play Store
   get_playstore_rankings: "playstore",
   get_playstore_complaints: "playstore",
   search_playstore_reviews: "playstore",
+  search_playstore_apps: "playstore",
 
   // Market
   get_price: "market",
