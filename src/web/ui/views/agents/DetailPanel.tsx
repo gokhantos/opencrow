@@ -73,16 +73,16 @@ function ToolList({ tools }: { tools: readonly ToolInfo[] }) {
 /* ───── Provider-specific style maps ───── */
 const AVATAR_STYLE: Record<string, string> = {
   "agent-sdk": "bg-purple/10 text-purple border border-purple/10",
+  anthropic: "bg-accent-subtle text-accent border border-accent-subtle",
   openrouter: "bg-blue-400/10 text-blue-400 border border-blue-400/10",
   alibaba: "bg-orange-400/10 text-orange-400 border border-orange-400/10",
-  anthropic: "bg-accent-subtle text-accent border border-accent-subtle",
 };
 
 const PROV_COLOR: Record<string, string> = {
   "agent-sdk": "text-purple",
+  anthropic: "text-accent",
   openrouter: "text-blue-400",
   alibaba: "text-orange-400",
-  anthropic: "text-accent",
 };
 
 /* ===============================================

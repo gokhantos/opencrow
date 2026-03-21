@@ -236,6 +236,7 @@ export function AgentFormModal({
     const defaults: Record<AiProvider, string> = {
       "agent-sdk": "claude-sonnet-4-6",
       alibaba: "qwen3.5-plus",
+      anthropic: "claude-sonnet-4-6",
       openrouter: "",
     };
     setValue("model", defaults[provider as AiProvider] ?? "");
@@ -548,6 +549,7 @@ export function AgentFormModal({
                   render={({ field }) => (
                     <select className={selectCls} {...field}>
                       <option value="agent-sdk">Agent SDK</option>
+                      <option value="anthropic">Anthropic (OAuth)</option>
                       <option value="openrouter">OpenRouter</option>
                       <option value="alibaba">Alibaba ModelStudio</option>
                     </select>
@@ -558,7 +560,7 @@ export function AgentFormModal({
                 <label className="block text-xs font-semibold text-muted uppercase tracking-wide mb-2">
                   Model
                 </label>
-                {provider === "agent-sdk" ? (
+                {provider === "agent-sdk" || provider === "anthropic" ? (
                   <select className={selectCls} {...register("model")}>
                     <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
                     <option value="claude-opus-4-6">claude-opus-4-6</option>

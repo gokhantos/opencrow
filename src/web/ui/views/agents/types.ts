@@ -9,7 +9,7 @@ export interface SubagentConfig {
   maxChildren: number;
 }
 
-export type AiProvider = "openrouter" | "agent-sdk" | "alibaba";
+export type AiProvider = "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
 
 export interface SkillInfo {
   id: string;
@@ -117,6 +117,7 @@ export type ProviderFilter = "all" | AiProvider;
 /* ───── Helpers ───── */
 export function providerLabel(provider: AiProvider): string {
   if (provider === "agent-sdk") return "Agent SDK";
+  if (provider === "anthropic") return "Anthropic";
   if (provider === "alibaba") return "Alibaba";
   return "OpenRouter";
 }

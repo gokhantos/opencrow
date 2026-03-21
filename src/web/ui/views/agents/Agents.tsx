@@ -26,6 +26,7 @@ import { useToast } from "../../components/Toast";
 const PROVIDER_TABS = [
   { id: "all", label: "All" },
   { id: "agent-sdk", label: "Agent SDK" },
+  { id: "anthropic", label: "Anthropic" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "alibaba", label: "Alibaba" },
 ] as const;
@@ -130,6 +131,7 @@ export default function Agents() {
   const providerCounts: Record<ProviderFilter, number> = {
     all: agents.length,
     "agent-sdk": agents.filter((a) => a.provider === "agent-sdk").length,
+    anthropic: agents.filter((a) => a.provider === "anthropic").length,
     openrouter: agents.filter((a) => a.provider === "openrouter").length,
     alibaba: agents.filter((a) => a.provider === "alibaba").length,
   };
