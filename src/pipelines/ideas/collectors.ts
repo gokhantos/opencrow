@@ -39,7 +39,7 @@ const DEFAULT_MODEL = "claude-sonnet-4-6";
  * mark them consumed after the store step.
  */
 export interface CollectorContext {
-  /** Table name → set of IDs already consumed in prior runs (within 30-day window). */
+  /** Table name → set of IDs already consumed in prior runs (permanent). */
   readonly consumed: ReadonlyMap<string, ReadonlySet<string>>;
   /** Accumulates: table name → IDs selected by collectors in the current run. */
   readonly selected: Map<string, string[]>;
@@ -58,35 +58,25 @@ function sampleRandom<T>(items: readonly T[], n: number): readonly T[] {
 }
 
 /**
- * Partition rows into fresh (not yet consumed) vs stale (already consumed).
- * Returns up to `target` rows, preferring fresh ones. Falls back to stale
- * rows if there are fewer than `minFresh` fresh ones so a run always gets data.
+ * Filter rows to ONLY unconsumed (fresh) ones. Never reuses consumed sources.
+ * Returns up to `target` fresh rows. If zero fresh rows exist, returns empty.
  */
 function excludeConsumed<T>(
   rows: readonly T[],
   consumed: ReadonlySet<string>,
   idExtractor: (row: T) => string,
   target: number,
-  minFresh = 5,
 ): { readonly selected: readonly T[]; readonly selectedIds: readonly string[] } {
   const fresh: T[] = [];
-  const stale: T[] = [];
 
   for (const row of rows) {
     const id = idExtractor(row);
-    if (consumed.has(id)) {
-      stale.push(row);
-    } else {
+    if (!consumed.has(id)) {
       fresh.push(row);
     }
   }
 
-  // Use fresh data first; backfill with random stale rows if not enough fresh ones
-  const selected =
-    fresh.length >= minFresh
-      ? fresh.slice(0, target)
-      : [...fresh, ...sampleRandom(stale, target - fresh.length)].slice(0, target);
-
+  const selected = fresh.slice(0, target);
   const selectedIds = selected.map(idExtractor);
   return { selected, selectedIds };
 }

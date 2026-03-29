@@ -23,6 +23,7 @@ import type {
   IntersectionHypothesis,
   SynthesisResult,
 } from "./types";
+import { getAllExistingIdeas } from "../../sources/ideas/store";
 
 const log = createLogger("pipeline:synthesizer");
 
@@ -322,6 +323,23 @@ signalStrength is 0.0-1.0: how strongly the data supports this intersection (not
   return intersections;
 }
 
+// ── Existing Ideas Context (dedup at LLM level) ─────────────────────────
+
+async function buildExistingIdeasContext(): Promise<string> {
+  try {
+    const existing = await getAllExistingIdeas();
+    if (existing.length === 0) return "";
+
+    const lines = existing.slice(0, 200).map(
+      (idea) => `- [${sanitizeForPrompt(idea.category)}] ${sanitizeForPrompt(idea.title)}: ${sanitizeForPrompt(idea.summary.slice(0, 100))}`,
+    );
+
+    return `\n\n=== EXISTING IDEAS (DO NOT generate anything similar to these — strict dedup) ===\n${lines.join("\n")}`;
+  } catch {
+    return "";
+  }
+}
+
 // ── Pass 2: Idea Development ─────────────────────────────────────────────
 
 async function developIdeas(
@@ -339,6 +357,8 @@ async function developIdeas(
     ? `\nPREVIOUSLY GENERATED (avoid these themes):\n${saturatedThemes}`
     : "";
 
+  const existingIdeasContext = await buildExistingIdeasContext();
+
   const prompt = `You are developing the following validated market intersection hypotheses into concrete product ideas.
 
 DIVERSITY REQUIREMENT (CRITICAL):
@@ -353,6 +373,7 @@ ${CATEGORY_CONTEXT[category]}
 ${intersectionLines}
 ${sanitizeForPrompt(deepSearchContext)}
 ${saturatedSection}
+${existingIdeasContext}
 
 For EACH hypothesis, develop a full product idea. Ground every field in the hypothesis signals above.
 
@@ -572,6 +593,8 @@ async function singlePassSynthesis(input: {
     ? `\nPREVIOUSLY GENERATED (avoid these themes):\n${saturatedThemes}`
     : "";
 
+  const existingIdeasContext = await buildExistingIdeasContext();
+
   const prompt = `You are a product strategist analyzing REAL market data. You have three data sets:
 
 1. THE APP LANDSCAPE — what 4000+ existing apps offer, their satisfaction scores, and which categories are underserved
@@ -592,6 +615,7 @@ ${sanitizeForPrompt(pains.summary || "No review data")}
 ${sanitizeForPrompt(capabilities.summary || "No capability data")}
 ${sanitizeForPrompt(deepSearchContext)}
 ${saturatedSection}
+${existingIdeasContext}
 
 Generate ${maxIdeas} ideas. Return ONLY a JSON array:
 [
