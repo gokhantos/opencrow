@@ -23,6 +23,7 @@ export interface InsertIdeaInput {
   readonly category: string;
   readonly quality_score: number | null;
   readonly pipeline_run_id?: string;
+  readonly source_ids_json?: string;
 }
 
 export interface GetIdeasOptions {
@@ -46,8 +47,8 @@ export async function insertIdea(
   const id = crypto.randomUUID();
 
   const rows = await db`
-    INSERT INTO generated_ideas (id, agent_id, title, summary, reasoning, sources_used, category, quality_score, pipeline_run_id)
-    VALUES (${id}, ${input.agent_id}, ${input.title}, ${input.summary}, ${input.reasoning}, ${input.sources_used}, ${input.category}, ${input.quality_score}, ${input.pipeline_run_id ?? null})
+    INSERT INTO generated_ideas (id, agent_id, title, summary, reasoning, sources_used, category, quality_score, pipeline_run_id, source_ids_json)
+    VALUES (${id}, ${input.agent_id}, ${input.title}, ${input.summary}, ${input.reasoning}, ${input.sources_used}, ${input.category}, ${input.quality_score}, ${input.pipeline_run_id ?? null}, ${input.source_ids_json ?? "[]"})
     RETURNING *
   `;
 
@@ -282,4 +283,104 @@ export async function archiveStaleIdeas(
     RETURNING id
   `;
   return rows.length;
+}
+
+
+// ============================================================================
+// Idea Deduplication Functions
+// ============================================================================
+
+export interface SimilarIdea {
+  readonly id: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly category: string;
+  readonly title_similarity: number;
+  readonly summary_similarity: number;
+}
+
+/**
+ * Find existing ideas similar to the given title/summary using pg_trgm.
+ * Requires the pg_trgm extension and GIN indexes (migration 007).
+ */
+export async function findSimilarIdeas(
+  title: string,
+  summary: string,
+  limit = 5,
+): Promise<readonly SimilarIdea[]> {
+  const cappedLimit = Math.min(limit, 20);
+  const db = getDb();
+  try {
+    return db`
+      SELECT id, title, summary, category,
+        similarity(title, ${title}) as title_similarity,
+        similarity(summary, ${summary}) as summary_similarity
+      FROM generated_ideas
+      WHERE COALESCE(pipeline_stage, 'idea') != 'archived'
+        AND (similarity(title, ${title}) > 0.4 OR similarity(summary, ${summary}) > 0.5)
+      ORDER BY similarity(title, ${title}) DESC
+      LIMIT ${cappedLimit}
+    ` as Promise<SimilarIdea[]>;
+  } catch {
+    // pg_trgm might not be available — non-fatal, skip fuzzy layer
+    return [];
+  }
+}
+
+export interface ExistingIdeaSummary {
+  readonly title: string;
+  readonly summary: string;
+  readonly category: string;
+}
+
+/**
+ * Get all non-archived idea titles and summaries for dedup context.
+ * Used to inject into LLM prompts and for exact-match dedup.
+ */
+export async function getAllExistingIdeas(limit = 500): Promise<readonly ExistingIdeaSummary[]> {
+  const db = getDb();
+  const cappedLimit = Math.min(limit, 1000);
+  return db`
+    SELECT title, LEFT(summary, 150) as summary, category
+    FROM generated_ideas
+    WHERE COALESCE(pipeline_stage, 'idea') != 'archived'
+    ORDER BY created_at DESC
+    LIMIT ${cappedLimit}
+  ` as Promise<ExistingIdeaSummary[]>;
+}
+
+/**
+ * Get all source IDs ever used across all non-archived ideas.
+ * Returns a map of table name → set of source IDs.
+ */
+export async function getUsedSourceIds(): Promise<ReadonlyMap<string, ReadonlySet<string>>> {
+  const db = getDb();
+  const result = new Map<string, Set<string>>();
+
+  try {
+    const rows = await db`
+      SELECT source_ids_json FROM generated_ideas
+      WHERE source_ids_json IS NOT NULL AND source_ids_json != '[]'
+        AND COALESCE(pipeline_stage, 'idea') != 'archived'
+    ` as Array<{ source_ids_json: string }>;
+
+    for (const row of rows) {
+      try {
+        const raw = JSON.parse(row.source_ids_json);
+        if (!Array.isArray(raw)) continue;
+        for (const entry of raw) {
+          if (typeof entry?.table !== "string" || typeof entry?.id !== "string") continue;
+          const set = result.get(entry.table) ?? new Set<string>();
+          set.add(entry.id);
+          result.set(entry.table, set);
+        }
+      } catch {
+        // skip malformed JSON
+      }
+    }
+  } catch {
+    // non-fatal
+  }
+
+  return result;
 }

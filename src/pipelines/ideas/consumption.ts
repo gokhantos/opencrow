@@ -1,27 +1,24 @@
 /**
  * Tracks which source data points have been consumed by pipeline runs.
  * Consumed signals are excluded from future collector queries so each
- * run sees fresh data. Signals expire after 30 days.
+ * run sees fresh data. Consumed signals are permanent — a source is
+ * never reused once consumed.
  */
 import { getDb } from "../../store/db";
 import { createLogger } from "../../logger";
 
 const log = createLogger("pipeline:consumption");
 
-const EXPIRY_SECONDS = 30 * 24 * 3600; // 30 days
-
 /**
- * Get IDs already consumed from a source table (within expiry window).
+ * Get ALL IDs ever consumed from a source table (no expiry).
  */
 export async function getConsumedIds(sourceTable: string): Promise<ReadonlySet<string>> {
   const db = getDb();
-  const cutoff = Math.floor(Date.now() / 1000) - EXPIRY_SECONDS;
 
   try {
     const rows = await db`
       SELECT source_id FROM pipeline_consumed_signals
       WHERE source_table = ${sourceTable}
-        AND consumed_at >= ${cutoff}
     ` as Array<{ source_id: string }>;
 
     return new Set(rows.map((r) => r.source_id));

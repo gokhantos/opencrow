@@ -14,7 +14,7 @@
 import { createLogger } from "../../logger";
 import { getDb } from "../../store/db";
 import type { MemoryManager } from "../../memory/types";
-import { insertIdea } from "../../sources/ideas/store";
+import { insertIdea, findSimilarIdeas, getAllExistingIdeas } from "../../sources/ideas/store";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
 import {
   updatePipelineRun,
@@ -218,9 +218,9 @@ async function buildSaturatedThemes(memoryManager?: MemoryManager | null): Promi
   }
 }
 
-async function semanticDedup(
+async function checkForDuplicates(
   candidates: readonly GeneratedIdeaCandidate[],
-  memoryManager: MemoryManager,
+  memoryManager: MemoryManager | null | undefined,
 ): Promise<{
   readonly kept: readonly GeneratedIdeaCandidate[];
   readonly rejected: readonly string[];
@@ -228,22 +228,73 @@ async function semanticDedup(
   const kept: GeneratedIdeaCandidate[] = [];
   const rejected: string[] = [];
 
-  for (const candidate of candidates) {
-    try {
-      const results = await memoryManager.search(
-        "shared",
-        `${candidate.title}: ${candidate.summary}`,
-        { limit: 1, minScore: 0.75, kinds: ["idea"] },
-      );
+  // Pre-load all existing idea titles for exact-match layer
+  const existingIdeas = await getAllExistingIdeas();
+  const normalizedExisting = new Set(
+    existingIdeas.map((i) =>
+      i.title.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim(),
+    ),
+  );
 
-      if (results.length > 0 && results[0]!.score > 0.75) {
-        const existing = results[0]!.source.metadata.title ?? "unknown";
-        rejected.push(`${candidate.title} (similar to "${existing}", ${results[0]!.score.toFixed(2)})`);
-        continue;
-      }
-    } catch {
-      // keep on search failure
+  for (const candidate of candidates) {
+    const normalizedTitle = candidate.title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // ── Layer 1: Exact normalized title match ──────────────────────────
+    if (normalizedExisting.has(normalizedTitle)) {
+      rejected.push(`${candidate.title} [EXACT] matches existing idea`);
+      log.info("Idea rejected by exact title match", { title: candidate.title });
+      continue;
     }
+
+    // ── Layer 2: Fuzzy DB match via pg_trgm ────────────────────────────
+    const similarIdeas = await findSimilarIdeas(candidate.title, candidate.summary, 3);
+    const fuzzyMatch = similarIdeas.find(
+      (s) => s.title_similarity > 0.4 || s.summary_similarity > 0.5,
+    );
+    if (fuzzyMatch) {
+      rejected.push(
+        `${candidate.title} [FUZZY] similar to "${fuzzyMatch.title}" (title: ${fuzzyMatch.title_similarity.toFixed(2)}, summary: ${fuzzyMatch.summary_similarity.toFixed(2)})`,
+      );
+      log.info("Idea rejected by fuzzy DB match", {
+        title: candidate.title,
+        matchedTitle: fuzzyMatch.title,
+        titleSim: fuzzyMatch.title_similarity,
+        summarySim: fuzzyMatch.summary_similarity,
+      });
+      continue;
+    }
+
+    // ── Layer 3: Semantic vector match (stricter threshold: 0.65) ──────
+    if (memoryManager) {
+      try {
+        const results = await memoryManager.search(
+          "shared",
+          `${candidate.title}: ${candidate.summary}`,
+          { limit: 1, minScore: 0.65, kinds: ["idea"] },
+        );
+
+        if (results.length > 0 && results[0]!.score > 0.65) {
+          const existing = results[0]!.source.metadata.title ?? "unknown";
+          rejected.push(
+            `${candidate.title} [SEMANTIC] similar to "${existing}" (score: ${results[0]!.score.toFixed(2)})`,
+          );
+          log.info("Idea rejected by semantic match", {
+            title: candidate.title,
+            matchedTitle: existing,
+            score: results[0]!.score,
+          });
+          continue;
+        }
+      } catch {
+        // keep on search failure
+      }
+    }
+
+    // All 3 layers passed — keep the idea
     kept.push(candidate);
   }
 
@@ -314,6 +365,34 @@ export async function runIdeasPipeline(
       (c) => `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
     );
 
+    // ── Guard: short-circuit if no fresh source data ──────────────────
+    if (
+      capabilities.capabilities.length === 0 &&
+      trends.trendingCategories.length === 0 &&
+      pains.clusters.length === 0
+    ) {
+      log.warn("No fresh source data available — all sources already consumed. Skipping synthesis.", { runId });
+
+      const summary: PipelineResultSummary = {
+        totalSourcesQueried: 8,
+        totalSignalsFound: 0,
+        totalIdeasGenerated: 0,
+        totalIdeasKept: 0,
+        totalIdeasDuplicate: 0,
+        topThemes: [],
+        ideaIds: [],
+        durationMs: nowMs() - startTime,
+      };
+
+      await updatePipelineRun(runId, {
+        status: "completed",
+        resultSummary: summary,
+        finishedAt: now(),
+      });
+
+      return { runId, summary };
+    }
+
     // ── Step 4: Deep search (optional) ────────────────────────────────
     let deepSearchContext = "";
     if (memoryManager && trends.trendingCategories.length > 0) {
@@ -352,14 +431,14 @@ export async function runIdeasPipeline(
       (s) => `Generated ${s.totalGenerated} idea candidates from trend intersections`,
     );
 
-    // ── Step 6: Validate (semantic dedup) ─────────────────────────────
+    // ── Step 6: Validate (3-layer dedup: exact + fuzzy + semantic) ────
     let kept = synthesis.candidates;
-    let semanticRejected: readonly string[] = [];
+    let dedupRejected: readonly string[] = [];
 
-    if (memoryManager && kept.length > 0) {
-      const dedupResult = await semanticDedup(kept, memoryManager);
+    if (kept.length > 0) {
+      const dedupResult = await checkForDuplicates(kept, memoryManager);
       kept = dedupResult.kept;
-      semanticRejected = dedupResult.rejected;
+      dedupRejected = dedupResult.rejected;
     }
 
     const qualityFiltered = kept.filter(
@@ -371,13 +450,20 @@ export async function runIdeasPipeline(
       "validate",
       async () => ({
         kept: qualityFiltered.length,
-        semanticDupes: semanticRejected.length,
+        semanticDupes: dedupRejected.length,
         belowThreshold: kept.length - qualityFiltered.length,
       }),
       (r) => `${r.kept} kept, ${r.semanticDupes} semantic duplicates, ${r.belowThreshold} below threshold`,
     );
 
     // ── Step 7: Store ideas ───────────────────────────────────────────
+    // Build source_ids_json once (same for all ideas in this run)
+    const sourceIdsJson = JSON.stringify(
+      [...collectorCtx.selected.entries()].flatMap(([table, selectedIds]) =>
+        selectedIds.map((id) => ({ table, id })),
+      ),
+    );
+
     const ideaIds = await runStep(
       runId,
       "store",
@@ -420,6 +506,7 @@ export async function runIdeasPipeline(
               category: candidate.category || config.category,
               quality_score: Math.min(Math.max(candidate.qualityScore, 1), 5),
               pipeline_run_id: runId,
+              source_ids_json: sourceIdsJson,
             });
 
             if (memoryManager) {
@@ -458,7 +545,7 @@ export async function runIdeasPipeline(
       totalSignalsFound: trends.risingApps.length + pains.clusters.length + capabilities.capabilities.length,
       totalIdeasGenerated: synthesis.totalGenerated,
       totalIdeasKept: ideaIds.length,
-      totalIdeasDuplicate: semanticRejected.length,
+      totalIdeasDuplicate: dedupRejected.length,
       topThemes: trends.trendingCategories.slice(0, 10).map((c) => c.category),
       ideaIds,
       durationMs: nowMs() - startTime,
