@@ -11,6 +11,21 @@ const RESTART_COOLDOWN_MS = 60_000; // 60s cooldown per target
 const lastActionAt = new Map<string, number>();
 
 /**
+ * Builds the auth headers for internal control-plane calls. The internal API is
+ * fail-closed (see src/internal/server.ts): without a bearer token, mutating
+ * routes (process start/stop/restart) are rejected. The token is provisioned in
+ * setup and inherited by every child process via the parent env.
+ */
+function internalAuthHeaders(
+  base: Record<string, string> = {},
+): Record<string, string> {
+  const internalToken = process.env.OPENCROW_INTERNAL_TOKEN;
+  return internalToken
+    ? { ...base, Authorization: `Bearer ${internalToken}` }
+    : base;
+}
+
+/**
  * Derives the current process name from env vars.
  * Agent processes have OPENCROW_AGENT_ID, scraper processes have OPENCROW_SCRAPER_ID, etc.
  */
@@ -33,6 +48,7 @@ interface OrchestratorProcess {
 
 async function listProcesses(): Promise<readonly OrchestratorProcess[]> {
   const res = await fetch(`${CORE_URL}/internal/orchestrator/state`, {
+    headers: internalAuthHeaders(),
     signal: AbortSignal.timeout(5000),
   });
   if (!res.ok) throw new Error(`Core API returned ${res.status}`);
@@ -48,7 +64,7 @@ async function processAction(
     `${CORE_URL}/internal/processes/${encodeURIComponent(name)}/${action}`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: internalAuthHeaders({ "Content-Type": "application/json" }),
       signal: AbortSignal.timeout(5000),
     },
   );

@@ -3,6 +3,42 @@
  * Unlike the bash tool, this runs known safe commands (tsc, eslint, etc.)
  * and inherits the full process.env so tools like cargo, go, python work.
  */
+import { loadConfig } from "../config/loader";
+import { resolveAllowedDirs, isPathAllowedSync } from "./path-utils";
+import { createLogger } from "../logger";
+
+const log = createLogger("tool:shell-runner");
+
+// ---------------------------------------------------------------------------
+// Allowed-directory enforcement
+// ---------------------------------------------------------------------------
+//
+// Dev tools (git/validate/test) historically relied only on shellEscape and
+// bypassed the bash tool's allowlist, so they could operate on any path on
+// disk. We reuse the same config.tools.allowedDirectories here so runShell
+// cannot execute outside permitted directories.
+
+let cachedAllowedDirs: readonly string[] | null = null;
+
+function getAllowedDirs(): readonly string[] {
+  if (cachedAllowedDirs) return cachedAllowedDirs;
+  try {
+    const config = loadConfig();
+    cachedAllowedDirs = resolveAllowedDirs(config.tools.allowedDirectories);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.warn("Failed to load allowed directories; denying runShell", {
+      error: message,
+    });
+    cachedAllowedDirs = [];
+  }
+  return cachedAllowedDirs;
+}
+
+/** Exported for tests that need to reset the cached allowlist. */
+export function resetAllowedDirsCache(): void {
+  cachedAllowedDirs = null;
+}
 
 /** Safe env keys for dev tool subprocesses — no secrets */
 const DEV_SAFE_ENV_KEYS = [
@@ -30,10 +66,36 @@ export interface ShellResult {
 
 export async function runShell(
   command: string,
-  opts: { cwd: string; timeoutMs?: number; env?: Record<string, string> },
+  opts: {
+    cwd: string;
+    timeoutMs?: number;
+    env?: Record<string, string>;
+    /**
+     * Allowed directories the command may run in. Callers that already resolved
+     * their own allowlist (e.g. validate_code, run_tests) should pass it here;
+     * otherwise the global config.tools.allowedDirectories is used.
+     */
+    allowedDirs?: readonly string[];
+  },
 ): Promise<ShellResult> {
   const timeout = opts.timeoutMs ?? 60_000;
   const start = Date.now();
+
+  // Enforce the configured allowed-directory boundary. Dev tools (git, validate,
+  // test) previously relied only on shellEscape and could run anywhere on disk.
+  const allowedDirs = opts.allowedDirs ?? getAllowedDirs();
+  if (!isPathAllowedSync(opts.cwd, allowedDirs)) {
+    log.warn("runShell blocked: cwd outside allowed directories", {
+      cwd: opts.cwd,
+    });
+    return {
+      stdout: "",
+      stderr: `Error: working directory not allowed: ${opts.cwd}`,
+      exitCode: 126,
+      timedOut: false,
+      durationMs: Date.now() - start,
+    };
+  }
 
   const proc = Bun.spawn(["bash", "-c", command], {
     cwd: opts.cwd,

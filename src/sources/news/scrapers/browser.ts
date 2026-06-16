@@ -24,6 +24,9 @@ const CONTEXT_OPTIONS = {
   colorScheme: "dark" as const,
 };
 
+// Hard cap on page navigations so a wedged page can't stall a scrape forever.
+export const NAVIGATION_TIMEOUT_MS = 45_000;
+
 export interface BrowserSession {
   readonly browser: Browser;
   readonly context: BrowserContext;
@@ -53,6 +56,7 @@ export async function launchChromium(): Promise<BrowserSession> {
       Math.floor(Math.random() * CHROMIUM_USER_AGENTS.length)
     ];
   const context = await browser.newContext({ ...CONTEXT_OPTIONS, userAgent });
+  context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
   await context.addInitScript(STEALTH_SCRIPT);
   log.info("Chromium session started");
 

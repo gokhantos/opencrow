@@ -12,6 +12,7 @@ import {
   HOME_URL,
   TOP_POSTS_URL,
   TIMELINE_OPERATIONS,
+  NAVIGATION_TIMEOUT_MS,
   type ParsedTweet,
 } from "../shared";
 import { createLogger } from "../../../logger";
@@ -50,7 +51,10 @@ async function scrapePage(
 
   try {
     log.info("Navigating", { url });
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: NAVIGATION_TIMEOUT_MS,
+    });
 
     for (let i = 0; i < 40; i++) {
       await delay(500, 500);
@@ -108,6 +112,7 @@ export async function scrapeTimeline(
 
     try {
       if (sourceSet.has("home")) {
+        const before = allTweets.length;
         log.info("Scraping home timeline", { maxPages });
         const responses = await scrapePage(page, HOME_URL, TIMELINE_OPERATIONS, maxPages);
         for (const body of responses) {
@@ -118,6 +123,13 @@ export async function scrapeTimeline(
               allTweets.push(tweetToDict(tweet, "home"));
             }
           }
+        }
+        // Zero-result sentinel: we received GraphQL responses but the DOM/JSON
+        // heuristics extracted no tweets — likely an X API shape change.
+        if (responses.length > 0 && allTweets.length === before) {
+          log.warn("X home timeline yielded 0 tweets from non-empty responses", {
+            responses: responses.length,
+          });
         }
         log.info("Home timeline scraped", { count: allTweets.length });
       }
@@ -134,6 +146,12 @@ export async function scrapeTimeline(
               allTweets.push(tweetToDict(tweet, "top_posts"));
             }
           }
+        }
+        // Zero-result sentinel: responses arrived but parsing produced nothing.
+        if (responses.length > 0 && allTweets.length === before) {
+          log.warn("X top posts yielded 0 tweets from non-empty responses", {
+            responses: responses.length,
+          });
         }
         log.info("Top posts scraped", { count: allTweets.length - before });
       }

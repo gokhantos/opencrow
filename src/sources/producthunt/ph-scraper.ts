@@ -2,6 +2,7 @@
 
 import { z } from "zod";
 import { createLogger } from "../../logger";
+import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 
 const log = createLogger("ph-daily");
 
@@ -9,6 +10,7 @@ const TOKEN_URL = "https://api.producthunt.com/v2/oauth/token";
 const GRAPHQL_URL = "https://api.producthunt.com/v2/api/graphql";
 const MAX_PAGES = 3;
 const MAX_RETRY_ATTEMPTS = 3;
+const REQUEST_TIMEOUT_MS = 20_000;
 
 // ── Zod schemas ──────────────────────────────────────────────────────────────
 
@@ -110,15 +112,22 @@ async function fetchAccessToken(
   clientId: string,
   clientSecret: string,
 ): Promise<string> {
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({
-      client_id: clientId,
-      client_secret: clientSecret,
-      grant_type: "client_credentials",
-    }),
-  });
+  const res = await fetchWithTimeout(
+    TOKEN_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: "client_credentials",
+      }),
+    },
+    REQUEST_TIMEOUT_MS,
+  );
 
   if (!res.ok) {
     throw new Error(`Token request failed: ${res.status} ${res.statusText}`);
@@ -158,15 +167,19 @@ async function fetchPostsPage(
     variables: cursor ? { after: cursor } : {},
   });
 
-  const res = await fetch(GRAPHQL_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      Authorization: `Bearer ${token}`,
+  const res = await fetchWithTimeout(
+    GRAPHQL_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body,
     },
-    body,
-  });
+    REQUEST_TIMEOUT_MS,
+  );
 
   if (!res.ok) {
     throw Object.assign(

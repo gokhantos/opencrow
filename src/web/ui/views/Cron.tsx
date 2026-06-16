@@ -11,6 +11,7 @@ import {
   Toggle,
   FormField,
 } from "../components";
+import { formatDuration } from "../lib/format";
 import { useZodForm } from "../hooks/useZodForm";
 
 interface CronJob {
@@ -121,16 +122,6 @@ function formatProgressTime(ts: number): string {
     minute: "2-digit",
     second: "2-digit",
   });
-}
-
-function formatDuration(ms: number | null): string {
-  if (ms == null) return "-";
-  if (ms < 1000) return `${ms}ms`;
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s`;
-  const min = Math.floor(sec / 60);
-  const remSec = sec % 60;
-  return remSec > 0 ? `${min}m ${remSec}s` : `${min}m`;
 }
 
 const PROGRESS_ICON: Record<string, string> = {
@@ -288,7 +279,7 @@ function RunRow({ run }: { run: CronRun }) {
         </span>
       </span>
       <span className="cr-run-duration">
-        {isRunning ? "-" : formatDuration(run.durationMs)}
+        {isRunning ? "-" : formatDuration(run.durationMs ?? 0)}
       </span>
       <span className={`cr-run-result ${run.error ? "cr-run-error" : ""}`}>
         {isRunning

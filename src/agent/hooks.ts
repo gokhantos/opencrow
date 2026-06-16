@@ -72,13 +72,20 @@ function truncateText(value: string, max: number): string {
 // Dangerous command patterns to block
 const DANGEROUS_COMMANDS = [
   /\brm\s+(-[rf]+\s+)?\/(?:etc|usr|var|home|root|boot)/, // rm system dirs
+  /\brm\s+-[rf]*r[rf]*\s+(\/|~|\$home)\s*$/i, // rm -rf / | ~ | $HOME
   /\bdd\s+if=.*of=/, // dd disk write
-  /\bchmod\s+-R\s+777/, // chmod -R 777
+  /\bchmod\s+(-R\s+)?777/, // chmod 777 (recursive or not)
   /\bchown\s+-R\s+/, // chown -R (risky)
   /:\(\)\{\s*:\|:\s*&\s*\};:/, // fork bomb
   /\bmkfs/, // filesystem format
   />\s*\/dev\/sd[a-z]/, // raw disk write (e.g., > /dev/sda)
   />\s*:?\s*\/dev\/sd[a-z]/, // raw disk write variant (e.g., >: /dev/sda)
+  // Pipe-to-shell installers: curl/wget … | sh|bash|zsh
+  /\b(?:curl|wget|fetch)\b[^|]*\|\s*(?:sudo\s+)?(?:ba|z|d|fi)?sh\b/i,
+  // Writes/appends into sensitive paths (/etc, ~/.ssh, authorized_keys)
+  />>?\s*(?:\/etc\/|~\/\.ssh\/|\$home\/\.ssh\/|[^\s]*authorized_keys)/i,
+  // Privilege escalation invoked directly
+  /\b(?:sudo|doas|pkexec)\b/, // run-as-root
 ];
 
 function isDangerousCommand(command: string): boolean {
@@ -94,8 +101,9 @@ function createPreToolUseHook(agentId: string): HookCallback {
     try {
       const toolName = String(input.tool_name ?? "");
 
-      // Only check Bash tool for dangerous commands
-      if (toolName === "Bash") {
+      // Check both the Agent SDK "Bash" tool and the custom lowercase "bash"
+      // tool (used on the pi-ai/OpenRouter path) for dangerous commands.
+      if (toolName === "Bash" || toolName === "bash") {
         const toolInput = input.tool_input as
           | Record<string, unknown>
           | undefined;
@@ -364,10 +372,12 @@ export function buildSdkHooks(opts: BuildHooksOptions): HookRecord {
   const { agentId, hooksConfig, onProgress } = opts;
   const hooks: Record<string, HookCallbackMatcher[]> = {};
 
-  // Dangerous command blocking (default: off)
-  if (hooksConfig?.dangerousCommandBlocking === true) {
+  // Dangerous command blocking (default: ON — safe by default).
+  // The hook callback itself matches both "Bash" and "bash", so a single
+  // wildcard matcher covers the SDK Bash tool and the custom bash tool.
+  if (hooksConfig?.dangerousCommandBlocking !== false) {
     hooks.PreToolUse = [
-      { matcher: "Bash", hooks: [createPreToolUseHook(agentId)] },
+      { matcher: "*", hooks: [createPreToolUseHook(agentId)] },
     ];
   }
 

@@ -1,8 +1,11 @@
 /** Reddit feed scraper — fetch-based JSON API, no browser needed. */
 
 import { createLogger } from "../../logger";
+import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 
 const log = createLogger("reddit-feed");
+
+const REQUEST_TIMEOUT_MS = 20_000;
 
 const BASE_URL = "https://www.reddit.com";
 const POSTS_PER_PAGE = 25;
@@ -79,9 +82,10 @@ async function fetchSubscribedSubreddits(
       const params = after
         ? `?limit=100&raw_json=1&after=${after}`
         : "?limit=100&raw_json=1";
-      const resp = await fetch(
+      const resp = await fetchWithTimeout(
         `${BASE_URL}/subreddits/mine/subscriber.json${params}`,
         { headers },
+        REQUEST_TIMEOUT_MS,
       );
       if (!resp.ok) break;
 
@@ -218,7 +222,11 @@ async function scrapeFeed(
 
   for (let page = 0; page < MAX_PAGES; page++) {
     try {
-      const resp = await fetch(currentUrl, { headers });
+      const resp = await fetchWithTimeout(
+        currentUrl,
+        { headers },
+        REQUEST_TIMEOUT_MS,
+      );
       if (resp.status === 429) {
         const retryAfter = Number(resp.headers.get("retry-after") || "0");
         const backoffMs = Math.max(retryAfter * 1000, 30_000);
@@ -373,7 +381,7 @@ async function fetchTopComments(
 ): Promise<readonly string[]> {
   try {
     const url = `https://www.reddit.com${permalink.replace(/^https?:\/\/www\.reddit\.com/, "")}.json?limit=${limit}&depth=1&sort=top&raw_json=1`;
-    const resp = await fetch(url, { headers });
+    const resp = await fetchWithTimeout(url, { headers }, REQUEST_TIMEOUT_MS);
     if (!resp.ok) return [];
 
     const data = (await resp.json()) as unknown[];

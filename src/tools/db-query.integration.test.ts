@@ -235,26 +235,38 @@ describe("db-query tools", () => {
   });
 
   describe("createDbQueryTool - result formatting", () => {
+    // NOTE: db_query now runs each query inside a READ ONLY transaction, which
+    // reserves a SEPARATE pooled connection. Session-local TEMP tables created
+    // on the test's connection would be invisible there, so these fixtures use
+    // ordinary tables (visible across connections) with explicit drops.
     it("should show no rows message for empty results", async () => {
       const db = getDb();
-      await db.unsafe("CREATE TEMP TABLE IF NOT EXISTS _test_empty (id serial PRIMARY KEY)");
-
-      const tool = createDbQueryTool();
-      const result = await tool.execute({ query: "SELECT * FROM _test_empty" });
-      expect(result.output).toContain("No rows returned");
-      expect(result.isError).toBe(false);
+      await db.unsafe("DROP TABLE IF EXISTS _test_empty");
+      await db.unsafe("CREATE TABLE _test_empty (id serial PRIMARY KEY)");
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({ query: "SELECT * FROM _test_empty" });
+        expect(result.output).toContain("No rows returned");
+        expect(result.isError).toBe(false);
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_empty");
+      }
     });
 
     it("should format rows as a table", async () => {
       const db = getDb();
-      await db.unsafe("CREATE TEMP TABLE IF NOT EXISTS _test_users (id serial PRIMARY KEY, name TEXT)");
+      await db.unsafe("DROP TABLE IF EXISTS _test_users");
+      await db.unsafe("CREATE TABLE _test_users (id serial PRIMARY KEY, name TEXT)");
       await db.unsafe("INSERT INTO _test_users (name) VALUES ('alice'), ('bob')");
-
-      const tool = createDbQueryTool();
-      const result = await tool.execute({ query: "SELECT * FROM _test_users" });
-      expect(result.output).toContain("2 row(s) returned");
-      expect(result.output).toContain("alice");
-      expect(result.output).toContain("bob");
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({ query: "SELECT * FROM _test_users" });
+        expect(result.output).toContain("2 row(s) returned");
+        expect(result.output).toContain("alice");
+        expect(result.output).toContain("bob");
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_users");
+      }
     });
 
     it("should handle query errors gracefully", async () => {
@@ -266,15 +278,19 @@ describe("db-query tools", () => {
 
     it("should pass params to db.unsafe", async () => {
       const db = getDb();
-      await db.unsafe("CREATE TEMP TABLE IF NOT EXISTS _test_params (id serial PRIMARY KEY)");
+      await db.unsafe("DROP TABLE IF EXISTS _test_params");
+      await db.unsafe("CREATE TABLE _test_params (id serial PRIMARY KEY)");
       await db.unsafe("INSERT INTO _test_params DEFAULT VALUES");
-
-      const tool = createDbQueryTool();
-      const result = await tool.execute({
-        query: "SELECT * FROM _test_params WHERE id = $1",
-        params: [1],
-      });
-      expect(result.isError).toBe(false);
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({
+          query: "SELECT * FROM _test_params WHERE id = $1",
+          params: [1],
+        });
+        expect(result.isError).toBe(false);
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_params");
+      }
     });
   });
 

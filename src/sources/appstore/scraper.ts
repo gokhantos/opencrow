@@ -16,10 +16,12 @@ import {
 
 import { getErrorMessage } from "../../lib/error-serialization";
 import { loadScraperIntervalMs } from "../scraper-config";
+import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 
 const log = createLogger("appstore-scraper");
 
 const DEFAULT_INTERVAL_MINUTES = 60;
+const REQUEST_TIMEOUT_MS = 20_000;
 const REQUEST_DELAY_MS = 2_000; // 2 seconds between API calls
 const TOP_APPS_PER_LIST = 5; // fetch reviews for top N from each list/category
 const DISCOVERY_LOOKUPS_PER_CYCLE = 3; // discover related apps for N random seeds per cycle
@@ -109,12 +111,16 @@ function delay(ms: number): Promise<void> {
 }
 
 async function fetchJson(url: string): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "OpenCrow/1.0 (App Store Scraper)",
-      Accept: "application/json",
+  const response = await fetchWithTimeout(
+    url,
+    {
+      headers: {
+        "User-Agent": "OpenCrow/1.0 (App Store Scraper)",
+        Accept: "application/json",
+      },
     },
-  });
+    REQUEST_TIMEOUT_MS,
+  );
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} for ${url}`);

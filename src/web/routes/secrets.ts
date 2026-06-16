@@ -95,7 +95,18 @@ export function createSecretsRoutes(): Hono {
 
     try {
       await setOverride("secrets", key, parsed.data.value);
-      log.info("Secret stored in DB", { key });
+      // Audit log: record WHO/WHAT for every secret write. These routes can
+      // overwrite OPENCROW_WEB_TOKEN / API keys (a privilege-escalation
+      // primitive), so every mutation must leave a trail. Never log the value.
+      log.warn("AUDIT secret write", {
+        action: "set",
+        key,
+        ip:
+          c.req.header("x-forwarded-for") ??
+          c.req.header("x-real-ip") ??
+          "unknown",
+        userAgent: c.req.header("user-agent") ?? "unknown",
+      });
       return c.json({ success: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to store secret";
@@ -113,7 +124,17 @@ export function createSecretsRoutes(): Hono {
 
     try {
       await deleteOverride("secrets", key);
-      log.info("Secret removed from DB", { key });
+      // Audit log: deleting a DB secret falls back to env and can change the
+      // effective auth token, so every delete must be recorded.
+      log.warn("AUDIT secret delete", {
+        action: "delete",
+        key,
+        ip:
+          c.req.header("x-forwarded-for") ??
+          c.req.header("x-real-ip") ??
+          "unknown",
+        userAgent: c.req.header("user-agent") ?? "unknown",
+      });
       return c.json({ success: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to delete secret";

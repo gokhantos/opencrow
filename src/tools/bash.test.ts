@@ -14,6 +14,7 @@ describe("createBashTool", () => {
     config = {
       allowedDirectories: [tempDir],
       blockedCommands: ["sudo", "rm -rf /", "mkfs", "dd"],
+      dangerousCommandBlocking: true,
       maxBashTimeout: 30000,
       maxFileSize: 1024 * 1024,
       maxIterations: 200,

@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { join } from "path";
-import { tmpdir } from "os";
 import {
   runShell,
   truncateOutput,
+  resetAllowedDirsCache,
   SHELL_MAX_BYTES,
   BASH_MAX_BYTES,
   BASH_HEAD_BYTES,
@@ -17,7 +17,14 @@ describe("shell-runner", () => {
   let tempDir: string;
 
   beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "shell-runner-test-"));
+    // runShell now enforces config.tools.allowedDirectories, which defaults to
+    // the agent workspace under $HOME. Create temp dirs inside it so commands
+    // are permitted.
+    const home = process.env.HOME ?? "";
+    const workspace = join(home, ".opencrow", "workspace");
+    await mkdir(workspace, { recursive: true });
+    tempDir = await mkdtemp(join(workspace, "shell-runner-test-"));
+    resetAllowedDirsCache();
   });
 
   afterEach(async () => {

@@ -6,6 +6,12 @@ import { inputError, permissionError, serviceError } from "./error-helpers";
 // Database Query Tool
 // ============================================================================
 
+/**
+ * Per-query statement timeout (ms) enforced at the PostgreSQL level via
+ * `SET LOCAL statement_timeout`. Caps runaway/expensive agent queries.
+ */
+const QUERY_STATEMENT_TIMEOUT_MS = 10_000;
+
 export function createDbQueryTool(): ToolDefinition {
   return {
     name: "db_query",
@@ -107,14 +113,28 @@ export function createDbQueryTool(): ToolDefinition {
         const db = getDb();
         const startTime = Date.now();
 
-        // Security: relies on the regex blocklist above — no DB-level read-only guarantee.
-        // db.unsafe() is required here because the query is dynamic (agent-supplied).
-        let rows;
-        if (params.length > 0) {
-          rows = await db.unsafe(finalQuery, params);
-        } else {
-          rows = await db.unsafe(finalQuery);
-        }
+        // DB-level enforcement: run the agent-supplied query inside a READ ONLY
+        // transaction. PostgreSQL itself rejects any write/DDL in this mode, so
+        // even if the regex blocklist above were bypassed, the database refuses
+        // mutations. SET LOCAL statement_timeout caps query duration. The regex
+        // checks remain as defense-in-depth.
+        //
+        // Recommended further hardening: connect db_query through a dedicated
+        // PostgreSQL role granted only SELECT on the relevant tables. That moves
+        // enforcement to the connection/role layer instead of per-statement.
+        //
+        // db.unsafe() is required here because the query text is dynamic
+        // (agent-supplied); params are still bound safely as $1, $2, ...
+        const rows = (await db.begin(async (tx) => {
+          await tx`SET TRANSACTION READ ONLY`;
+          await tx.unsafe(
+            `SET LOCAL statement_timeout = ${QUERY_STATEMENT_TIMEOUT_MS}`,
+          );
+          if (params.length > 0) {
+            return await tx.unsafe(finalQuery, params);
+          }
+          return await tx.unsafe(finalQuery);
+        })) as Record<string, unknown>[];
 
         const duration = Date.now() - startTime;
 

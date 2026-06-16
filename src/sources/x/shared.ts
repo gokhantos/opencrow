@@ -12,6 +12,9 @@ export const BOOKMARKS_URL = `${BASE_URL}/i/bookmarks`;
 export const GRAPHQL_API_PREFIX = `${BASE_URL}/i/api/graphql`;
 export const TOP_POSTS_URL = "https://x.com/i/jf/creators/inspiration/top_posts";
 
+// Hard cap on page navigations so a wedged page can't stall a scrape forever.
+export const NAVIGATION_TIMEOUT_MS = 45_000;
+
 export const TIMELINE_OPERATIONS = new Set([
   "HomeTimeline",
   "HomeLatestTimeline",
@@ -98,6 +101,7 @@ export async function launchXBrowser(
     timezoneId: "America/New_York",
     colorScheme: "dark",
   });
+  context.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
   await context.addInitScript(STEALTH_SCRIPT);
   await context.addCookies(toPlaywrightCookies(authToken, ct0));
 

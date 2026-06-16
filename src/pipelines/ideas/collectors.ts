@@ -61,7 +61,7 @@ function sampleRandom<T>(items: readonly T[], n: number): readonly T[] {
  * Filter rows to ONLY unconsumed (fresh) ones. Never reuses consumed sources.
  * Returns up to `target` fresh rows. If zero fresh rows exist, returns empty.
  */
-function excludeConsumed<T>(
+export function excludeConsumed<T>(
   rows: readonly T[],
   consumed: ReadonlySet<string>,
   idExtractor: (row: T) => string,

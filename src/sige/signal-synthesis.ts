@@ -159,7 +159,7 @@ Return the JSON:`;
 
 // ─── JSON Extraction ──────────────────────────────────────────────────────────
 
-function extractJson(text: string): RawSynthesizedSignals {
+export function extractJson(text: string): RawSynthesizedSignals {
   const trimmed = text.trim();
 
   try {
@@ -208,7 +208,7 @@ function toString(value: unknown, fallback = ""): string {
 const VALID_SEVERITIES = new Set(["critical", "high", "medium"]);
 const VALID_MOMENTUMS = new Set(["accelerating", "steady", "emerging"]);
 
-function validatePainCluster(raw: unknown, index: number): PainCluster {
+export function validatePainCluster(raw: unknown, index: number): PainCluster {
   if (typeof raw !== "object" || raw === null) {
     throw new Error(`painClusters[${index}] must be an object`);
   }
@@ -227,7 +227,7 @@ function validatePainCluster(raw: unknown, index: number): PainCluster {
   };
 }
 
-function validateEmergingPattern(raw: unknown, index: number): EmergingPattern {
+export function validateEmergingPattern(raw: unknown, index: number): EmergingPattern {
   if (typeof raw !== "object" || raw === null) {
     throw new Error(`emergingPatterns[${index}] must be an object`);
   }
@@ -246,7 +246,7 @@ function validateEmergingPattern(raw: unknown, index: number): EmergingPattern {
   };
 }
 
-function validateGapSignal(raw: unknown, index: number): GapSignal {
+export function validateGapSignal(raw: unknown, index: number): GapSignal {
   if (typeof raw !== "object" || raw === null) {
     throw new Error(`gapSignals[${index}] must be an object`);
   }
@@ -261,7 +261,7 @@ function validateGapSignal(raw: unknown, index: number): GapSignal {
   };
 }
 
-function validateCollisionPoint(raw: unknown, index: number): CollisionPoint {
+export function validateCollisionPoint(raw: unknown, index: number): CollisionPoint {
   if (typeof raw !== "object" || raw === null) {
     throw new Error(`collisionPoints[${index}] must be an object`);
   }
@@ -275,7 +275,7 @@ function validateCollisionPoint(raw: unknown, index: number): CollisionPoint {
   };
 }
 
-function validateSynthesizedSignals(raw: RawSynthesizedSignals): SynthesizedSignals {
+export function validateSynthesizedSignals(raw: RawSynthesizedSignals): SynthesizedSignals {
   const painClusters = Array.isArray(raw.painClusters)
     ? (raw.painClusters as unknown[]).map(validatePainCluster)
     : [];

@@ -1,8 +1,12 @@
 /** HackerNews front page scraper — Firebase REST API. */
 
 import { createLogger } from "../../logger";
+import { fetchWithTimeout } from "../shared/fetch-with-timeout";
+import { getErrorMessage } from "../../lib/error-serialization";
 
 const log = createLogger("hn-front-page");
+
+const API_TIMEOUT_MS = 15_000;
 
 const API_BASE = "https://hacker-news.firebaseio.com/v0";
 const MAX_STORIES = 60;
@@ -41,17 +45,33 @@ interface HNItem {
 }
 
 async function fetchTopStoryIds(count: number): Promise<readonly number[]> {
-  const res = await fetch(`${API_BASE}/topstories.json`);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch top stories: ${res.status}`);
+  // Soft failure: a single blip on this request must not abort the whole
+  // HN scrape. Return an empty list and let the caller treat that as a no-op.
+  try {
+    const res = await fetchWithTimeout(
+      `${API_BASE}/topstories.json`,
+      {},
+      API_TIMEOUT_MS,
+    );
+    if (!res.ok) {
+      log.warn("Failed to fetch HN top stories", { status: res.status });
+      return [];
+    }
+    const ids = (await res.json()) as number[];
+    return ids.slice(0, count);
+  } catch (err) {
+    log.warn("Error fetching HN top stories", { error: getErrorMessage(err) });
+    return [];
   }
-  const ids = (await res.json()) as number[];
-  return ids.slice(0, count);
 }
 
 async function fetchItem(id: number): Promise<HNItem | null> {
   try {
-    const res = await fetch(`${API_BASE}/item/${id}.json`);
+    const res = await fetchWithTimeout(
+      `${API_BASE}/item/${id}.json`,
+      {},
+      API_TIMEOUT_MS,
+    );
     if (!res.ok) return null;
     const item = (await res.json()) as HNItem | null;
     return item;
@@ -181,6 +201,13 @@ export async function scrapeHNFrontPage(opts?: {
   const commentLimit = opts?.commentLimit ?? COMMENT_LIMIT;
   log.info("Fetching HN top story IDs", { count: maxStories });
   const ids = await fetchTopStoryIds(maxStories);
+
+  if (ids.length === 0) {
+    // Soft failure: top-stories endpoint was unreachable or empty this cycle.
+    // Skip the rest of the scrape rather than throwing and aborting.
+    log.warn("No HN top story IDs returned, skipping scrape cycle");
+    return [];
+  }
 
   log.info("Fetching story details", { count: ids.length });
   const storyItems = await fetchStoriesInBatches(ids);

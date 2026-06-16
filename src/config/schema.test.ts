@@ -9,6 +9,8 @@ import {
   cronConfigSchema,
   modelParamsSchema,
   opencrowConfigSchema,
+  DEFAULT_AGENT_WORKSPACE,
+  DEFAULT_BLOCKED_COMMANDS,
 } from "./schema";
 
 describe("retryConfigSchema", () => {
@@ -135,10 +137,13 @@ describe("agentDefinitionSchema", () => {
 });
 
 describe("toolsConfigSchema", () => {
-  test("defaults are applied correctly", () => {
+  test("defaults are applied correctly (safe by default)", () => {
     const result = toolsConfigSchema.parse({});
-    expect(result.allowedDirectories).toEqual(["$HOME"]);
-    expect(result.blockedCommands).toEqual([]);
+    // Confined to a dedicated agent workspace, not the whole $HOME.
+    expect(result.allowedDirectories).toEqual([DEFAULT_AGENT_WORKSPACE]);
+    // Ships a non-empty denylist of dangerous commands by default.
+    expect(result.blockedCommands).toEqual([...DEFAULT_BLOCKED_COMMANDS]);
+    expect(result.blockedCommands).toContain("sudo");
     expect(result.maxBashTimeout).toBe(600_000);
     expect(result.maxFileSize).toBe(10_485_760);
     expect(result.maxIterations).toBe(200);

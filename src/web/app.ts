@@ -102,15 +102,37 @@ export function createWebApp(deps: WebAppDeps): Hono {
     log.warn("OPENCROW_WEB_TOKEN not in env — checking DB per request");
   }
 
-  // Auth middleware: resolve token from DB secrets first, then env.
+  // Auth middleware — FAIL-CLOSED. Resolve token from DB secrets first, then env.
   // This runs per-request so changes take effect without restart.
+  //
+  // The /api/* surface includes privileged operations (secrets management,
+  // process control, channel/scraper actions). When no token is configured we
+  // reject with 503 instead of allowing the request through — an unconfigured
+  // deployment must never expose these endpoints unauthenticated.
   app.use("/api/*", async (c, next) => {
     const { getSecret } = await import("../config/secrets");
-    const token = await getSecret("OPENCROW_WEB_TOKEN");
+    let token: string | undefined;
+    try {
+      token = await getSecret("OPENCROW_WEB_TOKEN");
+    } catch (err) {
+      log.error("Failed to resolve web token — failing closed", { err });
+      return c.json({ success: false, error: "Web API auth unavailable" }, 503);
+    }
     if (token) {
       return bearerAuth({ token })(c, next);
     }
-    return next();
+    log.error(
+      "Web API request rejected — OPENCROW_WEB_TOKEN is not configured (fail-closed)",
+      { path: c.req.path },
+    );
+    return c.json(
+      {
+        success: false,
+        error:
+          "Web API is not configured. Set OPENCROW_WEB_TOKEN to enable access.",
+      },
+      503,
+    );
   });
 
   const chat = createChatRoutes(deps);

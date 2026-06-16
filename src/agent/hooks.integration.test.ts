@@ -45,7 +45,7 @@ describe("buildSdkHooks", () => {
         hooksConfig: { dangerousCommandBlocking: true },
       });
 
-      expect(hooks.PreToolUse![0]!.matcher).toBe("Bash");
+      expect(hooks.PreToolUse![0]!.matcher).toBe("*");
       expect(hooks.PostToolUse![0]!.matcher).toBe("*");
       expect(hooks.PostToolUseFailure![0]!.matcher).toBe("*");
       expect(hooks.SessionStart![0]!.matcher).toBe("*");
@@ -94,9 +94,16 @@ describe("buildSdkHooks", () => {
       });
 
       expect(hooks.PreToolUse).toBeDefined();
-      expect(hooks.PreToolUse![0]!.matcher).toBe("Bash");
+      expect(hooks.PreToolUse![0]!.matcher).toBe("*");
       expect(hooks.PostToolUse).toBeDefined();
       expect(hooks.SessionStart).toBeDefined();
+    });
+
+    it("enables PreToolUse by default (safe by default)", () => {
+      const hooks = buildSdkHooks({ agentId, sessionId });
+
+      expect(hooks.PreToolUse).toBeDefined();
+      expect(hooks.PreToolUse![0]!.matcher).toBe("*");
     });
 
     it("disables audit log when hooksConfig.auditLog is false", () => {
@@ -109,8 +116,8 @@ describe("buildSdkHooks", () => {
       expect(hooks.PostToolUse).toBeUndefined();
       expect(hooks.PostToolUseFailure).toBeUndefined();
       expect(hooks.Stop).toBeDefined();
-      // PreToolUse is OFF by default, so still undefined
-      expect(hooks.PreToolUse).toBeUndefined();
+      // PreToolUse is ON by default now (safe by default).
+      expect(hooks.PreToolUse).toBeDefined();
     });
 
     it("disables session tracking when sessionTracking is false", () => {

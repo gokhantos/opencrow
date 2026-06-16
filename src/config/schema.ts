@@ -126,9 +126,76 @@ export const agentDefinitionSchema = z.object({
   skills: z.array(z.string()).default([]),
 });
 
+/**
+ * Safe-by-default denylist for the agent bash tool. These are matched by
+ * `isCommandBlocked` in src/tools/bash.ts against each shell segment's first
+ * token (basename-aware) or as a literal prefix. Keep entries lowercase.
+ *
+ * This is defense-in-depth alongside the regex-based dangerous-command hook in
+ * src/agent/hooks.ts; operators can extend it via config but should not need to
+ * remove entries for normal use.
+ */
+export const DEFAULT_BLOCKED_COMMANDS: readonly string[] = [
+  // Privilege escalation
+  "sudo",
+  "su",
+  "doas",
+  "pkexec",
+  // Catastrophic deletes / disk operations
+  "rm -rf /",
+  "rm -rf /*",
+  "rm -rf ~",
+  "rm -rf $home",
+  "dd",
+  "mkfs",
+  "fdisk",
+  "shred",
+  // Fork bomb
+  ":(){",
+  // Permission widening
+  "chmod 777",
+  "chmod -r 777",
+  // System control
+  "shutdown",
+  "reboot",
+  "halt",
+  "poweroff",
+  "init",
+  "systemctl",
+  // Remote execution / network shells (lateral movement, exfiltration)
+  "ssh",
+  "scp",
+  "sftp",
+  "nc",
+  "ncat",
+  "netcat",
+  "telnet",
+  // Writes to sensitive paths (matched as a literal segment prefix)
+  "tee /etc",
+  "tee ~/.ssh",
+  // NOTE: pipe-to-shell installers (curl … | sh, wget … | bash) and redirects
+  // into sensitive paths are caught by the regex-based dangerous-command check
+  // in src/agent/hooks.ts, because isCommandBlocked splits on shell
+  // metacharacters and so cannot see across a pipe.
+];
+
+/**
+ * Default agent workspace. Bash and runShell are confined here rather than the
+ * whole home directory, so the agent cannot read/modify arbitrary user files
+ * (~/.ssh, dotfiles, etc.) by default. Operators can widen this in config.
+ */
+export const DEFAULT_AGENT_WORKSPACE = "$HOME/.opencrow/workspace";
+
 export const toolsConfigSchema = z.object({
-  allowedDirectories: z.array(z.string()).default(["$HOME"]),
-  blockedCommands: z.array(z.string()).default([]),
+  allowedDirectories: z.array(z.string()).default([DEFAULT_AGENT_WORKSPACE]),
+  blockedCommands: z.array(z.string()).default([...DEFAULT_BLOCKED_COMMANDS]),
+  /**
+   * Enable regex-based dangerous-command blocking on the bash tool. Safe by
+   * default: both the bash tool and the SDK PreToolUse hook treat `undefined`
+   * as ON, and the top-level config default sets it to `true` explicitly. Set
+   * to `false` only to opt out.
+   */
+  dangerousCommandBlocking: z.boolean().optional(),
   maxBashTimeout: z.number().int().default(600_000),
   maxFileSize: z.number().int().default(10_485_760),
   maxIterations: z.number().int().default(200),
@@ -424,8 +491,9 @@ export const opencrowConfigSchema = z.object({
     host: "127.0.0.1",
   }),
   tools: toolsConfigSchema.default({
-    allowedDirectories: ["$HOME"],
-    blockedCommands: [],
+    allowedDirectories: [DEFAULT_AGENT_WORKSPACE],
+    blockedCommands: [...DEFAULT_BLOCKED_COMMANDS],
+    dangerousCommandBlocking: true,
     maxBashTimeout: 600_000,
     maxFileSize: 10_485_760,
     maxIterations: 200,

@@ -15,7 +15,7 @@ import {
   Lightbulb,
 } from "lucide-react";
 import { apiFetch } from "../api";
-import { relativeTime } from "../lib/format";
+import { relativeTime, formatDuration } from "../lib/format";
 import { cn } from "../lib/cn";
 import { PageHeader, LoadingState, EmptyState } from "../components";
 import { useToast } from "../components/Toast";
@@ -134,12 +134,6 @@ const STEP_LABELS: Record<string, string> = {
   generation: "Generate",
   synthesize: "Synthesize",
 };
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${(ms / 60000).toFixed(1)}m`;
-}
 
 // ── Step Progress Bar ────────────────────────────────────────────────
 
