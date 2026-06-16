@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useLocalStorage } from "../../lib/useLocalStorage";
 import { apiFetch, deleteAgent, updateAgent, setConfigHash } from "../../api";
+import { agentsResponseSchema } from "../../lib/schemas";
 import type {
   AgentInfo,
   AgentDetail,
@@ -50,7 +51,10 @@ export default function Agents() {
 
   const loadAgents = useCallback(async () => {
     try {
-      const res = await apiFetch<AgentsResponse>("/api/agents");
+      const parsed = await apiFetch("/api/agents", {}, {
+        schema: agentsResponseSchema,
+      });
+      const res = parsed as unknown as AgentsResponse;
       if (res.success) {
         setAgents(res.data);
         if (res.configHash) setConfigHash(res.configHash);

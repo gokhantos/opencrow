@@ -26,7 +26,13 @@ elif [[ -n "$TSC" ]]; then
   $TSC --noEmit
 fi
 
-# ── 2. Unit tests for changed files ─────────────────────────
+# ── 2. Lint (Biome) ──────────────────────────────────────────
+if [[ -n "$BUN" ]]; then
+  echo "  lint..."
+  $BUN run lint
+fi
+
+# ── 3. Unit tests for changed files ─────────────────────────
 if [[ -n "$BUN" ]]; then
   # Find test files that correspond to changed source files
   TEST_FILES=""

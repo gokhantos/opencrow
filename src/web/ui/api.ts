@@ -1,3 +1,5 @@
+import type { ZodType } from "zod";
+
 const TOKEN_KEY = "opencrow_web_token";
 
 export function getToken(): string | null {
@@ -28,9 +30,19 @@ export interface ApiError {
   message: string;
 }
 
+/**
+ * Optional extras for {@link apiFetch}. Pass a zod `schema` to validate the
+ * decoded JSON response at runtime; when omitted the body is cast to `T` (the
+ * legacy behaviour, preserved for the ~86 existing call sites).
+ */
+export interface ApiFetchExtras<T> {
+  readonly schema?: ZodType<T>;
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
+  extras: ApiFetchExtras<T> = {},
 ): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
@@ -55,7 +67,34 @@ export async function apiFetch<T>(
     throw err;
   }
 
-  return res.json() as Promise<T>;
+  const body = (await res.json()) as unknown;
+
+  if (extras.schema) {
+    const parsed = extras.schema.safeParse(body);
+    if (!parsed.success) {
+      const err: ApiError = {
+        status: res.status,
+        message: `Invalid response from ${path}: ${parsed.error.message}`,
+      };
+      throw err;
+    }
+    return parsed.data;
+  }
+
+  return body as T;
+}
+
+/**
+ * Thin wrapper that always validates the response against a zod schema.
+ * Prefer this at hot paths so a malformed payload surfaces as a typed
+ * {@link ApiError} instead of crashing deep inside a component render.
+ */
+export function apiFetchValidated<T>(
+  path: string,
+  schema: ZodType<T>,
+  options: RequestInit = {},
+): Promise<T> {
+  return apiFetch<T>(path, options, { schema });
 }
 
 export function setupChannel(

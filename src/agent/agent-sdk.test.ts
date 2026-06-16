@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import {
   withAlibabaEnv,
   formatToolProgress,
@@ -9,8 +9,6 @@ import {
   summarizeThinking,
   shortenPath,
   lastUserMessage,
-  chat,
-  agenticChat,
 } from "./agent-sdk";
 import type { AgentOptions, ConversationMessage } from "./types";
 
@@ -822,422 +820,40 @@ describe("withAlibabaEnv", () => {
 });
 
 // ============================================================================
-// chat function tests (integration-style)
+// chat function — request-builder behavior
+//
+// NOTE: Real (non-tautological) assertions for chat()/agenticChat() live in
+// ./agent-sdk-chat.test.ts, where the Claude Agent SDK `query()` and prompt
+// enrichment are mocked so we can assert on the EXACT request that gets built
+// (model, systemPrompt, maxTurns, prompt history, session resume, result
+// mapping) without spawning a real subprocess or touching the database.
+//
+// The blocks below were previously `try { await chat() } catch { expect(error)
+// .toBeDefined() }` — they passed regardless of behavior AND spawned a real
+// SDK subprocess. They are skipped here (rather than re-mocking the SDK in this
+// file, which would leak module mocks into the pure-helper tests above) and
+// fully superseded by ./agent-sdk-chat.test.ts.
 // ============================================================================
 
-describe("chat", () => {
-  const mockMessages: ConversationMessage[] = [
-    {
-      role: "user",
-      content: "Hello, world!",
-      timestamp: Date.now(),
-    },
-  ];
-
-  const baseOptions: AgentOptions = {
-    systemPrompt: "You are a helpful assistant.",
-    model: "test-model",
-  };
-
-  it("should handle empty messages array", async () => {
-    const emptyMessages: ConversationMessage[] = [];
-    const options: AgentOptions = {
-      ...baseOptions,
-      modelParams: {
-        thinkingMode: "disabled",
-      },
-    };
-
-    try {
-      await chat(emptyMessages, options);
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle single message without history", async () => {
-    const singleMessage: ConversationMessage[] = [
-      {
-        role: "user",
-        content: "Test message",
-        timestamp: Date.now(),
-      },
-    ];
-    const options: AgentOptions = {
-      ...baseOptions,
-      modelParams: {
-        thinkingMode: "adaptive",
-      },
-    };
-
-    try {
-      await chat(singleMessage, options);
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle multiple messages with history", async () => {
-    const messages: ConversationMessage[] = [
-      { role: "user", content: "First message", timestamp: Date.now() - 2000 },
-      {
-        role: "assistant",
-        content: "First response",
-        timestamp: Date.now() - 1000,
-      },
-      { role: "user", content: "Second message", timestamp: Date.now() },
-    ];
-    const options: AgentOptions = {
-      ...baseOptions,
-      modelParams: {
-        thinkingMode: "enabled",
-        thinkingBudget: 16000,
-      },
-    };
-
-    try {
-      await chat(messages, options);
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle options with extendedContext", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      modelParams: {
-        extendedContext: true,
-      },
-    };
-
-    try {
-      await chat(mockMessages, options);
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle options with maxBudgetUsd", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      modelParams: {
-        maxBudgetUsd: 1.0,
-      },
-    };
-
-    try {
-      await chat(mockMessages, options);
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle reasoning flag", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      reasoning: true,
-    };
-
-    try {
-      await chat(mockMessages, options);
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle history exceeding MAX_HISTORY_IN_PROMPT (10 messages)", async () => {
-    const manyMessages: ConversationMessage[] = [];
-    for (let i = 0; i < 15; i++) {
-      manyMessages.push({
-        role: i % 2 === 0 ? "user" : "assistant",
-        content: `Message ${i}`,
-        timestamp: Date.now() - (15 - i) * 1000,
-      });
-    }
-
-    try {
-      await chat(manyMessages, baseOptions);
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
+describe.skip("chat (superseded by agent-sdk-chat.test.ts)", () => {
+  it("builds the request, maps results, and handles history — see agent-sdk-chat.test.ts", () => {
+    // TODO: covered by ./agent-sdk-chat.test.ts with a mocked SDK query().
   });
 });
 
 // ============================================================================
-// agenticChat function tests (integration-style)
+// agenticChat function — request-builder behavior
+//
+// Real assertions for agenticChat() (model/maxTurns mapping, result text,
+// in-process MCP server attachment) live in ./agent-sdk-chat.test.ts with a
+// mocked SDK query(). The blocks here were tautological
+// `try { await agenticChat() } catch { expect(error).toBeDefined() }` tests
+// that passed regardless of behavior and spawned a real subprocess; they are
+// skipped and superseded by ./agent-sdk-chat.test.ts.
 // ============================================================================
 
-describe("agenticChat", () => {
-  const mockMessages: ConversationMessage[] = [
-    {
-      role: "user",
-      content: "Test task",
-      timestamp: Date.now(),
-    },
-  ];
-
-  const baseOptions: AgentOptions = {
-    systemPrompt: "You are a helpful assistant.",
-    model: "test-model",
-  };
-
-  it("should handle empty messages", async () => {
-    const emptyMessages: ConversationMessage[] = [];
-
-    try {
-      await agenticChat(
-        emptyMessages,
-        baseOptions,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle maxIterations parameter", async () => {
-    try {
-      await agenticChat(
-        mockMessages,
-        baseOptions,
-        {} as import("../tools/registry").ToolRegistry,
-        5
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should call onProgress callback with events", async () => {
-    const progressEvents: import("./types").ProgressEvent[] = [];
-    const onProgress = mock((event: import("./types").ProgressEvent) => {
-      progressEvents.push(event);
-    });
-
-    try {
-      await agenticChat(
-        mockMessages,
-        { ...baseOptions, onProgress },
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-
-    expect(onProgress).toBeDefined();
-  });
-
-  it("should handle agentId option", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      agentId: "test-agent-id",
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle abortSignal option", async () => {
-    const abortController = new AbortController();
-    const options: AgentOptions = {
-      ...baseOptions,
-      abortSignal: abortController.signal,
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle sdkSessionId for session resumption", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      sdkSessionId: "test-session-id",
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle onSdkSessionId callback", async () => {
-    const capturedSessionIds: string[] = [];
-    const onSdkSessionId = mock((sessionId: string) => {
-      capturedSessionIds.push(sessionId);
-    });
-
-    const options: AgentOptions = {
-      ...baseOptions,
-      onSdkSessionId,
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-
-    expect(onSdkSessionId).toBeDefined();
-  });
-
-  it("should handle all tool enablement options", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      browserEnabled: true,
-      githubEnabled: true,
-      context7Enabled: true,
-      sequentialThinkingEnabled: true,
-      dbhubEnabled: true,
-      filesystemEnabled: true,
-      gitEnabled: true,
-      qdrantEnabled: true,
-      braveSearchEnabled: true,
-      firecrawlEnabled: true,
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle sdkHooks option", async () => {
-    const mockHooks = {
-      onTurnStart: mock(() => {}),
-      onTurnEnd: mock(() => {}),
-    };
-
-    const options: AgentOptions = {
-      ...baseOptions,
-      sdkHooks: mockHooks,
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle usageContext option", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      usageContext: {
-        channel: "test-channel",
-        chatId: "test-chat-id",
-        source: "message",
-      },
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle cwd option", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      cwd: "/tmp/test-directory",
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle maxOutputTokens option", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      maxOutputTokens: 4096,
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
-  });
-
-  it("should handle all modelParams options together", async () => {
-    const options: AgentOptions = {
-      ...baseOptions,
-      modelParams: {
-        thinkingMode: "enabled",
-        thinkingBudget: 64000,
-        effort: "high",
-        extendedContext: true,
-        maxBudgetUsd: 5.0,
-      },
-    };
-
-    try {
-      await agenticChat(
-        mockMessages,
-        options,
-        {} as import("../tools/registry").ToolRegistry,
-        10
-      );
-    } catch (error) {
-      expect(error).toBeDefined();
-    }
+describe.skip("agenticChat (superseded by agent-sdk-chat.test.ts)", () => {
+  it("builds the agentic request and maps results — see agent-sdk-chat.test.ts", () => {
+    // TODO: covered by ./agent-sdk-chat.test.ts with a mocked SDK query().
   });
 });

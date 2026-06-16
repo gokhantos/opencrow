@@ -15,6 +15,7 @@ import {
   formatDuration,
 } from "../lib/format";
 import { cn } from "../lib/cn";
+import { useChart } from "../lib/useChart";
 
 // ============================================================================
 // Types
@@ -125,35 +126,6 @@ function sinceEpoch(rangeId: string): number | undefined {
   const range = RANGES.find((r) => r.id === rangeId);
   if (!range || range.seconds === 0) return undefined;
   return Math.floor(Date.now() / 1000) - range.seconds;
-}
-
-// ============================================================================
-// ECharts Hook
-// ============================================================================
-
-function useChart(
-  ref: React.RefObject<HTMLDivElement | null>,
-  option: echarts.EChartsOption,
-) {
-  const chartRef = useRef<echarts.ECharts | null>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const chart = echarts.init(el, undefined, { renderer: "canvas" });
-    chartRef.current = chart;
-    const ro = new ResizeObserver(() => chart.resize());
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      chart.dispose();
-      chartRef.current = null;
-    };
-  }, [ref]);
-
-  useEffect(() => {
-    chartRef.current?.setOption(option, { notMerge: true });
-  }, [option]);
 }
 
 // ============================================================================

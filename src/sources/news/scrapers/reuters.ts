@@ -2,7 +2,11 @@
 
 import type { BrowserContext } from "playwright";
 import type { RawArticle } from "../types";
-import { launchChromium, waitForChallengePage } from "./browser";
+import {
+  launchChromium,
+  waitForChallengePage,
+  NAVIGATION_TIMEOUT_MS,
+} from "./browser";
 import { randomDelay } from "./delays";
 import { REUTERS_SECTIONS } from "./constants";
 import { createLogger } from "../../../logger";
@@ -37,7 +41,10 @@ async function scrapeSection(
   const page = await context.newPage();
   try {
     log.info("Navigating", { url, section });
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: NAVIGATION_TIMEOUT_MS,
+    });
     await randomDelay(2.0, 3.0);
 
     const passed = await waitForChallengePage(page, `reuters-${section}`, [
@@ -98,6 +105,15 @@ async function scrapeSection(
       summary: string;
       published_at: string;
     }>;
+
+    // Zero-result sentinel: the anti-bot challenge passed (page loaded) yet the
+    // CSS selectors matched nothing — a strong signal Reuters changed its DOM.
+    if (items.length === 0) {
+      log.warn("Reuters parsed 0 articles from a loaded section page", {
+        section,
+        url,
+      });
+    }
 
     return items.map(
       (item): RawArticle => ({

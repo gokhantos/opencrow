@@ -55,17 +55,8 @@ function parseIpv4Octets(ip: string): readonly number[] | null {
   return octets;
 }
 
-export function isPrivateIp(ip: string): boolean {
-  // IPv6 checks
-  const normalized = ip.toLowerCase();
-  if (normalized === "::1") return true;
-  if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
-  if (normalized.startsWith("fe80")) return true;
-
-  // IPv4 checks
-  const octets = parseIpv4Octets(ip);
-  if (!octets || octets.length < 2) return false;
-
+function isPrivateIpv4(octets: readonly number[]): boolean {
+  if (octets.length < 2) return false;
   const a = octets[0]!;
   const b = octets[1]!;
 
@@ -73,18 +64,77 @@ export function isPrivateIp(ip: string): boolean {
   if (a === 0) return true;
   // 10.0.0.0/8
   if (a === 10) return true;
-  // 127.0.0.0/8
+  // 127.0.0.0/8 (loopback)
   if (a === 127) return true;
   // 172.16.0.0/12 (172.16.x.x – 172.31.x.x)
   if (a === 172 && b >= 16 && b <= 31) return true;
   // 192.168.0.0/16
   if (a === 192 && b === 168) return true;
-  // 169.254.0.0/16 (link-local, AWS metadata)
+  // 169.254.0.0/16 (link-local, AWS/GCP/Azure metadata 169.254.169.254)
   if (a === 169 && b === 254) return true;
   // 100.64.0.0/10 (CGNAT / Tailscale: 100.64.x.x – 100.127.x.x)
   if (a === 100 && b >= 64 && b <= 127) return true;
+  // 192.0.0.0/24 (IETF protocol assignments) and 192.0.2.0/24 (TEST-NET-1)
+  if (a === 192 && b === 0) return true;
+  // 198.18.0.0/15 (benchmarking)
+  if (a === 198 && (b === 18 || b === 19)) return true;
+  // 224.0.0.0/4 multicast and 240.0.0.0/4 reserved
+  if (a >= 224) return true;
 
   return false;
+}
+
+/**
+ * Reject any address that resolves to a loopback, private, link-local, CGNAT,
+ * multicast, or reserved range. IPv4 is parsed by numeric octet range (not
+ * string prefix), and IPv4-mapped / IPv4-compatible IPv6 addresses are unwrapped
+ * so that e.g. `::ffff:127.0.0.1` and `::ffff:7f00:1` are caught.
+ */
+export function isPrivateIp(ip: string): boolean {
+  const normalized = ip.toLowerCase().trim();
+
+  // Strip an IPv6 zone identifier (e.g. fe80::1%eth0) before any checks.
+  const bare = normalized.split("%")[0] ?? normalized;
+
+  // IPv4-mapped / IPv4-compatible IPv6 (::ffff:a.b.c.d or ::a.b.c.d).
+  const mappedV4 = bare.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mappedV4) {
+    const octets = parseIpv4Octets(mappedV4[1]!);
+    return octets ? isPrivateIpv4(octets) : true;
+  }
+
+  // IPv4-mapped IPv6 in hex form (::ffff:7f00:1 == 127.0.0.1).
+  const mappedHex = bare.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1]!, 16);
+    const lo = parseInt(mappedHex[2]!, 16);
+    const octets = [
+      (hi >> 8) & 0xff,
+      hi & 0xff,
+      (lo >> 8) & 0xff,
+      lo & 0xff,
+    ];
+    return isPrivateIpv4(octets);
+  }
+
+  // Pure IPv6 ranges.
+  if (bare.includes(":")) {
+    if (bare === "::1" || bare === "::") return true; // loopback / unspecified
+    if (bare.startsWith("fc") || bare.startsWith("fd")) return true; // fc00::/7 ULA
+    if (bare.startsWith("fe80")) return true; // link-local
+    if (bare.startsWith("fe9") || bare.startsWith("fea") || bare.startsWith("feb")) {
+      return true; // remainder of fe80::/10 link-local block
+    }
+    if (bare.startsWith("ff")) return true; // ff00::/8 multicast
+    // Anything else that parsed as IPv6 but isn't a normal global address:
+    // be conservative only for clearly-local forms above; allow global v6.
+    return false;
+  }
+
+  // Plain IPv4.
+  const octets = parseIpv4Octets(bare);
+  if (!octets) return false;
+  return isPrivateIpv4(octets);
 }
 
 export async function validateUrl(url: string): Promise<string | null> {
@@ -100,12 +150,28 @@ export async function validateUrl(url: string): Promise<string | null> {
   }
 
   const hostname = parsed.hostname;
-  if (hostname === "localhost" || hostname === "127.0.0.1") {
+  const lowerHost = hostname.toLowerCase();
+  if (lowerHost === "localhost" || lowerHost.endsWith(".localhost")) {
     return "Rejected hostname: localhost is not allowed.";
+  }
+
+  // If the hostname is already a literal IP (incl. bracketed IPv6 like [::1]),
+  // check it directly — no DNS lookup needed and rebinding cannot apply.
+  const literalIp = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+  if (isIpLiteral(literalIp)) {
+    if (isPrivateIp(literalIp)) {
+      return `Rejected: ${literalIp} is a private/reserved address.`;
+    }
+    return null;
   }
 
   try {
     const addrs = await resolveDns(hostname);
+    if (addrs.length === 0) {
+      return `DNS resolution returned no addresses for ${hostname}.`;
+    }
     for (const addr of addrs) {
       if (isPrivateIp(addr)) {
         return `Rejected: hostname resolves to private IP ${addr}.`;
@@ -116,6 +182,12 @@ export async function validateUrl(url: string): Promise<string | null> {
   }
 
   return null;
+}
+
+/** True when the string is a literal IPv4 or IPv6 address (not a hostname). */
+function isIpLiteral(host: string): boolean {
+  if (host.includes(":")) return true; // any colon ⇒ IPv6 literal
+  return parseIpv4Octets(host) !== null;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +278,23 @@ async function fetchWithRedirects(
   let currentUrl = initialUrl;
 
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    // Re-resolve and re-validate the hostname's IPs on EVERY hop (including the
+    // first), immediately before connecting. This shrinks the DNS-rebinding
+    // TOCTOU window: a stale validation from executeWebFetch cannot be reused,
+    // and each redirect target is re-checked here rather than only by the
+    // earlier validateUrl call.
+    //
+    // Residual limitation: Bun's fetch() resolves DNS again internally and we
+    // cannot pin the socket to the IP we validated, so a sub-millisecond rebind
+    // between our resolve and Bun's connect is theoretically possible. True
+    // hardening would require connecting to a pinned, pre-validated IP (e.g. a
+    // custom dispatcher/agent or Host-header pinning) — not currently available
+    // with Bun's fetch. This is the strongest feasible mitigation today.
+    const hopError = await validateUrl(currentUrl);
+    if (hopError) {
+      throw new Error(`Blocked (SSRF): ${hopError}`);
+    }
+
     const response = await fetch(currentUrl, {
       method: i === 0 ? opts.method : "GET",
       headers: opts.headers,
@@ -225,13 +314,9 @@ async function fetchWithRedirects(
       return response;
     }
 
-    const redirectUrl = new URL(location, currentUrl).toString();
-    const redirectError = await validateUrl(redirectUrl);
-    if (redirectError) {
-      throw new Error(`Redirect blocked: ${redirectError}`);
-    }
-
-    currentUrl = redirectUrl;
+    // Resolve the redirect target; it is re-validated at the top of the next
+    // loop iteration before the connection is made.
+    currentUrl = new URL(location, currentUrl).toString();
   }
 
   throw new Error(`Too many redirects (max ${MAX_REDIRECTS}).`);

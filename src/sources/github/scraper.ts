@@ -211,6 +211,16 @@ async function fetchTrending(
 
     const html = await resp.text();
     const repos = parseTrendingHtml(html);
+
+    // Zero-result sentinel: a non-empty page that yields no repos almost
+    // always means GitHub changed its markup and our regex selectors broke.
+    if (repos.length === 0 && html.length > 0) {
+      log.warn("GitHub trending parsed 0 repos from non-empty page", {
+        period,
+        htmlBytes: html.length,
+      });
+    }
+
     return { ok: true, repos };
   } catch (err) {
     const msg = getErrorMessage(err);

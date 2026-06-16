@@ -25,24 +25,61 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
     c.json({ status: "ok", timestamp: Date.now() }),
   );
 
-  // Auth middleware for all other internal endpoints.
+  // Auth middleware for all other internal endpoints — FAIL-CLOSED.
   // /internal/health is registered above and is intentionally exempt (liveness probes).
   // IMPORTANT: any route registered BEFORE this middleware is also exempt — keep health first.
-  const internalToken = process.env.OPENCROW_INTERNAL_TOKEN;
-  if (!internalToken) {
-    log.warn("OPENCROW_INTERNAL_TOKEN not set — internal API is unauthenticated");
-  } else {
-    app.use("/internal/*", async (c, next) => {
-      const authHeader = c.req.header("authorization");
-      const bearerToken = authHeader?.startsWith("Bearer ")
-        ? authHeader.slice(7)
-        : null;
-      if (bearerToken !== internalToken) {
-        return c.json({ error: "Unauthorized" }, 401);
-      }
-      await next();
-    });
+  //
+  // The internal control-plane exposes privileged primitives (full shell/db/deploy
+  // via /internal/chat, plus process start/stop/restart and scraper control). It MUST
+  // never be reachable without a configured token. When no token is configured (neither
+  // DB-stored secret nor env), we reject every privileged request with 503 instead of
+  // allowing it through (which would leave the control plane wide open).
+  //
+  // The token is resolved per-request via getSecret() so DB-stored rotations take effect
+  // without a restart — mirroring how the web token is resolved in src/web/app.ts.
+  if (!process.env.OPENCROW_INTERNAL_TOKEN) {
+    log.warn(
+      "OPENCROW_INTERNAL_TOKEN not in env — checking DB per request; internal API is fail-closed until a token is configured",
+    );
   }
+
+  app.use("/internal/*", async (c, next) => {
+    const { getSecret } = await import("../config/secrets");
+    let internalToken: string | undefined;
+    try {
+      internalToken = await getSecret("OPENCROW_INTERNAL_TOKEN");
+    } catch (error) {
+      log.error("Failed to resolve internal token — failing closed", { error });
+      return c.json(
+        { error: "Internal API auth unavailable" },
+        503,
+      );
+    }
+
+    // Fail closed: no token configured means the control plane is locked down.
+    if (!internalToken) {
+      log.error(
+        "Internal API request rejected — OPENCROW_INTERNAL_TOKEN is not configured (fail-closed)",
+        { path: c.req.path },
+      );
+      return c.json(
+        {
+          error:
+            "Internal API is not configured. Set OPENCROW_INTERNAL_TOKEN to enable the control plane.",
+        },
+        503,
+      );
+    }
+
+    const authHeader = c.req.header("authorization");
+    const bearerToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : null;
+    if (bearerToken !== internalToken) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    await next();
+  });
 
   // --- Live status ---
   app.get("/internal/status", async (c) => {

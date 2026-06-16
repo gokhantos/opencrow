@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import * as echarts from "echarts";
-import { apiFetch } from "../api";
+import type { ZodType } from "zod";
+import { usePolledFetch } from "../hooks/usePolledFetch";
+import { systemMetricsSchema } from "../lib/schemas";
 import {
   Activity,
   Cpu,
@@ -12,6 +14,7 @@ import {
   CheckCircle,
 } from "lucide-react";
 import { cn } from "../lib/cn";
+import { useChart } from "../lib/useChart";
 import { LoadingState, Button } from "../components";
 
 // ============================================================================
@@ -80,35 +83,6 @@ function rgba(hex: string, alpha: number): string {
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   return `rgba(${r},${g},${b},${alpha})`;
-}
-
-// ============================================================================
-// ECharts Hook
-// ============================================================================
-
-function useChart(
-  ref: React.RefObject<HTMLDivElement | null>,
-  option: echarts.EChartsOption,
-) {
-  const chartRef = useRef<echarts.ECharts | null>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const chart = echarts.init(el, undefined, { renderer: "canvas" });
-    chartRef.current = chart;
-    const ro = new ResizeObserver(() => chart.resize());
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      chart.dispose();
-      chartRef.current = null;
-    };
-  }, [ref]);
-
-  useEffect(() => {
-    chartRef.current?.setOption(option, { notMerge: true });
-  }, [option]);
 }
 
 // ============================================================================
@@ -570,31 +544,24 @@ function ChartSection({
 
 export default function SystemMetrics() {
   const [metrics, setMetrics] = useState<SystemMetricsData[]>([]);
-  const [currentMetrics, setCurrentMetrics] =
-    useState<SystemMetricsData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
+  const {
+    data: currentMetrics,
+    loading,
+    error,
+    refetch,
+  } = usePolledFetch<SystemMetricsData>("/api/system/metrics", {
+    intervalMs: 2000,
+    extras: {
+      schema: systemMetricsSchema as unknown as ZodType<SystemMetricsData>,
+    },
+  });
+
+  // Accumulate a rolling window of the most recent 60 samples for the charts.
   useEffect(() => {
-    fetchMetrics();
-    const interval = setInterval(fetchMetrics, 2000);
-    return () => clearInterval(interval);
-  }, []);
-
-  async function fetchMetrics() {
-    try {
-      const data = await apiFetch<SystemMetricsData>("/api/system/metrics");
-      setCurrentMetrics(data);
-      setMetrics((prev) => {
-        const newMetrics = [...prev, data];
-        return newMetrics.slice(-60);
-      });
-      setLoading(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to fetch metrics");
-      setLoading(false);
-    }
-  }
+    if (!currentMetrics) return;
+    setMetrics((prev) => [...prev, currentMetrics].slice(-60));
+  }, [currentMetrics]);
 
   if (loading) return <LoadingState />;
 
@@ -606,7 +573,7 @@ export default function SystemMetrics() {
           Unable to load metrics
         </h2>
         <p className="text-faint m-0 text-sm">{error}</p>
-        <Button variant="secondary" onClick={fetchMetrics}>
+        <Button variant="secondary" onClick={refetch}>
           Retry
         </Button>
       </div>

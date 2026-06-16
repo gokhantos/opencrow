@@ -1,0 +1,10 @@
+# Bun configuration — see https://bun.sh/docs/runtime/bunfig
+
+[test]
+# Emit coverage when running `bun test --coverage` (CI already passes the flag).
+coverage = true
+
+# NOTE: intentionally NO `coverageThreshold` here. Bun supports a threshold via
+# `coverageThreshold = 0.0`, but pinning a hard floor would break CI the moment a
+# new untested file lands. Once coverage is measured and stable, set this to the
+# current measured level (e.g. coverageThreshold = 0.5) to ratchet it upward.

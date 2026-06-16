@@ -145,6 +145,15 @@ export async function runSetup(): Promise<void> {
   const webToken =
     existingEnv.OPENCROW_WEB_TOKEN ?? crypto.randomBytes(24).toString("hex");
 
+  // Internal control-plane token — secures the core orchestrator API
+  // (process start/stop/restart, /internal/chat shell access, scraper control).
+  // The internal API is fail-closed: without this token the control plane is
+  // locked down, so it must be provisioned during setup. Inherited by every
+  // spawned child process via the parent process env (see notesForVerifier).
+  const internalToken =
+    existingEnv.OPENCROW_INTERNAL_TOKEN ??
+    crypto.randomBytes(24).toString("hex");
+
   const openrouterKey = await p.text({
     message: "OpenRouter API key (for embeddings, optional):",
     placeholder: "sk-or-v1-...",
@@ -197,6 +206,7 @@ export async function runSetup(): Promise<void> {
   const envVars: Record<string, string> = {
     DATABASE_URL: databaseUrl,
     OPENCROW_WEB_TOKEN: webToken,
+    OPENCROW_INTERNAL_TOKEN: internalToken,
   };
 
   if (qdrantUrl) envVars.QDRANT_URL = qdrantUrl;

@@ -20,7 +20,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -45,7 +45,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -60,23 +60,20 @@ jobs:
 
       - name: Run isolated tests (mock.module)
         run: |
-          # Tests using mock.module must run in separate processes
-          # to prevent Bun's global module cache pollution
-          bun test src/tools/git-operations.test.ts --timeout 30000
-          bun test src/tools/spawn-agent.test.ts --timeout 30000
-          bun test src/tools/manage-agent.test.ts --timeout 30000
-          bun test src/tools/cron.test.ts --timeout 30000
-          bun test src/tools/cross-agent-memory.test.ts --timeout 30000
-          bun test src/monitor/runner.test.ts --timeout 30000
+          # Tests using mock.module must run in separate processes to prevent
+          # Bun's global module cache pollution. Selected by the *.isolated.test.ts
+          # filename suffix (single source of truth).
+          for f in $(find src -name '*.isolated.test.ts'); do
+            bun test "$f" --timeout 30000 || exit 1
+          done
 
       - name: Run unit tests
         run: |
-          # Exclude mock.module tests (ran above) and integration tests (need DB)
-          ISOLATED="git-operations|spawn-agent|manage-agent|cron\.test|cross-agent-memory|monitor/runner"
-          INTEGRATION="db-query|shell-runner|config/loader|agent/hooks|cron/store|store/token-usage|store/observations|store/messages|store/sessions|store/routing-rules\.test|store/config-overrides|store/agent-overrides|store/workflows\.test|store/sdk-sessions|store/memory\.test|store/summaries\.test"
+          # Unit lane = every *.test.ts EXCEPT the integration (*.integration.test.ts,
+          # need a DB) and isolated (*.isolated.test.ts, ran above) lanes.
           find src -name '*.test.ts' \
-            | grep -vE "$ISOLATED" \
-            | grep -vE "$INTEGRATION" \
+            -not -name '*.integration.test.ts' \
+            -not -name '*.isolated.test.ts' \
             | xargs bun test --timeout 30000 --coverage
 
   # ─── Integration Tests (with DB) ───────────────────────────
@@ -107,7 +104,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -122,24 +119,9 @@ jobs:
 
       - name: Run integration tests
         run: |
-          bun test \
-            src/tools/db-query.test.ts \
-            src/tools/shell-runner.test.ts \
-            src/config/loader.test.ts \
-            src/agent/hooks.test.ts \
-            src/cron/store.test.ts \
-            src/store/token-usage.test.ts \
-            src/store/observations.test.ts \
-            src/store/messages.test.ts \
-            src/store/sessions.test.ts \
-            src/store/routing-rules.test.ts \
-            src/store/config-overrides.test.ts \
-            src/store/agent-overrides.test.ts \
-            src/store/workflows.test.ts \
-            src/store/sdk-sessions.test.ts \
-            src/store/memory.test.ts \
-            src/store/summaries.test.ts \
-            --timeout 30000 --coverage
+          # Integration lane = every *.integration.test.ts (DB-backed).
+          find src -name '*.integration.test.ts' \
+            | xargs bun test --timeout 30000 --coverage
 
   # ─── Build Check ────────────────────────────────────────────
   build:
@@ -150,7 +132,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -165,13 +147,42 @@ jobs:
 
       - name: Verify entry points compile
         run: |
-          for f in src/index.ts src/gateway.ts src/entries/core.ts src/entries/agent.ts src/entries/cron.ts src/entries/scraper.ts src/entries/market.ts src/web-index.ts; do
-            bun build "$f" --target=bun --no-bundle --outfile /tmp/build-check/$(basename "$f" .ts).js 2>&1
+          # Build every real entry point and fail fast on the first error
+          # (ModuleNotFound etc.). Globbing src/entries/*.ts keeps this in sync
+          # as entries are added or removed.
+          for f in src/index.ts src/web-index.ts src/entries/*.ts; do
+            echo "building $f"
+            bun build "$f" --target=bun --no-bundle >/dev/null || exit 1
           done
           echo "All entry points compile successfully"
 
       - name: Build Tailwind CSS
         run: bunx @tailwindcss/cli -i src/web/ui/tailwind.css -o /tmp/tailwind-out.css --minify
+
+  # ─── Lint ───────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules
+            ~/.bun/install/cache
+          key: bun-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-
+
+      - run: bun install --frozen-lockfile
+
+      - name: Biome lint
+        run: bun run lint
 
   # ─── Security Audit ─────────────────────────────────────────
   security:
@@ -182,7 +193,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -206,18 +217,24 @@ jobs:
             | grep -v 'schema\.' \
             | grep -v 'your-.*-here' \
             | grep -v '\.\.\.'; then
-            echo "::warning::Potential hardcoded secrets found. Review the matches above."
+            echo "::error::Potential hardcoded secrets found. Review the matches above."
+            exit 1
           else
             echo "No hardcoded secrets detected"
           fi
 
       - name: Check for console.log in source
         run: |
+          # Fail on stray console.log. Known-safe exclusions: test files, the
+          # logger itself, and the interactive CLI (src/cli/*) which prints
+          # user-facing output to the terminal by design.
           if grep -rn 'console\.log' src/ --include='*.ts' --include='*.tsx' \
             | grep -v '\.test\.ts' \
             | grep -v 'logger\.ts' \
+            | grep -v '/cli/' \
             | grep -v '// eslint-disable'; then
-            echo "::warning::console.log statements found in source code. Use the logger instead."
+            echo "::error::console.log statements found in source code. Use the logger instead."
+            exit 1
           else
             echo "No stray console.log statements"
           fi

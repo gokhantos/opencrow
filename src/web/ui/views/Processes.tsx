@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback } from "react";
+import type { ZodType } from "zod";
 import { apiFetch } from "../api";
+import { usePolledFetch } from "../hooks/usePolledFetch";
+import { processesResponseSchema } from "../lib/schemas";
 import { formatUptime } from "../lib/format";
 import { cn } from "../lib/cn";
 import { LoadingState, EmptyState, PageHeader, Button } from "../components";
@@ -533,12 +536,29 @@ function RestartHistory({ events }: { events: readonly RestartEvent[] }) {
 
 const MAX_HISTORY = 50;
 
+interface ProcessesResponse {
+  readonly data: ProcessInfo[];
+}
+
 export default function Processes() {
-  const [processes, setProcesses] = useState<ProcessInfo[]>([]);
   const [restartHistory, setRestartHistory] = useState<RestartEvent[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const prevRef = React.useRef<Map<string, ProcessInfo>>(new Map());
+
+  const {
+    data: processesResult,
+    loading,
+    error: fetchError,
+    refetch,
+  } = usePolledFetch<ProcessesResponse>("/api/processes", {
+    intervalMs: 5000,
+    extras: {
+      schema: processesResponseSchema as unknown as ZodType<ProcessesResponse>,
+    },
+  });
+
+  const processes = processesResult?.data ?? [];
+  const [actionError, setActionError] = useState("");
+  const error = actionError || (fetchError ? "Failed to load processes" : "");
 
   const detectRestartEvents = useCallback((current: readonly ProcessInfo[]) => {
     const prev = prevRef.current;
@@ -581,24 +601,10 @@ export default function Processes() {
     prevRef.current = new Map(current.map((p) => [p.name, p]));
   }, []);
 
-  const fetchProcesses = useCallback(async () => {
-    try {
-      const res = await apiFetch<{ data: ProcessInfo[] }>("/api/processes");
-      setProcesses(res.data);
-      detectRestartEvents(res.data);
-      setError("");
-      setLoading(false);
-    } catch {
-      setError("Failed to load processes");
-      setLoading(false);
-    }
-  }, [detectRestartEvents]);
-
+  // Derive restart/crash events from each fresh poll result.
   useEffect(() => {
-    fetchProcesses();
-    const interval = setInterval(fetchProcesses, 5000);
-    return () => clearInterval(interval);
-  }, [fetchProcesses]);
+    if (processesResult) detectRestartEvents(processesResult.data);
+  }, [processesResult, detectRestartEvents]);
 
   async function handleAction(
     name: string,
@@ -616,9 +622,10 @@ export default function Processes() {
         );
       }
 
-      setTimeout(fetchProcesses, action === "stop" ? 1000 : 2000);
+      setActionError("");
+      setTimeout(refetch, action === "stop" ? 1000 : 2000);
     } catch {
-      setError(`Failed to ${action} ${name}`);
+      setActionError(`Failed to ${action} ${name}`);
     }
   }
 
@@ -634,7 +641,7 @@ export default function Processes() {
         title="Processes"
         count={processes.length}
         actions={
-          <Button variant="secondary" size="sm" onClick={fetchProcesses}>
+          <Button variant="secondary" size="sm" onClick={refetch}>
             Refresh
           </Button>
         }

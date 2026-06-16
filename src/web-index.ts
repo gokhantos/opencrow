@@ -124,6 +124,39 @@ async function main(): Promise<void> {
   let systemWsNextId = 0;
   const systemWsClients = new Set<import("bun").ServerWebSocket<WsData>>();
 
+  // FAIL-CLOSED auth for the raw Bun.serve routes (/ws/* and /internal/restart).
+  // The Hono /api/* surface enforces this in src/web/app.ts, but these handlers
+  // bypass Hono. Resolve the token from DB secrets first, then env (mirroring
+  // src/web/app.ts) so DB rotations take effect without a restart. When no token
+  // is configured we reject — these endpoints must never be unauthenticated.
+  // Returns a Response when the request must be rejected, or null when authorized.
+  async function checkWebTokenAuth(req: Request): Promise<Response | null> {
+    const { getSecret } = await import("./config/secrets");
+    let expectedToken: string | undefined;
+    try {
+      expectedToken = await getSecret("OPENCROW_WEB_TOKEN");
+    } catch (err) {
+      log.error("Failed to resolve web token — failing closed", { error: err });
+      return new Response("Auth unavailable", { status: 503 });
+    }
+    if (!expectedToken) {
+      log.error("Request rejected — OPENCROW_WEB_TOKEN not configured (fail-closed)", {
+        path: new URL(req.url).pathname,
+      });
+      return new Response("Web API not configured", { status: 503 });
+    }
+    const protocol = req.headers.get("sec-websocket-protocol");
+    const authHeader = req.headers.get("authorization");
+    const bearerToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice(7)
+      : null;
+    const providedToken = protocol ?? bearerToken;
+    if (providedToken !== expectedToken) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+    return null;
+  }
+
   Bun.serve<WsData>({
     port: config.web.port,
     hostname: config.web.host,
@@ -147,7 +180,7 @@ async function main(): Promise<void> {
         },
       }),
     },
-    fetch(req, bunServer) {
+    async fetch(req, bunServer) {
       const url = new URL(req.url);
 
       // Serve CSS files dynamically (tailwind-out.css is a build artifact)
@@ -163,18 +196,8 @@ async function main(): Promise<void> {
 
       // WebSocket system events feed — real-time dashboard updates
       if (url.pathname === "/ws/system") {
-        const expectedToken = process.env.OPENCROW_WEB_TOKEN;
-        if (expectedToken) {
-          const protocol = req.headers.get("sec-websocket-protocol");
-          const authHeader = req.headers.get("authorization");
-          const bearerToken = authHeader?.startsWith("Bearer ")
-            ? authHeader.slice(7)
-            : null;
-          const providedToken = protocol ?? bearerToken;
-          if (providedToken !== expectedToken) {
-            return new Response("Unauthorized", { status: 401 });
-          }
-        }
+        const unauthorized = await checkWebTokenAuth(req);
+        if (unauthorized) return unauthorized;
         const upgraded = bunServer.upgrade(req, {
           data: { kind: "system" as const, id: systemWsNextId++ },
         });
@@ -184,18 +207,8 @@ async function main(): Promise<void> {
 
       // WebSocket chat — local agent execution with progress streaming
       if (url.pathname === "/ws/chat") {
-        const expectedToken = process.env.OPENCROW_WEB_TOKEN;
-        if (expectedToken) {
-          const protocol = req.headers.get("sec-websocket-protocol");
-          const authHeader = req.headers.get("authorization");
-          const bearerToken = authHeader?.startsWith("Bearer ")
-            ? authHeader.slice(7)
-            : null;
-          const providedToken = protocol ?? bearerToken;
-          if (providedToken !== expectedToken) {
-            return new Response("Unauthorized", { status: 401 });
-          }
-        }
+        const unauthorized = await checkWebTokenAuth(req);
+        if (unauthorized) return unauthorized;
         const upgraded = bunServer.upgrade(req, {
           data: { kind: "chat" as const, chatId: "web-default" },
         });
@@ -205,16 +218,8 @@ async function main(): Promise<void> {
 
       // Internal restart endpoint — web process restarts itself
       if (url.pathname === "/internal/restart" && req.method === "POST") {
-        const expectedToken = process.env.OPENCROW_WEB_TOKEN;
-        if (expectedToken) {
-          const authHeader = req.headers.get("authorization");
-          const bearerToken = authHeader?.startsWith("Bearer ")
-            ? authHeader.slice(7)
-            : null;
-          if (bearerToken !== expectedToken) {
-            return new Response("Unauthorized", { status: 401 });
-          }
-        }
+        const unauthorized = await checkWebTokenAuth(req);
+        if (unauthorized) return unauthorized;
         log.info("Restart requested via /internal/restart");
         setTimeout(() => process.exit(0), 100);
         return new Response(JSON.stringify({ ok: true }), {
@@ -345,10 +350,15 @@ async function main(): Promise<void> {
   setInterval(async () => {
     if (systemWsClients.size === 0) return;
     try {
+      // /api/status is now fail-closed: resolve the token from DB secrets or env
+      // so this internal self-fetch authenticates even when the token lives only
+      // in the DB.
+      const { getSecret } = await import("./config/secrets");
+      const statusToken = await getSecret("OPENCROW_WEB_TOKEN");
       const res = await webApp.fetch(
         new Request(`http://localhost:${config.web.port}/api/status`, {
-          headers: process.env.OPENCROW_WEB_TOKEN
-            ? { Authorization: `Bearer ${process.env.OPENCROW_WEB_TOKEN}` }
+          headers: statusToken
+            ? { Authorization: `Bearer ${statusToken}` }
             : {},
         }),
       );

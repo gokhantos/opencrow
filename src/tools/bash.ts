@@ -1,4 +1,5 @@
 import { resolve } from "path";
+import { mkdirSync } from "node:fs";
 import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
 import {
@@ -8,6 +9,7 @@ import {
 } from "./path-utils";
 import { BASH_MAX_BYTES, BASH_HEAD_BYTES, BASH_TAIL_BYTES } from "./shell-runner";
 import { createLogger } from "../logger";
+import { isDangerousCommand } from "../agent/hooks";
 import { inputError, permissionError, timeoutError, serviceError } from "./error-helpers";
 
 const log = createLogger("tool:bash");
@@ -72,6 +74,24 @@ function truncateBashOutput(text: string, label: string): string {
 }
 
 export function createBashTool(config: ToolsConfig): ToolDefinition {
+  // Resolve the configured workspace(s). The first entry is the default cwd for
+  // commands that don't pass an explicit workingDirectory — we intentionally no
+  // longer fall back to the whole $HOME directory.
+  const expandedDirs = config.allowedDirectories.map(expandHome);
+  // Ensure the default workspace exists so the agent has somewhere to operate
+  // before any tool resolves realpaths against it.
+  const defaultDir = expandedDirs[0];
+  if (defaultDir) {
+    try {
+      mkdirSync(defaultDir, { recursive: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.warn("Failed to create agent workspace directory", {
+        dir: defaultDir,
+        error: message,
+      });
+    }
+  }
   const allowedDirs = resolveAllowedDirs(config.allowedDirectories);
 
   return {
@@ -88,7 +108,8 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
         },
         workingDirectory: {
           type: "string",
-          description: "Working directory for the command (default: $HOME)",
+          description:
+            "Working directory for the command (default: the agent workspace). Must be within an allowed directory.",
         },
       },
       required: ["command"],
@@ -96,10 +117,11 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
 
     async execute(input: Record<string, unknown>): Promise<ToolResult> {
       const command = String(input.command ?? "");
-      const home = process.env.HOME ?? "";
+      // Default to the agent workspace (first allowed dir), NOT $HOME.
+      const fallbackDir = defaultDir ?? process.env.HOME ?? "";
       const workDir = input.workingDirectory
         ? resolve(expandHome(String(input.workingDirectory)))
-        : home;
+        : fallbackDir;
 
       if (!command.trim()) {
         return inputError("Error: empty command");
@@ -107,6 +129,21 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
 
       if (isCommandBlocked(command, config.blockedCommands)) {
         return permissionError(`Error: command blocked for safety: ${command}`);
+      }
+
+      // Defense-in-depth: the regex-based dangerous-command check also runs here
+      // so the custom "bash" tool (pi-ai/OpenRouter path, which does not go
+      // through the Agent SDK PreToolUse hook) is protected by default.
+      if (
+        config.dangerousCommandBlocking !== false &&
+        isDangerousCommand(command)
+      ) {
+        log.warn("Blocked dangerous command", {
+          command: command.slice(0, 200),
+        });
+        return permissionError(
+          `Error: command blocked for safety: ${command}`,
+        );
       }
 
       {
