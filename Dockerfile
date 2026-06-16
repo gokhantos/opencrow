@@ -27,7 +27,7 @@ COPY --chown=bun:bun . .
 # The dashboard stylesheet is gitignored, so generate it at build time.
 RUN bun run tw:build
 
-# Web dashboard (core API :48081 and market :48084 stay container-internal).
+# Web dashboard (core API :48081 stays container-internal).
 EXPOSE 48080
 
 CMD ["bun", "run", "start"]

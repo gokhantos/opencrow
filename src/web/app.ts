@@ -7,7 +7,6 @@ import { createAgentRoutes } from "./routes/agents";
 import { createCronRoutes } from "./routes/cron";
 import { createChannelRoutes } from "./routes/channels";
 import { createMemoryRoutes, createMemoryDebugRoutes } from "./routes/memory";
-import { createMarketRoutes } from "./routes/market";
 import { systemRoutes } from "./routes/system";
 import { createXAccountRoutes } from "./routes/x-accounts";
 import { createPHAccountRoutes } from "./routes/ph-accounts";
@@ -41,8 +40,6 @@ import type { RedditScraper } from "../sources/reddit/scraper";
 import type { GithubScraper } from "../sources/github/scraper";
 import type { PHScraper } from "../sources/producthunt/scraper";
 import type { NewsProcessor } from "../sources/news/processor";
-import type { MarketPipeline } from "../sources/markets/pipeline";
-import type { MarketType } from "../sources/markets/types";
 import { getRecentLogs, type StoredLogEntry } from "../logger";
 import { getDb } from "../store/db";
 import type { OpenCrowConfig } from "../config/schema";
@@ -80,9 +77,6 @@ export interface WebAppDeps {
   ) => Promise<AgentOptions>;
   readonly messageHandler?: MessageHandler;
   readonly memoryManager?: MemoryManager;
-  readonly marketPipeline?: MarketPipeline;
-  readonly marketSymbols?: readonly string[];
-  readonly marketTypes?: readonly MarketType[];
   readonly bookmarkProcessor?: BookmarkProcessor;
   readonly autolikeProcessor?: AutolikeProcessor;
   readonly autofollowProcessor?: AutofollowProcessor;
@@ -370,16 +364,6 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
   const secrets = createSecretsRoutes();
   app.route("/api", secrets);
-
-  {
-    const market = createMarketRoutes(
-      deps.marketPipeline,
-      deps.marketSymbols ?? [],
-      deps.marketTypes ?? ["spot"],
-      { coreClient: deps.coreClient },
-    );
-    app.route("/api", market);
-  }
 
   const sige = createSigeRoutes();
   app.route("/api", sige);

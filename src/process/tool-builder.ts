@@ -12,7 +12,6 @@ import { createSpawnAgentTool } from "../tools/spawn-agent";
 import { createCronTool } from "../tools/cron";
 import type { CronToolConfig } from "../tools/cron";
 import { createMemoryTools, createSearchMemoryTool } from "../tools/memory";
-import { createMarketTools } from "../sources/markets/tools";
 import { createNewsTools } from "../tools/news";
 import { createPHTools } from "../tools/ph";
 import { createHNTools } from "../tools/hn";
@@ -45,14 +44,6 @@ export function buildWorkflowToolRegistry(
 
   // Workflows get ALL tools unconditionally — no scraper-enabled gating.
   // Scraper toggles control whether background scraping runs, not tool availability.
-
-  if (config.market) {
-    const marketTools = createMarketTools(
-      config.market.symbols ?? [],
-      config.market.marketTypes ?? [],
-    ).filter((t) => allowsTool(t.name));
-    if (marketTools.length > 0) registry = registry.withTools(marketTools);
-  }
 
   {
     const newsTools = createNewsTools(memoryManager).filter((t) =>
@@ -255,14 +246,6 @@ export function buildRegistryForAgent(
     config.processes.scraperProcesses.scraperIds ?? [],
   );
   const scraperEnabled = (id: string) => enabledScrapers.has(id);
-
-  if (config.market) {
-    const marketTools = createMarketTools(
-      config.market.symbols ?? [],
-      config.market.marketTypes ?? [],
-    ).filter((t) => allowsTool(t.name));
-    if (marketTools.length > 0) registry = registry.withTools(marketTools);
-  }
 
   if (scraperEnabled("news")) {
     const newsTools = createNewsTools(memoryManager).filter((t) =>

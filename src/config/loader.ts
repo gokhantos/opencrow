@@ -129,15 +129,13 @@ function mergeChannelOverrides(
  * Apply feature toggle overrides from DB:
  * - features.enabledScrapers → sets scraperProcesses.scraperIds
  * - features.qdrantEnabled → toggles memorySearch on/off
- * - features.marketEnabled → toggles market on/off
  */
 async function mergeFeatureOverrides(
   base: OpenCrowConfig,
 ): Promise<OpenCrowConfig> {
-  const [enabledScrapers, qdrantEnabled, marketEnabled, sigeOverride] = await Promise.all([
+  const [enabledScrapers, qdrantEnabled, sigeOverride] = await Promise.all([
     getOverride("features", "enabledScrapers"),
     getOverride("features", "qdrantEnabled"),
-    getOverride("features", "marketEnabled"),
     getOverride("config", "sige"),
   ]);
 
@@ -165,19 +163,6 @@ async function mergeFeatureOverrides(
         string,
         unknown
       > & { memorySearch?: unknown };
-      result = rest;
-    }
-  }
-
-  if (marketEnabled !== null) {
-    if (Boolean(marketEnabled)) {
-      // Keep market as-is from base when enabling
-    } else {
-      // Disable by removing the market key
-      const { market: _dropped, ...rest } = result as Record<
-        string,
-        unknown
-      > & { market?: unknown };
       result = rest;
     }
   }

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { marketPipelineConfigSchema } from "../sources/markets/config";
 
 export const telegramConfigSchema = z.object({
   botToken: z.string().optional(),
@@ -443,7 +442,6 @@ export const opencrowConfigSchema = z.object({
   embeddings: embeddingsConfigSchema,
   memorySearch: memorySearchConfigSchema.optional(),
   observations: observationsConfigSchema,
-  market: marketPipelineConfigSchema.optional(),
   monitor: monitorConfigSchema,
   processes: processesConfigSchema,
   rateLimit: rateLimitConfigSchema,
@@ -467,7 +465,6 @@ export type PostgresConfig = z.infer<typeof postgresConfigSchema>;
 export type QdrantConfig = z.infer<typeof qdrantConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof embeddingsConfigSchema>;
 export type InternalApiConfig = z.infer<typeof internalApiConfigSchema>;
-export type MarketPipelineConfig = z.infer<typeof marketPipelineConfigSchema>;
 export type ObservationsConfig = z.infer<typeof observationsConfigSchema>;
 export type ProcessSpec = z.infer<typeof processSpecSchema>;
 export type ProcessesConfig = z.infer<typeof processesConfigSchema>;

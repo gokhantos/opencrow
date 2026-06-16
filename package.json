@@ -72,7 +72,6 @@
     "@hookform/resolvers": "^5.2.2",
     "@mariozechner/pi-ai": "0.54.0",
     "@playwright/mcp": "^0.0.68",
-    "@questdb/nodejs-client": "^4.0.3",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "@xyflow/react": "^12.10.1",
     "croner": "^10.0.1",
@@ -88,7 +87,6 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-hook-form": "^7.71.2",
-    "technicalindicators": "^3.1.0",
     "zod": "^4.3.6"
   }
 }

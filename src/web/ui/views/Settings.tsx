@@ -1,10 +1,9 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { apiFetch } from "../api";
 import { LoadingState, PageHeader, Toggle, Button } from "../components";
 import { useToast } from "../components/Toast";
 import {
   Database,
-  TrendingUp,
   Rss,
   ChevronRight,
   ChevronDown,
@@ -128,7 +127,6 @@ interface FeaturesResponse {
     readonly enabled: readonly string[];
   };
   readonly qdrant: { readonly enabled: boolean };
-  readonly market: { readonly enabled: boolean };
   readonly embeddings: EmbeddingsConfig;
 }
 
@@ -148,60 +146,6 @@ function StatusPill({ enabled }: { readonly enabled: boolean }) {
       />
       {enabled ? "Active" : "Off"}
     </span>
-  );
-}
-
-/* ── Feature card for single-toggle features ── */
-function FeatureCard({
-  icon: Icon,
-  iconColor,
-  title,
-  description,
-  detail,
-  enabled,
-  saving,
-  onToggle,
-}: {
-  readonly icon: React.ComponentType<{ className?: string }>;
-  readonly iconColor: string;
-  readonly title: string;
-  readonly description: string;
-  readonly detail: string;
-  readonly enabled: boolean;
-  readonly saving: boolean;
-  readonly onToggle: (checked: boolean) => void;
-}) {
-  return (
-    <div className="group bg-bg-1 border border-border rounded-xl p-5 transition-all duration-200 hover:border-border-hover">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-start gap-3.5 min-w-0">
-          <div
-            className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center ${iconColor}`}
-          >
-            <Icon className="w-[18px] h-[18px]" />
-          </div>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2.5 mb-1">
-              <h3 className="text-sm font-semibold text-strong m-0">
-                {title}
-              </h3>
-              <StatusPill enabled={enabled} />
-            </div>
-            <p className="text-xs text-muted m-0 leading-relaxed">
-              {description}
-            </p>
-          </div>
-        </div>
-        <Toggle
-          checked={enabled}
-          onChange={onToggle}
-          disabled={saving}
-        />
-      </div>
-      <div className="mt-3 ml-[50px] text-xs text-faint">
-        {detail}
-      </div>
-    </div>
   );
 }
 
@@ -593,7 +537,6 @@ export default function Settings() {
   );
   const [openConfigId, setOpenConfigId] = useState<string | null>(null);
   const [qdrantSaving, setQdrantSaving] = useState(false);
-  const [marketSaving, setMarketSaving] = useState(false);
   const [embeddingsConfig, setEmbeddingsConfig] =
     useState<EmbeddingsConfig | null>(null);
 
@@ -668,26 +611,6 @@ export default function Settings() {
     }
   }
 
-  async function handleMarketToggle(checked: boolean) {
-    if (!features) return;
-    setMarketSaving(true);
-    try {
-      await apiFetch("/api/features/market", {
-        method: "PUT",
-        body: JSON.stringify({ enabled: checked }),
-      });
-      setFeatures((prev) =>
-        prev ? { ...prev, market: { enabled: checked } } : prev,
-      );
-      window.dispatchEvent(new Event("features-changed"));
-      success(`Market data ${checked ? "enabled" : "disabled"}.`);
-    } catch {
-      toastError("Failed to update market data setting.");
-    } finally {
-      setMarketSaving(false);
-    }
-  }
-
   if (loading) return <LoadingState message="Loading settings..." />;
   if (!features) return null;
 
@@ -702,7 +625,6 @@ export default function Settings() {
             <span>
               {[
                 features.qdrant.enabled && "Qdrant",
-                features.market.enabled && "Market",
                 enabledScrapers.size > 0 &&
                   `${enabledScrapers.size} scraper${enabledScrapers.size === 1 ? "" : "s"}`,
               ]
@@ -751,22 +673,6 @@ export default function Settings() {
             />
           )}
         </div>
-
-        {/* Market Data */}
-        <FeatureCard
-          icon={TrendingUp}
-          iconColor="bg-cyan-subtle text-cyan"
-          title="Market Data (QuestDB)"
-          description="Time-series market data pipeline for candlestick and futures data."
-          detail={
-            features.market.enabled
-              ? "Candlestick and futures data are live."
-              : "The Markets view will be empty."
-          }
-          enabled={features.market.enabled}
-          saving={marketSaving}
-          onToggle={handleMarketToggle}
-        />
 
         {/* Scrapers */}
         <div className="bg-bg-1 border border-border rounded-xl transition-all duration-200 hover:border-border-hover">

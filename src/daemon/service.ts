@@ -51,14 +51,6 @@ const SERVICE_DEFS: Record<ServiceName, ServiceDef> = {
     after: ["opencrow.service"],
     restartSec: 5,
   },
-  market: {
-    systemdUnit: "opencrow-market.service",
-    systemdDesc: "OpenCrow Market Pipeline + WS Hub",
-    launchdLabel: "ai.opencrow.market",
-    logPrefix: "opencrow-market",
-    after: ["opencrow.service"],
-    restartSec: 5,
-  },
 };
 
 export function resolveService(name: ServiceName = "core"): OpenCrowService {

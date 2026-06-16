@@ -37,7 +37,6 @@ function getProcessType(name: string): string {
   if (name.startsWith("scraper:")) return "scraper";
   if (name === "cron") return "cron";
   if (name === "web") return "web";
-  if (name === "market") return "market";
   if (name === "core") return "core";
   if (name === "embedding") return "embedding";
   return "other";
@@ -61,7 +60,6 @@ function displayName(name: string): string {
     core: "Core",
     cron: "Cron",
     web: "Web",
-    market: "Market",
     embedding: "Embedding",
   };
   return labels[name] ?? name;
@@ -72,13 +70,13 @@ function groupProcesses(
 ): readonly ProcessGroup[] {
   const sorted = [...processes].sort((a, b) => a.name.localeCompare(b.name));
   const infra = sorted.filter((p) =>
-    ["core", "cron", "web", "market", "embedding"].includes(p.name),
+    ["core", "cron", "web", "embedding"].includes(p.name),
   );
   const agents = sorted.filter((p) => p.name.startsWith("agent:"));
   const scrapers = sorted.filter((p) => p.name.startsWith("scraper:"));
   const other = sorted.filter(
     (p) =>
-      !["core", "cron", "web", "market", "embedding"].includes(p.name) &&
+      !["core", "cron", "web", "embedding"].includes(p.name) &&
       !p.name.startsWith("agent:") &&
       !p.name.startsWith("scraper:"),
   );

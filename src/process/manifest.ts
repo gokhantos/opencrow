@@ -40,17 +40,6 @@ export function resolveManifest(
     },
   ];
 
-  // Market process only if market section is present
-  if (config.market !== undefined) {
-    builtins.push({
-      name: "market",
-      entry: "src/entries/market.ts",
-      restartPolicy: "always",
-      maxRestarts: 10,
-      restartWindowSec: 300,
-    });
-  }
-
   // SIGE process only if sige section is present and enabled
   if (config.sige !== undefined && config.sige.enabled) {
     builtins.push({

@@ -7,7 +7,6 @@
 import type { ToolDefinition } from "./types";
 import { createToolRegistry } from "./registry";
 import { createMemoryTools } from "./memory";
-import { createMarketTools } from "../sources/markets/tools";
 import { createNewsTools } from "./news";
 import { createPHTools } from "./ph";
 import { createHNTools } from "./hn";
@@ -39,7 +38,7 @@ export interface ToolCatalogEntry {
 }
 
 /** Maps tool display categories to feature flag identifiers */
-export const CATEGORY_TO_FEATURE: Record<string, { type: "scraper"; id: string } | { type: "toggle"; id: "market" | "qdrant" }> = {
+export const CATEGORY_TO_FEATURE: Record<string, { type: "scraper"; id: string } | { type: "toggle"; id: "qdrant" }> = {
   reddit: { type: "scraper", id: "reddit" },
   hacker_news: { type: "scraper", id: "hackernews" },
   product_hunt: { type: "scraper", id: "producthunt" },
@@ -48,12 +47,10 @@ export const CATEGORY_TO_FEATURE: Record<string, { type: "scraper"; id: string }
   appstore: { type: "scraper", id: "appstore" },
   playstore: { type: "scraper", id: "playstore" },
   news: { type: "scraper", id: "news" },
-  market: { type: "toggle", id: "market" },
 };
 
 export interface EnabledFeatures {
   readonly enabledScrapers: readonly string[];
-  readonly marketEnabled: boolean;
   readonly qdrantEnabled: boolean;
   readonly disabledTools: readonly string[];
 }
@@ -62,7 +59,6 @@ function isCategoryEnabled(category: string, features: EnabledFeatures): boolean
   const mapping = CATEGORY_TO_FEATURE[category];
   if (!mapping) return true;
   if (mapping.type === "scraper") return features.enabledScrapers.includes(mapping.id);
-  if (mapping.id === "market") return features.marketEnabled;
   if (mapping.id === "qdrant") return features.qdrantEnabled;
   return true;
 }
@@ -158,17 +154,6 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
   search_playstore_reviews: "playstore",
   search_playstore_apps: "playstore",
 
-  // Market
-  get_price: "market",
-  market_summary: "market",
-  get_candles: "market",
-  technical_analysis: "market",
-  market_snapshot: "market",
-  futures_overview: "market",
-  funding_rate: "market",
-  funding_summary: "market",
-  liquidations: "market",
-
   // Observability
   get_scraper_status: "observability",
   get_subagent_runs: "observability",
@@ -217,7 +202,6 @@ export const CATEGORY_LABELS: Record<string, string> = {
   x_timeline: "X / Twitter",
   appstore: "App Store",
   playstore: "Play Store",
-  market: "Markets & Trading",
   observability: "Observability",
   database: "Database",
   process: "Process Monitor",
@@ -303,8 +287,6 @@ export function buildToolCatalog(): readonly ToolCatalogEntry[] {
   tools.push(...createXTimelineTools(mm));
   tools.push(...createAppStoreTools(mm));
   tools.push(...createPlayStoreTools(mm));
-  // Market tools
-  tools.push(...createMarketTools(["BTCUSDT"], ["spot"]));
 
   // Observability
   tools.push(createGetScraperStatusTool());
@@ -357,7 +339,6 @@ const CATEGORY_ORDER = [
   "x_timeline",
   "appstore",
   "playstore",
-  "market",
   "observability",
   "database",
   "process",

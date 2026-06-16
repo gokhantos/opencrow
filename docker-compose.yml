@@ -29,24 +29,12 @@ services:
         hard: 65535
     restart: unless-stopped
 
-  questdb:
-    image: questdb/questdb:8.2.3
-    ports:
-      - "127.0.0.1:8812:8812"
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9009:9009"
-    volumes:
-      - questdb_data:/var/lib/questdb
-    restart: unless-stopped
-
   app:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
       qdrant:
-        condition: service_started
-      questdb:
         condition: service_started
     # Optional provider keys (OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN, …) and the
     # generated web/internal tokens are read from .env; the values below point the
@@ -55,8 +43,6 @@ services:
     environment:
       DATABASE_URL: postgres://opencrow:opencrow@postgres:5432/opencrow
       QDRANT_URL: http://qdrant:6333
-      QUESTDB_ILP_URL: tcp::addr=questdb:9009
-      QUESTDB_HTTP_URL: http://questdb:9000
       # Bind the dashboard to all interfaces *inside* the container so the
       # published port works; host exposure stays loopback-only (see ports).
       OPENCROW_WEB_HOST: 0.0.0.0
@@ -71,4 +57,3 @@ services:
 volumes:
   pg_data:
   qdrant_data:
-  questdb_data:

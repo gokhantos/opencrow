@@ -79,7 +79,6 @@ export function createFeaturesRoutes(): Hono {
       )) as string[] | null;
 
       const qdrantOverride = await getOverride(NAMESPACE, "qdrantEnabled");
-      const marketOverride = await getOverride(NAMESPACE, "marketEnabled");
 
       // Determine scraper enabled list: prefer DB override, fall back to config
       const scraperEnabled: string[] =
@@ -92,12 +91,6 @@ export function createFeaturesRoutes(): Hono {
         qdrantOverride !== null
           ? Boolean(qdrantOverride)
           : config.memorySearch !== undefined;
-
-      // Determine market enabled: prefer DB override, fall back to whether market is configured
-      const marketEnabled: boolean =
-        marketOverride !== null
-          ? Boolean(marketOverride)
-          : config.market !== undefined;
 
       // Embeddings config: prefer DB override, fall back to file config defaults
       const embeddingsOverride = await getOverride(NAMESPACE, "embeddings");
@@ -113,7 +106,6 @@ export function createFeaturesRoutes(): Hono {
             enabled: scraperEnabled,
           },
           qdrant: { enabled: qdrantEnabled },
-          market: { enabled: marketEnabled },
           embeddings: embeddingsConfig,
         },
       });
@@ -174,33 +166,6 @@ export function createFeaturesRoutes(): Hono {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error("Failed to update Qdrant enabled state", err);
-      return c.json({ success: false, error: message }, 500);
-    }
-  });
-
-  app.put("/features/market", async (c) => {
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ success: false, error: "Invalid JSON body" }, 400);
-    }
-
-    const parsed = updateBooleanSchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json(
-        { success: false, error: parsed.error.issues[0]?.message ?? "Invalid body" },
-        400,
-      );
-    }
-
-    try {
-      await setOverride(NAMESPACE, "marketEnabled", parsed.data.enabled);
-      log.info("Updated market enabled state", { enabled: parsed.data.enabled });
-      return c.json({ success: true, data: { enabled: parsed.data.enabled } });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log.error("Failed to update market enabled state", err);
       return c.json({ success: false, error: message }, 500);
     }
   });

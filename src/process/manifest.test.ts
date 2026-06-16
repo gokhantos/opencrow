@@ -107,27 +107,6 @@ describe("resolveManifest", () => {
     expect(specs.some((s) => s.name === "web")).toBe(true);
   });
 
-  test("includes market process when market section present", () => {
-    const config = makeConfig({
-      market: {
-        questdbIlpUrl: "",
-        questdbHttpUrl: "",
-        exchange: "binance",
-        marketTypes: [],
-        symbols: [],
-      },
-      processes: { static: [] },
-    });
-    const specs = resolveManifest(config, []);
-    expect(specs.some((s) => s.name === "market")).toBe(true);
-  });
-
-  test("excludes market process when market section absent", () => {
-    const config = makeConfig({ market: undefined, processes: { static: [] } });
-    const specs = resolveManifest(config, []);
-    expect(specs.some((s) => s.name === "market")).toBe(false);
-  });
-
   test("spawns agent processes for agents with telegram tokens", () => {
     const config = makeConfig({
       processes: {

@@ -7,8 +7,6 @@ import type { CronStore } from "../cron/store";
 import type { CronScheduler } from "../cron/scheduler";
 import type { ResolvedAgent } from "../agents/types";
 import type { MemoryManager } from "../memory/types";
-import type { MarketPipeline } from "../sources/markets/pipeline";
-import type { MarketType } from "../sources/markets/types";
 import type { MessageHandler } from "../channels/types";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
@@ -35,9 +33,6 @@ export interface InternalApiDeps {
   readonly buildAgentOptions?: (agent: ResolvedAgent) => Promise<AgentOptions>;
   readonly messageHandler?: MessageHandler;
   readonly memoryManager?: MemoryManager;
-  readonly marketPipeline?: MarketPipeline;
-  readonly marketSymbols?: readonly string[];
-  readonly marketTypes?: readonly MarketType[];
   readonly bookmarkProcessor?: BookmarkProcessor;
   readonly autolikeProcessor?: AutolikeProcessor;
   readonly autofollowProcessor?: AutofollowProcessor;
@@ -57,7 +52,6 @@ export interface InternalStatusResponse {
     readonly jobCount: number;
     readonly nextDueAt: number | null;
   } | null;
-  readonly market: unknown | null;
 }
 
 export interface InternalChatRequest {

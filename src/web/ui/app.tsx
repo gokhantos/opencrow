@@ -22,7 +22,6 @@ import Logs from "./views/Logs";
 import Chat from "./views/Chat";
 import Agents from "./views/agents/Agents";
 import Cron from "./views/Cron";
-import Markets from "./views/Markets";
 import SystemMetrics from "./views/SystemMetrics";
 import XAccounts from "./views/x-accounts/XAccounts";
 import ProductHunt from "./views/ProductHunt";
@@ -155,7 +154,6 @@ const SCRAPER_TO_TAB: Record<string, Tab> = {
 interface FeaturesState {
   readonly enabledScrapers: ReadonlySet<string>;
   readonly qdrantEnabled: boolean;
-  readonly marketEnabled: boolean;
 }
 
 function computeHiddenTabs(features: FeaturesState | null): ReadonlySet<Tab> {
@@ -180,11 +178,6 @@ function computeHiddenTabs(features: FeaturesState | null): ReadonlySet<Tab> {
   // Hide memory tab when Qdrant/RAG is disabled
   if (!features.qdrantEnabled) {
     hidden.add("memory");
-  }
-
-  // Hide markets tab when market feature is disabled
-  if (!features.marketEnabled) {
-    hidden.add("markets");
   }
 
   return hidden;
@@ -239,13 +232,11 @@ function App() {
         data: {
           scrapers: { enabled: string[] };
           qdrant: { enabled: boolean };
-          market: { enabled: boolean };
         };
       }>("/api/features");
       setFeatures({
         enabledScrapers: new Set(res.data.scrapers.enabled),
         qdrantEnabled: res.data.qdrant.enabled,
-        marketEnabled: res.data.market.enabled,
       });
     } catch {
       // Non-critical — show all tabs if features can't be loaded
@@ -330,7 +321,6 @@ function App() {
             {tab === "skills" && <Skills />}
             {tab === "tools" && <Tools />}
             {tab === "cron" && <Cron />}
-            {tab === "markets" && <Markets />}
             {tab === "x-accounts" && <XAccounts />}
             {tab === "producthunt" && <ProductHunt />}
             {tab === "hackernews" && <HackerNews />}

@@ -3,8 +3,7 @@ export type ServiceName =
   | "web"
   | "telegram"
   | "whatsapp"
-  | "scrapers"
-  | "market";
+  | "scrapers";
 
 export type ServiceRuntime = {
   status: "running" | "stopped" | "unknown";

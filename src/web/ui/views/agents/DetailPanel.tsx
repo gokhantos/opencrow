@@ -25,7 +25,6 @@ const CATEGORY_LABELS: Record<string, string> = {
   search: "Cross-Source",
   ideas: "Ideas",
   observability: "Observability",
-  market: "Market",
   development: "Development",
   system: "System",
 };

@@ -12,7 +12,6 @@ import {
   Github,
   GraduationCap,
   Newspaper,
-  TrendingUp,
   Clock,
   Activity,
   FileText,
@@ -44,7 +43,6 @@ export type Tab =
   | "appstore"
   | "playstore"
   | "news"
-  | "markets"
   | "cron"
   | "processes"
   | "system"
@@ -75,7 +73,7 @@ export const VALID_TABS = new Set<Tab>([
   "overview", "chat", "agents", "skills", "sessions", "channels",
   "x-accounts", "producthunt", "hackernews", "reddit",
   "github", "appstore", "playstore",
-  "news", "markets", "cron",
+  "news", "cron",
   "processes", "system", "tools", "agent-metrics", "routing",
   "memory", "logs", "settings", "workflows", "sige", "pipelines", "pipeline-ideas",
 ]);
@@ -95,7 +93,6 @@ export const TAB_TITLES: Record<Tab, string> = {
   appstore: "App Store",
   playstore: "Play Store",
   news: "News Feed",
-  markets: "Markets",
   cron: "Cron",
   processes: "Processes",
   system: "Metrics",
@@ -150,7 +147,6 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     collapsible: true,
     items: [
       { id: "news", label: "News Feed", Icon: Newspaper },
-      { id: "markets", label: "Markets", Icon: TrendingUp },
       { id: "pipelines", label: "Pipelines", Icon: Zap },
       { id: "pipeline-ideas", label: "Pipeline Ideas", Icon: Lightbulb },
       { id: "sige", label: "SIGE", Icon: Swords },

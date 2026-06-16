@@ -16,7 +16,7 @@ export interface CoreClient {
     agentId?: string;
   }): Promise<Response>;
 
-  /** GET /internal/status — live channel/cron/market status */
+  /** GET /internal/status — live channel/cron status */
   getStatus(): Promise<{
     channels: Record<string, { status: string; type: string }>;
     cron: {
@@ -24,7 +24,6 @@ export interface CoreClient {
       jobCount: number;
       nextDueAt: number | null;
     } | null;
-    market: unknown | null;
   }>;
 
   /** POST /internal/channels/:id/:action */
@@ -43,9 +42,6 @@ export interface CoreClient {
     action: string,
     body?: unknown,
   ): Promise<{ data?: unknown; error?: string }>;
-
-  /** GET /internal/market/status */
-  marketStatus(): Promise<{ data?: unknown; error?: string }>;
 
   /** POST /internal/cron/jobs/:id/run */
   cronRunNow(jobId: string): Promise<{ ok?: boolean; error?: string }>;
@@ -171,10 +167,6 @@ export function createCoreClient(baseUrl: string): CoreClient {
         method: "POST",
         body: body ? JSON.stringify(body) : "{}",
       });
-    },
-
-    async marketStatus() {
-      return fetchJson("/internal/market/status");
     },
 
     async cronRunNow(jobId) {

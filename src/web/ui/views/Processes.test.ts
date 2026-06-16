@@ -21,7 +21,6 @@ function displayName(name: string): string {
     core: "Core",
     cron: "Cron",
     web: "Web",
-    market: "Market",
   };
   return labels[name] ?? name;
 }
@@ -46,13 +45,13 @@ function groupProcesses(
 ): readonly ProcessGroup[] {
   const sorted = [...processes].sort((a, b) => a.name.localeCompare(b.name));
   const infra = sorted.filter((p) =>
-    ["core", "cron", "web", "market"].includes(p.name),
+    ["core", "cron", "web"].includes(p.name),
   );
   const agents = sorted.filter((p) => p.name.startsWith("agent:"));
   const scrapers = sorted.filter((p) => p.name.startsWith("scraper:"));
   const other = sorted.filter(
     (p) =>
-      !["core", "cron", "web", "market"].includes(p.name) &&
+      !["core", "cron", "web"].includes(p.name) &&
       !p.name.startsWith("agent:") &&
       !p.name.startsWith("scraper:"),
   );
@@ -107,7 +106,6 @@ test("displayName maps infra names to labels", () => {
   expect(displayName("core")).toBe("Core");
   expect(displayName("cron")).toBe("Cron");
   expect(displayName("web")).toBe("Web");
-  expect(displayName("market")).toBe("Market");
 });
 
 test("displayName returns unknown names as-is", () => {

@@ -15,7 +15,6 @@ import { sendCommand } from "../process/commands";
 import type { ProcessName } from "../process/types";
 import { createLogger } from "../logger";
 
-import { getErrorMessage } from "../lib/error-serialization";
 const log = createLogger("internal-api");
 
 export function createInternalApi(deps: InternalApiDeps): Hono {
@@ -78,10 +77,6 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
       ? await deps.cronScheduler.getStatus()
       : null;
 
-    const marketStatus = deps.marketPipeline
-      ? deps.marketPipeline.getStatus()
-      : null;
-
     return c.json({
       channels: channelStatus,
       cron: cronStatus
@@ -91,7 +86,6 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
             nextDueAt: cronStatus.nextDueAt,
           }
         : null,
-      market: marketStatus,
     });
   });
 
@@ -599,33 +593,6 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
         nextDueAt: status.nextDueAt,
       },
     });
-  });
-
-  // --- Market status ---
-  app.get("/internal/market/status", async (c) => {
-    // Monolith mode: local pipeline available
-    if (deps.marketPipeline) {
-      return c.json({ data: deps.marketPipeline.getStatus() });
-    }
-
-    // Distributed mode: proxy to market process
-    try {
-      const resp = await fetch("http://127.0.0.1:48084/health", {
-        signal: AbortSignal.timeout(3000),
-      });
-      if (!resp.ok) {
-        return c.json({ error: `Market process returned ${resp.status}` }, 503);
-      }
-      const body = (await resp.json()) as { pipeline?: unknown };
-      return c.json({ data: body.pipeline ?? null });
-    } catch (err) {
-      return c.json(
-        {
-          error: `Market process unreachable: ${getErrorMessage(err)}`,
-        },
-        503,
-      );
-    }
   });
 
   // --- Process management ---

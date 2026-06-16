@@ -14,7 +14,7 @@ test("navigation has a reasonable number of tabs", () => {
 });
 
 test("navigation includes core tabs", () => {
-  const core: Tab[] = ["overview", "agents", "cron", "markets", "logs", "system"];
+  const core: Tab[] = ["overview", "agents", "cron", "logs", "system"];
   for (const tab of core) {
     expect(NAV_IDS).toContain(tab);
   }

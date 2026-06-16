@@ -25,7 +25,6 @@ import { buildSdkHooks } from "../agent/hooks";
 import { createMemoryManager } from "../memory/manager";
 import { createEmbeddingProviderFromConfig } from "../memory/embeddings";
 import { createQdrantClient } from "../memory/qdrant";
-import { initQuestDBReadOnly } from "../sources/markets/questdb";
 import {
   buildRegistryForAgent as buildRegistry,
   buildWorkflowToolRegistry,
@@ -208,12 +207,6 @@ export async function bootstrap(
       });
       log.info("Observation hook initialized");
     }
-  }
-
-  try {
-    await initQuestDBReadOnly();
-  } catch {
-    // QuestDB unavailable — market tools will fail gracefully at runtime
   }
 
   const workflowToolRegistry = baseToolRegistry

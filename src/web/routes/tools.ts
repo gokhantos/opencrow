@@ -12,12 +12,11 @@ import { loadConfigWithOverrides } from "../../config/loader";
 const NAMESPACE = "tools";
 
 async function getEnabledFeatures(): Promise<EnabledFeatures> {
-  const [config, enabledScrapersOverride, qdrantOverride, marketOverride, disabledToolsOverride] =
+  const [config, enabledScrapersOverride, qdrantOverride, disabledToolsOverride] =
     await Promise.all([
       loadConfigWithOverrides(),
       getOverride("features", "enabledScrapers"),
       getOverride("features", "qdrantEnabled"),
-      getOverride("features", "marketEnabled"),
       getOverride(NAMESPACE, "disabledTools"),
     ]);
 
@@ -31,17 +30,12 @@ async function getEnabledFeatures(): Promise<EnabledFeatures> {
       ? Boolean(qdrantOverride)
       : config.memorySearch !== undefined;
 
-  const marketEnabled: boolean =
-    marketOverride !== null
-      ? Boolean(marketOverride)
-      : config.market !== undefined;
-
   const disabledTools: readonly string[] =
     disabledToolsOverride !== null
       ? (disabledToolsOverride as string[])
       : [];
 
-  return { enabledScrapers, qdrantEnabled, marketEnabled, disabledTools };
+  return { enabledScrapers, qdrantEnabled, disabledTools };
 }
 
 const updateDisabledSchema = z.object({

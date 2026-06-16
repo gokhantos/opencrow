@@ -94,8 +94,6 @@ async function main(): Promise<void> {
     autolikeProcessor,
     autofollowProcessor,
     timelineScrapeProcessor,
-    marketSymbols: config.market?.symbols ?? [],
-    marketTypes: config.market?.marketTypes ?? [],
   });
 
   // Recover any pipeline runs stuck as 'running' from a previous crash
@@ -119,10 +117,7 @@ async function main(): Promise<void> {
     }
   }, 30_000);
 
-  const MARKET_WS_URL = "ws://127.0.0.1:48084/ws/market";
-
   type WsData =
-    | { kind: "market"; upstream: WebSocket | null }
     | { kind: "system"; id: number }
     | { kind: "chat"; chatId: string };
 
@@ -164,27 +159,6 @@ async function main(): Promise<void> {
             "Cache-Control": "public, max-age=60",
           },
         });
-      }
-
-      // WebSocket market kline feed — proxy to market process
-      if (url.pathname === "/ws/market") {
-        const expectedToken = process.env.OPENCROW_WEB_TOKEN;
-        if (expectedToken) {
-          const protocol = req.headers.get("sec-websocket-protocol");
-          const authHeader = req.headers.get("authorization");
-          const bearerToken = authHeader?.startsWith("Bearer ")
-            ? authHeader.slice(7)
-            : null;
-          const providedToken = protocol ?? bearerToken;
-          if (providedToken !== expectedToken) {
-            return new Response("Unauthorized", { status: 401 });
-          }
-        }
-        const upgraded = bunServer.upgrade(req, {
-          data: { kind: "market" as const, upstream: null },
-        });
-        if (upgraded) return undefined as unknown as Response;
-        return new Response("WebSocket upgrade failed", { status: 400 });
       }
 
       // WebSocket system events feed — real-time dashboard updates
@@ -261,61 +235,11 @@ async function main(): Promise<void> {
           log.debug("Chat WS client connected");
           return;
         }
-        log.debug("Market WS client connected — opening upstream");
-        const upstream = new WebSocket(MARKET_WS_URL);
-
-        upstream.addEventListener("open", () => {
-          log.debug("Upstream market WS connected");
-        });
-
-        upstream.addEventListener("message", (event) => {
-          try {
-            if (ws.readyState === 1) {
-              ws.send(
-                typeof event.data === "string"
-                  ? event.data
-                  : new Uint8Array(event.data as ArrayBuffer),
-              );
-            }
-          } catch {
-            // Client already closed — ignore
-          }
-        });
-
-        upstream.addEventListener("close", () => {
-          log.debug("Upstream market WS closed");
-          if (ws.data.kind === "market") ws.data.upstream = null;
-          try {
-            ws.close(1001, "upstream closed");
-          } catch {
-            /* already closed */
-          }
-        });
-
-        upstream.addEventListener("error", (event) => {
-          const errMsg = event instanceof ErrorEvent
-            ? event.message || "WebSocket error"
-            : String(event);
-          log.warn("Upstream market WS error", { error: errMsg });
-          if (ws.data.kind === "market") ws.data.upstream = null;
-          try {
-            ws.close(1011, "upstream error");
-          } catch {
-            /* already closed */
-          }
-        });
-
-        if (ws.data.kind === "market") ws.data.upstream = upstream;
       },
       message(ws, msg) {
         if (ws.data.kind === "chat") {
           handleChatMessage(ws as import("bun").ServerWebSocket<{ kind: "chat"; chatId: string }>, msg);
           return;
-        }
-        if (ws.data.kind !== "market") return;
-        const upstream = ws.data.upstream;
-        if (upstream && upstream.readyState === WebSocket.OPEN) {
-          upstream.send(typeof msg === "string" ? msg : new Uint8Array(msg));
         }
       },
       close(ws) {
@@ -327,17 +251,6 @@ async function main(): Promise<void> {
         if (ws.data.kind === "chat") {
           log.debug("Chat WS client disconnected");
           return;
-        }
-        log.debug("Market WS client disconnected — closing upstream");
-        if (ws.data.kind !== "market") return;
-        const upstream = ws.data.upstream;
-        if (upstream) {
-          ws.data.upstream = null;
-          try {
-            upstream.close();
-          } catch {
-            /* already closed */
-          }
         }
       },
     },

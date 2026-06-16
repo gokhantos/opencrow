@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-A self-hosted multi-agent AI platform that orchestrates specialized agents across Telegram, WhatsApp, and a web dashboard — with 100+ tools, 16 autonomous data scrapers, vector memory, cron scheduling, and real-time market streaming.
+A self-hosted multi-agent AI platform that orchestrates specialized agents across Telegram, WhatsApp, and a web dashboard — with 100+ tools, 15 autonomous data scrapers, vector memory, and cron scheduling.
 </p>
 
 ---
@@ -23,7 +23,6 @@ A self-hosted multi-agent AI platform that orchestrates specialized agents acros
 - **Scrape data sources** autonomously — HackerNews, Reddit, GitHub, X/Twitter, App Store, Play Store, news, and more
 - **Remember everything** — conversations, facts, and observations are indexed into vector memory and recalled across sessions
 - **Generate ideas** — research agents collect signals, ideation agents synthesize them into product/crypto/AI startup ideas on a schedule
-- **Monitor markets** — real-time crypto derivatives via Binance WebSocket (prices, liquidations, open interest, technical indicators)
 - **Automate with cron** — schedule any agent to run at intervals, one-shot times, or cron expressions
 - **Self-manage** — agents can deploy code, restart processes, manage other agents, and monitor system health
 - **Scale horizontally** — each agent, scraper, and subsystem runs as an isolated process with crash recovery
@@ -32,7 +31,7 @@ A self-hosted multi-agent AI platform that orchestrates specialized agents acros
 
 ## Architecture
 
-OpenCrow runs as a thin core process that spawns and supervises isolated child processes. Each subsystem (agents, scrapers, web, cron, markets) runs independently with crash-loop detection, exponential backoff, and automatic recovery.
+OpenCrow runs as a thin core process that spawns and supervises isolated child processes. Each subsystem (agents, scrapers, web, cron) runs independently with crash-loop detection, exponential backoff, and automatic recovery.
 
 ```
 core (orchestrator + internal API)
@@ -41,8 +40,7 @@ core (orchestrator + internal API)
       ├── web                        (React dashboard + Hono API)
       ├── agent:default              (Telegram + WhatsApp channels)
       ├── agent:<id>                 (per-agent Telegram/WhatsApp bots)
-      ├── scraper:<id>               (one per data source, isolated)
-      └── market                     (WebSocket hub + derivatives pipeline)
+      └── scraper:<id>               (one per data source, isolated)
 ```
 
 - **Process isolation** — Kill a scraper, everything else keeps running. Crash one agent, others are unaffected.
@@ -59,7 +57,6 @@ core (orchestrator + internal API)
 | Frontend | React SPA (TSX + CSS bundled by Bun HTML imports) |
 | Database | PostgreSQL (`Bun.sql` tagged templates) |
 | Vector Search | Qdrant |
-| Time Series | QuestDB |
 | Telegram | grammY |
 | WhatsApp | Baileys |
 | Embeddings | OpenRouter (`text-embedding-3-small`, 512 dims) |
@@ -176,17 +173,6 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 | `get_calendar` | Economic calendar events with filtering |
 | `cross_source_search` | Search across ALL 19 indexed source types in one call |
 
-### Markets & Trading
-| Tool | Description |
-|------|-------------|
-| `get_price` / `market_summary` | Real-time crypto prices and 24h summaries |
-| `get_candles` | OHLCV candlestick data with technical indicators |
-| `technical_analysis` | Pre-computed trend, oscillator, and volume indicators |
-| `market_snapshot` | Comprehensive market overview in one call |
-| `futures_overview` | Open interest, long/short ratios, funding rates |
-| `funding_rate` / `funding_summary` | Funding rate history with aggregation and stats |
-| `liquidations` | Recent liquidation events and cascade summary |
-
 ### Memory & Knowledge
 | Tool | Description |
 |------|-------------|
@@ -235,7 +221,7 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 
 ## Data Scrapers
 
-16 autonomous scrapers run as isolated processes, each with its own tick interval and error handling. Scraped data is stored in PostgreSQL and indexed into Qdrant for semantic search.
+15 autonomous scrapers run as isolated processes, each with its own tick interval and error handling. Scraped data is stored in PostgreSQL and indexed into Qdrant for semantic search.
 
 | Scraper | Interval | What it collects |
 |---------|----------|-----------------|
@@ -247,8 +233,6 @@ Every tool is a `ToolDefinition` with name, JSON Schema, and execute function. T
 | **X/Twitter** | varies | Timeline, bookmarks, auto-like, auto-follow via Playwright + GraphQL interception |
 | **App Store** | 60 min | Top Free/Paid rankings + reviews for top 10 apps |
 | **Play Store** | 60 min | Top Free rankings + reviews with full descriptions via gplay |
-
-| **Markets** | real-time | Crypto derivatives via Binance WebSocket (prices, liquidations, open interest, technical indicators) |
 
 ### Scraper features
 
@@ -357,7 +341,6 @@ React SPA served via Bun HTML imports with Hono API backend. 30+ views covering 
 | **Ideas** | Idea browser with filtering and stats |
 | **Processes** | Live process tree with restart/stop controls |
 | **Logs** | Real-time process log viewer |
-| **Markets** | Crypto derivatives data visualization |
 | **Routing Rules** | Message routing configuration |
 | **Failures** | Failure pattern analysis |
 | **System Metrics** | System-level metrics and health |
@@ -399,7 +382,7 @@ opencrow version    # Show version info
 ### Prerequisites
 
 - [Bun](https://bun.sh) runtime
-- Docker (for PostgreSQL, Qdrant, QuestDB)
+- Docker (for PostgreSQL, Qdrant)
 - Claude Agent SDK credentials (`~/.claude/.credentials.json`)
 
 ### Install
@@ -420,8 +403,6 @@ DATABASE_URL=postgres://opencrow:changeme@127.0.0.1:5432/opencrow
 
 # Optional
 QDRANT_URL=http://127.0.0.1:6333         # Vector search (defaults to this)
-QUESTDB_ILP_URL=tcp::addr=127.0.0.1:9009 # Time series ingestion
-QUESTDB_HTTP_URL=http://127.0.0.1:9000   # Time series queries
 OPENCROW_WEB_HOST=127.0.0.1              # Web UI bind address
 OPENCROW_WEB_PORT=48080                  # Web UI port
 ```
@@ -429,7 +410,7 @@ OPENCROW_WEB_PORT=48080                  # Web UI port
 ### Start services
 
 ```bash
-docker compose up -d    # PostgreSQL + Qdrant + QuestDB
+docker compose up -d    # PostgreSQL + Qdrant
 ```
 
 ### Run
@@ -483,13 +464,13 @@ src/
 ├── config/          # Schema (Zod), loader, env overrides
 ├── cron/            # Scheduler, executor, job store, delivery poller
 ├── daemon/          # systemd + launchd service management
-├── entries/         # Process entry points (core, agent, cron, scraper, market)
+├── entries/         # Process entry points (core, agent, cron, scraper)
 ├── health/          # Checkpoint, rollback notifier
 ├── memory/          # RAG pipeline (indexer, search, embeddings, Qdrant, chunker)
 ├── process/         # Orchestrator, manifest, bootstrap, supervisor
 ├── prompts/         # Prompt loader
 ├── router/          # Message routing, activity logging
-├── sources/         # 16 data scrapers (each in own directory)
+├── sources/         # 15 data scrapers (each in own directory)
 ├── store/           # Database init + migrations
 ├── tools/           # 100+ tool definitions (registry, types, factories)
 ├── web/             # Hono routes + React SPA
