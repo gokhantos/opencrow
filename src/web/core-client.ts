@@ -120,7 +120,11 @@ export function createCoreClient(baseUrl: string): CoreClient {
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Core API ${res.status}: ${body}`);
+      const error = new Error(`Core API ${res.status}: ${body}`) as Error & {
+        status?: number;
+      };
+      error.status = res.status;
+      throw error;
     }
     return res.json() as Promise<T>;
   }
