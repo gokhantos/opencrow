@@ -7,9 +7,22 @@ const log = createLogger("embeddings");
 const MAX_RETRIES = 3;
 const MAX_CONCURRENT_BATCHES = 4;
 
-interface OpenRouterEmbeddingResponse {
+interface EmbeddingApiResponse {
   readonly data: readonly { readonly embedding: readonly number[] }[];
-  readonly usage: { readonly total_tokens: number };
+  readonly usage?: { readonly total_tokens?: number };
+}
+
+interface EmbeddingProviderOptions {
+  /** OpenAI-compatible API base, e.g. https://openrouter.ai/api/v1 */
+  readonly baseUrl: string;
+  /** Optional bearer token — omitted entirely for local servers like Ollama. */
+  readonly apiKey?: string;
+  readonly model: string;
+  /** Requested output size. Sent only when set (local models use a fixed dim). */
+  readonly dimensions?: number;
+  readonly batchSize: number;
+  /** Short label for logs/errors: "openrouter" | "ollama". */
+  readonly label: string;
 }
 
 function delay(ms: number): Promise<void> {
@@ -44,13 +57,11 @@ async function processWithConcurrency<T, R>(
   return results;
 }
 
-function createOpenRouterEmbeddingProvider(
-  apiKey: string,
-  model: string,
-  dimensions: number,
-  batchSize: number,
+function createOpenAICompatibleEmbeddingProvider(
+  opts: EmbeddingProviderOptions,
 ): EmbeddingProvider {
-  const url = "https://openrouter.ai/api/v1/embeddings";
+  const { baseUrl, apiKey, model, dimensions, batchSize, label } = opts;
+  const url = `${baseUrl.replace(/\/+$/, "")}/embeddings`;
 
   async function embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -58,9 +69,15 @@ function createOpenRouterEmbeddingProvider(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
+          // Local servers (Ollama) need no auth — omit the header entirely.
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
-        body: JSON.stringify({ input: texts, model, dimensions }),
+        body: JSON.stringify({
+          input: texts,
+          model,
+          // Only OpenRouter/OpenAI accept a custom output size; local models don't.
+          ...(dimensions ? { dimensions } : {}),
+        }),
       });
 
       if (response.status === 429) {
@@ -76,11 +93,11 @@ function createOpenRouterEmbeddingProvider(
       if (!response.ok) {
         const body = await response.text();
         throw new Error(
-          `OpenRouter embeddings error (${response.status}): ${body}`,
+          `Embeddings error (${label}) (${response.status}): ${body}`,
         );
       }
 
-      const json = (await response.json()) as OpenRouterEmbeddingResponse;
+      const json = (await response.json()) as EmbeddingApiResponse;
 
       if (!json.data || !Array.isArray(json.data)) {
         const isProviderRouting =
@@ -99,7 +116,8 @@ function createOpenRouterEmbeddingProvider(
         );
       }
 
-      log.info("Embedded batch (openrouter)", {
+      log.info("Embedded batch", {
+        provider: label,
         model,
         chunks: json.data.length,
         tokens: json.usage?.total_tokens,
@@ -131,29 +149,54 @@ function createOpenRouterEmbeddingProvider(
 }
 
 /**
- * Create an OpenRouter embedding provider from config.
- * Returns null and logs a warning if OPENROUTER_API_KEY is not provided.
+ * Create an embedding provider from config.
+ *
+ * - provider "ollama": local OpenAI-compatible server, no API key required.
+ * - provider "openrouter" (default): requires an API key; returns null (and
+ *   logs a warning, disabling vector search) when none is provided.
  */
 export function createEmbeddingProviderFromConfig(
   config: EmbeddingsConfig,
   apiKey?: string,
 ): EmbeddingProvider | null {
+  const model = config.model ?? config.openrouterModel;
+
+  if (config.provider === "ollama") {
+    const baseUrl = config.baseUrl ?? "http://127.0.0.1:11434/v1";
+    log.info("Using Ollama embedding provider", {
+      baseUrl,
+      model,
+      dimensions: config.dimensions,
+    });
+    return createOpenAICompatibleEmbeddingProvider({
+      baseUrl,
+      apiKey: apiKey || undefined,
+      model,
+      // Local models emit a fixed native dimension — don't request a custom size.
+      dimensions: undefined,
+      batchSize: config.batchSize,
+      label: "ollama",
+    });
+  }
+
   if (!apiKey) {
     log.warn("OpenRouter embedding provider requires OPENROUTER_API_KEY — vector search disabled");
     return null;
   }
 
+  const baseUrl = config.baseUrl ?? "https://openrouter.ai/api/v1";
   log.info("Using OpenRouter embedding provider", {
-    model: config.openrouterModel,
+    model,
     dimensions: config.dimensions,
   });
-
-  return createOpenRouterEmbeddingProvider(
+  return createOpenAICompatibleEmbeddingProvider({
+    baseUrl,
     apiKey,
-    config.openrouterModel,
-    config.dimensions,
-    config.batchSize,
-  );
+    model,
+    dimensions: config.dimensions,
+    batchSize: config.batchSize,
+    label: "openrouter",
+  });
 }
 
 /**
@@ -161,10 +204,12 @@ export function createEmbeddingProviderFromConfig(
  * Kept for backward compatibility with embedding-generator.ts
  */
 export function createEmbeddingProvider(apiKey: string): EmbeddingProvider {
-  return createOpenRouterEmbeddingProvider(
+  return createOpenAICompatibleEmbeddingProvider({
+    baseUrl: "https://openrouter.ai/api/v1",
     apiKey,
-    "qwen/qwen3-embedding-8b",
-    4096,
-    100,
-  );
+    model: "qwen/qwen3-embedding-8b",
+    dimensions: 4096,
+    batchSize: 100,
+    label: "openrouter",
+  });
 }

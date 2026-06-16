@@ -69,6 +69,34 @@ function applyEnvOverrides(
     result.browser = { ...existing, enabled: true };
   }
 
+  // --- embeddings ---
+  const embeddings = {
+    ...((result.embeddings ?? {}) as Record<string, unknown>),
+  };
+  let embeddingsChanged = false;
+  if (process.env.OPENCROW_EMBEDDINGS_PROVIDER) {
+    embeddings.provider = process.env.OPENCROW_EMBEDDINGS_PROVIDER;
+    embeddingsChanged = true;
+  }
+  if (process.env.OPENCROW_EMBEDDINGS_BASE_URL) {
+    embeddings.baseUrl = process.env.OPENCROW_EMBEDDINGS_BASE_URL;
+    embeddingsChanged = true;
+  }
+  if (process.env.OPENCROW_EMBEDDINGS_MODEL) {
+    embeddings.model = process.env.OPENCROW_EMBEDDINGS_MODEL;
+    embeddingsChanged = true;
+  }
+  if (process.env.OPENCROW_EMBEDDINGS_DIMENSIONS) {
+    const dims = Number(process.env.OPENCROW_EMBEDDINGS_DIMENSIONS);
+    if (!Number.isNaN(dims)) {
+      embeddings.dimensions = dims;
+      embeddingsChanged = true;
+    }
+  }
+  if (embeddingsChanged) {
+    result.embeddings = embeddings;
+  }
+
   return result;
 }
 

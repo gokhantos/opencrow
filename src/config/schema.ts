@@ -206,11 +206,15 @@ export const qdrantConfigSchema = z.object({
 
 export const embeddingsConfigSchema = z
   .object({
-    provider: z.enum(["openrouter"]).default("openrouter"),
+    provider: z.enum(["openrouter", "ollama"]).default("openrouter"),
+    /** Base URL of an OpenAI-compatible embeddings API. Defaults per provider. */
+    baseUrl: z.string().optional(),
     /** Embedding vector dimensions */
     dimensions: z.number().int().min(32).max(4096).default(4096),
     /** OpenRouter model to use */
     openrouterModel: z.string().default("qwen/qwen3-embedding-8b"),
+    /** Generic model name (any provider). Falls back to openrouterModel. */
+    model: z.string().optional(),
     /** Max texts per API batch */
     batchSize: z.number().int().min(1).default(64),
   })
