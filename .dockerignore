@@ -1,0 +1,34 @@
+# Installed fresh inside the image
+node_modules
+
+# VCS / local tooling
+.git
+.githooks
+.serena
+.claude
+.claude-sdk-isolated
+.idea
+.vscode
+
+# Secrets & local env (passed in via compose instead)
+.env
+.env.*
+
+# Runtime data & logs
+data
+*.db
+*.db-wal
+*.db-shm
+logs
+*.log
+coverage
+*.lcov
+
+# Generated at build time
+src/web/ui/tailwind-out.css
+
+# Misc
+.DS_Store
+.playwright-mcp
+.mcp.json
+*.tgz

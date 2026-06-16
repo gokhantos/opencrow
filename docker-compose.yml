@@ -10,6 +10,11 @@ services:
     command: ["postgres", "-c", "max_connections=2000"]
     volumes:
       - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opencrow -d opencrow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   qdrant:
@@ -32,6 +37,35 @@ services:
       - "127.0.0.1:9009:9009"
     volumes:
       - questdb_data:/var/lib/questdb
+    restart: unless-stopped
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      questdb:
+        condition: service_started
+    # Optional provider keys (OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN, …) and the
+    # generated web/internal tokens are read from .env; the values below point the
+    # app at the other containers by service name and override the loopback defaults.
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://opencrow:opencrow@postgres:5432/opencrow
+      QDRANT_URL: http://qdrant:6333
+      QUESTDB_ILP_URL: tcp::addr=questdb:9009
+      QUESTDB_HTTP_URL: http://questdb:9000
+      # Bind the dashboard to all interfaces *inside* the container so the
+      # published port works; host exposure stays loopback-only (see ports).
+      OPENCROW_WEB_HOST: 0.0.0.0
+    ports:
+      # Loopback-only on the host — Tailscale `serve` proxies this onto the tailnet.
+      - "127.0.0.1:48080:48080"
+    extra_hosts:
+      # Reach host-native Ollama (embeddings) at host.docker.internal:11434.
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
 volumes:
