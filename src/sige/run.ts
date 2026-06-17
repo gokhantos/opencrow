@@ -31,6 +31,8 @@ import { loadConfig } from "../config/loader";
 import { createLogger } from "../logger";
 import type { MemoryManager } from "../memory/types";
 import { crossWriteSigeIdeas, SIGE_AGENT_ID } from "./cross-write";
+import type { CollectorContext } from "../pipelines/ideas/collectors";
+import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "../pipelines/ideas/collectors";
 import type { BroadCorpus, DiscoverFrontiersOptions, DiscoveryResult } from "./discovery/frontier-discovery";
 import { discoverFrontiers } from "./discovery/frontier-discovery";
 import { applyIncentives, computeIncentives } from "./incentives";
@@ -212,13 +214,12 @@ export async function runSession(
 /**
  * Autonomous (seedless) SIGE run: frontier discovery → per-frontier depth game.
  *
- * Uses an intentionally minimal BroadCorpus (empty trend/pain/capability
- * summaries) so that `discoverFrontiers` runs `generateDivergentIdeas` with
- * no pre-synthesized signals. This is correct for the autonomous SIGE session
- * path: the real signal collection with markConsumed bookkeeping is owned by
- * `pipeline-autonomous.ts` (which calls the collectors properly with its own
- * CollectorContext). Here we only need frontier discovery so that
- * `frontier.seedText` can seed the depth game.
+ * Collects a real signal corpus (trends × pains × capabilities — the same
+ * collectors the demoted ideas pipeline persists continuously) so discovery has
+ * grounding to self-pick a frontier. Each collector is fault-tolerant: a failure
+ * degrades that section to empty rather than aborting the run. (The pipeline
+ * path in `pipeline-autonomous.ts` additionally does markConsumed bookkeeping;
+ * the session path only needs the corpus to seed the depth game.)
  *
  * With maxDeepFrontiers=1 (default) the status transitions fire exactly once
  * per stage — identical to a seeded run. With maxDeepFrontiers>1 they repeat
@@ -234,13 +235,35 @@ async function runAutonomousSession(
   const smartConfig = loadConfig().pipelines.ideas.smart;
   const sigeAutoConfig = smartConfig.sigeAuto;
 
-  // Minimal empty corpus: discovery will run generateDivergentIdeas with an
-  // empty signalsContext (accepted — the function makes signals optional).
-  const emptyCorpus: BroadCorpus = {
-    trends: { trendingCategories: [], risingApps: [], summary: "" },
-    pains: { clusters: [], summary: "" },
-    capabilities: { capabilities: [], summary: "" },
+  // Collect a real signal corpus so discovery has grounding to self-pick a
+  // frontier. Fault-tolerant: a failing collector degrades to an empty section.
+  const collectorModel = session.config.model;
+  const collectorCtx: CollectorContext = {
+    consumed: new Map(),
+    selected: new Map(),
+    credibilityPosteriors: new Map(),
   };
+  const [trends, pains, capabilities] = await Promise.all([
+    analyzeAppLandscape(collectorModel, collectorCtx).catch((err) => {
+      log.warn("autonomous: landscape collector failed", { sessionId, err });
+      return { trendingCategories: [], risingApps: [], summary: "" };
+    }),
+    clusterReviews(undefined, collectorModel, collectorCtx).catch((err) => {
+      log.warn("autonomous: reviews collector failed", { sessionId, err });
+      return { clusters: [], summary: "" };
+    }),
+    scanCapabilities(collectorModel, collectorCtx).catch((err) => {
+      log.warn("autonomous: capabilities collector failed", { sessionId, err });
+      return { capabilities: [], summary: "" };
+    }),
+  ]);
+  const corpus: BroadCorpus = { trends, pains, capabilities };
+  log.info("autonomous: collected signal corpus", {
+    sessionId,
+    trends: trends.trendingCategories.length,
+    pains: pains.clusters.length,
+    capabilities: capabilities.capabilities.length,
+  });
 
   const discoveryOpts: DiscoverFrontiersOptions = {
     broadPoolSize: sigeAutoConfig.broadPoolSize,
@@ -250,7 +273,7 @@ async function runAutonomousSession(
     signal,
   };
 
-  const discovery: DiscoveryResult = await discoverFrontiers(emptyCorpus, mem0, discoveryOpts);
+  const discovery: DiscoveryResult = await discoverFrontiers(corpus, mem0, discoveryOpts);
 
   if (discovery.frontiers.length === 0) {
     log.warn("autonomous: no frontiers discovered — completing without deep game", { sessionId });
