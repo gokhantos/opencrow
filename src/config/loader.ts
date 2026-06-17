@@ -165,6 +165,56 @@ function mergeChannelOverrides(
 }
 
 /**
+ * Deep-merge a DB sige override onto the base sige object derived from
+ * env/file configuration.
+ *
+ * Semantics:
+ * - Scalar values present in `override` win over `base`.
+ * - Nested object values are shallow-merged (one level deep): keys present in
+ *   the override's nested object win; keys absent in the override survive from
+ *   `base`. This ensures a DB override of `{"enabled":true}` does not discard
+ *   env-derived `mem0.baseUrl`, while a DB override of
+ *   `{"mem0":{"baseUrl":"http://x"}}` still lets `mem0.userId` survive from
+ *   `base`.
+ * - Never mutates either input — builds and returns a new object.
+ */
+export function deepMergeSigeOverride(
+  base: Record<string, unknown>,
+  override: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...base };
+  for (const key of Object.keys(override)) {
+    // Skip prototype-polluting keys. The override originates from a JSON-parsed
+    // DB row (config_overrides), so a crafted value could carry an own
+    // "__proto__"/"constructor"/"prototype" key. The schema parse downstream
+    // strips them, but guard here so the helper stays safe in isolation.
+    if (key === "__proto__" || key === "constructor" || key === "prototype") {
+      continue;
+    }
+    const overrideVal = override[key];
+    const baseVal = base[key];
+    if (
+      overrideVal !== null &&
+      typeof overrideVal === "object" &&
+      !Array.isArray(overrideVal) &&
+      baseVal !== null &&
+      typeof baseVal === "object" &&
+      !Array.isArray(baseVal)
+    ) {
+      // Both sides are plain objects: shallow-merge so override keys win but
+      // base keys absent from override survive.
+      merged[key] = {
+        ...(baseVal as Record<string, unknown>),
+        ...(overrideVal as Record<string, unknown>),
+      };
+    } else {
+      merged[key] = overrideVal;
+    }
+  }
+  return merged;
+}
+
+/**
  * Apply feature toggle overrides from DB:
  * - features.enabledScrapers → sets scraperProcesses.scraperIds
  * - features.qdrantEnabled → toggles memorySearch on/off
@@ -207,7 +257,8 @@ async function mergeFeatureOverrides(
   }
 
   if (sigeOverride !== null && typeof sigeOverride === "object") {
-    result = { ...result, sige: sigeOverride };
+    const baseSige = (result.sige ?? {}) as Record<string, unknown>;
+    result = { ...result, sige: deepMergeSigeOverride(baseSige, sigeOverride as Record<string, unknown>) };
   }
 
   return opencrowConfigSchema.parse(result);
