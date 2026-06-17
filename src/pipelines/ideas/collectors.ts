@@ -479,7 +479,7 @@ export async function clusterReviews(
           SELECT r.id, a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
-          WHERE r.rating <= 2 AND a.category = ANY(${focusCategories as string[]})
+          WHERE r.rating <= 2 AND a.category IN ${db(focusCategories as string[])}
           ORDER BY r.first_seen_at DESC LIMIT 400
         `) as Array<Record<string, unknown>>
       : (await db`
@@ -496,7 +496,7 @@ export async function clusterReviews(
           SELECT r.id, a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
-          WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category = ANY(${focusCategories as string[]})
+          WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category IN ${db(focusCategories as string[])}
           ORDER BY r.first_seen_at DESC LIMIT 200
         `) as Array<Record<string, unknown>>
       : (await db`
@@ -820,7 +820,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
       SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
              points_velocity, updated_at, feed_type
       FROM hn_stories
-      WHERE updated_at >= NOW() - INTERVAL '7 days'
+      WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
       ORDER BY COALESCE(points_velocity, 0) DESC, updated_at DESC, (points + comment_count * 2) DESC
       LIMIT 50
     `) as Array<Record<string, unknown>>;
@@ -937,7 +937,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
       SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
              top_comments_json, flair, score_velocity, updated_at
       FROM reddit_posts
-      WHERE updated_at >= NOW() - INTERVAL '7 days'
+      WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
       ORDER BY COALESCE(score_velocity, 0) DESC, updated_at DESC, (score + num_comments * 3) DESC
       LIMIT 50
     `) as Array<Record<string, unknown>>;
@@ -1041,7 +1041,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
       SELECT id, author_username, author_verified, text, likes, retweets, views,
              likes_velocity, scraped_at
       FROM x_scraped_tweets
-      WHERE scraped_at >= NOW() - INTERVAL '7 days'
+      WHERE scraped_at >= ${nowSec - 7 * 24 * 3600}
       ORDER BY COALESCE(likes_velocity, 0) DESC, scraped_at DESC LIMIT 50
     `) as Array<Record<string, unknown>>;
 
