@@ -4,8 +4,10 @@ import {
   acquirePipelineLock,
   createPipelineStep,
   updatePipelineStep,
+  touchPipelineStep,
   updatePipelineRun,
   getPipelineRun,
+  getStepsForRun,
   findCompletedStep,
   findResumableRuns,
   incrementResumeAttempts,
@@ -112,6 +114,59 @@ describe("pipeline resume store layer", () => {
       const { runId } = await acquirePipelineLock(TEST_PIPELINE);
       const result = await findCompletedStep(runId!, "nonexistent");
       expect(result.found).toBe(false);
+    });
+  });
+
+  describe("running step status + heartbeat", () => {
+    it("creates a step in 'running' status with an initial heartbeat", async () => {
+      const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+      const step = await createPipelineStep({ runId: runId!, stepName: "synthesis" });
+
+      expect(step.status).toBe("running");
+      expect(step.startedAt).not.toBeNull();
+      expect(step.lastHeartbeat).not.toBeNull();
+      // Heartbeat starts at (or after) the step's start.
+      expect(step.lastHeartbeat!).toBeGreaterThanOrEqual(step.startedAt!);
+    });
+
+    it("touchPipelineStep advances last_heartbeat of a running step", async () => {
+      const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+      const step = await createPipelineStep({ runId: runId!, stepName: "synthesis" });
+
+      const db = getDb();
+      // Force the heartbeat into the past so the touch is observable at 1s resolution.
+      await db.unsafe(
+        `UPDATE pipeline_steps SET last_heartbeat = last_heartbeat - 60 WHERE id = $1`,
+        [step.id],
+      );
+
+      await touchPipelineStep(step.id);
+
+      const [refreshed] = await getStepsForRun(runId!);
+      expect(refreshed!.lastHeartbeat!).toBeGreaterThan(step.lastHeartbeat! - 60);
+    });
+
+    it("touchPipelineStep does NOT resurrect a finished step", async () => {
+      const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+      const step = await createPipelineStep({ runId: runId!, stepName: "synthesis" });
+      await updatePipelineStep(step.id, { status: "completed", outputSummary: "done" });
+
+      const db = getDb();
+      const [beforeRow] = (await db.unsafe(
+        `SELECT status, last_heartbeat FROM pipeline_steps WHERE id = $1`,
+        [step.id],
+      )) as Array<{ status: string; last_heartbeat: number | null }>;
+
+      await touchPipelineStep(step.id);
+
+      const [afterRow] = (await db.unsafe(
+        `SELECT status, last_heartbeat FROM pipeline_steps WHERE id = $1`,
+        [step.id],
+      )) as Array<{ status: string; last_heartbeat: number | null }>;
+
+      expect(afterRow!.status).toBe("completed");
+      // A completed step is no longer 'running', so its heartbeat must be untouched.
+      expect(afterRow!.last_heartbeat).toBe(beforeRow!.last_heartbeat);
     });
   });
 

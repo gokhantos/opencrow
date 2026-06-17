@@ -63,6 +63,8 @@ export interface PipelineStep {
   readonly error: string | null;
   readonly startedAt: number | null;
   readonly finishedAt: number | null;
+  /** Last liveness tick (epoch seconds) while the step is 'running'; null once finished. */
+  readonly lastHeartbeat: number | null;
 }
 
 export interface PipelineResultSummary {

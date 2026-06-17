@@ -20,7 +20,9 @@ import {
   markRunFailed,
   markRunRunning,
   getPipelineRun,
+  hasFreshHeartbeat,
 } from "./store";
+import { isRunActive } from "./active-runs";
 import { runIdeasPipeline } from "./ideas/pipeline";
 
 /**
@@ -43,9 +45,29 @@ const log = createLogger("pipeline:resume");
  */
 export const MAX_RESUME_ATTEMPTS = 3;
 
+/**
+ * A run whose newest 'running' step heartbeat is within this many seconds is
+ * treated as still alive in another process and is NOT re-dispatched. Comfortably
+ * larger than the step heartbeat interval (10s) so several missed ticks don't
+ * read as dead; a genuinely interrupted run becomes resumable once it lapses.
+ */
+export const LIVE_HEARTBEAT_WINDOW_SEC = 60;
+
 export interface ResumeResult {
   readonly resumed: number;
   readonly failed: number;
+  /** Runs skipped because they were already executing (live). */
+  readonly skipped: number;
+}
+
+/**
+ * Whether a run is already executing and must not be re-dispatched: either it is
+ * active in THIS process (exact), or another process is keeping its step
+ * heartbeat fresh (cross-instance backstop).
+ */
+async function isRunLive(runId: string): Promise<boolean> {
+  if (isRunActive(runId)) return true;
+  return hasFreshHeartbeat(runId, LIVE_HEARTBEAT_WINDOW_SEC);
 }
 
 /**
@@ -68,17 +90,27 @@ export async function resumeInterruptedRuns(
 ): Promise<ResumeResult> {
   let resumed = 0;
   let failed = 0;
+  let skipped = 0;
 
   let runs: Awaited<ReturnType<typeof findResumableRuns>>;
   try {
     runs = await findResumableRuns();
   } catch (err) {
     log.error("Failed to query resumable runs", { err });
-    return { resumed: 0, failed: 0 };
+    return { resumed: 0, failed: 0, skipped: 0 };
   }
 
   for (const run of runs) {
     try {
+      // Never re-dispatch a run that is already executing (e.g. a long run
+      // started by the /run route in this same process, or one another instance
+      // is keeping alive). Prevents duplicate concurrent executions.
+      if (await isRunLive(run.id)) {
+        skipped += 1;
+        log.info("Skipping resume — run already executing", { runId: run.id });
+        continue;
+      }
+
       if (classifyResume(run.resumeAttempts) === "fail") {
         await markRunFailed(
           run.id,
@@ -113,12 +145,12 @@ export async function resumeInterruptedRuns(
     }
   }
 
-  return { resumed, failed };
+  return { resumed, failed, skipped };
 }
 
 export type ResumeByIdResult =
   | { readonly ok: true; readonly runId: string; readonly pipelineId: string }
-  | { readonly ok: false; readonly reason: "not_found" };
+  | { readonly ok: false; readonly reason: "not_found" | "already_running" };
 
 /**
  * Manually (re-)trigger a single previous run by id, on demand — without
@@ -128,9 +160,11 @@ export type ResumeByIdResult =
  * (e.g. one created before checkpointing) re-runs from scratch under the same
  * id. Fire-and-forget — the run continues in the background.
  *
- * CAUTION: this does not detect whether the run is ALREADY executing; resuming
- * a genuinely-live run would double-execute it. Intended for interrupted
- * ('running' but dead) or finished ('failed'/'completed') runs.
+ * A run that is ALREADY executing (active in this process, or kept alive by a
+ * fresh step heartbeat in another) is left untouched and reported as
+ * `already_running` — re-dispatching it would double-execute and orphan rows.
+ * Intended for interrupted ('running' but dead) or finished
+ * ('failed'/'completed') runs.
  */
 export async function resumeRunById(
   runId: string,
@@ -140,6 +174,11 @@ export async function resumeRunById(
   const run = await getPipelineRun(runId);
   if (run === null) {
     return { ok: false, reason: "not_found" };
+  }
+
+  if (await isRunLive(runId)) {
+    log.info("Refusing manual resume — run already executing", { runId });
+    return { ok: false, reason: "already_running" };
   }
 
   await markRunRunning(runId);

@@ -5,18 +5,25 @@ import {
   markRunFailed,
   incrementResumeAttempts,
   getPipelineRun,
+  createPipelineStep,
 } from "./store";
 import {
   resumeRunById,
   resumeAllInterrupted,
   type PipelineDispatcher,
 } from "./resume";
+import { beginRun, __resetActiveRuns } from "./active-runs";
 import type { PipelineConfig } from "./types";
 
 const TEST_PIPELINE = "test-resume-by-id";
 
 async function cleanup(): Promise<void> {
   const db = getDb();
+  await db.unsafe(
+    `DELETE FROM pipeline_steps WHERE run_id IN
+       (SELECT id FROM pipeline_runs WHERE pipeline_id = $1)`,
+    [TEST_PIPELINE],
+  );
   await db.unsafe(`DELETE FROM pipeline_runs WHERE pipeline_id = $1`, [
     TEST_PIPELINE,
   ]);
@@ -38,6 +45,7 @@ function spyDispatcher(): {
 describe("resumeRunById", () => {
   beforeEach(async () => {
     await initDb(process.env.DATABASE_URL);
+    __resetActiveRuns();
     await cleanup();
   });
 
@@ -91,6 +99,7 @@ describe("resumeRunById", () => {
 describe("resumeAllInterrupted", () => {
   beforeEach(async () => {
     await initDb(process.env.DATABASE_URL);
+    __resetActiveRuns();
     await cleanup();
   });
 
@@ -115,5 +124,76 @@ describe("resumeAllInterrupted", () => {
     expect(dispatchedIds).toContain(b.runId!);
     expect(dispatchedIds).not.toContain(dead.runId!);
     expect(count).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("duplicate-dispatch guard", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    __resetActiveRuns();
+    await cleanup();
+  });
+
+  afterEach(async () => {
+    __resetActiveRuns();
+    await cleanup();
+    await closeDb();
+  });
+
+  it("resumeRunById refuses a run already active in THIS process (no dispatch)", async () => {
+    const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+    // Simulate the run already executing here (runIdeasPipeline calls beginRun).
+    beginRun(runId!);
+
+    const spy = spyDispatcher();
+    const result = await resumeRunById(runId!, null, spy.fn);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("already_running");
+    expect(spy.calls).toHaveLength(0);
+  });
+
+  it("resumeRunById refuses a run kept alive by a fresh step heartbeat (cross-process)", async () => {
+    const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+    // A 'running' step created just now carries a fresh heartbeat — another
+    // process is actively executing this run.
+    await createPipelineStep({ runId: runId!, stepName: "synthesis" });
+
+    const spy = spyDispatcher();
+    const result = await resumeRunById(runId!, null, spy.fn);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toBe("already_running");
+    expect(spy.calls).toHaveLength(0);
+  });
+
+  it("resumeRunById proceeds when the heartbeat has gone stale (interrupted, dead)", async () => {
+    const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+    const step = await createPipelineStep({ runId: runId!, stepName: "synthesis" });
+    // Age the heartbeat past the live window — the writer process is gone.
+    await getDb().unsafe(
+      `UPDATE pipeline_steps SET last_heartbeat = last_heartbeat - 600 WHERE id = $1`,
+      [step.id],
+    );
+
+    const spy = spyDispatcher();
+    const result = await resumeRunById(runId!, null, spy.fn);
+
+    expect(result.ok).toBe(true);
+    expect(spy.calls).toHaveLength(1);
+    expect(spy.calls[0]!.runId).toBe(runId!);
+  });
+
+  it("resumeAllInterrupted skips a live run and does not dispatch it", async () => {
+    const live = await acquirePipelineLock(TEST_PIPELINE);
+    const dead = await acquirePipelineLock(TEST_PIPELINE);
+    beginRun(live.runId!); // live is executing in this process
+
+    const spy = spyDispatcher();
+    await resumeAllInterrupted(null, spy.fn);
+
+    const dispatchedIds = spy.calls.map((c) => c.runId);
+    expect(dispatchedIds).not.toContain(live.runId!);
+    expect(dispatchedIds).toContain(dead.runId!);
   });
 });

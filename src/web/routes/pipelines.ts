@@ -245,6 +245,12 @@ export function createPipelineRoutes(deps?: {
     const runId = c.req.param("runId");
     const result = await resumeRunById(runId, deps?.memoryManager);
     if (!result.ok) {
+      if (result.reason === "already_running") {
+        return c.json(
+          { success: false, error: "Run is already executing" },
+          409,
+        );
+      }
       return c.json({ success: false, error: "Run not found" }, 404);
     }
     log.info("Resuming pipeline run on demand", {

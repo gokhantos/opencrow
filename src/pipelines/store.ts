@@ -59,6 +59,7 @@ function rowToStep(r: Record<string, unknown>): PipelineStep {
     error: (r.error as string) ?? null,
     startedAt: r.started_at ? Number(r.started_at) : null,
     finishedAt: r.finished_at ? Number(r.finished_at) : null,
+    lastHeartbeat: r.last_heartbeat ? Number(r.last_heartbeat) : null,
   };
 }
 
@@ -188,12 +189,30 @@ export async function createPipelineStep(input: {
   readonly stepName: string;
 }): Promise<PipelineStep> {
   const db = getDb();
+  const ts = now();
+  // Start 'running' (not 'pending') with a heartbeat so an executing step is
+  // distinguishable from one that never started — runStep refreshes the
+  // heartbeat while work() is in flight (see touchPipelineStep).
   const rows = (await db`
-    INSERT INTO pipeline_steps (run_id, step_name, started_at)
-    VALUES (${input.runId}, ${input.stepName}, ${now()})
+    INSERT INTO pipeline_steps (run_id, step_name, status, started_at, last_heartbeat)
+    VALUES (${input.runId}, ${input.stepName}, 'running', ${ts}, ${ts})
     RETURNING *
   `) as Array<Record<string, unknown>>;
   return rowToStep(rows[0]!);
+}
+
+/**
+ * Refresh a step's liveness heartbeat. Scoped to `status = 'running'` so a late
+ * tick from an interval that hasn't been cleared yet can never resurrect a step
+ * that already completed or failed.
+ */
+export async function touchPipelineStep(id: string): Promise<void> {
+  const db = getDb();
+  await db`
+    UPDATE pipeline_steps
+    SET last_heartbeat = ${now()}
+    WHERE id = ${id} AND status = 'running'
+  `;
 }
 
 export async function updatePipelineStep(
@@ -213,11 +232,9 @@ export async function updatePipelineStep(
   },
 ): Promise<void> {
   const db = getDb();
-  const finished =
-    update.finishedAt ??
-    (update.status === "completed" || update.status === "failed"
-      ? now()
-      : undefined);
+  const isTerminal =
+    update.status === "completed" || update.status === "failed";
+  const finished = update.finishedAt ?? (isTerminal ? now() : undefined);
 
   const outputJson =
     update.outputJson !== undefined ? JSON.stringify(update.outputJson) : undefined;
@@ -231,7 +248,10 @@ export async function updatePipelineStep(
       output_json = COALESCE(${outputJson ?? null}::jsonb, output_json),
       duration_ms = COALESCE(${update.durationMs ?? null}, duration_ms),
       error = COALESCE(${update.error ?? null}, error),
-      finished_at = COALESCE(${finished ?? null}, finished_at)
+      finished_at = COALESCE(${finished ?? null}, finished_at),
+      -- A finished step has no liveness; clear the heartbeat so staleness checks
+      -- only ever consider genuinely in-flight ('running') steps.
+      last_heartbeat = CASE WHEN ${isTerminal} THEN NULL ELSE last_heartbeat END
     WHERE id = ${id}
   `;
 }
@@ -282,6 +302,36 @@ export async function findCompletedStep(
     return { found: true, hasOutput: true, outputJson: parsed };
   } catch {
     return miss;
+  }
+}
+
+/**
+ * Whether a run shows a live heartbeat: it has a step still 'running' whose
+ * last_heartbeat is within `withinSec`. The cross-process liveness signal — a
+ * run actively executing in ANOTHER process keeps ticking, so a resume here can
+ * tell "alive but slow" from "interrupted and dead" and refuse to double-
+ * dispatch the former. Returns false on any error so resume degrades toward
+ * re-dispatch rather than wedging (the in-process registry is the primary
+ * guard; this only backstops the multi-instance case).
+ */
+export async function hasFreshHeartbeat(
+  runId: string,
+  withinSec: number,
+): Promise<boolean> {
+  try {
+    const db = getDb();
+    const cutoff = now() - withinSec;
+    const rows = (await db`
+      SELECT 1 FROM pipeline_steps
+      WHERE run_id = ${runId}
+        AND status = 'running'
+        AND last_heartbeat IS NOT NULL
+        AND last_heartbeat >= ${cutoff}
+      LIMIT 1
+    `) as Array<Record<string, unknown>>;
+    return rows.length > 0;
+  } catch {
+    return false;
   }
 }
 

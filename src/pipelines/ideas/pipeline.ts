@@ -19,10 +19,13 @@ import { insertIdea, getIdeasByStage } from "../../sources/ideas/store";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
 import {
   updatePipelineRun,
+  getPipelineRun,
   createPipelineStep,
   updatePipelineStep,
+  touchPipelineStep,
   findCompletedStep,
 } from "../store";
+import { beginRun, endRun } from "../active-runs";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
 import type { CollectorContext } from "./collectors";
 import {
@@ -126,6 +129,26 @@ export interface PipelineRunResult {
   readonly summary: PipelineResultSummary;
 }
 
+/**
+ * How often a 'running' step refreshes its liveness heartbeat. A slow step (e.g.
+ * synthesis Pass 2 can run several minutes) must keep ticking so a stale-heartbeat
+ * check can tell "alive but slow" from "process died mid-step".
+ */
+const STEP_HEARTBEAT_INTERVAL_MS = 10_000;
+
+/** Zero-value summary returned when a duplicate dispatch is suppressed and the
+ *  run has no persisted summary yet. */
+const EMPTY_RUN_SUMMARY: PipelineResultSummary = {
+  totalSourcesQueried: 0,
+  totalSignalsFound: 0,
+  totalIdeasGenerated: 0,
+  totalIdeasKept: 0,
+  totalIdeasDuplicate: 0,
+  topThemes: [],
+  ideaIds: [],
+  durationMs: 0,
+};
+
 async function runStep<T>(
   runId: string,
   stepName: string,
@@ -142,7 +165,17 @@ async function runStep<T>(
     return cached.outputJson as T;
   }
 
+  // Step is created 'running' with an initial heartbeat; keep it fresh while
+  // work() is in flight. Errors from a heartbeat tick must never disturb the
+  // step itself, and the timer is unref'd so it can't hold the process open.
   const step = await createPipelineStep({ runId, stepName });
+  const heartbeat = setInterval(() => {
+    void touchPipelineStep(step.id).catch((err) => {
+      log.warn("Step heartbeat failed", { runId, stepName, error: sanitizeError(err) });
+    });
+  }, STEP_HEARTBEAT_INTERVAL_MS);
+  (heartbeat as { unref?: () => void }).unref?.();
+
   const start = nowMs();
   try {
     const result = await work();
@@ -160,6 +193,8 @@ async function runStep<T>(
       durationMs: nowMs() - start,
     });
     throw err;
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -1922,6 +1957,19 @@ export async function runIdeasPipeline(
   runId: string,
   memoryManager?: MemoryManager | null,
 ): Promise<PipelineRunResult> {
+  // Duplicate-dispatch guard: if this process is already executing this run, do
+  // NOT run a second copy (it would re-run incomplete steps and orphan rows).
+  // Resume guards before dispatch too; this is the last-resort check, placed
+  // BEFORE the try so it can never trip the failure path that marks the live
+  // run 'failed'. Return the run's last known summary (or a zero summary).
+  if (!beginRun(runId)) {
+    log.warn("Duplicate pipeline dispatch suppressed — run already executing", {
+      runId,
+    });
+    const existing = await getPipelineRun(runId);
+    return { runId, summary: existing?.resultSummary ?? EMPTY_RUN_SUMMARY };
+  }
+
   const startTime = nowMs();
 
   await updatePipelineRun(runId, {
@@ -2704,5 +2752,9 @@ export async function runIdeasPipeline(
       finishedAt: now(),
     });
     throw err;
+  } finally {
+    // Release the in-process slot so a later resume (after a real restart or a
+    // genuine failure) can re-dispatch this id.
+    endRun(runId);
   }
 }

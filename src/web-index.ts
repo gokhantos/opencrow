@@ -100,9 +100,13 @@ async function main(): Promise<void> {
   // stuck as 'running' are re-dispatched from their last completed step; runs
   // that exhausted their resume budget are failed.
   resumeInterruptedRuns(ctx.memoryManager ?? undefined)
-    .then(({ resumed, failed }) => {
-      if (resumed > 0 || failed > 0) {
-        log.info("Processed interrupted pipeline runs", { resumed, failed });
+    .then(({ resumed, failed, skipped }) => {
+      if (resumed > 0 || failed > 0 || skipped > 0) {
+        log.info("Processed interrupted pipeline runs", {
+          resumed,
+          failed,
+          skipped,
+        });
       }
     })
     .catch(() => {});
