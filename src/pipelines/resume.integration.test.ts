@@ -6,6 +6,8 @@ import {
   incrementResumeAttempts,
   getPipelineRun,
   createPipelineStep,
+  updatePipelineStep,
+  getStepsForRun,
 } from "./store";
 import {
   resumeRunById,
@@ -212,5 +214,74 @@ describe("duplicate-dispatch guard", () => {
     const dispatchedIds = spy.calls.map((c) => c.runId);
     expect(dispatchedIds).not.toContain(live.runId!);
     expect(dispatchedIds).toContain(dead.runId!);
+  });
+});
+
+describe("ghost step reconcile on resume", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    __resetActiveRuns();
+    await cleanup();
+  });
+
+  afterEach(async () => {
+    __resetActiveRuns();
+    await cleanup();
+    await closeDb();
+  });
+
+  it("resumeRunById fails dangling running steps before re-dispatch, preserving completed", async () => {
+    const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+
+    // Simulate prior run: landscape completed, reviews still 'running' (ghost from prior process).
+    const comp = await createPipelineStep({ runId: runId!, stepName: "landscape" });
+    await updatePipelineStep(comp.id, {
+      status: "completed",
+      outputSummary: "done",
+      outputJson: { ok: true },
+    });
+    await createPipelineStep({ runId: runId!, stepName: "reviews" }); // ghost
+
+    // Age the heartbeat so isRunLive does not short-circuit (run is treated as dead).
+    await getDb().unsafe(
+      `UPDATE pipeline_steps SET last_heartbeat = last_heartbeat - 600 WHERE run_id = $1`,
+      [runId!],
+    );
+
+    const spy = spyDispatcher();
+    const result = await resumeRunById(runId!, null, spy.fn);
+
+    expect(result.ok).toBe(true);
+
+    const steps = await getStepsForRun(runId!);
+    const byName = new Map(steps.map((s) => [s.stepName, s]));
+
+    // Completed checkpoint must survive (runStep will replay it).
+    expect(byName.get("landscape")!.status).toBe("completed");
+    // Ghost must be failed.
+    expect(byName.get("reviews")!.status).toBe("failed");
+    // Dispatcher was called exactly once.
+    expect(spy.calls).toHaveLength(1);
+    expect(spy.calls[0]!.runId).toBe(runId!);
+  });
+
+  it("resumeInterruptedRuns fails dangling running steps before re-dispatch", async () => {
+    const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+
+    const ghost = await createPipelineStep({ runId: runId!, stepName: "synthesis" });
+    // Age the heartbeat so resumeInterruptedRuns won't skip (it uses registry-only check anyway)
+    await getDb().unsafe(
+      `UPDATE pipeline_steps SET last_heartbeat = last_heartbeat - 600 WHERE id = $1`,
+      [ghost.id],
+    );
+
+    __resetActiveRuns();
+    const spy = spyDispatcher();
+    await resumeInterruptedRuns(null, spy.fn);
+
+    const steps = await getStepsForRun(runId!);
+    const synthStep = steps.find((s) => s.stepName === "synthesis");
+    expect(synthStep!.status).toBe("failed");
+    expect(spy.calls.map((c) => c.runId)).toContain(runId!);
   });
 });
