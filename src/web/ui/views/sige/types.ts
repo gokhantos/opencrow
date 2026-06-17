@@ -25,7 +25,8 @@ export interface SigeSessionConfig {
 
 export interface SigeSession {
   readonly id: string;
-  readonly seedInput: string;
+  // Null for autonomous (origin="auto") sessions, which have no human seed.
+  readonly seedInput: string | null;
   readonly status: SigeSessionStatus;
   readonly config: SigeSessionConfig;
   readonly report?: string;

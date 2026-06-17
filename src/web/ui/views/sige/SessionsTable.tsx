@@ -14,7 +14,11 @@ function formatDate(isoString: string): string {
   });
 }
 
-function truncate(s: string, maxLen: number): string {
+// Autonomous (origin="auto") sessions have no human seed — show a label instead.
+export const AUTONOMOUS_SEED_LABEL = "Autonomous discovery";
+
+export function truncate(s: string | null | undefined, maxLen: number): string {
+  if (!s) return AUTONOMOUS_SEED_LABEL;
   if (s.length <= maxLen) return s;
   return s.slice(0, maxLen).trimEnd() + "…";
 }

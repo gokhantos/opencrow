@@ -3,6 +3,7 @@ import { ArrowLeft, X } from "lucide-react";
 import { Button, LoadingState } from "../../components";
 import { cn } from "../../lib/cn";
 import { ProgressBar } from "./ProgressBar";
+import { AUTONOMOUS_SEED_LABEL } from "./SessionsTable";
 import { SigeStatusBadge } from "./SigeStatusBadge";
 import { ReportTab } from "./ReportTab";
 import { IdeasTab } from "./IdeasTab";
@@ -138,7 +139,7 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
           Seed Input
         </p>
         <p className="text-sm text-foreground leading-relaxed m-0 font-mono whitespace-pre-wrap">
-          {session.seedInput}
+          {session.seedInput ?? AUTONOMOUS_SEED_LABEL}
         </p>
       </div>
 
