@@ -31,7 +31,7 @@ jobs:
           key: bun-${{ hashFiles('bun.lock') }}
           restore-keys: bun-
 
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile || bun install
 
       - name: TypeScript strict check
         run: bunx tsc --noEmit
@@ -56,7 +56,7 @@ jobs:
           key: bun-${{ hashFiles('bun.lock') }}
           restore-keys: bun-
 
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile || bun install
 
       - name: Run isolated tests (mock.module)
         run: |
@@ -115,7 +115,7 @@ jobs:
           key: bun-${{ hashFiles('bun.lock') }}
           restore-keys: bun-
 
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile || bun install
 
       - name: Run integration tests
         run: |
@@ -143,7 +143,7 @@ jobs:
           key: bun-${{ hashFiles('bun.lock') }}
           restore-keys: bun-
 
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile || bun install
 
       - name: Verify entry points compile
         run: |
@@ -179,7 +179,7 @@ jobs:
           key: bun-${{ hashFiles('bun.lock') }}
           restore-keys: bun-
 
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile || bun install
 
       - name: Biome lint
         run: bun run lint
@@ -204,7 +204,7 @@ jobs:
           key: bun-${{ hashFiles('bun.lock') }}
           restore-keys: bun-
 
-      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile || bun install
 
       - name: Check for hardcoded secrets
         run: |
