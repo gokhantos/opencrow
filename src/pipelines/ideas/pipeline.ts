@@ -17,7 +17,12 @@ import { loadConfig } from "../../config/loader";
 import type { MemoryManager } from "../../memory/types";
 import { insertIdea, getIdeasByStage } from "../../sources/ideas/store";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
-import { updatePipelineRun, createPipelineStep, updatePipelineStep } from "../store";
+import {
+  updatePipelineRun,
+  createPipelineStep,
+  updatePipelineStep,
+  findCompletedStep,
+} from "../store";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
 import type { CollectorContext } from "./collectors";
 import {
@@ -127,6 +132,16 @@ async function runStep<T>(
   work: () => Promise<T>,
   formatOutput: (result: T) => string,
 ): Promise<T> {
+  // Resume fast-path: if this step already completed (a prior process run that
+  // was interrupted by a restart) and its structured output was persisted,
+  // replay it WITHOUT re-running work() — no re-scrape, no re-consume, no LLM
+  // spend. A missing/unparseable payload falls through to a normal re-run.
+  const cached = await findCompletedStep(runId, stepName);
+  if (cached.found && cached.hasOutput) {
+    log.info("Resuming pipeline step from checkpoint", { runId, stepName });
+    return cached.outputJson as T;
+  }
+
   const step = await createPipelineStep({ runId, stepName });
   const start = nowMs();
   try {
@@ -134,6 +149,7 @@ async function runStep<T>(
     await updatePipelineStep(step.id, {
       status: "completed",
       outputSummary: formatOutput(result),
+      outputJson: result,
       durationMs: nowMs() - start,
     });
     return result;
@@ -2450,6 +2466,12 @@ export async function runIdeasPipeline(
       runId,
       "store",
       async () => {
+        // Resume-safety: the store step is the one non-idempotent step (it
+        // inserts ideas in a loop). If a prior attempt was interrupted MID-store
+        // and is now being re-run, clear any ideas already attached to this run
+        // so the deterministic finalSelected set is re-stored exactly once.
+        await getDb()`DELETE FROM generated_ideas WHERE pipeline_run_id = ${runId}`;
+
         const ids: string[] = [];
         for (const candidate of finalSelected) {
           try {

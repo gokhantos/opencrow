@@ -62,25 +62,6 @@ function rowToStep(r: Record<string, unknown>): PipelineStep {
   };
 }
 
-// ── Orphan recovery (runs stuck as 'running' after process restart) ──────
-
-/**
- * Mark any runs stuck in 'running' as 'failed'.
- * Call this at startup to clean up after unclean shutdowns.
- */
-export async function recoverOrphanedRuns(): Promise<number> {
-  const db = getDb();
-  const rows = await db`
-    UPDATE pipeline_runs
-    SET status = 'failed',
-        error = 'Run was interrupted by process restart',
-        finished_at = ${now()}
-    WHERE status = 'running'
-    RETURNING id
-  `;
-  return rows.length;
-}
-
 // ── Atomic pipeline lock ────────────────────────────────────────────────
 
 export interface LockResult {
@@ -221,6 +202,11 @@ export async function updatePipelineStep(
     readonly status?: StepStatus;
     readonly inputSummary?: string;
     readonly outputSummary?: string;
+    /**
+     * Full structured step output, persisted for replay-on-resume. Serialized to
+     * JSONB; only JSON round-trippable values should be passed (see runStep).
+     */
+    readonly outputJson?: unknown;
     readonly durationMs?: number;
     readonly error?: string;
     readonly finishedAt?: number;
@@ -233,15 +219,120 @@ export async function updatePipelineStep(
       ? now()
       : undefined);
 
+  const outputJson =
+    update.outputJson !== undefined ? JSON.stringify(update.outputJson) : undefined;
+
   await db`
     UPDATE pipeline_steps
     SET
       status = COALESCE(${update.status ?? null}, status),
       input_summary = COALESCE(${update.inputSummary ?? null}, input_summary),
       output_summary = COALESCE(${update.outputSummary ?? null}, output_summary),
+      output_json = COALESCE(${outputJson ?? null}::jsonb, output_json),
       duration_ms = COALESCE(${update.durationMs ?? null}, duration_ms),
       error = COALESCE(${update.error ?? null}, error),
       finished_at = COALESCE(${finished ?? null}, finished_at)
+    WHERE id = ${id}
+  `;
+}
+
+// ── Resume support ──────────────────────────────────────────────────────
+
+/**
+ * The cached payload of a completed step, for the resume fast-path in runStep.
+ * `found` distinguishes "no completed step" from "completed but no payload"
+ * (e.g. a pre-migration row) — both mean "re-run", but only `found && hasOutput`
+ * is a cache hit.
+ */
+export interface CompletedStepOutput {
+  readonly found: boolean;
+  readonly hasOutput: boolean;
+  readonly outputJson: unknown;
+}
+
+/**
+ * Look up an already-completed step's structured output for (runId, stepName).
+ * Returns a cache-miss shape (found=false) when no completed step exists, the
+ * stored payload is NULL (pre-migration / never persisted), or the stored JSON
+ * fails to read — so resume degrades to "re-run that step", never crashes.
+ */
+export async function findCompletedStep(
+  runId: string,
+  stepName: string,
+): Promise<CompletedStepOutput> {
+  const miss: CompletedStepOutput = { found: false, hasOutput: false, outputJson: null };
+  try {
+    const db = getDb();
+    const rows = (await db`
+      SELECT output_json FROM pipeline_steps
+      WHERE run_id = ${runId} AND step_name = ${stepName} AND status = 'completed'
+      ORDER BY started_at DESC
+      LIMIT 1
+    `) as Array<Record<string, unknown>>;
+    if (rows.length === 0) return miss;
+    const raw = rows[0]!.output_json;
+    if (raw === null || raw === undefined) {
+      return { found: true, hasOutput: false, outputJson: null };
+    }
+    const parsed = parseJson<unknown>(raw, undefined);
+    if (parsed === undefined) {
+      // Corrupt/unparseable payload — treat as a miss so the step re-runs.
+      return { found: true, hasOutput: false, outputJson: null };
+    }
+    return { found: true, hasOutput: true, outputJson: parsed };
+  } catch {
+    return miss;
+  }
+}
+
+/** A run eligible for resume after a process restart, with the state resume needs. */
+export interface ResumableRun {
+  readonly id: string;
+  readonly pipelineId: string;
+  readonly config: PipelineConfig;
+  readonly category: IdeaCategory;
+  readonly resumeAttempts: number;
+}
+
+/**
+ * Find all runs still marked 'running' — these were interrupted by a process
+ * restart (a genuine in-code failure sets 'failed' instead). Returns the
+ * pipeline id + persisted config so the orchestrator can re-dispatch them.
+ */
+export async function findResumableRuns(): Promise<readonly ResumableRun[]> {
+  const db = getDb();
+  const rows = (await db`
+    SELECT id, pipeline_id, config, category, resume_attempts
+    FROM pipeline_runs
+    WHERE status = 'running'
+  `) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: r.id as string,
+    pipelineId: r.pipeline_id as string,
+    config: parseJson<PipelineConfig>(r.config, {} as PipelineConfig),
+    category: r.category as IdeaCategory,
+    resumeAttempts: Number(r.resume_attempts ?? 0),
+  }));
+}
+
+/** Increment a run's resume attempt counter. Returns the new count. */
+export async function incrementResumeAttempts(id: string): Promise<number> {
+  const db = getDb();
+  const rows = (await db`
+    UPDATE pipeline_runs
+    SET resume_attempts = resume_attempts + 1
+    WHERE id = ${id}
+    RETURNING resume_attempts
+  `) as Array<Record<string, unknown>>;
+  return rows.length > 0 ? Number(rows[0]!.resume_attempts ?? 0) : 0;
+}
+
+/** Mark a run failed with an explicit reason (used when resume attempts are exhausted). */
+export async function markRunFailed(id: string, error: string): Promise<void> {
+  const db = getDb();
+  await db`
+    UPDATE pipeline_runs
+    SET status = 'failed', error = ${error}, finished_at = ${now()}
     WHERE id = ${id}
   `;
 }

@@ -3,7 +3,7 @@ import { bootstrap } from "./process/bootstrap";
 import { getDb } from "./store/db";
 import { createCoreClient, type CoreClient } from "./web/core-client";
 import { createWebApp } from "./web/app";
-import { recoverOrphanedRuns } from "./pipelines/store";
+import { resumeInterruptedRuns } from "./pipelines/resume";
 import { createBookmarkProcessor } from "./sources/x/bookmarks/processor";
 import { createAutolikeProcessor } from "./sources/x/interactions/processor";
 import { createAutofollowProcessor } from "./sources/x/follow/processor";
@@ -96,10 +96,16 @@ async function main(): Promise<void> {
     timelineScrapeProcessor,
   });
 
-  // Recover any pipeline runs stuck as 'running' from a previous crash
-  recoverOrphanedRuns().then((count) => {
-    if (count > 0) log.info("Recovered orphaned pipeline runs", { count });
-  }).catch(() => {});
+  // Resume any pipeline runs interrupted by a process restart (deploy). Runs
+  // stuck as 'running' are re-dispatched from their last completed step; runs
+  // that exhausted their resume budget are failed.
+  resumeInterruptedRuns(ctx.memoryManager ?? undefined)
+    .then(({ resumed, failed }) => {
+      if (resumed > 0 || failed > 0) {
+        log.info("Processed interrupted pipeline runs", { resumed, failed });
+      }
+    })
+    .catch(() => {});
 
   // Periodic agent reload — skip if config unchanged
   let lastConfigHash = "";
