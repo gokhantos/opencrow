@@ -13,7 +13,7 @@ describe("Mem0Client circuit breaker", () => {
     globalThis.fetch = (async () => {
       calls += 1;
       throw new Error("Unable to connect. Is the computer able to access the url?");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const client = new Mem0Client({ baseUrl: "http://127.0.0.1:9" });
     expect(client.isUnavailable()).toBe(false);
@@ -35,7 +35,7 @@ describe("Mem0Client circuit breaker", () => {
 
   test("does not trip on a structured HTTP error (server reachable)", async () => {
     globalThis.fetch = (async () =>
-      new Response("nope", { status: 404 })) as typeof fetch;
+      new Response("nope", { status: 404 })) as unknown as typeof fetch;
 
     const client = new Mem0Client({ baseUrl: "http://127.0.0.1:9" });
 
