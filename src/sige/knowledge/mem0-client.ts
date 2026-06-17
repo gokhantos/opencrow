@@ -99,6 +99,9 @@ function isRetryableError(err: unknown): boolean {
 // A transport-level failure means the Mem0 service is unreachable (not
 // configured, container down, DNS failure). These are distinct from
 // Mem0ApiError, which is a structured HTTP response from a reachable server.
+// How long the breaker stays fully open before letting a single probe through.
+const BREAKER_COOLDOWN_MS = 30_000;
+
 function isConnectionError(err: unknown): boolean {
   if (err instanceof Mem0ApiError) return false;
   if (!(err instanceof Error)) return false;
@@ -121,19 +124,49 @@ export class Mem0Client {
   private readonly baseUrl: string;
 
   // Circuit breaker: once a transport-level failure proves the service is
-  // unreachable, short-circuit every subsequent request instead of re-dialing
-  // a dead endpoint on every graph query. SIGE degrades to an empty graph
-  // gracefully, so failing fast is strictly better than retry-amplifying a
-  // known-down service across dozens of expert/social agents.
+  // unreachable, short-circuit subsequent requests instead of re-dialing a dead
+  // endpoint on every graph query. SIGE degrades to an empty graph gracefully,
+  // so failing fast beats retry-amplifying a known-down service across dozens of
+  // expert/social agents.
+  //
+  // Half-open recovery: after BREAKER_COOLDOWN_MS, exactly one request is let
+  // through as a probe (single-flight via `probing`). If it reaches the server
+  // the breaker closes and Mem0 resumes; if it fails the cooldown restarts. This
+  // lets a transient startup race (Mem0 not ready yet) heal without a process
+  // restart, while still bounding dials to one per cooldown window.
   private unavailable = false;
+  private openedAt = 0;
+  private probing = false;
 
   constructor(config: { readonly baseUrl: string }) {
     this.baseUrl = config.baseUrl.replace(/\/$/, "");
   }
 
-  /** True once the circuit breaker has tripped on a connection failure. */
+  /** True while the circuit breaker is open (short-circuiting requests). */
   isUnavailable(): boolean {
     return this.unavailable;
+  }
+
+  /** Endpoint reachable → close the breaker (even on an HTTP 4xx/5xx). */
+  private recordReachable(): void {
+    if (this.unavailable) {
+      log.info("Mem0 reachable again — closing circuit breaker", { baseUrl: this.baseUrl });
+    }
+    this.unavailable = false;
+    this.openedAt = 0;
+    this.probing = false;
+  }
+
+  /** Transport-level failure → (re)open the breaker and restart the cooldown. */
+  private recordUnreachable(): void {
+    if (!this.unavailable) {
+      log.warn("Mem0 unreachable — opening circuit breaker, skipping graph", {
+        baseUrl: this.baseUrl,
+      });
+    }
+    this.unavailable = true;
+    this.openedAt = Date.now();
+    this.probing = false;
   }
 
   // ─── Low-level fetch ───────────────────────────────────────────────────────
@@ -143,9 +176,15 @@ export class Mem0Client {
     path: string,
     body?: unknown,
   ): Promise<T> {
-    // Circuit breaker open: don't re-dial a known-dead endpoint.
+    // Circuit breaker. While open, short-circuit — unless the cooldown has
+    // elapsed and no probe is in flight, in which case THIS request becomes the
+    // single half-open probe (check-and-set is synchronous, so concurrent
+    // callers can't both win the probe).
     if (this.unavailable) {
-      throw new Error("Mem0 unavailable (circuit breaker open)");
+      if (this.probing || Date.now() - this.openedAt < BREAKER_COOLDOWN_MS) {
+        throw new Error("Mem0 unavailable (circuit breaker open)");
+      }
+      this.probing = true;
     }
 
     const url = `${this.baseUrl}${path}`;
@@ -168,20 +207,23 @@ export class Mem0Client {
     try {
       res = await fetch(url, init);
     } catch (err) {
-      // Transport-level failure → trip the breaker so the rest of the session
-      // skips Mem0 entirely instead of failing one query at a time.
+      // Transport-level failure → (re)open the breaker so the rest of the
+      // session skips Mem0 instead of failing one query at a time. A probe that
+      // fails any other way still clears `probing` so the cooldown restarts.
       if (isConnectionError(err)) {
-        if (!this.unavailable) {
-          log.warn("Mem0 unreachable — opening circuit breaker, skipping graph for this session", {
-            baseUrl: this.baseUrl,
-          });
-        }
-        this.unavailable = true;
+        this.recordUnreachable();
+      } else if (this.probing) {
+        this.probing = false;
+        this.openedAt = Date.now();
       }
       throw err;
     } finally {
       clearTimeout(timeoutId);
     }
+
+    // fetch resolved → the endpoint is reachable (even a 4xx/5xx is a live
+    // server), so close the breaker / complete a successful probe.
+    this.recordReachable();
 
     if (!res.ok) {
       const text = await res.text().catch(() => "(unreadable)");
