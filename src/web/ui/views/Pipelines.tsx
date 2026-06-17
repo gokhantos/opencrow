@@ -13,8 +13,9 @@ import {
   ShieldCheck,
   Save,
   Lightbulb,
+  RotateCcw,
 } from "lucide-react";
-import { apiFetch } from "../api";
+import { apiFetch, resumeRun, resumeInterruptedRuns } from "../api";
 import { relativeTime, formatDuration } from "../lib/format";
 import { cn } from "../lib/cn";
 import { PageHeader, LoadingState, EmptyState } from "../components";
@@ -215,13 +216,38 @@ function StatCard({
 
 // ── Run Row (single fetch, shared data between progress bar + detail) ─
 
-function RunRow({ run }: { readonly run: PipelineRunRow }) {
+function RunRow({
+  run,
+  onResumed,
+}: {
+  readonly run: PipelineRunRow;
+  readonly onResumed?: () => void;
+}) {
   const [expanded, setExpanded] = useState(run.status === "running");
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [ideas, setIdeas] = useState<readonly RunIdea[]>([]);
   const [loadError, setLoadError] = useState(false);
   const [expandedIdeaId, setExpandedIdeaId] = useState<string | null>(null);
+  const [resuming, setResuming] = useState(false);
+  const toast = useToast();
   const StatusIcon = STATUS_ICONS[run.status] ?? Clock;
+
+  const handleResume = useCallback(async () => {
+    setResuming(true);
+    try {
+      const res = await resumeRun(run.id);
+      if (res.success) {
+        toast.success("Run resuming — picking up from the last completed step");
+        onResumed?.();
+      } else {
+        toast.error(res.error ?? "Failed to resume run");
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to resume run");
+    } finally {
+      setResuming(false);
+    }
+  }, [run.id, toast, onResumed]);
 
   // Single fetch for both progress bar and detail panel
   useEffect(() => {
@@ -530,6 +556,27 @@ function RunRow({ run }: { readonly run: PipelineRunRow }) {
                   </p>
                 </div>
               )}
+
+              {/* Resume — re-trigger a failed run from its last completed step */}
+              {run.status === "failed" && (
+                <button
+                  onClick={handleResume}
+                  disabled={resuming}
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium",
+                    "bg-accent-subtle text-accent border border-accent/20",
+                    "hover:bg-accent/20 transition-colors disabled:opacity-50",
+                    "disabled:cursor-not-allowed cursor-pointer",
+                  )}
+                >
+                  {resuming ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <RotateCcw size={14} />
+                  )}
+                  {resuming ? "Resuming..." : "Resume run"}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -695,6 +742,26 @@ export default function Pipelines() {
     [fetchData, toast],
   );
 
+  const interruptedCount = runs.filter((r) => r.status === "running").length;
+
+  const handleResumeAll = useCallback(async () => {
+    try {
+      const res = await resumeInterruptedRuns();
+      if (res.success) {
+        toast.success(
+          `Resuming ${res.resumed ?? 0} interrupted run${res.resumed === 1 ? "" : "s"}`,
+        );
+        refreshTimer.current = setTimeout(fetchData, 1000);
+      } else {
+        toast.error(res.error ?? "Failed to resume interrupted runs");
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "Failed to resume interrupted runs";
+      toast.error(msg);
+    }
+  }, [fetchData, toast]);
+
   if (loading) {
     return <LoadingState message="Loading pipelines..." />;
   }
@@ -729,12 +796,27 @@ export default function Pipelines() {
       {/* Recent Runs */}
       {runs.length > 0 && (
         <>
-          <h2 className="font-heading text-lg font-semibold text-strong mb-4">
-            Recent Runs
-          </h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-heading text-lg font-semibold text-strong">
+              Recent Runs
+            </h2>
+            {interruptedCount > 0 && (
+              <button
+                onClick={handleResumeAll}
+                className={cn(
+                  "flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium",
+                  "bg-accent-subtle text-accent border border-accent/20",
+                  "hover:bg-accent/20 transition-colors cursor-pointer",
+                )}
+              >
+                <RotateCcw size={14} />
+                Resume interrupted ({interruptedCount})
+              </button>
+            )}
+          </div>
           <div className="space-y-3">
             {runs.map((run) => (
-              <RunRow key={run.id} run={run} />
+              <RunRow key={run.id} run={run} onResumed={fetchData} />
             ))}
           </div>
         </>

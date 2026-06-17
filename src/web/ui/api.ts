@@ -128,6 +128,20 @@ export function requestWhatsAppPairingCode(
   });
 }
 
+export function resumeRun(
+  runId: string,
+): Promise<{ success: boolean; message?: string; runId?: string; error?: string }> {
+  return apiFetch(`/api/pipelines-runs/${runId}/resume`, { method: "POST" });
+}
+
+export function resumeInterruptedRuns(): Promise<{
+  success: boolean;
+  resumed?: number;
+  error?: string;
+}> {
+  return apiFetch("/api/pipelines-runs/resume-interrupted", { method: "POST" });
+}
+
 let _configHash: string | null = null;
 
 export function getConfigHash(): string | null {

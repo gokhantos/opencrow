@@ -6,7 +6,11 @@ import {
   incrementResumeAttempts,
   getPipelineRun,
 } from "./store";
-import { resumeRunById, type PipelineDispatcher } from "./resume";
+import {
+  resumeRunById,
+  resumeAllInterrupted,
+  type PipelineDispatcher,
+} from "./resume";
 import type { PipelineConfig } from "./types";
 
 const TEST_PIPELINE = "test-resume-by-id";
@@ -81,5 +85,35 @@ describe("resumeRunById", () => {
       SELECT resume_attempts FROM pipeline_runs WHERE id = ${runId!}
     `) as Array<{ resume_attempts: number }>;
     expect(Number(resumable[0]!.resume_attempts)).toBe(0);
+  });
+});
+
+describe("resumeAllInterrupted", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    await cleanup();
+  });
+
+  afterEach(async () => {
+    await cleanup();
+    await closeDb();
+  });
+
+  it("re-dispatches every interrupted ('running') run, not the failed ones", async () => {
+    const a = await acquirePipelineLock(TEST_PIPELINE); // running
+    const b = await acquirePipelineLock(TEST_PIPELINE); // running
+    const dead = await acquirePipelineLock(TEST_PIPELINE);
+    await markRunFailed(dead.runId!, "real failure");
+
+    const spy = spyDispatcher();
+    const count = await resumeAllInterrupted(null, spy.fn);
+
+    const dispatchedIds = spy.calls.map((c) => c.runId);
+    // Membership (the shared DB may hold other 'running' rows): both of ours
+    // were dispatched, the genuinely-failed one was not.
+    expect(dispatchedIds).toContain(a.runId!);
+    expect(dispatchedIds).toContain(b.runId!);
+    expect(dispatchedIds).not.toContain(dead.runId!);
+    expect(count).toBeGreaterThanOrEqual(2);
   });
 });

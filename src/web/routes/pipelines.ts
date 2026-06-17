@@ -19,7 +19,7 @@ import {
 } from "../../pipelines/store";
 import { updateIdeaStage } from "../../sources/ideas/store";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
-import { resumeRunById } from "../../pipelines/resume";
+import { resumeRunById, resumeAllInterrupted } from "../../pipelines/resume";
 import type { MemoryManager } from "../../memory/types";
 import { createLogger } from "../../logger";
 
@@ -227,6 +227,15 @@ export function createPipelineRoutes(deps?: {
     const runId = c.req.param("runId");
     const ideas = await getIdeasForRun(runId);
     return c.json({ success: true, data: ideas });
+  });
+
+  // Bulk: resume ALL interrupted runs (still 'running' after a restart).
+  // Registered before the :runId route — "resume-interrupted" is a distinct
+  // static path so it never collides with a run id.
+  app.post("/pipelines-runs/resume-interrupted", async (c) => {
+    const count = await resumeAllInterrupted(deps?.memoryManager);
+    log.info("Resuming all interrupted runs on demand", { count });
+    return c.json({ success: true, resumed: count }, 202);
   });
 
   // Manually (re-)trigger a previous run by id, on demand. Resumes from the

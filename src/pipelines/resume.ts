@@ -155,3 +155,23 @@ export async function resumeRunById(
 
   return { ok: true, runId, pipelineId: run.pipelineId };
 }
+
+/**
+ * Manually resume ALL currently-interrupted runs (those still 'running' — left
+ * over from a restart that has not yet been auto-resumed). Re-dispatches each
+ * via {@link resumeRunById}. Deliberately does NOT touch 'failed' runs, which
+ * may have failed for real reasons; use resumeRunById for those individually.
+ * Returns how many were re-dispatched.
+ */
+export async function resumeAllInterrupted(
+  memoryManager?: MemoryManager | null,
+  dispatch: PipelineDispatcher = runIdeasPipeline,
+): Promise<number> {
+  const runs = await findResumableRuns();
+  let count = 0;
+  for (const run of runs) {
+    const result = await resumeRunById(run.id, memoryManager, dispatch);
+    if (result.ok) count += 1;
+  }
+  return count;
+}
