@@ -1,4 +1,7 @@
-mem0ai[graph]==2.0.0b2
+# Pinned to 0.1.x: the sidecar targets the 0.1 Memory.from_config API
+# (vector_store/graph_store/llm/embedder provider dicts). mem0 2.x is a major
+# rewrite with a different config surface — do NOT bump without porting app.py.
+mem0ai[graph]==0.1.118
 ollama==0.4.5
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
