@@ -12,6 +12,7 @@
  */
 
 import type { CapabilityMaker } from "./types";
+import { credibilityKey } from "./credibility";
 
 /** Clamp a number into the inclusive [0, 1] range; NaN → 0. */
 export function clamp01(value: number): number {
@@ -68,6 +69,14 @@ export function recencyFactor(
   return clamp01(Math.pow(0.5, ageDays / halfLife));
 }
 
+/**
+ * Neutral learned-credibility posterior mean. A Beta(1,1) cold-start source
+ * sits at 0.5, so treating 0.5 (or an absent posterior) as neutral makes the
+ * learned-credibility multiplier a no-op until real feedback moves a source
+ * above/below the midpoint. Keeps the default path identical to before #157.
+ */
+export const NEUTRAL_LEARNED_CREDIBILITY = 0.5;
+
 /** Inputs to the combined per-row rank score. */
 export interface RankInputs {
   /** Source-credibility weight in [0, 1]. Defaults to 0.5 when absent. */
@@ -78,6 +87,63 @@ export interface RankInputs {
   readonly corroborationCount?: number;
   /** Recency factor in [0, 1]. Defaults to 0.5 when absent. */
   readonly recency?: number;
+  /**
+   * Learned Beta-Bernoulli posterior mean in [0, 1] for this row's
+   * (source_table, signal_type, category) tuple, from downstream idea fate.
+   * Absent (or 0.5) ⇒ no learned signal ⇒ neutral multiplier of 1.0, so the
+   * score is unchanged from the static-credibility-only behavior. A posterior
+   * above 0.5 boosts the row; below 0.5 dampens it.
+   */
+  readonly learnedCredibility?: number;
+}
+
+/**
+ * Map a learned posterior mean in [0, 1] to a BOUNDED multiplier centered on
+ * 1.0. 0.5 → 1.0 (neutral), 1.0 → 1 + `swing`, 0.0 → 1 − `swing`. Absent ⇒ 1.0.
+ *
+ * The swing is intentionally small (default 0.3) so a learned source can nudge
+ * but never dominate the static credibility × momentum × corroboration × recency
+ * blend — under-observed sources (near 0.5) stay essentially neutral.
+ */
+export function learnedCredibilityMultiplier(
+  posteriorMean: number | undefined,
+  swing = 0.3,
+): number {
+  if (posteriorMean == null) return 1;
+  const p = clamp01(posteriorMean);
+  return 1 + swing * (p - NEUTRAL_LEARNED_CREDIBILITY) * 2;
+}
+
+/**
+ * Look up a learned posterior mean for a row from a posterior map keyed by
+ * {@link credibilityKey}(`source_table`, `signal_type`, `category`).
+ *
+ * Provenance written by the pipeline only carries {table, id}, so the learned
+ * model's `signal_type` is typically the literal `"unknown"` and `category` is
+ * the downstream idea's category. To maximise hit-rate from the collector side
+ * (which knows its sub-source but not the future idea category) this tries the
+ * exact key first, then progressively looser fallbacks. Returns `undefined`
+ * when the map is absent/empty or no candidate key matches — callers then treat
+ * it as neutral (multiplier 1.0), preserving the default path.
+ */
+export function lookupLearnedCredibility(
+  posteriors: ReadonlyMap<string, number> | undefined,
+  sourceTable: string,
+  signalType: string,
+  category: string,
+): number | undefined {
+  if (!posteriors || posteriors.size === 0) return undefined;
+  const candidates = [
+    credibilityKey(sourceTable, signalType, category),
+    credibilityKey(sourceTable, signalType, "unknown"),
+    credibilityKey(sourceTable, "unknown", category),
+    credibilityKey(sourceTable, "unknown", "unknown"),
+  ];
+  for (const key of candidates) {
+    const value = posteriors.get(key);
+    if (typeof value === "number") return value;
+  }
+  return undefined;
 }
 
 /**
@@ -89,6 +155,12 @@ export interface RankInputs {
  * engagement), momentum and corroboration are meaningful boosts, recency is a
  * mild tie-breaker. Corroboration is log-scaled so a 3rd source matters less
  * than the 2nd. The result is in roughly [0, 1] before jitter.
+ *
+ * Learned credibility (optional): the additive base is scaled by a bounded
+ * multiplier derived from the row's posterior mean (0.5 ⇒ ×1.0 no-op), then the
+ * scaled base is re-clamped to [0, 1] before jitter so the score stays bounded.
+ * When no posterior is supplied the multiplier is exactly 1.0 → identical to the
+ * pre-existing behavior.
  */
 export function computeRankScore(
   inputs: RankInputs,
@@ -108,8 +180,11 @@ export function computeRankScore(
     0.2 * corroBoost +
     0.1 * recency;
 
+  // Fold in the learned posterior as a bounded, re-clamped multiplier.
+  const learned = clamp01(base * learnedCredibilityMultiplier(inputs.learnedCredibility));
+
   const jitter = explorationWeight * rng();
-  return base + jitter;
+  return learned + jitter;
 }
 
 /**

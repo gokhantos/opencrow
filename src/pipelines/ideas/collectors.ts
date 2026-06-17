@@ -33,6 +33,7 @@ import {
   recencyFactor,
   computeRankScore,
   selectRanked,
+  lookupLearnedCredibility,
   parseMakers,
   parseTopics,
   parseTopComments,
@@ -57,6 +58,9 @@ export {
   normalizeVelocities,
   recencyFactor,
   computeRankScore,
+  learnedCredibilityMultiplier,
+  lookupLearnedCredibility,
+  NEUTRAL_LEARNED_CREDIBILITY,
   selectRanked,
   parseJsonArray,
   parseMakers,
@@ -81,6 +85,17 @@ export interface CollectorContext {
   readonly consumed: ReadonlyMap<string, ReadonlySet<string>>;
   /** Accumulates: table name → IDs selected by collectors in the current run. */
   readonly selected: Map<string, string[]>;
+  /**
+   * Learned per-source Beta-Bernoulli posteriors keyed by
+   * `credibilityKey(source_table, signal_type, category)` (see
+   * {@link import("./credibility").credibilityKey} — `<table>::<signal>::<cat>`).
+   * Value = posterior mean in [0, 1] of "this source yields good ideas".
+   *
+   * OPTIONAL: when absent/empty, collector ranking degrades to the static
+   * source-credibility-only behavior (no-op multiplier of 1.0). Populated by
+   * pipeline.ts from {@link loadCredibilityPosteriors}.
+   */
+  readonly credibilityPosteriors?: ReadonlyMap<string, number>;
 }
 
 // ── Shared utilities ─────────────────────────────────────────────────────────
@@ -680,6 +695,18 @@ interface RawCandidate {
   readonly table: string;
   readonly id: string;
   readonly entity: EntityRow;
+  /**
+   * Sub-source granularity (e.g. "feed", "front-page", "trending", a news
+   * domain, a subreddit tier). Used as the `signal_type` component when looking
+   * up the learned-credibility posterior for this row.
+   */
+  readonly signalType: string;
+  /**
+   * Category component for the learned-credibility lookup. Capability signals
+   * are not pre-categorized, so this is "unknown" — the lookup falls back across
+   * looser keys (see {@link lookupLearnedCredibility}).
+   */
+  readonly category: string;
   /** Source-credibility weight in [0, 1]. */
   readonly credibility: number;
   /** Raw velocity (per-scrape momentum) before normalization. */
@@ -758,6 +785,8 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
           return {
             table: "ph_products",
             id: p.id as string,
+            signalType: "feed",
+            category: "unknown",
             entity: {
               id: p.id as string,
               source: "producthunt",
@@ -811,6 +840,8 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
           return {
             table: "hn_stories",
             id: s.id as string,
+            signalType: subSource,
+            category: "unknown",
             entity: {
               id: s.id as string,
               source: "hackernews",
@@ -871,6 +902,8 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
           return {
             table: "github_repos",
             id: r.id as string,
+            signalType: "trending",
+            category: "unknown",
             entity: {
               id: r.id as string,
               source: "github",
@@ -923,6 +956,8 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
           return {
             table: "reddit_posts",
             id: p.id as string,
+            signalType: "topical",
+            category: "unknown",
             entity: {
               id: p.id as string,
               source: "reddit",
@@ -974,6 +1009,8 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
           return {
             table: "news_articles",
             id: a.id as string,
+            signalType: subSource,
+            category: "unknown",
             entity: {
               id: a.id as string,
               source: "news",
@@ -1022,6 +1059,8 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
           return {
             table: "x_scraped_tweets",
             id: t.id as string,
+            signalType: subSource,
+            category: "unknown",
             entity: {
               id: t.id as string,
               source: "x",
@@ -1069,6 +1108,13 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
       // persisted rankScore stay consistent.
       const scoreByRow = new Map<string, number>();
       for (const c of pool.candidates) {
+        // Learned per-source posterior (optional; neutral no-op when absent).
+        const learnedCredibility = lookupLearnedCredibility(
+          ctx?.credibilityPosteriors,
+          c.table,
+          c.signalType,
+          c.category,
+        );
         scoreByRow.set(
           c.id,
           computeRankScore({
@@ -1076,6 +1122,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             velocityNorm: velNormByRow.get(c.id) ?? 0,
             corroborationCount: corroborationByRowId.get(c.id) ?? 1,
             recency: c.recency,
+            learnedCredibility,
           }),
         );
       }

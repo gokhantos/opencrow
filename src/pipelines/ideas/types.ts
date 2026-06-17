@@ -225,6 +225,19 @@ export interface GeneratedIdeaCandidate {
    * by the Pipeline-phase verifier to bind ideas to real source rows.
    */
   readonly supportingSignalIds?: readonly string[];
+  /**
+   * Critique sub-scores (#2): the four 0-1 dimensions emitted by Pass 3
+   * (idea critique). Optional — populated only for candidates that survived
+   * critique with a matched critique entry. The aggregate already feeds
+   * qualityScore; this preserves the full breakdown so the Pipeline phase can
+   * stamp all four into critique_subscores_json.
+   */
+  readonly critiqueSubscores?: {
+    readonly specificity: number;
+    readonly signalGrounding: number;
+    readonly differentiation: number;
+    readonly buildability: number;
+  };
 }
 
 export interface SynthesisResult {

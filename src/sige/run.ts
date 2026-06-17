@@ -32,11 +32,89 @@ import type {
 } from "./types";
 import { enrichSeedWithProjectData } from "./seed-enricher";
 import { synthesizeSignals, signalsToPromptContext } from "./signal-synthesis";
-import { crossWriteSigeIdeas } from "./cross-write";
+import { crossWriteSigeIdeas, SIGE_AGENT_ID } from "./cross-write";
 import { loadConfig } from "../config/loader";
 import { createLogger } from "../logger";
+import type { MemoryManager } from "../memory/types";
 
 const log = createLogger("sige:run");
+
+/**
+ * Best-effort construction of a vector MemoryManager for SIGE's cross-write
+ * semantic dedup layer.
+ *
+ * Mirrors the wiring in `src/process/bootstrap.ts` (embedding provider + Qdrant
+ * client + memory manager) but is fully self-contained and NEVER throws: if
+ * memory search is unconfigured (no `memorySearch` block), a secret/embedding
+ * provider is missing, or the Qdrant client can't be reached, it returns
+ * `null` so the caller transparently falls back to the exact-title + pg_trgm
+ * dedup layers (the prior behavior). A failure here must never break a SIGE
+ * session.
+ *
+ * The returned client is short-lived — SIGE uses it only for the cross-write
+ * dedup/index and discards it; no long-lived disposal lifecycle is needed.
+ */
+async function buildSigeMemoryManager(): Promise<MemoryManager | null> {
+  try {
+    const config = loadConfig();
+    if (config.memorySearch === undefined) {
+      return null;
+    }
+
+    const { getSecret } = await import("../config/secrets");
+    const { getOverride } = await import("../store/config-overrides");
+    const { embeddingsConfigSchema } = await import("../config/schema");
+    const { createEmbeddingProviderFromConfig } = await import("../memory/embeddings");
+    const { createQdrantClient } = await import("../memory/qdrant");
+    const { createMemoryManager } = await import("../memory/manager");
+
+    const embeddingsOverride = await getOverride("features", "embeddings");
+    const embeddingsConfig = embeddingsConfigSchema.parse(
+      embeddingsOverride ?? config.embeddings ?? {},
+    );
+    const apiKey =
+      (await getSecret("OPENROUTER_API_KEY")) ??
+      (await getSecret("VOYAGE_API_KEY")) ??
+      undefined;
+    const embeddingProvider = createEmbeddingProviderFromConfig(
+      embeddingsConfig,
+      apiKey,
+    );
+
+    const memSearch = config.memorySearch;
+    const qdrantUrl = (await getSecret("QDRANT_URL")) ?? memSearch.qdrant.url;
+    const qdrantCollection = memSearch.qdrant.collection;
+    const qdrantClient = await createQdrantClient({
+      url: qdrantUrl,
+      apiKey: memSearch.qdrant.apiKey,
+    });
+
+    if (qdrantClient.available) {
+      await qdrantClient.ensureCollection(
+        qdrantCollection,
+        embeddingsConfig.dimensions,
+      );
+    }
+
+    return createMemoryManager({
+      embeddingProvider,
+      qdrantClient,
+      qdrantCollection,
+      shared: memSearch.shared,
+      defaultLimit: memSearch.defaultLimit,
+      minScore: memSearch.minScore,
+      vectorWeight: memSearch.vectorWeight,
+      textWeight: memSearch.textWeight,
+      mmrLambda: memSearch.mmrLambda,
+    });
+  } catch (err) {
+    log.warn(
+      "Could not build MemoryManager for SIGE cross-write — semantic dedup layer disabled (non-fatal)",
+      { err },
+    );
+    return null;
+  }
+}
 
 // ─── Default Session Config ─────────────────────────────────────────────────
 //
@@ -254,18 +332,48 @@ export async function runSession(
       appConfig.sige?.enabled === true;
 
     if (sigeCrossWriteEnabled) {
-      // runSession has no vector MemoryManager in scope, so the semantic dedup
-      // layer is skipped (null) — the exact-title and pg_trgm layers still run.
+      // Build a vector MemoryManager so the Qdrant (>0.65) semantic dedup layer
+      // runs. Falls back to null when memory/Qdrant is unconfigured or
+      // construction fails — then only the exact-title + pg_trgm layers run
+      // (the prior behavior). Never breaks the session.
+      const memoryManager = await buildSigeMemoryManager();
+
       const result = await crossWriteSigeIdeas(
         enrichedRankedIdeas,
         sessionId,
-        null,
+        memoryManager,
       );
       log.info("SIGE cross-write into generated_ideas", {
         sessionId,
         inserted: result.inserted,
         rejected: result.rejected.length,
+        semanticDedup: memoryManager !== null,
       });
+
+      // Mirror the trend pipeline (pipeline.ts step 7): index the cross-written
+      // ideas into memory so future dedup/search can see them. Best-effort and
+      // gated by the same try/catch — failures here never break the session.
+      if (memoryManager !== null && result.insertedIdeas.length > 0) {
+        await Promise.all(
+          result.insertedIdeas.map((idea) =>
+            memoryManager
+              .indexIdea(SIGE_AGENT_ID, {
+                id: idea.id,
+                title: idea.title,
+                summary: idea.description,
+                category: "sige",
+                reasoning: idea.description,
+              })
+              .catch((err) => {
+                log.warn("Failed to index SIGE idea into memory (non-fatal)", {
+                  sessionId,
+                  ideaId: idea.id,
+                  err,
+                });
+              }),
+          ),
+        );
+      }
     }
   } catch (err) {
     log.warn("SIGE cross-write step failed (non-fatal)", { sessionId, err });
