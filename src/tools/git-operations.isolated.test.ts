@@ -1,6 +1,18 @@
 import { test, expect, describe, mock, beforeEach } from "bun:test";
+import { mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ToolsConfig } from "../config/schema";
 import type { ShellResult } from "./shell-runner";
+
+// Use a real, existing directory as the allow-listed root. Hardcoded paths like
+// "/home/test/projects" break the allow-list check on macOS, where isPathAllowed
+// resolves firmlinks (/home → /System/Volumes/Data/home), so the reconstructed
+// real path no longer matches the configured prefix. realpath() of a real temp
+// dir is stable across platforms.
+const PROJECTS_ROOT = realpathSync(mkdtempSync(join(tmpdir(), "git-ops-test-")));
+const REPO_PATH = join(PROJECTS_ROOT, "repo");
+const NOTGIT_PATH = join(PROJECTS_ROOT, "notgit");
 
 // --- Mocks ---
 
@@ -29,7 +41,7 @@ mock.module("./shell-runner", () => ({
 const { createGitOperationsTool } = await import("./git-operations");
 
 const DEFAULT_CONFIG: ToolsConfig = {
-  allowedDirectories: ["/home/test/projects"],
+  allowedDirectories: [PROJECTS_ROOT],
   blockedCommands: [],
   maxBashTimeout: 600_000,
   maxFileSize: 10_485_760,
@@ -102,7 +114,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "status",
-      path: "/home/test/projects/notgit",
+      path: NOTGIT_PATH,
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("not a git repository");
@@ -113,7 +125,7 @@ describe("git_operations execute", () => {
   test("rejects commit without message", async () => {
     const result = await tool.execute({
       action: "commit",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("message");
@@ -122,7 +134,7 @@ describe("git_operations execute", () => {
   test("rejects branch_create without branch name", async () => {
     const result = await tool.execute({
       action: "branch_create",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("branch");
@@ -131,7 +143,7 @@ describe("git_operations execute", () => {
   test("rejects invalid action", async () => {
     const result = await tool.execute({
       action: "rebase",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("Unsupported action");
@@ -147,7 +159,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "push",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("main");
@@ -160,7 +172,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "push",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("confirm_main");
@@ -173,7 +185,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "push",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
       confirm_main: true,
     });
     expect(result.isError).toBe(false);
@@ -186,7 +198,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "push",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(false);
   });
@@ -208,7 +220,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "status",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(false);
     expect(result.output).toContain("main");
@@ -231,7 +243,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "diff",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(false);
     expect(result.output).toContain("file changed");
@@ -244,7 +256,7 @@ describe("git_operations execute", () => {
 
     await tool.execute({
       action: "diff",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
       staged: true,
     });
 
@@ -261,7 +273,7 @@ describe("git_operations execute", () => {
 
     await tool.execute({
       action: "diff",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
       branch: "develop",
     });
 
@@ -284,7 +296,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "log",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(false);
     expect(result.output).toContain("abc1234");
@@ -297,7 +309,7 @@ describe("git_operations execute", () => {
 
     await tool.execute({
       action: "log",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
       max_lines: 5,
     });
 
@@ -320,7 +332,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "commit",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
       message: "feat: add tool",
       files: ["src/tool.ts"],
     });
@@ -342,7 +354,7 @@ describe("git_operations execute", () => {
 
     await tool.execute({
       action: "commit",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
       message: "chore: update",
     });
 
@@ -359,7 +371,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "pull",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
 
     expect(result.isError).toBe(false);
@@ -377,7 +389,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "branch_list",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(false);
     expect(result.output).toContain("main");
@@ -394,7 +406,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "branch_create",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
       branch: "feat/new",
     });
     expect(result.isError).toBe(false);
@@ -411,7 +423,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "stash",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(false);
 
@@ -430,7 +442,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "stash_pop",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(false);
 
@@ -446,7 +458,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "status",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.isError).toBe(true);
     expect(result.output).toContain("timed out");
@@ -462,7 +474,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "branch_create",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
       branch: "nonexistent",
     });
     expect(result.isError).toBe(true);
@@ -477,7 +489,7 @@ describe("git_operations execute", () => {
 
     await tool.execute({
       action: "status",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
 
     // Check env on the status call (second call, after rev-parse)
@@ -497,7 +509,7 @@ describe("git_operations execute", () => {
 
     const result = await tool.execute({
       action: "log",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
     });
     expect(result.output).not.toContain("\x1B[");
     expect(result.output).toContain("+ added");
@@ -512,7 +524,7 @@ describe("git_operations execute", () => {
     await tool.execute({ action: "status" });
 
     const revParseOpts = mockRunShell.mock.calls[0]![1];
-    expect(revParseOpts.cwd).toBe("/home/test/projects");
+    expect(revParseOpts.cwd).toBe(PROJECTS_ROOT);
   });
 
   // --- Diff truncation ---
@@ -531,7 +543,7 @@ describe("git_operations execute", () => {
 
     await tool.execute({
       action: "diff",
-      path: "/home/test/projects/repo",
+      path: REPO_PATH,
       max_lines: 50,
     });
 
