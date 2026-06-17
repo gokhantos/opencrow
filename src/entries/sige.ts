@@ -107,6 +107,14 @@ async function main(): Promise<void> {
     }
   });
 
+  // Block until shutdown. `supervisor.start()` only wires up timers/handlers
+  // and resolves immediately — it does NOT block — so we await an explicit
+  // shutdown promise to keep the process alive and ensure the "stopped" log
+  // fires on real shutdown rather than firing one tick after startup.
+  const shutdownComplete = new Promise<void>((resolve) => {
+    supervisor.onShutdown(() => resolve());
+  });
+
   // Run an immediate first poll, then schedule subsequent polls
   await pollAndProcess(mem0, userId, signal);
 
@@ -117,6 +125,7 @@ async function main(): Promise<void> {
   }, POLL_INTERVAL_MS);
 
   await supervisor.start();
+  await shutdownComplete;
 
   log.info("SIGE process stopped");
 }

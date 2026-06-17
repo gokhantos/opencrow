@@ -119,6 +119,23 @@ function applyEnvOverrides(
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }
 
+  // --- sige (Strategic Intelligence Game Engine) ---
+  // Env-based enable so SIGE can be turned on consistently across both
+  // loadConfig() (no DB) and loadConfigWithOverrides() (DB), instead of
+  // relying solely on a DB override that only the override-aware loader sees.
+  const sigeEnabled = boolEnv("OPENCROW_SIGE_ENABLED");
+  const sigeMem0Url = process.env.OPENCROW_SIGE_MEM0_URL;
+  if (sigeEnabled !== undefined || sigeMem0Url) {
+    const sige = { ...((result.sige ?? {}) as Record<string, unknown>) };
+    if (sigeEnabled !== undefined) sige.enabled = sigeEnabled;
+    if (sigeMem0Url) {
+      const mem0 = { ...((sige.mem0 ?? {}) as Record<string, unknown>) };
+      mem0.baseUrl = sigeMem0Url;
+      sige.mem0 = mem0;
+    }
+    result.sige = sige;
+  }
+
   return result;
 }
 

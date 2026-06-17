@@ -96,13 +96,44 @@ function isRetryableError(err: unknown): boolean {
   return false;
 }
 
+// A transport-level failure means the Mem0 service is unreachable (not
+// configured, container down, DNS failure). These are distinct from
+// Mem0ApiError, which is a structured HTTP response from a reachable server.
+function isConnectionError(err: unknown): boolean {
+  if (err instanceof Mem0ApiError) return false;
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return (
+    err.name === "ConnectionRefused" ||
+    err.name === "TypeError" ||
+    msg.includes("unable to connect") ||
+    msg.includes("connection refused") ||
+    msg.includes("econnrefused") ||
+    msg.includes("enotfound") ||
+    msg.includes("fetch failed") ||
+    msg.includes("failed to fetch")
+  );
+}
+
 // ─── Client ───────────────────────────────────────────────────────────────────
 
 export class Mem0Client {
   private readonly baseUrl: string;
 
+  // Circuit breaker: once a transport-level failure proves the service is
+  // unreachable, short-circuit every subsequent request instead of re-dialing
+  // a dead endpoint on every graph query. SIGE degrades to an empty graph
+  // gracefully, so failing fast is strictly better than retry-amplifying a
+  // known-down service across dozens of expert/social agents.
+  private unavailable = false;
+
   constructor(config: { readonly baseUrl: string }) {
     this.baseUrl = config.baseUrl.replace(/\/$/, "");
+  }
+
+  /** True once the circuit breaker has tripped on a connection failure. */
+  isUnavailable(): boolean {
+    return this.unavailable;
   }
 
   // ─── Low-level fetch ───────────────────────────────────────────────────────
@@ -112,6 +143,11 @@ export class Mem0Client {
     path: string,
     body?: unknown,
   ): Promise<T> {
+    // Circuit breaker open: don't re-dial a known-dead endpoint.
+    if (this.unavailable) {
+      throw new Error("Mem0 unavailable (circuit breaker open)");
+    }
+
     const url = `${this.baseUrl}${path}`;
 
     const headers: Record<string, string> = {
@@ -131,6 +167,18 @@ export class Mem0Client {
     let res: Response;
     try {
       res = await fetch(url, init);
+    } catch (err) {
+      // Transport-level failure → trip the breaker so the rest of the session
+      // skips Mem0 entirely instead of failing one query at a time.
+      if (isConnectionError(err)) {
+        if (!this.unavailable) {
+          log.warn("Mem0 unreachable — opening circuit breaker, skipping graph for this session", {
+            baseUrl: this.baseUrl,
+          });
+        }
+        this.unavailable = true;
+      }
+      throw err;
     } finally {
       clearTimeout(timeoutId);
     }
@@ -188,7 +236,9 @@ export class Mem0Client {
       res = await this.requestWithRetry<Mem0ApiAddResponse>("POST", "/v1/memories/", body);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.error("addMemory failed", { err });
+      // Once the breaker is open, every call fails the same way — don't spam.
+      if (this.unavailable) log.debug("addMemory skipped (Mem0 unavailable)");
+      else log.error("addMemory failed", { err });
       throw new Error(`Mem0 addMemory failed: ${msg}`);
     }
 
@@ -252,7 +302,9 @@ export class Mem0Client {
       res = await this.requestWithRetry<Mem0ApiSearchResponse>("POST", "/v1/memories/search/", body);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log.error("search failed", { err, query: params.query });
+      // Once the breaker is open, every call fails the same way — don't spam.
+      if (this.unavailable) log.debug("search skipped (Mem0 unavailable)", { query: params.query });
+      else log.error("search failed", { err, query: params.query });
       throw new Error(`Mem0 search failed: ${msg}`);
     }
 

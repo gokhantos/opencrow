@@ -54,6 +54,25 @@ function applyEnvOverrides(
     result.browser = { ...existing, enabled: true };
   }
 
+  // --- sige ---
+  const boolEnv = (name: string): boolean | undefined => {
+    const v = env[name];
+    if (v === undefined) return undefined;
+    return v === "true" || v === "1";
+  };
+  const sigeEnabled = boolEnv("OPENCROW_SIGE_ENABLED");
+  const sigeMem0Url = env.OPENCROW_SIGE_MEM0_URL;
+  if (sigeEnabled !== undefined || sigeMem0Url) {
+    const sige = { ...((result.sige ?? {}) as Record<string, unknown>) };
+    if (sigeEnabled !== undefined) sige.enabled = sigeEnabled;
+    if (sigeMem0Url) {
+      const mem0 = { ...((sige.mem0 ?? {}) as Record<string, unknown>) };
+      mem0.baseUrl = sigeMem0Url;
+      sige.mem0 = mem0;
+    }
+    result.sige = sige;
+  }
+
   return result;
 }
 
@@ -138,6 +157,33 @@ describe("applyEnvOverrides", () => {
     const result = applyEnvOverrides(input, {});
     expect(result.logLevel).toBe("info");
     expect((result.web as Record<string, unknown>).port).toBe(8080);
+  });
+
+  test("enables sige when OPENCROW_SIGE_ENABLED=true", () => {
+    const result = applyEnvOverrides({}, { OPENCROW_SIGE_ENABLED: "true" });
+    const sige = result.sige as Record<string, unknown>;
+    expect(sige.enabled).toBe(true);
+  });
+
+  test("disables sige when OPENCROW_SIGE_ENABLED=false", () => {
+    const result = applyEnvOverrides({}, { OPENCROW_SIGE_ENABLED: "false" });
+    const sige = result.sige as Record<string, unknown>;
+    expect(sige.enabled).toBe(false);
+  });
+
+  test("leaves sige untouched when no sige env vars set", () => {
+    const result = applyEnvOverrides({}, {});
+    expect(result.sige).toBeUndefined();
+  });
+
+  test("sets sige mem0 baseUrl from OPENCROW_SIGE_MEM0_URL", () => {
+    const result = applyEnvOverrides(
+      {},
+      { OPENCROW_SIGE_MEM0_URL: "http://mem0:8050" },
+    );
+    const sige = result.sige as Record<string, unknown>;
+    const mem0 = sige.mem0 as Record<string, unknown>;
+    expect(mem0.baseUrl).toBe("http://mem0:8050");
   });
 
   test("does not mutate original config", () => {
