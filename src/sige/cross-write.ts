@@ -76,6 +76,11 @@ export interface SigeCrossWriteResult {
   readonly inserted: number;
   /** Titles rejected by the 3-layer dedup. */
   readonly rejected: readonly string[];
+  /**
+   * Ideas that survived dedup AND were successfully inserted. Exposed so callers
+   * can index exactly what landed in generated_ideas into vector memory.
+   */
+  readonly insertedIdeas: readonly ScoredIdea[];
 }
 
 /**
@@ -128,7 +133,7 @@ export async function crossWriteSigeIdeas(
 ): Promise<SigeCrossWriteResult> {
   try {
     if (rankedIdeas.length === 0) {
-      return { inserted: 0, rejected: [] };
+      return { inserted: 0, rejected: [], insertedIdeas: [] };
     }
 
     // Top-N by fusedScore (falling back to expertScore), highest first.
@@ -150,11 +155,11 @@ export async function crossWriteSigeIdeas(
     const keptTitles = new Set(kept.map((c) => c.title));
     const ideasToWrite = topIdeas.filter((idea) => keptTitles.has(idea.title));
 
-    let inserted = 0;
+    const insertedIdeas: ScoredIdea[] = [];
     for (const idea of ideasToWrite) {
       try {
         await insertSigeIdea(idea, sessionId);
-        inserted += 1;
+        insertedIdeas.push(idea);
       } catch (err) {
         log.warn("Failed to cross-write a SIGE idea (non-fatal)", {
           sessionId,
@@ -168,16 +173,16 @@ export async function crossWriteSigeIdeas(
     log.info("SIGE → generated_ideas cross-write complete", {
       sessionId,
       candidates: candidates.length,
-      inserted,
+      inserted: insertedIdeas.length,
       rejected: rejected.length,
     });
 
-    return { inserted, rejected };
+    return { inserted: insertedIdeas.length, rejected, insertedIdeas };
   } catch (err) {
     log.error(
       "SIGE cross-write failed (non-fatal — session continues)",
       { sessionId, err },
     );
-    return { inserted: 0, rejected: [] };
+    return { inserted: 0, rejected: [], insertedIdeas: [] };
   }
 }

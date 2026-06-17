@@ -935,7 +935,16 @@ Return ONLY a JSON array with one entry per idea (in the same order):
     // Map 0-1 critique avg to 1-5 quality scale
     const critiqueQualityScore = 1 + avgScore * 4;
 
-    survived.push({ ...candidate, qualityScore: critiqueQualityScore });
+    survived.push({
+      ...candidate,
+      qualityScore: critiqueQualityScore,
+      critiqueSubscores: {
+        specificity: scores.specificity,
+        signalGrounding: scores.signalGrounding,
+        differentiation: scores.differentiation,
+        buildability: scores.buildability,
+      },
+    });
   }
 
   log.info("Pass 3 complete", {

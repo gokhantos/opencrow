@@ -243,9 +243,20 @@ interface StampIdeaQualityMetaParams {
   readonly model: string;
   /**
    * Per-idea signalGrounding in [0,1] from the chain-of-evidence verifier.
-   * Persisted into critique_subscores_json when present.
+   * Used only as a fallback when the full critique breakdown is unavailable.
    */
   readonly signalGrounding?: number;
+  /**
+   * Full Pass-3 critique breakdown (each 0..1) for candidates that matched a
+   * critique entry. When present, all four are persisted into
+   * critique_subscores_json; otherwise we fall back to {signalGrounding}.
+   */
+  readonly critiqueSubscores?: {
+    readonly specificity: number;
+    readonly signalGrounding: number;
+    readonly differentiation: number;
+    readonly buildability: number;
+  };
 }
 
 /**
@@ -260,9 +271,11 @@ async function stampIdeaQualityMeta(
 ): Promise<void> {
   try {
     const subscores =
-      params.signalGrounding !== undefined
-        ? JSON.stringify({ signalGrounding: params.signalGrounding })
-        : null;
+      params.critiqueSubscores !== undefined
+        ? JSON.stringify(params.critiqueSubscores)
+        : params.signalGrounding !== undefined
+          ? JSON.stringify({ signalGrounding: params.signalGrounding })
+          : null;
     const db = getDb();
     await db`
       UPDATE generated_ideas
@@ -499,6 +512,11 @@ export async function runIdeasPipeline(
     const collectorCtx: CollectorContext = {
       consumed: new Map(consumedEntries),
       selected: new Map(),
+      // #4 part2: fold learned source-credibility posteriors into collector
+      // selection. The map is keyed by credibilityKey(table, signalType,
+      // category) and degrades to a no-op (multiplier 1.0) when empty, so it is
+      // always safe to set. Only scanCapabilities consumes it today.
+      credibilityPosteriors,
     };
 
     // ── Step 1: Analyze app landscape ───────────────────────────────────
@@ -724,13 +742,17 @@ export async function runIdeasPipeline(
               source_ids_json: JSON.stringify(ideaProvenance),
             });
 
-            // #12 part1 — stamp prompt_version + model and persist the per-idea
-            // signalGrounding score as critique sub-scores (best-effort; the
-            // columns are added by migration 010). Never breaks the insert.
+            // #12 part1 — stamp prompt_version + model and persist the full
+            // Pass-3 critique breakdown (specificity, signalGrounding,
+            // differentiation, buildability) as critique sub-scores when the
+            // candidate matched a critique entry; otherwise fall back to the
+            // per-idea signalGrounding alone. Best-effort (columns added by
+            // migration 010); never breaks the insert.
             await stampIdeaQualityMeta(idea.id, {
               promptVersion: PROMPT_VERSION,
               model,
               signalGrounding: groundingByTitle.get(candidate.title),
+              critiqueSubscores: candidate.critiqueSubscores,
             });
 
             if (memoryManager) {
