@@ -16,21 +16,25 @@
  */
 
 import { createLogger } from "../../../logger";
+import { getDb } from "../../../store/db";
 import {
   aggregateEval,
   aggregateGiantRun,
   compareSigeAb,
   computeEmbeddingNovelty,
+  computeTasteLoopDrift,
   type DedupLabel,
   type EmbeddingNoveltyMetric,
   type EvalAggregate,
   type EvalIdeaRow,
   type GiantRunAggregate,
   type GiantScoredIdea,
+  type JudgeOutcomeRow,
   type NoveltyEmbedDep,
   type NoveltySearchDep,
   type SigeAbPair,
   type SigeAbReport,
+  type TasteLoopDrift,
 } from "./aggregate";
 import type { GiantAxisKey } from "../giant";
 import {
@@ -53,10 +57,150 @@ import {
   type LoadIdeasOptions,
 } from "./store";
 import { aggregateSignalRanker, type SignalRankerReport } from "./signal-ranker";
+import {
+  selectAntiExemplars,
+  selectGoldenExemplars,
+  type ScoredIdeaRow,
+} from "../taste";
 
 const log = createLogger("ideas:eval:harness");
 
 const DEFAULT_BASELINE_WINDOW = 5;
+
+// ── Taste-loop drift section (judge GIANT vs realized outcome) ──────────────────
+
+/** Terminal feedback kinds → success outcome for the kappa/Spearman labels. */
+const TASTE_VALIDATED_KINDS: ReadonlySet<string> = new Set(["validated", "built"]);
+/** Terminal feedback kinds → failure outcome. */
+const TASTE_ARCHIVED_KINDS: ReadonlySet<string> = new Set([
+  "archived",
+  "dismissed",
+]);
+
+interface RawJudgeOutcomeRow {
+  readonly id: string;
+  readonly giant_composite: string | number | null;
+  readonly outcome_kind: string | null;
+  readonly outcome_actor: string | null;
+  readonly archetype: string | null;
+  readonly segment: string | null;
+  readonly demand_score: string | number | null;
+  readonly whitespace: boolean | string | null;
+  readonly pipeline_stage: string | null;
+}
+
+/** Coerce a DB scalar (text/numeric) into a finite number or null. PURE. */
+function toFiniteNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const n = typeof value === "string" ? Number(value) : value;
+  return typeof n === "number" && Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Map a feedback kind to the binary taste outcome, or null when non-terminal.
+ * PURE — exported only via the harness consumers; kept tiny + testable.
+ */
+function kindToOutcome(kind: string | null): "validated" | "archived" | null {
+  if (kind === null) return null;
+  if (TASTE_VALIDATED_KINDS.has(kind)) return "validated";
+  if (TASTE_ARCHIVED_KINDS.has(kind)) return "archived";
+  return null;
+}
+
+/**
+ * Project joined DB rows (generated_ideas ⟕ latest idea_feedback) into the pure
+ * JudgeOutcomeRow shape, AND a parallel ScoredIdeaRow set used to count the
+ * golden/anti exemplar inventory exactly as generation would select it. PURE.
+ */
+function projectJudgeOutcomeRows(rows: readonly RawJudgeOutcomeRow[]): {
+  readonly outcomeRows: readonly JudgeOutcomeRow[];
+  readonly scoredRows: readonly ScoredIdeaRow[];
+} {
+  const outcomeRows: JudgeOutcomeRow[] = [];
+  const scoredRows: ScoredIdeaRow[] = [];
+  for (const r of rows) {
+    const giantComposite = toFiniteNumber(r.giant_composite);
+    // Outcome precedence: an explicit feedback kind wins; otherwise fall back to
+    // the projected pipeline_stage so a validated/archived stage still labels.
+    const outcome =
+      kindToOutcome(r.outcome_kind) ?? kindToOutcome(r.pipeline_stage);
+    const isHuman =
+      r.outcome_actor !== null &&
+      r.outcome_actor !== "pipeline" &&
+      !r.outcome_actor.startsWith("proxy:");
+    outcomeRows.push({
+      id: r.id,
+      giantComposite,
+      outcome,
+      source: isHuman ? "human" : "proxy",
+    });
+    scoredRows.push({
+      id: r.id,
+      title: "",
+      summary: "",
+      segment: r.segment,
+      giantComposite,
+      archetype: r.archetype,
+      demandScore: toFiniteNumber(r.demand_score),
+      whitespace:
+        r.whitespace === null
+          ? null
+          : r.whitespace === true || r.whitespace === "t" || r.whitespace === "true",
+      pipelineStage: r.pipeline_stage,
+    });
+  }
+  return { outcomeRows, scoredRows };
+}
+
+/**
+ * Load the taste-loop drift section: join generated_ideas to its LATEST
+ * idea_feedback event, derive judge-vs-outcome rows, and count the golden/anti
+ * exemplar inventory the taste module would inject. Fully guarded — returns null
+ * on any failure or when disabled, so it never breaks the eval run.
+ */
+async function loadTasteLoopSection(
+  enabled: boolean,
+  exemplarCount: number,
+  ideaIds: readonly string[],
+): Promise<TasteLoopDrift | null> {
+  if (!enabled || ideaIds.length === 0) return null;
+  const db = getDb();
+  try {
+    const rows = (await db`
+      SELECT
+        gi.id AS id,
+        gi.giant_composite AS giant_composite,
+        gi.archetype AS archetype,
+        gi.segment AS segment,
+        gi.demand_score AS demand_score,
+        gi.whitespace AS whitespace,
+        gi.pipeline_stage AS pipeline_stage,
+        fb.kind AS outcome_kind,
+        fb.actor AS outcome_actor
+      FROM generated_ideas gi
+      LEFT JOIN LATERAL (
+        SELECT kind, actor
+        FROM idea_feedback
+        WHERE idea_feedback.idea_id = gi.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) fb ON true
+      WHERE gi.id IN ${db(ideaIds as string[])}
+    `) as RawJudgeOutcomeRow[];
+
+    const { outcomeRows, scoredRows } = projectJudgeOutcomeRows(rows);
+    const golden = selectGoldenExemplars(scoredRows, { exemplarCount });
+    const anti = selectAntiExemplars(scoredRows, { exemplarCount });
+
+    return computeTasteLoopDrift(outcomeRows, {
+      goldenExemplars: golden.length,
+      antiExemplars: anti.length,
+    });
+  } catch (err) {
+    log.warn("taste-loop section failed; omitting from eval", { err });
+    return null;
+  }
+}
 
 export interface RunEvalOptions {
   /** Scope which ideas to evaluate (category / run / since / limit). */
@@ -77,6 +221,19 @@ export interface RunEvalOptions {
    * signal rows exist), so leaving it on is safe even pre-feature.
    */
   readonly signalRanker?: boolean;
+  /**
+   * When false, skip the taste-loop drift section (judge-vs-outcome
+   * kappa/Spearman + exemplar coverage). Default true; the section is
+   * independently graceful (null when no outcome labels / GIANT composites
+   * exist), so leaving it on is safe even cold-start.
+   */
+  readonly tasteLoop?: boolean;
+  /**
+   * Low few-shot exemplar count used only to SIZE the golden/anti inventory in
+   * the taste-loop coverage section (mirrors smart.taste.exemplarCount). Default
+   * 4. Does not affect generation — eval is off the hot path.
+   */
+  readonly exemplarCount?: number;
 }
 
 export interface RunEvalResult {
@@ -143,11 +300,21 @@ export async function runEval(opts?: RunEvalOptions): Promise<RunEvalResult> {
     // signal_facets ↔ idea-outcome join and folds it into the run aggregate.
     const signalRanker = await loadSignalRankerSection(opts?.signalRanker ?? true);
 
+    // Taste-loop drift section (graceful, optional). Joins each idea to its
+    // latest outcome label + GIANT composite and measures judge-vs-outcome
+    // agreement (kappa/Spearman) plus golden/anti exemplar coverage.
+    const tasteLoop = await loadTasteLoopSection(
+      opts?.tasteLoop ?? true,
+      opts?.exemplarCount ?? 4,
+      ideas.map((i) => i.id),
+    );
+
     const aggregate = aggregateEval({
       ideas,
       outcomes,
       dedupLabels: opts?.dedupLabels,
       signalRanker,
+      tasteLoop,
     });
 
     // Optional LLM-as-judge re-scoring (gated inside judgeIdeas).
@@ -162,6 +329,7 @@ export async function runEval(opts?: RunEvalOptions): Promise<RunEvalResult> {
             outcomes,
             dedupLabels: opts?.dedupLabels,
             signalRanker,
+            tasteLoop,
           })
         : null;
 
@@ -200,6 +368,11 @@ export async function runEval(opts?: RunEvalOptions): Promise<RunEvalResult> {
       judged: judgeVerdicts.size,
       signalRankerLabeled: signalRanker?.totalLabeled ?? 0,
       signalRankerLift: signalRanker?.lift ?? null,
+      judgeOutcomeKappa: tasteLoop?.kappa.kappa ?? null,
+      judgeOutcomeSpearman: tasteLoop?.rankCorrelation.spearman ?? null,
+      tasteLoopLabeledFraction: tasteLoop?.coverage.labeledFraction ?? null,
+      goldenExemplars: tasteLoop?.coverage.goldenExemplars ?? 0,
+      antiExemplars: tasteLoop?.coverage.antiExemplars ?? 0,
       snapshotId,
     });
 

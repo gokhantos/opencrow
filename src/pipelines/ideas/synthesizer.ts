@@ -916,6 +916,80 @@ function validatedExemplarSection(validatedExemplars: string): string {
   return validatedExemplars ? `\n${validatedExemplars}` : "";
 }
 
+// ── Anti-exemplar few-shot (Phase 4 cold-taste-loop — genericness lever) ────
+//
+// SYMMETRIC to buildValidatedExemplars, but NEGATIVE: an "AVOID these generic
+// archetypes" block built from low-GIANT / known-generic ideas (templated
+// "X for Y app", low novelty + defensibility, vague "AI-powered <noun>" shells).
+// This is the HIGHER-LEVERAGE half of the genericness fix and the SAFER one for
+// mode-collapse — negatives steer generation AWAY from a pattern rather than
+// pulling it TOWARD a small set of seeds. Injected into BOTH the generation
+// prompts (Pass 2 / wide / single-pass) AND the GIANT critique so the critic
+// also penalizes the avoided archetypes.
+//
+// Counts are kept LOW (the Pipeline phase selects via taste.exemplarCount,
+// default 4, and ROTATES the slice across runs) to preserve novelty — the
+// eval-harness novelty metric is the gate.
+
+/**
+ * Minimal shape of a negative archetype used as an anti-exemplar. `reason` is
+ * the human-legible "why this is generic/weak" string surfaced in the AVOID
+ * block so the model learns the PATTERN to avoid, not just the instance.
+ */
+export interface AntiExemplarInput {
+  readonly title: string;
+  readonly summary: string;
+  readonly category?: string;
+  /** Why this was flagged (generic-archetype reason and/or low-GIANT). */
+  readonly reason?: string;
+}
+
+/**
+ * Build a NEGATIVE few-shot block from generic / low-GIANT ideas, symmetric to
+ * buildValidatedExemplars. Output is kept SHORT (titles + a one-line why-bad)
+ * and counts LOW to avoid mode-collapse; the caller is expected to pass a small,
+ * rotated slice (taste.exemplarCount, default 4).
+ *
+ * Returns "" when there are no anti-exemplars, so callers can inject
+ * unconditionally. Pure formatting — gating happens at the call site via
+ * smart.taste.antiExemplars (the Pipeline phase passes "" when the flag is off).
+ *
+ * Format matches taste.renderAntiBlock so EITHER path produces the same
+ * "AVOID these generic archetypes" block (pick ONE at the call site to avoid
+ * double-injection).
+ */
+export function buildAntiExemplars(
+  antiExemplars: readonly AntiExemplarInput[],
+  max = 4,
+): string {
+  if (antiExemplars.length === 0) return "";
+
+  const lines = antiExemplars.slice(0, max).map((ex) => {
+    const category = ex.category ? `[${sanitizeForPrompt(ex.category)}] ` : "";
+    const why = ex.reason ? ` — ${sanitizeForPrompt(ex.reason)}` : "";
+    return `  ✗ ${category}${sanitizeForPrompt(ex.title)}: ${sanitizeForPrompt(
+      ex.summary.slice(0, 120),
+    )}${why}`;
+  });
+
+  return [
+    "",
+    "=== AVOID these generic archetypes that scored POORLY (do NOT generate anything like them) ===",
+    "These are undifferentiated shells — templated 'X for Y', vague 'AI-powered <noun>', no acute problem.",
+    "Steer AWAY from this entire pattern, not just these exact titles.",
+    ...lines,
+  ].join("\n");
+}
+
+/**
+ * Render the negative anti-exemplar block at a saturatedSection seam, symmetric
+ * to validatedExemplarSection. Empty string in → empty string out (legacy prompt
+ * unchanged). The Pipeline phase passes "" when smart.taste.antiExemplars is off.
+ */
+function antiExemplarSection(antiExemplars: string): string {
+  return antiExemplars ? `\n${antiExemplars}` : "";
+}
+
 // ── Pass 2: Idea Development ─────────────────────────────────────────────
 
 async function developIdeas(
@@ -926,6 +1000,7 @@ async function developIdeas(
   model: string,
   validatedExemplars: string,
   chainOfEvidence: boolean,
+  antiExemplars = "",
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const intersectionLines = topIntersections.map((h, i) =>
     `${i + 1}. "${h.title}"\n   Pain: ${h.painSignal}\n   Capability: ${h.capabilitySignal}\n   Market: ${h.marketSignal}\n   Hypothesis: ${h.hypothesis}\n   Signal strength: ${h.signalStrength.toFixed(2)}`,
@@ -936,6 +1011,7 @@ async function developIdeas(
     : "";
 
   const exemplarSection = validatedExemplarSection(validatedExemplars);
+  const antiSection = antiExemplarSection(antiExemplars);
 
   const evidenceInstruction = chainOfEvidence
     ? `\n- supportingSignalIds: array of [id:...] tokens from the SIGNAL CITATIONS / capability annotations above that ground THIS idea (e.g. ["hackernews_3","producthunt_1"]). Cite only signals you actually used.`
@@ -963,6 +1039,7 @@ ${SCHLEP_INSTRUCTION}
 ${intersectionLines}
 ${sanitizeForPrompt(deepSearchContext)}
 ${exemplarSection}
+${antiSection}
 ${saturatedSection}
 ${existingIdeasContext}
 
@@ -1173,6 +1250,7 @@ async function developIdeasWide(
   validatedExemplars: string,
   chainOfEvidence: boolean,
   generateWide: GenerateWideConfig,
+  antiExemplars = "",
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const intersectionLines = topIntersections
     .map(
@@ -1196,6 +1274,7 @@ async function developIdeasWide(
     ? `\nPREVIOUSLY GENERATED (avoid these themes):\n${saturatedThemes}`
     : "";
   const exemplarSection = validatedExemplarSection(validatedExemplars);
+  const antiSection = antiExemplarSection(antiExemplars);
 
   const evidenceInstruction = chainOfEvidence
     ? `\n  - supportingSignalIds: array of [id:...] tokens from the SIGNAL CITATIONS / capability annotations above that ground THIS idea. Cite only signals you actually used. EVERY seed MUST stay bound to its grounding signals.`
@@ -1229,6 +1308,7 @@ ${segmentSpread}
 ${intersectionLines}
 ${sanitizeForPrompt(deepSearchContext)}
 ${exemplarSection}
+${antiSection}
 ${saturatedSection}
 ${existingIdeasContext}
 
@@ -1395,10 +1475,15 @@ async function critiqueIdeas(
   capabilitiesSummary: string,
   model: string,
   giant: GiantConfig,
+  antiExemplars = "",
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const ideaList = candidates.map((c, i) =>
     `${i + 1}. "${c.title}"\n   Summary: ${c.summary.slice(0, 300)}\n   Reasoning: ${c.reasoning.slice(0, 200)}\n   Target: ${c.targetAudience}\n   Features: ${c.keyFeatures.slice(0, 4).join(", ")}`,
   ).join("\n\n");
+
+  // Inject the negative archetype block so the critic PENALIZES nonObviousness /
+  // defensibility for ideas that match the generic patterns we steered away from.
+  const antiSection = antiExemplarSection(antiExemplars);
 
   const rawContext = [
     "=== RAW TRENDS SUMMARY ===",
@@ -1412,6 +1497,7 @@ async function critiqueIdeas(
   const prompt = `You are a ruthless product idea critic. Score each idea honestly against the raw market data.
 
 ${rawContext}
+${antiSection}
 
 === IDEAS TO CRITIQUE ===
 ${ideaList}
@@ -1621,6 +1707,7 @@ async function singlePassSynthesis(input: {
   readonly maxIdeas: number;
   readonly model: string;
   readonly validatedExemplars?: string;
+  readonly antiExemplars?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
 
@@ -1629,6 +1716,7 @@ async function singlePassSynthesis(input: {
     : "";
 
   const exemplarSection = validatedExemplarSection(input.validatedExemplars ?? "");
+  const antiSection = antiExemplarSection(input.antiExemplars ?? "");
 
   const existingIdeasContext = await buildExistingIdeasContext();
 
@@ -1654,6 +1742,7 @@ ${sanitizeForPrompt(pains.summary || "No review data")}
 ${sanitizeForPrompt(capabilities.summary || "No capability data")}
 ${sanitizeForPrompt(deepSearchContext)}
 ${exemplarSection}
+${antiSection}
 ${saturatedSection}
 ${existingIdeasContext}
 
@@ -1726,6 +1815,17 @@ export async function synthesizeFromTrends(input: {
    */
   readonly validatedExemplars?: string;
   /**
+   * Phase 4 cold-taste-loop ANTI-EXEMPLAR block: an already-rendered "AVOID these
+   * generic archetypes" few-shot (built by the Pipeline phase via taste.ts
+   * renderAntiBlock, or synthesizer.buildAntiExemplars). Injected into BOTH the
+   * generation prompts and the GIANT critique to steer generation AWAY from the
+   * generic / low-GIANT pattern (the higher-leverage genericness lever, and the
+   * safer one for mode-collapse). Optional — backward-compatible; injected only
+   * when smart.taste.antiExemplars is on AND the caller supplies it. Empty/absent
+   * → today's behavior. Keep the count LOW + rotated to preserve novelty.
+   */
+  readonly antiExemplars?: string;
+  /**
    * Phase 1 "generate-wide" SIGE divergent merge (flag-gated, default OFF): extra
    * UNSCORED candidates produced by the SIGE divergent-generation pool that the
    * Pipeline phase folds into the synthesizer pool. They are merged BEFORE Pass 3
@@ -1744,6 +1844,10 @@ export async function synthesizeFromTrends(input: {
   const generateWide = smart.generateWide;
   // Gate the positive few-shot: only inject when the flag is ON.
   const validatedExemplars = smart.validatedExemplars ? input.validatedExemplars ?? "" : "";
+  // Gate the NEGATIVE anti-exemplar few-shot (Phase 4 genericness lever): only
+  // inject when smart.taste.antiExemplars is on. The Pipeline phase already
+  // passes "" when off; gate here too so the path is defended end-to-end.
+  const antiExemplars = smart.taste.antiExemplars ? input.antiExemplars ?? "" : "";
 
   // ── Pass 1: Discover intersections ──────────────────────────────────
   let intersections: readonly IntersectionHypothesis[];
@@ -1752,12 +1856,12 @@ export async function synthesizeFromTrends(input: {
     intersections = await discoverIntersections(trends, pains, capabilities, model, chainOfEvidence);
   } catch (err) {
     log.error("Pass 1 failed, falling back to single-pass synthesis", { err });
-    return singlePassSynthesis({ ...input, validatedExemplars });
+    return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars });
   }
 
   if (intersections.length === 0) {
     log.warn("No intersections found in Pass 1, falling back to single-pass synthesis");
-    return singlePassSynthesis({ ...input, validatedExemplars });
+    return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars });
   }
 
   // Deduplicate by capabilitySignal — if 3+ hypotheses cite the same capability, keep only the best
@@ -1812,6 +1916,7 @@ export async function synthesizeFromTrends(input: {
           validatedExemplars,
           chainOfEvidence,
           generateWide,
+          antiExemplars,
         );
         if (rawCandidates.length === 0) {
           log.warn(
@@ -1825,6 +1930,7 @@ export async function synthesizeFromTrends(input: {
             model,
             validatedExemplars,
             chainOfEvidence,
+            antiExemplars,
           );
         }
       } catch (wideErr) {
@@ -1840,6 +1946,7 @@ export async function synthesizeFromTrends(input: {
           model,
           validatedExemplars,
           chainOfEvidence,
+          antiExemplars,
         );
       }
     } else {
@@ -1851,11 +1958,12 @@ export async function synthesizeFromTrends(input: {
         model,
         validatedExemplars,
         chainOfEvidence,
+        antiExemplars,
       );
     }
   } catch (err) {
     log.error("Pass 2 failed, falling back to single-pass synthesis", { err });
-    return singlePassSynthesis({ ...input, validatedExemplars });
+    return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars });
   }
 
   if (rawCandidates.length === 0) {
@@ -1887,6 +1995,7 @@ export async function synthesizeFromTrends(input: {
       capabilities.summary,
       model,
       smart.giant,
+      antiExemplars,
     );
   } catch (err) {
     log.error("Pass 3 failed, returning uncritiqued candidates", { err });

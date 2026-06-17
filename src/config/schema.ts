@@ -607,6 +607,44 @@ export const sigeHardeningConfigSchema = z
     deepTier: true,
   });
 
+// Phase 4 "warm the cold taste loop": bootstrap the taste/calibration loop
+// WITHOUT waiting for human labels. Anti-exemplars (an "AVOID these generic
+// archetypes" block) and synthetic golden-set positive exemplars break the
+// cold-start; cheap auto-proxy labels seed the calibration loop; optional GIANT
+// axis-weight calibration learns low-weight nudges. Fully defaulted ->
+// backward-compatible. The safe levers (antiExemplars/syntheticGolden/
+// autoProxyLabels) default ON; calibrateGiantWeights defaults OFF until enough
+// labels accrue and NEVER overrides the rubric spine.
+export const tasteConfigSchema = z
+  .object({
+    // "AVOID these generic archetypes" few-shot block built from low-GIANT /
+    // known-generic ideas. The higher-leverage, anti-mode-collapse-safe lever.
+    antiExemplars: z.boolean().default(true),
+    // Derive positive exemplars from the BEST existing scored ideas when there
+    // are too few human-validated ideas; real human labels replace these.
+    syntheticGolden: z.boolean().default(true),
+    // Write cheap bootstrap labels into idea_feedback (actor "proxy:<reason>")
+    // to seed the calibration loop. Human labels always outweigh proxy labels.
+    autoProxyLabels: z.boolean().default(true),
+    // Learn low-weight per-axis GIANT weight nudges from feedback. Gated, never
+    // overrides the rubric spine; default OFF until enough labels exist.
+    calibrateGiantWeights: z.boolean().default(false),
+    // Few-shot exemplar count. Kept LOW + rotated across runs to avoid
+    // collapsing generation toward the seeds (mode collapse).
+    exemplarCount: z.number().int().min(1).max(12).default(4),
+    // Minimum human-validated ideas before synthetic golden exemplars are
+    // dropped in favor of real ones.
+    goldenMinHumanLabels: z.number().int().min(0).default(10),
+  })
+  .default({
+    antiExemplars: true,
+    syntheticGolden: true,
+    autoProxyLabels: true,
+    calibrateGiantWeights: false,
+    exemplarCount: 4,
+    goldenMinHumanLabels: 10,
+  });
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -641,6 +679,10 @@ export const smartConfigSchema = z.object({
   // convergence veto. Only active when sigeValuation is ON. Fully defaulted ->
   // backward-compatible.
   sige: sigeHardeningConfigSchema,
+  // Phase 4 "warm the cold taste loop": anti-exemplars, synthetic golden-set
+  // bootstrap, auto-proxy labels, optional GIANT axis-weight calibration.
+  // Fully defaulted -> backward-compatible.
+  taste: tasteConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -680,6 +722,14 @@ const SMART_IDEAS_DEFAULTS = {
     dissentWeight: 0.15,
     convergenceVetoThreshold: 0.85,
     deepTier: true,
+  },
+  taste: {
+    antiExemplars: true,
+    syntheticGolden: true,
+    autoProxyLabels: true,
+    calibrateGiantWeights: false,
+    exemplarCount: 4,
+    goldenMinHumanLabels: 10,
   },
 } as const;
 
@@ -798,5 +848,6 @@ export type GiantConfig = z.infer<typeof giantConfigSchema>;
 export type GenerateWideConfig = z.infer<typeof generateWideConfigSchema>;
 export type DemandConfig = z.infer<typeof demandConfigSchema>;
 export type SigeHardeningConfig = z.infer<typeof sigeHardeningConfigSchema>;
+export type TasteConfig = z.infer<typeof tasteConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;

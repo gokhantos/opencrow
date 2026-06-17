@@ -213,6 +213,14 @@ export interface EvalAggregate {
    * existing snapshots stay shape-compatible.
    */
   readonly sigeAb?: SigeAbReport | null;
+  /**
+   * Taste-loop drift / judge-vs-outcome agreement (Phase 4 cold-taste-loop):
+   * Cohen's kappa + Spearman between the judge's GIANT ranking and the realized
+   * outcome labels (human + proxy), plus golden/anti exemplar inventory and
+   * label coverage. Optional + null until outcome labels exist, so existing
+   * snapshots stay shape-compatible.
+   */
+  readonly tasteLoop?: TasteLoopDrift | null;
   readonly totalIdeas: number;
 }
 
@@ -918,6 +926,321 @@ export async function computeEmbeddingNovelty(
   };
 }
 
+// ── Taste-loop drift / judge-vs-outcome agreement (Phase 4) ────────────────────
+
+/**
+ * One idea paired with (a) the judge's GIANT composite and (b) its realized
+ * terminal outcome label. This is the unit of the taste-loop drift eval: it lets
+ * us ask whether the judge's RANKING / accept-reject agrees with what actually
+ * happened to the idea (validated vs archived), across BOTH human and proxy
+ * labels.
+ *
+ * `outcome` is `null` when the idea has no terminal label yet (still in-flight);
+ * such rows are EXCLUDED from kappa/Spearman (no ground truth to agree with) but
+ * still counted in coverage so the "% labeled" denominator stays honest.
+ */
+export interface JudgeOutcomeRow {
+  readonly id: string;
+  /** Judge's GIANT non-compensatory composite (0..5), or null when unscored. */
+  readonly giantComposite: number | null;
+  /** Realized terminal outcome, or null when the idea has no label yet. */
+  readonly outcome: "validated" | "archived" | null;
+  /** Provenance of the outcome label: human label or auto proxy. */
+  readonly source: "human" | "proxy";
+}
+
+/**
+ * Cohen's kappa for the judge accept/reject vs the realized outcome. Both are
+ * binary: judge "accept" = composite >= threshold, outcome "success" =
+ * validated. Kappa corrects raw agreement for chance — it is the honest signal
+ * that the judge's taste tracks reality rather than just sharing a base rate.
+ */
+export interface JudgeOutcomeKappa {
+  /** Cohen's kappa in [-1,1], or null when undefined (empty / degenerate). */
+  readonly kappa: number | null;
+  /** Raw observed agreement (Po), [0,1], or null when empty. */
+  readonly observedAgreement: number | null;
+  /** Chance-expected agreement (Pe), [0,1], or null when empty. */
+  readonly expectedAgreement: number | null;
+  /** Confusion counts over the judge×outcome 2×2 table. */
+  readonly acceptValidated: number;
+  readonly acceptArchived: number;
+  readonly rejectValidated: number;
+  readonly rejectArchived: number;
+  /** Number of labeled rows that contributed (had both a composite and a label). */
+  readonly labeled: number;
+}
+
+/**
+ * Spearman rank correlation between the judge's GIANT-composite ranking and the
+ * realized-outcome ranking (validated > archived). A high positive value means
+ * the judge ranks soon-to-be-validated ideas above soon-to-be-killed ones.
+ */
+export interface JudgeOutcomeRankCorrelation {
+  /** Spearman rho in [-1,1], or null when undefined (< 2 rows / no variance). */
+  readonly spearman: number | null;
+  /** Number of labeled rows that contributed. */
+  readonly labeled: number;
+}
+
+/**
+ * Taste-loop coverage: how much material the cold-start machinery actually has
+ * to work with. Low golden/anti counts or a tiny labeled fraction mean the
+ * learning loops are still mostly inert.
+ */
+export interface TasteLoopCoverage {
+  /** Positive golden exemplars available to inject this run. */
+  readonly goldenExemplars: number;
+  /** Anti (avoid) exemplars available to inject this run. */
+  readonly antiExemplars: number;
+  /** Distinct ideas carrying a HUMAN outcome label. */
+  readonly humanLabelCount: number;
+  /** Distinct ideas carrying a PROXY (auto-bootstrap) outcome label. */
+  readonly proxyLabelCount: number;
+  /** Distinct ideas carrying ANY outcome label (human ∪ proxy). */
+  readonly labeledCount: number;
+  /** Fraction of ideas with any outcome label, [0,1]. */
+  readonly labeledFraction: number;
+  readonly totalIdeas: number;
+}
+
+/** Run-level taste-loop drift / agreement section. */
+export interface TasteLoopDrift {
+  readonly kappa: JudgeOutcomeKappa;
+  readonly rankCorrelation: JudgeOutcomeRankCorrelation;
+  readonly coverage: TasteLoopCoverage;
+}
+
+/** Composite threshold at/above which the judge is treated as "accept". */
+export const DEFAULT_JUDGE_ACCEPT_THRESHOLD = 3.2;
+/** Kappa below this trips a drift alert (judge taste diverging from reality). */
+export const JUDGE_OUTCOME_KAPPA_ALERT_THRESHOLD = 0.6;
+
+/** Keep only rows that carry BOTH a finite composite and a terminal outcome. */
+function labeledJudgeOutcomeRows(
+  rows: readonly JudgeOutcomeRow[],
+): readonly JudgeOutcomeRow[] {
+  return rows.filter(
+    (r) =>
+      r.outcome !== null &&
+      typeof r.giantComposite === "number" &&
+      Number.isFinite(r.giantComposite),
+  );
+}
+
+/**
+ * Cohen's kappa between the judge's binary accept (composite >= threshold) and
+ * the binary outcome (validated = success). PURE. Safe on empty input (all-null
+ * fields). When one margin is degenerate (e.g. every row is "accept") Pe can be
+ * 1, making kappa undefined — we return null rather than dividing by zero.
+ */
+export function computeJudgeOutcomeKappa(
+  rows: readonly JudgeOutcomeRow[],
+  opts?: { readonly acceptThreshold?: number },
+): JudgeOutcomeKappa {
+  const threshold = opts?.acceptThreshold ?? DEFAULT_JUDGE_ACCEPT_THRESHOLD;
+  const labeled = labeledJudgeOutcomeRows(rows);
+
+  let acceptValidated = 0;
+  let acceptArchived = 0;
+  let rejectValidated = 0;
+  let rejectArchived = 0;
+
+  for (const r of labeled) {
+    const accept = (r.giantComposite as number) >= threshold;
+    const validated = r.outcome === "validated";
+    if (accept && validated) acceptValidated += 1;
+    else if (accept && !validated) acceptArchived += 1;
+    else if (!accept && validated) rejectValidated += 1;
+    else rejectArchived += 1;
+  }
+
+  const n = labeled.length;
+  if (n === 0) {
+    return {
+      kappa: null,
+      observedAgreement: null,
+      expectedAgreement: null,
+      acceptValidated,
+      acceptArchived,
+      rejectValidated,
+      rejectArchived,
+      labeled: 0,
+    };
+  }
+
+  // Observed agreement: judge and outcome agree on the diagonal.
+  const po = (acceptValidated + rejectArchived) / n;
+
+  // Chance agreement from the marginals.
+  const acceptRow = acceptValidated + acceptArchived;
+  const rejectRow = rejectValidated + rejectArchived;
+  const validatedCol = acceptValidated + rejectValidated;
+  const archivedCol = acceptArchived + rejectArchived;
+  const pe =
+    (acceptRow / n) * (validatedCol / n) +
+    (rejectRow / n) * (archivedCol / n);
+
+  const kappa = pe >= 1 ? null : (po - pe) / (1 - pe);
+
+  return {
+    kappa: roundOrNull(kappa),
+    observedAgreement: roundOrNull(po),
+    expectedAgreement: roundOrNull(pe),
+    acceptValidated,
+    acceptArchived,
+    rejectValidated,
+    rejectArchived,
+    labeled: n,
+  };
+}
+
+/**
+ * Assign fractional (tie-averaged) ranks to a list of numbers. Equal values
+ * share the average of the ranks they span — required for a correct Spearman
+ * when there are ties (and outcome labels are heavily tied: only two levels).
+ * PURE.
+ */
+export function tiedRanks(values: readonly number[]): readonly number[] {
+  const indexed = values.map((value, index) => ({ value, index }));
+  indexed.sort((a, b) => a.value - b.value);
+
+  const ranks = new Array<number>(values.length);
+  let i = 0;
+  while (i < indexed.length) {
+    let j = i;
+    while (
+      j + 1 < indexed.length &&
+      indexed[j + 1]!.value === indexed[i]!.value
+    ) {
+      j += 1;
+    }
+    // Ranks are 1-based; average rank of the tied block [i..j].
+    const avgRank = (i + j) / 2 + 1;
+    for (let k = i; k <= j; k += 1) {
+      ranks[indexed[k]!.index] = avgRank;
+    }
+    i = j + 1;
+  }
+  return ranks;
+}
+
+/**
+ * Pearson correlation of two equal-length number lists, or null when either has
+ * no variance / fewer than two points. PURE. (Spearman = Pearson on ranks.)
+ */
+export function pearson(
+  xs: readonly number[],
+  ys: readonly number[],
+): number | null {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 2) return null;
+  let sumX = 0;
+  let sumY = 0;
+  for (let i = 0; i < n; i += 1) {
+    sumX += xs[i]!;
+    sumY += ys[i]!;
+  }
+  const meanX = sumX / n;
+  const meanY = sumY / n;
+  let cov = 0;
+  let varX = 0;
+  let varY = 0;
+  for (let i = 0; i < n; i += 1) {
+    const dx = xs[i]! - meanX;
+    const dy = ys[i]! - meanY;
+    cov += dx * dy;
+    varX += dx * dx;
+    varY += dy * dy;
+  }
+  if (varX === 0 || varY === 0) return null;
+  return cov / Math.sqrt(varX * varY);
+}
+
+/**
+ * Spearman rank correlation between the judge's GIANT composite and the realized
+ * outcome (validated = 1, archived = 0). Computed as Pearson on tie-averaged
+ * ranks so the two-level outcome ties are handled correctly. PURE. Returns null
+ * when fewer than two labeled rows or when either side has no variance (e.g.
+ * every labeled idea shares the same outcome).
+ */
+export function computeJudgeOutcomeRankCorrelation(
+  rows: readonly JudgeOutcomeRow[],
+): JudgeOutcomeRankCorrelation {
+  const labeled = labeledJudgeOutcomeRows(rows);
+  if (labeled.length < 2) {
+    return { spearman: null, labeled: labeled.length };
+  }
+  const composites = labeled.map((r) => r.giantComposite as number);
+  const outcomes = labeled.map((r) => (r.outcome === "validated" ? 1 : 0));
+  const spearman = pearson(tiedRanks(composites), tiedRanks(outcomes));
+  return { spearman: roundOrNull(spearman), labeled: labeled.length };
+}
+
+/**
+ * Compute taste-loop coverage: exemplar inventory + label provenance counts +
+ * the fraction of ideas with any outcome label. PURE. Counts are by DISTINCT
+ * idea id so a doubly-labeled idea is not double-counted; a human label takes
+ * precedence over a proxy one for that idea's provenance bucket.
+ */
+export function computeTasteLoopCoverage(
+  rows: readonly JudgeOutcomeRow[],
+  exemplars: {
+    readonly goldenExemplars: number;
+    readonly antiExemplars: number;
+  },
+): TasteLoopCoverage {
+  const total = rows.length;
+  const humanLabeled = new Set<string>();
+  const proxyLabeled = new Set<string>();
+
+  for (const r of rows) {
+    if (r.outcome === null) continue;
+    if (r.source === "human") humanLabeled.add(r.id);
+    else proxyLabeled.add(r.id);
+  }
+  // Human precedence: an idea labeled by both counts as human, not proxy.
+  for (const id of humanLabeled) proxyLabeled.delete(id);
+
+  const labeledCount = humanLabeled.size + proxyLabeled.size;
+
+  return {
+    goldenExemplars: Math.max(0, Math.trunc(exemplars.goldenExemplars)),
+    antiExemplars: Math.max(0, Math.trunc(exemplars.antiExemplars)),
+    humanLabelCount: humanLabeled.size,
+    proxyLabelCount: proxyLabeled.size,
+    labeledCount,
+    labeledFraction: total === 0 ? 0 : roundOrNull(labeledCount / total) ?? 0,
+    totalIdeas: total,
+  };
+}
+
+/**
+ * Build the full taste-loop drift section: judge-vs-outcome kappa, rank
+ * correlation, and coverage. PURE. Safe on empty input. `exemplars` carries the
+ * golden/anti inventory the harness loaded (defaults to 0/0 when the taste
+ * module is off / unavailable).
+ */
+export function computeTasteLoopDrift(
+  rows: readonly JudgeOutcomeRow[],
+  opts?: {
+    readonly acceptThreshold?: number;
+    readonly goldenExemplars?: number;
+    readonly antiExemplars?: number;
+  },
+): TasteLoopDrift {
+  return {
+    kappa: computeJudgeOutcomeKappa(rows, {
+      acceptThreshold: opts?.acceptThreshold,
+    }),
+    rankCorrelation: computeJudgeOutcomeRankCorrelation(rows),
+    coverage: computeTasteLoopCoverage(rows, {
+      goldenExemplars: opts?.goldenExemplars ?? 0,
+      antiExemplars: opts?.antiExemplars ?? 0,
+    }),
+  };
+}
+
 // ── Top-level aggregation ──────────────────────────────────────────────────────
 
 /**
@@ -951,6 +1274,12 @@ export function aggregateEval(params: {
    * (SIGE-off) runs.
    */
   readonly sigeAb?: SigeAbReport | null;
+  /**
+   * Pre-computed taste-loop drift section (judge-vs-outcome kappa/Spearman +
+   * exemplar coverage), built by the harness from JudgeOutcomeRow[]. Optional &
+   * graceful: omit/null when no outcome labels exist yet.
+   */
+  readonly tasteLoop?: TasteLoopDrift | null;
 }): EvalAggregate {
   const {
     ideas,
@@ -960,6 +1289,7 @@ export function aggregateEval(params: {
     giant,
     embeddingNovelty,
     sigeAb,
+    tasteLoop,
   } = params;
   return {
     meanSubscores: aggregateMeanSubscores(ideas),
@@ -970,6 +1300,7 @@ export function aggregateEval(params: {
     giant: giant ?? null,
     embeddingNovelty: embeddingNovelty ?? null,
     sigeAb: sigeAb ?? null,
+    tasteLoop: tasteLoop ?? null,
     totalIdeas: ideas.length,
   };
 }

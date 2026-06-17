@@ -36,6 +36,7 @@ import type { EnrichDemandConfig } from "./demand-probes";
 import {
   hasCitedDemand,
   demandArtifactSchema,
+  DEMAND_SCORE_MAX,
   type DemandArtifact,
   type DemandCandidateText,
 } from "./demand";
@@ -70,6 +71,22 @@ import {
 } from "./sige-select";
 import { GIANT_AXIS_KEYS } from "./giant";
 import type { AiProvider } from "../../agent/types";
+import {
+  selectGoldenExemplars,
+  selectAntiExemplars,
+  renderGoldenBlock,
+  renderAntiBlock,
+  type ScoredIdeaRow,
+} from "./taste";
+import {
+  deriveProxyLabels,
+  loadGiantWeights,
+  parseGiantScores,
+  DEFAULT_PROXY_OPTIONS,
+  type ScoredIdeaForProxy,
+} from "./feedback-bootstrap";
+import { insertIdeaFeedback } from "../../sources/ideas/store";
+import type { TasteConfig } from "../../config/schema";
 
 const log = createLogger("pipeline:ideas");
 
@@ -809,6 +826,191 @@ async function fetchValidatedExemplars(limit = 12): Promise<readonly ValidatedEx
     log.warn("Failed to fetch validated exemplars", { err });
     return [];
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 4 "warm the cold taste loop" — bootstrap the taste/calibration loop with
+// ZERO human labels: anti-exemplars (the genericness lever), a SYNTHETIC golden
+// set derived from the best scored ideas (replaced by real human picks as they
+// accrue), cheap auto-PROXY labels seeded into idea_feedback, and gated GIANT
+// axis-weight nudges. Every path is flag-gated under smart.taste and wrapped so a
+// failure FALLS BACK to the existing default path (empty blocks / no proxy /
+// neutral weights). Few-shot counts stay LOW + ROTATE per run so the positive
+// exemplars cannot collapse generation toward the seeds (novelty is the gate).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * PHASE 4 — Derive a deterministic per-run rotation seed from the run id so the
+ * golden + anti exemplar slices VARY across successive runs (anti-mode-collapse).
+ * A simple stable string hash; PURE.
+ */
+export function rotationSeedFromRunId(runId: string): number {
+  let hash = 0;
+  for (let i = 0; i < runId.length; i++) {
+    hash = (hash * 31 + runId.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+/** A subset of generated_ideas columns the taste loop reads back. */
+interface ScoredIdeaDbRow {
+  readonly id: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly category: string | null;
+  readonly segment: string | null;
+  readonly giant_composite: number | null;
+  readonly giant_scores_json: unknown;
+  readonly archetype: string | null;
+  readonly demand_score: number | null;
+  readonly whitespace: number | null;
+  readonly pipeline_stage: string | null;
+}
+
+/**
+ * PHASE 4 — Map a raw generated_ideas row onto the PURE {@link ScoredIdeaRow} the
+ * taste selectors consume. The GIANT scorecard is unwrapped via parseGiantScores
+ * (handles flat {axis:n} AND the nested {scores:{axis:n}} blob stampIdeaGiant
+ * writes). `whitespace` (a REAL 0..1 in the DB) is projected to the boolean flag
+ * the row carries. All scoring fields stay optional so partial rows degrade. PURE.
+ */
+export function toScoredIdeaRow(row: ScoredIdeaDbRow): ScoredIdeaRow {
+  const giantScores = parseGiantScores(row.giant_scores_json);
+  return {
+    id: row.id,
+    title: row.title,
+    summary: row.summary,
+    category: row.category,
+    segment: row.segment,
+    giantComposite: row.giant_composite,
+    giantScores: Object.keys(giantScores).length > 0 ? giantScores : null,
+    archetype: row.archetype,
+    demandScore: row.demand_score,
+    whitespace: typeof row.whitespace === "number" ? row.whitespace > 0 : null,
+    pipelineStage: row.pipeline_stage,
+  };
+}
+
+/**
+ * PHASE 4 — Load the scored-idea pool the taste selectors derive exemplars from:
+ * ALL human-validated rows (precedence) plus the most-recent non-archived scored
+ * rows (the synthetic-bootstrap pool). selectGoldenExemplars / selectAntiExemplars
+ * filter by stage internally. Fully GRACEFUL — returns [] on any failure so the
+ * optional taste path always falls back to empty blocks (mirrors
+ * fetchValidatedExemplars / loadCredibilityPosteriors). Pipeline phase owns it.
+ */
+async function fetchScoredIdeaRows(recentLimit = 400): Promise<readonly ScoredIdeaRow[]> {
+  try {
+    const db = getDb();
+    const rows = (await db`
+      (
+        SELECT id, title, summary, category, segment, giant_composite,
+               giant_scores_json, archetype, demand_score, whitespace, pipeline_stage
+        FROM generated_ideas
+        WHERE pipeline_stage = 'validated'
+      )
+      UNION
+      (
+        SELECT id, title, summary, category, segment, giant_composite,
+               giant_scores_json, archetype, demand_score, whitespace, pipeline_stage
+        FROM generated_ideas
+        WHERE COALESCE(pipeline_stage, 'idea') NOT IN ('archived', 'validated')
+        ORDER BY created_at DESC
+        LIMIT ${recentLimit}
+      )
+    `) as ScoredIdeaDbRow[];
+    return rows.map(toScoredIdeaRow);
+  } catch (err) {
+    log.warn("Failed to load scored idea rows for taste loop", { err });
+    return [];
+  }
+}
+
+/** The rendered taste prompt blocks plus counts for instrumentation (PURE). */
+export interface TasteBlocks {
+  /** Positive "produce MORE like these" block (golden), or "" when empty/off. */
+  readonly goldenBlock: string;
+  /** Negative "AVOID these generic archetypes" block, or "" when empty/off. */
+  readonly antiBlock: string;
+  readonly goldenCount: number;
+  readonly antiCount: number;
+  /** How many golden picks are still synthetic (vs human-validated). */
+  readonly syntheticGoldenCount: number;
+}
+
+/**
+ * PHASE 4 — Build the golden + anti exemplar prompt blocks from the loaded scored
+ * pool, gated per-lever under smart.taste. Golden picks are SEGMENT-DIVERSE,
+ * rotated by the per-run seed, and capped LOW (exemplarCount). Real human-
+ * validated picks take precedence and replace synthetic ones above
+ * goldenMinHumanLabels. PURE — no IO; takes the already-loaded rows + flags.
+ */
+export function buildTasteBlocks(
+  scoredRows: readonly ScoredIdeaRow[],
+  taste: TasteConfig,
+  rotationSeed: number,
+): TasteBlocks {
+  const goldenExemplars = taste.syntheticGolden
+    ? selectGoldenExemplars(scoredRows, {
+        exemplarCount: taste.exemplarCount,
+        goldenMinHumanLabels: taste.goldenMinHumanLabels,
+        rotationSeed,
+      })
+    : [];
+
+  const antiExemplars = taste.antiExemplars
+    ? selectAntiExemplars(scoredRows, {
+        exemplarCount: taste.exemplarCount,
+        rotationSeed,
+      })
+    : [];
+
+  return {
+    goldenBlock: renderGoldenBlock(goldenExemplars),
+    antiBlock: renderAntiBlock(antiExemplars),
+    goldenCount: goldenExemplars.length,
+    antiCount: antiExemplars.length,
+    syntheticGoldenCount: goldenExemplars.filter((g) => g.synthetic).length,
+  };
+}
+
+/**
+ * PHASE 4 — Map a stored idea + its run-derived signals onto the
+ * {@link ScoredIdeaForProxy} the proxy-label rules consume. The persisted GIANT
+ * columns are read directly; convergence-veto / grounded / supply / distinct-
+ * segments are DERIVED at the call-site (no persisted columns exist) and only
+ * trigger their rule when present. PURE.
+ */
+export function toScoredIdeaForProxy(params: {
+  readonly ideaId: string;
+  readonly candidate: GeneratedIdeaCandidate;
+  readonly gate?: CandidateGiantGate;
+  readonly artifact?: DemandArtifact;
+  readonly grounded?: boolean;
+  readonly convergenceVeto?: boolean;
+  readonly distinctSegments?: number;
+}): ScoredIdeaForProxy {
+  const { candidate, gate, artifact } = params;
+  const giantComposite = gate?.composite ?? candidate.giantComposite ?? candidate.qualityScore;
+  // hasSupplySignal — a real supply/competitor signal exists when the demand
+  // probe found cited evidence yet whitespace was DISCOUNTED below the raw
+  // demand intensity (score/5). That discount is exactly the supply-density
+  // subtraction, so a whitespace strictly below the demand ceiling means
+  // competitors crowded the space. Derived (no persisted column).
+  const hasSupplySignal =
+    artifact !== undefined &&
+    artifact.evidence.length > 0 &&
+    artifact.whitespace < artifact.score / DEMAND_SCORE_MAX;
+  return {
+    id: params.ideaId,
+    giantComposite,
+    ...(artifact !== undefined ? { demandScore: artifact.score } : {}),
+    ...(artifact !== undefined ? { whitespace: artifact.whitespace } : {}),
+    ...(artifact !== undefined ? { hasSupplySignal } : {}),
+    ...(params.convergenceVeto !== undefined ? { convergenceVeto: params.convergenceVeto } : {}),
+    ...(params.grounded !== undefined ? { grounded: params.grounded } : {}),
+    ...(params.distinctSegments !== undefined ? { distinctSegments: params.distinctSegments } : {}),
+  };
 }
 
 /**
@@ -1721,6 +1923,26 @@ export async function runIdeasPipeline(
     const model = config.model ?? "claude-sonnet-4-6";
     const smart = loadConfig().pipelines.ideas.smart;
     const sigeConfig = loadConfig().sige;
+    const taste = smart.taste;
+    const rotationSeed = rotationSeedFromRunId(runId);
+
+    // ── PHASE 4 (taste loop): LEARNED GIANT axis weights (gated calibrate-
+    //    GiantWeights, default OFF). loadGiantWeights re-checks the flag and
+    //    returns NEUTRAL (= GIANT_DEFAULT_WEIGHTS) when off / under-powered /
+    //    on error, so the default path keeps the rubric spine untouched. The
+    //    calibrated weights replace smart.giant.weights everywhere the pipeline
+    //    aggregates GIANT (effectiveGiant), so axes that predict validation get
+    //    bounded up-weighting. ──────────────────────────────────────────────────
+    const giantCalibration = await loadGiantWeights();
+    const effectiveGiant: GiantConfig = giantCalibration.neutral
+      ? smart.giant
+      : { ...smart.giant, weights: { ...giantCalibration.weights } };
+    if (!giantCalibration.neutral) {
+      log.info("Phase 4 taste: applying learned GIANT axis weights", {
+        effectiveLabelCount: giantCalibration.effectiveLabelCount,
+        weights: giantCalibration.weights,
+      });
+    }
 
     // ── #4 part2: Load source-credibility posteriors (graceful, [] when no
     //    feedback). Used to bias collection ordering when adaptiveCollection is
@@ -1848,9 +2070,36 @@ export async function runIdeasPipeline(
     // ── Step 5: Synthesize ideas at trend intersections ───────────────
     const saturatedThemes = await buildSaturatedThemes(memoryManager);
 
-    // #5 — positive few-shot from human-validated ideas. Built unconditionally;
-    // synthesizeFromTrends re-gates injection via smart.validatedExemplars.
-    const validatedExemplars = buildValidatedExemplars(await fetchValidatedExemplars());
+    // ── PHASE 4 (taste loop): build the GOLDEN + ANTI exemplar blocks from the
+    //    recent scored-idea pool + all human-validated rows (graceful [] on
+    //    failure). The selectors are PURE; rotation varies the slice per run and
+    //    exemplarCount keeps the few-shot count LOW (anti-mode-collapse). Golden
+    //    SUPERSEDES the legacy buildValidatedExemplars path under syntheticGolden:
+    //    real human picks come first and replace synthetic ones above
+    //    goldenMinHumanLabels. Anti-exemplars are the higher-leverage, safer
+    //    genericness lever. Both honor the existing smart.validatedExemplars flag
+    //    via synthesizeFromTrends' own re-gate. ──────────────────────────────────
+    const scoredRows = taste.syntheticGolden || taste.antiExemplars ? await fetchScoredIdeaRows() : [];
+    const tasteBlocks = buildTasteBlocks(scoredRows, taste, rotationSeed);
+
+    // #5 — positive few-shot. When syntheticGolden is ON the taste golden block
+    // (human-validated picks first, synthetic backfill cold-start) REPLACES the
+    // legacy validated-exemplar block to avoid double-injection. When OFF, fall
+    // back to the legacy human-validated few-shot path unchanged.
+    const validatedExemplars = taste.syntheticGolden
+      ? tasteBlocks.goldenBlock
+      : buildValidatedExemplars(await fetchValidatedExemplars());
+    const antiExemplars = tasteBlocks.antiBlock;
+
+    log.info("Phase 4 taste: exemplar blocks built", {
+      scoredPool: scoredRows.length,
+      golden: tasteBlocks.goldenCount,
+      syntheticGolden: tasteBlocks.syntheticGoldenCount,
+      anti: tasteBlocks.antiCount,
+      rotationSeed,
+      antiExemplarsOn: taste.antiExemplars,
+      syntheticGoldenOn: taste.syntheticGolden,
+    });
 
     // ── PHASE 1 (generate-wide): SIGE divergent pool merge (flag-gated) ──────
     // When smart.generateWide.sigeDivergent is ON, generate an extra UNSCORED
@@ -1878,6 +2127,7 @@ export async function runIdeasPipeline(
           deepSearchContext,
           saturatedThemes,
           validatedExemplars,
+          antiExemplars,
           category: config.category,
           maxIdeas: config.maxIdeas,
           model,
@@ -2035,7 +2285,7 @@ export async function runIdeasPipeline(
             DEFAULT_DEMAND_PROBES,
             demandCfg,
           );
-          const next = applyDemandRescore(candidate, artifact, smart.giant);
+          const next = applyDemandRescore(candidate, artifact, effectiveGiant);
           demandByCandidate.set(next, artifact);
           rescored.push(next);
         }
@@ -2077,7 +2327,7 @@ export async function runIdeasPipeline(
         let wouldKillCount = 0;
 
         for (const candidate of kept) {
-          const gate = evaluateCandidateGiantGate(candidate, smart.giant);
+          const gate = evaluateCandidateGiantGate(candidate, effectiveGiant);
           giantGateByCandidate.set(candidate, gate);
 
           if (gate.gated) {
@@ -2187,6 +2437,11 @@ export async function runIdeasPipeline(
       ...collectorCtx.selected.entries(),
     ].flatMap(([table, selectedIds]) => selectedIds.map((id) => ({ table, id })));
 
+    // PHASE 4 (taste loop) — capture each successfully-stored idea alongside its
+    // candidate so auto-proxy labels can be derived AFTER the store step from the
+    // same demand/gate signals computed above. Filled inside the store loop.
+    const storedPairs: Array<{ readonly ideaId: string; readonly candidate: GeneratedIdeaCandidate }> = [];
+
     const ideaIds = await runStep(
       runId,
       "store",
@@ -2273,7 +2528,7 @@ export async function runIdeasPipeline(
             if (smart.giant.enabled && candidate.giant !== undefined) {
               const gate =
                 giantGateByCandidate.get(candidate) ??
-                evaluateCandidateGiantGate(candidate, smart.giant);
+                evaluateCandidateGiantGate(candidate, effectiveGiant);
               await stampIdeaGiant(idea.id, candidate, gate);
             }
 
@@ -2310,6 +2565,7 @@ export async function runIdeasPipeline(
             }
 
             ids.push(idea.id);
+            storedPairs.push({ ideaId: idea.id, candidate });
           } catch (err) {
             log.warn("Failed to save idea", { title: candidate.title, err });
           }
@@ -2318,6 +2574,68 @@ export async function runIdeasPipeline(
       },
       (ids) => `Stored ${ids.length} ideas`,
     );
+
+    // ── PHASE 4 (taste loop): AUTO-PROXY LABELS (gated autoProxyLabels) ─────────
+    // Seed the cold calibration loop with cheap bootstrap labels: auto-ARCHIVE on
+    // convergence-veto / very-low-GIANT / strong demand counter-evidence, and a
+    // rare weak auto-VALIDATE on high-GIANT + grounded + multi-segment. Each event
+    // is actor-tagged "proxy:<reason>" so it is clearly distinct from (and always
+    // outweighed by) human labels — deriveProxyLabel never emits for an idea that
+    // already carries a terminal human label. Wrapped so a failure can NEVER break
+    // the run. Convergence-veto / grounded / distinct-segments are DERIVED here
+    // from this run's signals (no persisted columns); missing fields just don't
+    // trigger their rule (safe).
+    if (taste.autoProxyLabels && storedPairs.length > 0) {
+      try {
+        // Run-level convergence veto (when SIGE ran): a collapsed/sycophantic
+        // round is strong KILL counter-evidence applied across the batch.
+        const convergenceVetoed = sigeOn
+          ? computeSigeConvergenceVeto(sigeSignals, smart.sige.convergenceVetoThreshold).vetoed
+          : undefined;
+
+        // distinctSegments is a PER-IDEA multi-segment-credibility signal (gates
+        // the rare weak auto-VALIDATE). Each candidate addresses ONE resolved
+        // segment in this pipeline, so we leave it UNSET — the conjunctive
+        // auto-VALIDATE simply won't over-fire (safe), keeping proxy labeling
+        // biased toward the cheaper-to-trust ARCHIVE counter-evidence.
+        const proxyInputs: readonly ScoredIdeaForProxy[] = storedPairs.map(({ ideaId, candidate }) =>
+          toScoredIdeaForProxy({
+            ideaId,
+            candidate,
+            gate: giantGateByCandidate.get(candidate),
+            artifact: demandByCandidate.get(candidate),
+            // grounded ⇒ chain-of-evidence / boundSignalId / cited-demand presence.
+            // candidateHasDemandEvidence reads exactly those signal-bound fields;
+            // OR-in the demand artifact's cited rows so a code-cited demand probe
+            // also counts as grounded.
+            grounded:
+              candidateHasDemandEvidence(candidate) ||
+              (demandByCandidate.get(candidate)?.evidence.length ?? 0) > 0,
+            ...(convergenceVetoed !== undefined ? { convergenceVeto: convergenceVetoed } : {}),
+          }),
+        );
+
+        const proxyLabels = deriveProxyLabels(proxyInputs, DEFAULT_PROXY_OPTIONS, runId);
+        let written = 0;
+        for (const label of proxyLabels) {
+          const row = await insertIdeaFeedback({
+            ...label.event,
+            actor: `proxy:${label.reason}`,
+            run_id: runId,
+            prompt_version: PROMPT_VERSION,
+            model,
+          });
+          if (row !== null) written += 1;
+        }
+        log.info("Phase 4 taste: auto-proxy labels written", {
+          candidates: proxyInputs.length,
+          derived: proxyLabels.length,
+          written,
+        });
+      } catch (err) {
+        log.warn("Phase 4 taste: auto-proxy labeling failed — skipping", { err });
+      }
+    }
 
     // ── Mark consumed signals ─────────────────────────────────────────
     // Run sequentially to avoid overwhelming the database with parallel writes.
