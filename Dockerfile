@@ -19,7 +19,10 @@ USER bun
 # postinstall (git hooks + playwright) is guarded with `|| true`, so a missing
 # git/npx in the slim image is non-fatal.
 COPY --chown=bun:bun package.json bun.lock ./
-RUN bun install --frozen-lockfile
+# Prefer the frozen lockfile for reproducibility, but fall back to a normal
+# install: bun 1.3.14 intermittently reports "lockfile had changes" on a cold
+# x64 resolve even when the lock is correct (same quirk handled in CI).
+RUN bun install --frozen-lockfile || bun install
 
 # Application source.
 COPY --chown=bun:bun . .
