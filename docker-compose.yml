@@ -1,6 +1,10 @@
 services:
   postgres:
     image: postgres:17-alpine
+    # Run the native arm64 image. The Colima VM is aarch64 (Apple Silicon); without
+    # this pin Docker may resolve the amd64 manifest and silently emulate Postgres
+    # via Rosetta — the exact overhead we removed by going native. Keep it explicit.
+    platform: linux/arm64
     ports:
       - "127.0.0.1:5432:5432"
     environment:
@@ -8,11 +12,9 @@ services:
       POSTGRES_PASSWORD: opencrow
       POSTGRES_DB: opencrow
     # ---------------------------------------------------------------------------
-    # DEV/LOCAL Postgres tuning. This stack runs inside an x86_64 Colima/QEMU VM
-    # on Apple Silicon, so every instruction is emulated (~7x cost) and per-query
-    # I/O overhead dominates CPU. These flags trade durability for far less
-    # CPU/I/O. SAFE ONLY for a throwaway dev DB that can be recreated from
-    # migrations — DO NOT ship these to a production deployment.
+    # DEV/LOCAL Postgres tuning for a throwaway dev DB. These flags trade
+    # durability for far less CPU/I/O. SAFE ONLY for a dev DB that can be
+    # recreated from migrations — DO NOT ship these to a production deployment.
     # ---------------------------------------------------------------------------
     command:
       - "postgres"
@@ -66,6 +68,8 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.13.2
+    # Native arm64 (see postgres note) — avoid silent Rosetta emulation.
+    platform: linux/arm64
     ports:
       - "127.0.0.1:6333:6333"
     volumes:
