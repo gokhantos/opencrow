@@ -12,6 +12,7 @@
 
 import { getDb } from "../../../store/db";
 import { createLogger } from "../../../logger";
+import { demandArtifactSchema, type DemandArtifact } from "../demand";
 import type {
   CritiqueSubscores,
   EvalAggregate,
@@ -70,6 +71,27 @@ interface RawIdeaRow {
   readonly pipeline_stage: string | null;
   readonly critique_subscores_json: unknown;
   readonly created_at: string | number;
+  readonly demand_json: unknown;
+  readonly demand_score: number | string | null;
+  readonly whitespace: number | string | null;
+}
+
+/** Parse a persisted demand_json (jsonb object or string) into a DemandArtifact. */
+function parseDemandArtifact(raw: unknown): DemandArtifact | null {
+  if (raw == null) return null;
+  try {
+    const obj = typeof raw === "string" ? JSON.parse(raw) : raw;
+    const parsed = demandArtifactSchema.safeParse(obj);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function toNullableNumber(v: number | string | null): number | null {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 export interface LoadIdeasOptions {
@@ -91,7 +113,8 @@ export async function loadEvalIdeas(
   const limit = Math.min(Math.max(1, opts?.limit ?? 2000), 10000);
   try {
     const rows = (await db`
-      SELECT id, title, summary, category, pipeline_stage, critique_subscores_json, created_at
+      SELECT id, title, summary, category, pipeline_stage, critique_subscores_json, created_at,
+             demand_json, demand_score, whitespace
       FROM generated_ideas
       WHERE (${opts?.category ?? null}::text IS NULL OR category = ${opts?.category ?? null})
         AND (${opts?.pipelineRunId ?? null}::text IS NULL OR pipeline_run_id = ${opts?.pipelineRunId ?? null})
@@ -108,6 +131,9 @@ export async function loadEvalIdeas(
       pipeline_stage: r.pipeline_stage,
       critique_subscores: parseCritiqueSubscores(r.critique_subscores_json),
       created_at: Number(r.created_at),
+      demand: parseDemandArtifact(r.demand_json),
+      demand_score: toNullableNumber(r.demand_score),
+      whitespace: toNullableNumber(r.whitespace),
     }));
   } catch (err) {
     log.warn("loadEvalIdeas failed; returning empty set", { err });

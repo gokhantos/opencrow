@@ -63,6 +63,7 @@ describe("smartConfigSchema", () => {
         ],
         dissentWeight: 0.15,
         convergenceVetoThreshold: 0.85,
+        convergenceVetoAction: "log",
         deepTier: true,
       },
       taste: {
