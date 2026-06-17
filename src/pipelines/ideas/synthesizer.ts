@@ -12,17 +12,31 @@
 
 import { chat } from "../../agent/chat";
 import type { ConversationMessage } from "../../agent/types";
-import type { MemoryManager } from "../../memory/types";
+import type { MemoryManager, SearchResult } from "../../memory/types";
+// SearchResult is reused below to adapt idea candidates for the MMR diversity pass.
 import { createLogger } from "../../logger";
+import { loadConfig } from "../../config/loader";
+import type { SmartIdeasConfig } from "../../config/schema";
+import type { Mem0Client } from "../../sige/knowledge/mem0-client";
+import { insightForge, panoramaSearch } from "../../sige/memory/retrieval-modes";
+import {
+  candidateText,
+  embeddingRerank,
+  llmListwiseRerank,
+  type CrossEncoderEmbedder,
+  type RerankCandidate,
+} from "./deep-search-rerank";
 import type { IdeaCategory } from "../types";
 import type {
   TrendData,
   ClusteredPains,
   CapabilityScan,
+  Capability,
   GeneratedIdeaCandidate,
   IntersectionHypothesis,
   SynthesisResult,
 } from "./types";
+import { applyMmr } from "../../memory/mmr";
 import { getAllExistingIdeas } from "../../sources/ideas/store";
 
 const log = createLogger("pipeline:synthesizer");
@@ -64,27 +78,133 @@ export function parseJsonFromResponse<T>(text: string, fallback: T): T {
   }
 }
 
+// ── Signal citation tokens (chain-of-evidence #8 part2) ─────────────────
+
+/**
+ * Build a stable, prompt-safe citation token for a capability so the model can
+ * cite it as `[id:<token>]` and the Pipeline-phase verifier can bind the idea
+ * back to its grounding signal. Deterministic per (source, index) within a run.
+ *
+ * Example: source "producthunt", index 2 → "producthunt_2".
+ */
+export function signalCitationToken(source: string, index: number): string {
+  const safeSource = (source || "src")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 24) || "src";
+  return `${safeSource}_${index}`;
+}
+
+/**
+ * Extract emitted `[id:<token>]` citation tokens from a model field value.
+ * Returns a deduped, order-preserving list. Accepts either a delimited string
+ * or an already-parsed array (the model occasionally emits either shape).
+ */
+export function extractSignalIds(raw: unknown): readonly string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (token: string) => {
+    const cleaned = token.trim().replace(/^\[?id:?/i, "").replace(/\]$/, "").trim();
+    if (!cleaned) return;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(cleaned);
+  };
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      if (typeof item === "string") push(item);
+    }
+    return out;
+  }
+
+  if (typeof raw === "string") {
+    const tokenMatches = raw.match(/\[id:[^\]]+\]/gi);
+    if (tokenMatches) {
+      for (const m of tokenMatches) push(m);
+      return out;
+    }
+    for (const part of raw.split(/[,\s]+/)) push(part);
+  }
+  return out;
+}
+
 // ── Deep Search (optional Qdrant enrichment) ────────────────────────────
 
+const DEEP_SEARCH_KINDS = [
+  "hackernews_story", "reddit_post", "producthunt_product",
+  "github_repo", "x_post", "reuters_news", "cointelegraph_news",
+  "cryptopanic_news", "investingnews_news", "appstore_review",
+  "appstore_app", "playstore_review", "playstore_app",
+] as const;
+
+/**
+ * Map an aggregate retrieval score in [0,1] to a coarse, human-legible
+ * evidence-strength label that the synthesis prompt can reason over.
+ */
+export function evidenceStrengthLabel(meanScore: number): string {
+  if (meanScore >= 0.6) return "strong";
+  if (meanScore >= 0.45) return "moderate";
+  if (meanScore >= 0.3) return "weak";
+  return "minimal";
+}
+
+/**
+ * Optional dependencies for deepSearch. All fields are OPTIONAL and default to
+ * the legacy Qdrant-only behaviour:
+ *  - `model`     — chat model id used by the LLM listwise reranker.
+ *  - `rerankEmbedder` — injected embedder for cross-encoder-style rerank.
+ *  - `mem0` / `userId` — Mem0 graph client + user for knowledge-graph retrieval
+ *    (the graph branch is skipped entirely when either is absent).
+ */
+export interface DeepSearchOptions {
+  readonly model?: string;
+  readonly rerankEmbedder?: CrossEncoderEmbedder;
+  readonly mem0?: Mem0Client;
+  readonly userId?: string;
+}
+
+/**
+ * Retrieve supporting evidence for a set of themes from the indexed corpus.
+ *
+ * Backward-compatible: called with just (themes, memoryManager) it behaves like
+ * the legacy implementation PLUS a per-theme `evidence_strength` annotation
+ * (retrieval scores are no longer discarded).
+ *
+ * Gated, opt-in enrichments (all default OFF, all degrade to the Qdrant path on
+ * any error):
+ *  - smart.deepSearchReranker: over-fetch `rerankFetchK` hits then rerank down
+ *    to `rerankTopK` via an injected embedder (cross-encoder-style) or an LLM
+ *    listwise rerank through the project chat path.
+ *  - smart.knowledgeGraphRetrieval: when a Mem0 client + userId are supplied,
+ *    add a graph branch (insightForge/panoramaSearch) and append relation-path
+ *    facts to the context.
+ */
 export async function deepSearch(
   themes: readonly string[],
   memoryManager: MemoryManager,
+  options?: DeepSearchOptions,
 ): Promise<string> {
   if (themes.length === 0) return "";
 
+  const smart = loadConfig().pipelines.ideas.smart;
+  const rerankEnabled = smart.deepSearchReranker;
+  const fetchK = rerankEnabled ? smart.rerankFetchK : 3;
+  const topK = rerankEnabled ? smart.rerankTopK : 3;
+
   const searchQueries = themes.slice(0, 6);
-  const allKinds = [
-    "hackernews_story", "reddit_post", "producthunt_product",
-    "github_repo", "x_post", "reuters_news", "cointelegraph_news",
-    "cryptopanic_news", "investingnews_news", "appstore_review",
-    "appstore_app", "playstore_review", "playstore_app",
-  ] as const;
 
   const results = await Promise.all(
     searchQueries.map((query) =>
       memoryManager
-        .search("shared", query, { limit: 3, minScore: 0.3, kinds: [...allKinds] })
-        .catch(() => []),
+        .search("shared", query, {
+          limit: fetchK,
+          minScore: 0.3,
+          kinds: [...DEEP_SEARCH_KINDS],
+        })
+        .catch(() => [] as readonly SearchResult[]),
     ),
   );
 
@@ -92,23 +212,132 @@ export async function deepSearch(
   const entries: string[] = [];
 
   for (let i = 0; i < searchQueries.length; i++) {
-    const hits = (results[i] ?? []).filter((h) => {
+    const theme = searchQueries[i] ?? "";
+    const deduped = (results[i] ?? []).filter((h) => {
       if (seen.has(h.source.id)) return false;
       seen.add(h.source.id);
       return true;
     });
-    if (hits.length === 0) continue;
+    if (deduped.length === 0) continue;
+
+    // QUICK WIN: retain retrieval scores → per-theme evidence strength.
+    const meanScore =
+      deduped.reduce((sum, h) => sum + (h.score ?? 0), 0) / deduped.length;
+
+    let hits: readonly SearchResult[] = deduped;
+    if (rerankEnabled) {
+      hits = await rerankHits(theme, deduped, topK, options);
+    } else {
+      hits = deduped.slice(0, topK);
+    }
+
     const formatted = hits.map((h) => {
       const meta = h.source.metadata;
       const url = meta.url ?? meta.hn_url ?? meta.store_url ?? "";
-      return `  [${h.source.kind}] ${meta.title ?? ""}${url ? ` — ${url}` : ""}\n    ${h.chunk.content.slice(0, 200)}`;
+      const score = typeof h.score === "number" ? ` (score ${h.score.toFixed(2)})` : "";
+      return `  [${h.source.kind}]${score} ${meta.title ?? ""}${url ? ` — ${url}` : ""}\n    ${h.chunk.content.slice(0, 200)}`;
     });
-    entries.push(`Theme: "${searchQueries[i]}"\n${formatted.join("\n")}`);
+
+    const strength = evidenceStrengthLabel(meanScore);
+    entries.push(
+      `Theme: "${theme}" (evidence_strength: ${strength}, mean_score ${meanScore.toFixed(2)})\n${formatted.join("\n")}`,
+    );
   }
 
-  return entries.length > 0
-    ? `\n\n=== DEEP SEARCH (supporting evidence from indexed corpus) ===\n${entries.join("\n\n")}`
-    : "";
+  // #13 KNOWLEDGE-GRAPH RETRIEVAL: optional relation-path facts from Mem0.
+  const graphSection = await graphEvidence(searchQueries, smart, options);
+
+  const corpusSection =
+    entries.length > 0
+      ? `\n\n=== DEEP SEARCH (supporting evidence from indexed corpus) ===\n${entries.join("\n\n")}`
+      : "";
+
+  if (!corpusSection && !graphSection) return "";
+  return `${corpusSection}${graphSection}`;
+}
+
+/**
+ * Rerank an over-fetched hit set down to `topK`. Prefers the injected embedder
+ * (cross-encoder-style); falls back to an LLM listwise rerank when a model is
+ * provided; otherwise returns the first `topK` of input order. Never throws.
+ */
+async function rerankHits(
+  theme: string,
+  hits: readonly SearchResult[],
+  topK: number,
+  options: DeepSearchOptions | undefined,
+): Promise<readonly SearchResult[]> {
+  try {
+    if (hits.length <= topK) return hits;
+    const candidates: readonly RerankCandidate[] = hits.map((hit) => ({
+      hit,
+      text: candidateText(hit),
+    }));
+
+    if (options?.rerankEmbedder) {
+      const ranked = await embeddingRerank(theme, candidates, topK, options.rerankEmbedder);
+      return ranked.map((c) => c.hit);
+    }
+    if (options?.model) {
+      const ranked = await llmListwiseRerank(theme, candidates, topK, options.model);
+      return ranked.map((c) => c.hit);
+    }
+    return hits.slice(0, topK);
+  } catch (err) {
+    log.warn("deepSearch rerank failed, using input order", { err });
+    return hits.slice(0, topK);
+  }
+}
+
+/**
+ * Build the optional knowledge-graph evidence section. Returns "" when the
+ * feature is off, when no Mem0 client/userId is supplied, or on any error.
+ */
+async function graphEvidence(
+  themes: readonly string[],
+  smart: SmartIdeasConfig,
+  options: DeepSearchOptions | undefined,
+): Promise<string> {
+  if (!smart.knowledgeGraphRetrieval) return "";
+  const mem0 = options?.mem0;
+  const userId = options?.userId;
+  if (!mem0 || !userId || themes.length === 0) return "";
+
+  try {
+    const retrievals = await Promise.all(
+      themes.slice(0, 3).map((theme) =>
+        insightForge(mem0, userId, theme, { maxResults: 8 }).catch(() =>
+          panoramaSearch(mem0, userId, theme, { maxResults: 8 }).catch(() => null),
+        ),
+      ),
+    );
+
+    const seenFacts = new Set<string>();
+    const blocks: string[] = [];
+    for (let i = 0; i < retrievals.length; i++) {
+      const result = retrievals[i];
+      if (!result) continue;
+      const facts = result.facts
+        .filter((f) => {
+          const key = f.trim().toLowerCase();
+          if (!key || seenFacts.has(key)) return false;
+          seenFacts.add(key);
+          return true;
+        })
+        .slice(0, 6);
+      if (facts.length === 0) continue;
+      const strength = evidenceStrengthLabel(result.score);
+      blocks.push(
+        `Theme: "${themes[i]}" (graph_strength: ${strength})\n${facts.map((f) => `  • ${f}`).join("\n")}`,
+      );
+    }
+
+    if (blocks.length === 0) return "";
+    return `\n\n=== KNOWLEDGE GRAPH (relation-path facts) ===\n${blocks.join("\n\n")}`;
+  } catch (err) {
+    log.warn("deepSearch knowledge-graph branch failed, skipping", { err });
+    return "";
+  }
 }
 
 // ── Category Context ─────────────────────────────────────────────────────
@@ -172,12 +401,61 @@ AVOID: Platform plays that require multiple sides, ideas that need partnerships 
 
 // ── Insights section builder ──────────────────────────────────────────────
 
+/**
+ * Build a citation token per capability and a human-legible suffix carrying the
+ * `[id:<token>]` (chain-of-evidence #8 part2) and corroboration count (#10).
+ *
+ * The map is keyed by the lowercased capability title so the insight lines
+ * (which only carry titles) can be annotated. Returns an empty map / no-op
+ * annotations when chainOfEvidence is off, keeping legacy prompt output stable.
+ */
+function buildCapabilityEvidence(
+  capabilities: CapabilityScan,
+  chainOfEvidence: boolean,
+): {
+  readonly annotate: (title: string, source: string) => string;
+  readonly tokenLegend: readonly string[];
+} {
+  const byTitle = new Map<string, { token: string; corroboration?: number }>();
+  const legend: string[] = [];
+
+  capabilities.capabilities.forEach((cap: Capability, index: number) => {
+    const token = signalCitationToken(cap.source, index);
+    const key = cap.title.toLowerCase().trim();
+    if (!byTitle.has(key)) {
+      byTitle.set(key, { token, corroboration: cap.corroborationCount });
+    }
+    if (chainOfEvidence) {
+      legend.push(`  [id:${token}] ${cap.title} (${cap.source})`);
+    }
+  });
+
+  const annotate = (title: string, source: string): string => {
+    const entry = byTitle.get(title.toLowerCase().trim());
+    const suffixes: string[] = [];
+    if (chainOfEvidence) {
+      const token = entry?.token ?? signalCitationToken(source, byTitle.size);
+      suffixes.push(`[id:${token}]`);
+    }
+    // #10: emphasize high-corroboration (multi-source) signals.
+    const corroboration = entry?.corroboration;
+    if (typeof corroboration === "number" && corroboration > 1) {
+      suffixes.push(`(corroborated ×${corroboration})`);
+    }
+    return suffixes.length > 0 ? ` ${suffixes.join(" ")}` : "";
+  };
+
+  return { annotate, tokenLegend: legend };
+}
+
 function buildInsightsSection(
   trends: TrendData,
   pains: ClusteredPains,
   capabilities: CapabilityScan,
+  chainOfEvidence = false,
 ): string {
   const parts: string[] = [];
+  const capEvidence = buildCapabilityEvidence(capabilities, chainOfEvidence);
 
   if (trends.insights) {
     const { underservedSegments, workingPatterns, whiteSpaces } = trends.insights;
@@ -241,7 +519,7 @@ function buildInsightsSection(
     const { genuinelyNew, technologyWaves, painCapabilityLinks } = capabilities.insights;
     const capLines = genuinelyNew
       .slice(0, 8)
-      .map((c) => `  • [${c.classification}] ${c.title} (${c.source}): ${c.whyNew}`);
+      .map((c) => `  • [${c.classification}] ${c.title} (${c.source})${capEvidence.annotate(c.title, c.source)}: ${c.whyNew}`);
     const waveLines = technologyWaves
       .slice(0, 5)
       .map((w) => `  • ${w.name}: ${w.implication}`);
@@ -267,6 +545,16 @@ function buildInsightsSection(
     );
   }
 
+  // #8 part2: expose the full citation legend so the model can reference signals
+  // it did not see annotated inline (e.g. raw-summary fallback paths).
+  if (chainOfEvidence && capEvidence.tokenLegend.length > 0) {
+    parts.push(
+      "",
+      "=== SIGNAL CITATIONS (cite these tokens as supporting evidence) ===",
+      ...capEvidence.tokenLegend,
+    );
+  }
+
   return parts.join("\n");
 }
 
@@ -277,8 +565,9 @@ async function discoverIntersections(
   pains: ClusteredPains,
   capabilities: CapabilityScan,
   model: string,
+  chainOfEvidence: boolean,
 ): Promise<readonly IntersectionHypothesis[]> {
-  const insightsSection = buildInsightsSection(trends, pains, capabilities);
+  const insightsSection = buildInsightsSection(trends, pains, capabilities, chainOfEvidence);
 
   const prompt = `You have structured market intelligence from three sources. Find the non-obvious intersections.
 
@@ -340,6 +629,52 @@ async function buildExistingIdeasContext(): Promise<string> {
   }
 }
 
+// ── Validated-exemplar few-shot (#5) ─────────────────────────────────────
+
+/** Minimal shape of a human-validated idea used as a positive few-shot example. */
+export interface ValidatedExemplar {
+  readonly title: string;
+  readonly summary: string;
+  readonly category?: string;
+}
+
+/**
+ * #5 VALIDATED-EXEMPLAR FEW-SHOT: build a positive few-shot block from ideas
+ * that humans validated, symmetric to the negative saturation block. Injected
+ * into Pass 2 / single-pass prompts so the model produces "more like these".
+ *
+ * Returns "" when there are no exemplars, so callers can inject unconditionally.
+ * The block is pure formatting — gating happens at the call site via
+ * smart.validatedExemplars (the Pipeline phase passes "" when the flag is off).
+ */
+export function buildValidatedExemplars(
+  exemplars: readonly ValidatedExemplar[],
+  max = 6,
+): string {
+  if (exemplars.length === 0) return "";
+
+  const lines = exemplars.slice(0, max).map((ex) => {
+    const category = ex.category ? `[${sanitizeForPrompt(ex.category)}] ` : "";
+    return `  • ${category}${sanitizeForPrompt(ex.title)}: ${sanitizeForPrompt(ex.summary.slice(0, 160))}`;
+  });
+
+  return [
+    "",
+    "=== HUMAN-VALIDATED IDEAS (produce MORE like these — same quality bar, NOT duplicates) ===",
+    "These ideas passed human review. Match their specificity, grounding, and concreteness.",
+    "Do NOT copy them; generate fundamentally new ideas that share their rigor.",
+    ...lines,
+  ].join("\n");
+}
+
+/**
+ * Render the positive validated-exemplar block at a saturatedSection seam.
+ * Empty string in → empty string out (legacy prompt unchanged).
+ */
+function validatedExemplarSection(validatedExemplars: string): string {
+  return validatedExemplars ? `\n${validatedExemplars}` : "";
+}
+
 // ── Pass 2: Idea Development ─────────────────────────────────────────────
 
 async function developIdeas(
@@ -348,6 +683,8 @@ async function developIdeas(
   saturatedThemes: string,
   deepSearchContext: string,
   model: string,
+  validatedExemplars: string,
+  chainOfEvidence: boolean,
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const intersectionLines = topIntersections.map((h, i) =>
     `${i + 1}. "${h.title}"\n   Pain: ${h.painSignal}\n   Capability: ${h.capabilitySignal}\n   Market: ${h.marketSignal}\n   Hypothesis: ${h.hypothesis}\n   Signal strength: ${h.signalStrength.toFixed(2)}`,
@@ -355,6 +692,16 @@ async function developIdeas(
 
   const saturatedSection = saturatedThemes
     ? `\nPREVIOUSLY GENERATED (avoid these themes):\n${saturatedThemes}`
+    : "";
+
+  const exemplarSection = validatedExemplarSection(validatedExemplars);
+
+  const evidenceInstruction = chainOfEvidence
+    ? `\n- supportingSignalIds: array of [id:...] tokens from the SIGNAL CITATIONS / capability annotations above that ground THIS idea (e.g. ["hackernews_3","producthunt_1"]). Cite only signals you actually used.`
+    : "";
+
+  const evidenceField = chainOfEvidence
+    ? `,\n    "supportingSignalIds": ["string"]`
     : "";
 
   const existingIdeasContext = await buildExistingIdeasContext();
@@ -372,6 +719,7 @@ ${CATEGORY_CONTEXT[category]}
 === VALIDATED INTERSECTION HYPOTHESES (ranked by signal strength) ===
 ${intersectionLines}
 ${sanitizeForPrompt(deepSearchContext)}
+${exemplarSection}
 ${saturatedSection}
 ${existingIdeasContext}
 
@@ -390,7 +738,7 @@ Each idea requires:
 - qualityScore: 1.0-5.0 (self-assessed — will be overridden by critique pass)
 - targetAudience: Specific person (job title, age, situation, location if relevant)
 - keyFeatures: 5-7 specific features (not generic, tied to the hypothesis signals)
-- revenueModel: One-line summary
+- revenueModel: One-line summary${evidenceInstruction}
 
 Return ONLY a JSON array of ${topIntersections.length} ideas:
 [
@@ -407,7 +755,7 @@ Return ONLY a JSON array of ${topIntersections.length} ideas:
     "qualityScore": number,
     "targetAudience": "string",
     "keyFeatures": ["string"],
-    "revenueModel": "string"
+    "revenueModel": "string"${evidenceField}
   }
 ]`;
 
@@ -439,8 +787,32 @@ Return ONLY a JSON array of ${topIntersections.length} ideas:
     candidates = parseJsonFromResponse<GeneratedIdeaCandidate[]>(retryResponse.text, []);
   }
 
-  log.info("Pass 2 complete", { count: candidates.length });
-  return candidates;
+  const normalized = chainOfEvidence
+    ? candidates.map(normalizeSignalIds)
+    : candidates;
+
+  log.info("Pass 2 complete", { count: normalized.length });
+  return normalized;
+}
+
+/**
+ * Normalize a candidate's emitted `supportingSignalIds` into a clean string[]
+ * regardless of whether the model returned a string or array. Immutable.
+ */
+function normalizeSignalIds(
+  candidate: GeneratedIdeaCandidate,
+): GeneratedIdeaCandidate {
+  const ids = extractSignalIds(
+    (candidate as { supportingSignalIds?: unknown }).supportingSignalIds,
+  );
+  if (ids.length === 0) {
+    // Drop a possibly-malformed field rather than carry junk forward.
+    const { supportingSignalIds: _omit, ...rest } = candidate as GeneratedIdeaCandidate & {
+      supportingSignalIds?: unknown;
+    };
+    return rest;
+  }
+  return { ...candidate, supportingSignalIds: ids };
 }
 
 // ── Pass 3: Idea Critique ─────────────────────────────────────────────────
@@ -586,12 +958,15 @@ async function singlePassSynthesis(input: {
   readonly category: IdeaCategory;
   readonly maxIdeas: number;
   readonly model: string;
+  readonly validatedExemplars?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
 
   const saturatedSection = saturatedThemes
     ? `\nPREVIOUSLY GENERATED (avoid these themes):\n${saturatedThemes}`
     : "";
+
+  const exemplarSection = validatedExemplarSection(input.validatedExemplars ?? "");
 
   const existingIdeasContext = await buildExistingIdeasContext();
 
@@ -614,6 +989,7 @@ ${sanitizeForPrompt(pains.summary || "No review data")}
 === NEW CAPABILITIES (emerging tech, open source, behavior shifts) ===
 ${sanitizeForPrompt(capabilities.summary || "No capability data")}
 ${sanitizeForPrompt(deepSearchContext)}
+${exemplarSection}
 ${saturatedSection}
 ${existingIdeasContext}
 
@@ -679,22 +1055,33 @@ export async function synthesizeFromTrends(input: {
   readonly category: IdeaCategory;
   readonly maxIdeas: number;
   readonly model: string;
+  /**
+   * #5 Positive few-shot block of human-validated ideas (built by the Pipeline
+   * phase via buildValidatedExemplars). Optional — backward-compatible; injected
+   * only when smart.validatedExemplars is on AND the caller supplies it.
+   */
+  readonly validatedExemplars?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
+
+  const smart = loadConfig().pipelines.ideas.smart;
+  const chainOfEvidence = smart.chainOfEvidence;
+  // Gate the positive few-shot: only inject when the flag is ON.
+  const validatedExemplars = smart.validatedExemplars ? input.validatedExemplars ?? "" : "";
 
   // ── Pass 1: Discover intersections ──────────────────────────────────
   let intersections: readonly IntersectionHypothesis[];
 
   try {
-    intersections = await discoverIntersections(trends, pains, capabilities, model);
+    intersections = await discoverIntersections(trends, pains, capabilities, model, chainOfEvidence);
   } catch (err) {
     log.error("Pass 1 failed, falling back to single-pass synthesis", { err });
-    return singlePassSynthesis(input);
+    return singlePassSynthesis({ ...input, validatedExemplars });
   }
 
   if (intersections.length === 0) {
     log.warn("No intersections found in Pass 1, falling back to single-pass synthesis");
-    return singlePassSynthesis(input);
+    return singlePassSynthesis({ ...input, validatedExemplars });
   }
 
   // Deduplicate by capabilitySignal — if 3+ hypotheses cite the same capability, keep only the best
@@ -734,10 +1121,18 @@ export async function synthesizeFromTrends(input: {
   let rawCandidates: readonly GeneratedIdeaCandidate[];
 
   try {
-    rawCandidates = await developIdeas(topIntersections, category, saturatedThemes, deepSearchContext, model);
+    rawCandidates = await developIdeas(
+      topIntersections,
+      category,
+      saturatedThemes,
+      deepSearchContext,
+      model,
+      validatedExemplars,
+      chainOfEvidence,
+    );
   } catch (err) {
     log.error("Pass 2 failed, falling back to single-pass synthesis", { err });
-    return singlePassSynthesis(input);
+    return singlePassSynthesis({ ...input, validatedExemplars });
   }
 
   if (rawCandidates.length === 0) {
@@ -763,8 +1158,58 @@ export async function synthesizeFromTrends(input: {
     critiquedCandidates = rawCandidates;
   }
 
+  // ── QUICK WIN: sort by quality desc, then MMR diversity before slicing ──
+  const finalCandidates = sortAndDiversify(critiquedCandidates, maxIdeas);
+
   return {
-    candidates: critiquedCandidates.slice(0, maxIdeas),
+    candidates: finalCandidates,
     totalGenerated: rawCandidates.length,
   };
+}
+
+/**
+ * QUICK WIN — sort + MMR. Sort critiqued candidates by qualityScore desc, then
+ * run an intra-batch MMR diversity pass (Jaccard over title+summary) so the
+ * top `maxIdeas` are both high-quality AND mutually distinct.
+ *
+ * Adapts candidates to the existing src/memory/mmr.ts applyMmr via minimal
+ * SearchResult-shaped objects ({ chunk: { content: title+summary }, score }).
+ * Falls back to a plain quality sort + slice on any error (never throws).
+ */
+function sortAndDiversify(
+  candidates: readonly GeneratedIdeaCandidate[],
+  maxIdeas: number,
+): readonly GeneratedIdeaCandidate[] {
+  if (candidates.length <= 1 || maxIdeas <= 0) {
+    return candidates.slice(0, maxIdeas);
+  }
+
+  const sorted = [...candidates].sort((a, b) => b.qualityScore - a.qualityScore);
+  if (sorted.length <= maxIdeas) return sorted;
+
+  try {
+    // Adapt to SearchResult shape; applyMmr only reads `chunk.content` + `score`
+    // and maps back by index, so a minimal structural object is sufficient.
+    const adapted = sorted.map((c) => ({
+      chunk: { content: `${c.title}\n${c.summary}` },
+      score: c.qualityScore,
+    })) as unknown as readonly SearchResult[];
+
+    const diversified = applyMmr(adapted, 0.7, maxIdeas);
+    const byContent = new Map<string, GeneratedIdeaCandidate>();
+    sorted.forEach((c) => byContent.set(`${c.title}\n${c.summary}`, c));
+
+    const result: GeneratedIdeaCandidate[] = [];
+    for (const r of diversified) {
+      const match = byContent.get(r.chunk.content);
+      if (match) result.push(match);
+    }
+    // Safety: if mapping lost entries, fall back to the quality-sorted slice.
+    return result.length === Math.min(maxIdeas, sorted.length)
+      ? result
+      : sorted.slice(0, maxIdeas);
+  } catch (err) {
+    log.warn("sort+MMR diversity pass failed, using quality sort", { err });
+    return sorted.slice(0, maxIdeas);
+  }
 }

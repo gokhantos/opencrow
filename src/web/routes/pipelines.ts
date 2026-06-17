@@ -279,7 +279,9 @@ export function createPipelineRoutes(deps?: {
       );
     }
 
-    const updated = await updateIdeaStage(id, body.stage);
+    // Records both the projected stage and an append-only idea_feedback
+    // event (the learning substrate). Attribute the transition to the web UI.
+    const updated = await updateIdeaStage(id, body.stage, { actor: "web" });
     if (!updated) {
       return c.json({ success: false, error: "Idea not found" }, 404);
     }

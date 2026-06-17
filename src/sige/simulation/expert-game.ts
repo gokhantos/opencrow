@@ -12,7 +12,7 @@ import {
   graphViewToPromptContext,
   type GraphView,
 } from "../knowledge/graph-query"
-import type { Mem0Client } from "../knowledge/mem0-client"
+import { Mem0Client } from "../knowledge/mem0-client"
 import type { GameFormulation } from "../types"
 import { runWithConcurrency } from "./concurrency"
 import { saveAgentAction, saveSimulationResult } from "../store"
@@ -29,6 +29,7 @@ import type {
   SigeSessionConfig,
   SimulationRound,
   StrategicAgentRole,
+  StrategicMetadata,
 } from "../types"
 
 const log = createLogger("sige:expert-game")
@@ -197,6 +198,299 @@ export async function runExpertGame(params: {
   })
 
   return { rounds: allCompletedRounds, equilibria, rankedIdeas, metaGameHealth }
+}
+
+// ─── Evaluate-Only Mode (headless, candidate-injectable) ──────────────────────
+//
+// Unlike runExpertGame (which begins with Round-1 divergent *generation*),
+// evaluateCandidates SKIPS generation entirely and seeds the
+// strategic-interaction / evolutionary / equilibrium rounds with
+// externally-supplied candidate ideas. This lets the ideas pipeline (or any
+// other caller) submit pre-generated candidates and get back per-candidate
+// expert scores graded by the 9-agent strategic tournament.
+//
+// This path is fully DECOUPLED from config.sige.enabled — that gate only
+// governs the standalone polling process; evaluateCandidates is callable
+// regardless (the caller is responsible for any feature flagging, e.g. the
+// ideas pipeline gates this behind smart.sigeValuation).
+//
+// ── Candidate → ScoredIdea mapping ──
+//   incoming.title       → ScoredIdea.title        (required; blank titles dropped)
+//   incoming.summary     → ScoredIdea.description  (falls back to "" when absent)
+//   incoming.expertScore → ScoredIdea.expertScore  (clamped to [0,1]; default 0.5 —
+//                          acts as the seed/prior confidence the agents revise)
+//   incoming.id          → ScoredIdea.id           (preserved when supplied so the
+//                          caller can map results back; otherwise a UUID is minted)
+//   proposedBy           → "external:candidate"    (synthetic — not an agent role)
+//   round                → 1                        (treated as if generated in R1)
+// Internally, rounds 2–4 re-score ideas by *title*, matching the existing game's
+// title-keyed aggregation. The returned title is therefore the join key callers
+// should use to reconcile results with their inputs.
+
+/** Shape of a candidate idea injected into the evaluate-only path. */
+export interface CandidateIdea {
+  readonly title: string
+  readonly summary?: string
+  readonly description?: string
+  /** Optional prior/seed score in [0,1]; defaults to 0.5 when absent. */
+  readonly expertScore?: number
+  /** Optional stable id; preserved on the mapped ScoredIdea when supplied. */
+  readonly id?: string
+}
+
+/** Context/dependencies for the headless evaluate-only path. */
+export interface EvaluateCandidatesContext {
+  /** Mem0 client used by strategic agents for per-role knowledge filtering. */
+  readonly mem0?: Mem0Client
+  /** Mem0 user id (graph namespace); defaults to "sige-global". */
+  readonly userId?: string
+  /** Session id used purely for logging/keying; a UUID is minted if absent. */
+  readonly sessionId?: string
+  /**
+   * Game formulation to ground agent reasoning. When omitted a minimal
+   * placeholder is synthesized so the path remains callable standalone.
+   */
+  readonly gameFormulation?: GameFormulation
+  /** SIGE session config; defaults to DEFAULT_EVALUATE_CONFIG when absent. */
+  readonly config?: SigeSessionConfig
+  /** Optional synthesized-signals prompt context (from signal-synthesis). */
+  readonly signalsContext?: string
+  /** Optional enriched seed string used by the taste filter quality gate. */
+  readonly enrichedSeed?: string
+  readonly signal?: AbortSignal
+}
+
+/** Per-candidate result returned by evaluateCandidates. */
+export interface CandidateEvaluation {
+  readonly title: string
+  readonly expertScore: number
+  readonly strategicMetadata: StrategicMetadata
+}
+
+const DEFAULT_EVALUATE_CONFIG: SigeSessionConfig = {
+  expertRounds: 4,
+  socialAgentCount: 20,
+  socialRounds: 3,
+  maxConcurrentAgents: 4,
+  alpha: 0.5,
+  incentiveWeights: {
+    diversity: 0.25,
+    building: 0.2,
+    surprise: 0.15,
+    accuracyPenalty: 0.1,
+    socialViability: 0.3,
+  },
+  provider: "anthropic",
+  model: "claude-sonnet-4-6",
+  agentModel: "claude-sonnet-4-6",
+}
+
+/**
+ * Evaluate externally-supplied candidate ideas through the strategic
+ * tournament (rounds 2–4), skipping Round-1 generation.
+ *
+ * Returns one entry per *retained* candidate (blank-titled candidates are
+ * dropped) carrying the agent-graded expertScore and the strategic metadata
+ * accumulated through equilibrium analysis. Results are keyed by title.
+ *
+ * Pipeline-phase entry signature:
+ *   evaluateCandidates(candidates, context) =>
+ *     Promise<{ title, expertScore, strategicMetadata }[]>
+ */
+export async function evaluateCandidates(
+  candidates: readonly CandidateIdea[],
+  context: EvaluateCandidatesContext = {},
+): Promise<readonly CandidateEvaluation[]> {
+  const sessionId = context.sessionId ?? crypto.randomUUID()
+  const userId = context.userId ?? "sige-global"
+  const config = context.config ?? DEFAULT_EVALUATE_CONFIG
+  const mem0 = context.mem0 ?? new Mem0Client({ baseUrl: "http://localhost:8000" })
+  const gameFormulation =
+    context.gameFormulation ?? buildPlaceholderGameFormulation(sessionId)
+  const { signal, signalsContext, enrichedSeed } = context
+
+  const seededIdeas = mapCandidatesToScoredIdeas(candidates)
+
+  if (seededIdeas.length === 0) {
+    log.warn("evaluateCandidates: no usable candidates after mapping — returning empty", {
+      sessionId,
+      received: candidates.length,
+    })
+    return []
+  }
+
+  log.info("evaluateCandidates: starting evaluate-only path", {
+    sessionId,
+    candidates: seededIdeas.length,
+  })
+
+  checkAborted(signal)
+
+  // Synthetic Round 1: candidates injected as if they were generated, so the
+  // downstream rounds can consume them via the same SimulationRound contract.
+  const sortedSeed = [...seededIdeas].sort((a, b) => b.expertScore - a.expertScore)
+  const seedRound: SimulationRound = {
+    roundNumber: 1,
+    roundType: "divergent_generation",
+    agentActions: [],
+    outcomes: {
+      selectedIdeas: sortedSeed,
+      eliminatedIdeas: [],
+    },
+  }
+
+  // ── Round 2: strategic interaction (agents evaluate the injected candidates) ──
+  const round2 = await runStrategicInteraction({
+    sessionId,
+    gameFormulation,
+    round1Results: seedRound,
+    mem0,
+    userId,
+    config,
+    signal,
+    signalsContext,
+  })
+
+  checkAborted(signal)
+
+  // ── Taste filter quality gate (same as the full game) ──
+  let filteredRound2 = round2
+  if (enrichedSeed) {
+    try {
+      const tasteResult = await runTasteFilter({
+        ideas: round2.outcomes.selectedIdeas,
+        enrichedSeed,
+        model: config.model,
+        provider: config.provider ?? "anthropic",
+        minPassCount: 5,
+      })
+      filteredRound2 = {
+        ...round2,
+        outcomes: {
+          ...round2.outcomes,
+          selectedIdeas: tasteResult.passed,
+          eliminatedIdeas: tasteResult.eliminated.map((e) => e.idea.title),
+        },
+      }
+    } catch (err) {
+      log.warn("evaluateCandidates: taste filter failed — using unfiltered Round 2", {
+        sessionId,
+        err,
+      })
+    }
+  }
+
+  // ── Round 3: evolutionary tournament ──
+  const round3 = await runEvolutionaryTournament({
+    sessionId,
+    gameFormulation,
+    round2Results: filteredRound2,
+    mem0,
+    userId,
+    config,
+    signal,
+    signalsContext,
+  })
+
+  checkAborted(signal)
+
+  // ── Round 4: equilibrium analysis ──
+  const round4 = await runEquilibriumAnalysis({
+    sessionId,
+    gameFormulation,
+    round3Results: round3,
+    allRounds: [seedRound, round2, round3],
+    mem0,
+    userId,
+    config,
+    signal,
+    signalsContext,
+  })
+
+  const rankedIdeas = round4.outcomes.selectedIdeas
+
+  log.info("evaluateCandidates: complete", {
+    sessionId,
+    evaluated: rankedIdeas.length,
+  })
+
+  return rankedIdeas.map((idea) => ({
+    title: idea.title,
+    expertScore: idea.expertScore,
+    strategicMetadata: idea.strategicMetadata,
+  }))
+}
+
+/**
+ * Map incoming candidate shapes to the internal ScoredIdea contract.
+ * Blank-titled candidates are dropped. See the mapping table above.
+ */
+export function mapCandidatesToScoredIdeas(
+  candidates: readonly CandidateIdea[],
+): readonly ScoredIdea[] {
+  const ideas: ScoredIdea[] = []
+
+  for (const candidate of candidates) {
+    const title = typeof candidate.title === "string" ? candidate.title.trim() : ""
+    if (!title) continue
+
+    const description =
+      (typeof candidate.summary === "string" && candidate.summary) ||
+      (typeof candidate.description === "string" && candidate.description) ||
+      ""
+
+    const rawScore =
+      typeof candidate.expertScore === "number" ? candidate.expertScore : 0.5
+    const expertScore = Math.max(0, Math.min(1, rawScore))
+
+    ideas.push({
+      id: typeof candidate.id === "string" && candidate.id ? candidate.id : crypto.randomUUID(),
+      title,
+      description,
+      proposedBy: "external:candidate",
+      round: 1,
+      expertScore,
+      incentiveBreakdown: {
+        diversityBonus: 0,
+        buildingBonus: 0,
+        surpriseBonus: 0,
+        accuracyPenalty: 0,
+        memoryReward: 0,
+        coalitionStability: 0,
+        signalCredibility: 0,
+        socialViability: 0,
+      },
+      strategicMetadata: {
+        paretoOptimal: false,
+        dominantStrategy: false,
+        evolutionarilyStable: false,
+        nashEquilibrium: false,
+      },
+    })
+  }
+
+  return ideas
+}
+
+/**
+ * Minimal placeholder GameFormulation for headless callers that don't run the
+ * formulation step. Provides just enough structure for prompt building.
+ */
+function buildPlaceholderGameFormulation(sessionId: string): GameFormulation {
+  return {
+    id: crypto.randomUUID(),
+    sessionId,
+    gameType: "simultaneous",
+    players: [],
+    strategies: {},
+    informationStructure: {
+      visibility: {},
+      asymmetries: [],
+      commonKnowledge: [],
+    },
+    moveSequence: "simultaneous",
+    constraints: [],
+  }
 }
 
 // ─── Round 1: Divergent Generation ───────────────────────────────────────────

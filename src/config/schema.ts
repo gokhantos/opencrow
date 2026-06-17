@@ -458,6 +458,52 @@ export const sigeConfigSchema = z.object({
     }),
 });
 
+export const smartConfigSchema = z.object({
+  // External-service / expensive-LLM gates: default OFF so the pipeline's
+  // default runtime path and existing tests are unchanged.
+  sigeValuation: z.boolean().default(false),
+  knowledgeGraphRetrieval: z.boolean().default(false),
+  deepSearchReranker: z.boolean().default(false),
+  signalFacets: z.boolean().default(false),
+  // Pure-logic improvements: safe, default ON (they change default idea
+  // output by design but add no external calls).
+  adaptiveCollection: z.boolean().default(true), // velocity/credibility/corroboration ordering
+  validatedExemplars: z.boolean().default(true), // positive few-shot
+  chainOfEvidence: z.boolean().default(true), // signal-ID binding + verify
+  rerankTopK: z.number().int().min(4).max(50).default(6),
+  rerankFetchK: z.number().int().min(10).max(100).default(30),
+});
+
+const SMART_IDEAS_DEFAULTS = {
+  sigeValuation: false,
+  knowledgeGraphRetrieval: false,
+  deepSearchReranker: false,
+  signalFacets: false,
+  adaptiveCollection: true,
+  validatedExemplars: true,
+  chainOfEvidence: true,
+  rerankTopK: 6,
+  rerankFetchK: 30,
+} as const;
+
+export const ideasPipelineConfigSchema = z
+  .object({
+    smart: smartConfigSchema.default({ ...SMART_IDEAS_DEFAULTS }),
+  })
+  .default({
+    smart: { ...SMART_IDEAS_DEFAULTS },
+  });
+
+export const pipelinesConfigSchema = z
+  .object({
+    ideas: ideasPipelineConfigSchema.default({
+      smart: { ...SMART_IDEAS_DEFAULTS },
+    }),
+  })
+  .default({
+    ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
+  });
+
 export const opencrowConfigSchema = z.object({
   agent: agentConfigSchema.default({
     model: "claude-sonnet-4-6",
@@ -515,6 +561,9 @@ export const opencrowConfigSchema = z.object({
   rateLimit: rateLimitConfigSchema,
   memoryEviction: memoryEvictionConfigSchema.optional(),
   sige: sigeConfigSchema.optional(),
+  pipelines: pipelinesConfigSchema.default({
+    ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
+  }),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
@@ -547,3 +596,6 @@ export type RateLimitConfig = z.infer<typeof rateLimitConfigSchema>;
 export type RateLimitPerSenderConfig = z.infer<typeof rateLimitPerSenderSchema>;
 export type MemoryEvictionConfig = z.infer<typeof memoryEvictionConfigSchema>;
 export type SigeConfig = z.infer<typeof sigeConfigSchema>;
+export type SmartIdeasConfig = z.infer<typeof smartConfigSchema>;
+export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
+export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;

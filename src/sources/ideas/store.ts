@@ -1,4 +1,13 @@
 import { getDb } from "../../store/db";
+import { createLogger } from "../../logger";
+import {
+  type FeedbackKind,
+  type IdeaFeedbackEvent,
+  type IdeaFeedbackRow,
+  stageToFeedbackKind,
+} from "./feedback";
+
+const log = createLogger("ideas:store");
 export interface GeneratedIdea {
   readonly id: string;
   readonly agent_id: string;
@@ -202,18 +211,172 @@ export async function getStageCounts(): Promise<readonly StageCounts[]> {
   ` as Promise<StageCounts[]>;
 }
 
+export interface UpdateIdeaStageOptions {
+  readonly actor?: string | null;
+  readonly runId?: string | null;
+  readonly promptVersion?: string | null;
+  readonly model?: string | null;
+}
+
+/**
+ * Project the current `pipeline_stage` onto generated_ideas AND append an
+ * immutable transition event to idea_feedback, atomically inside a single
+ * transaction. The feedback row is the learning substrate; the projected
+ * stage is just the latest view.
+ *
+ * If the stage has no feedback semantics (see stageToFeedbackKind) only the
+ * projection happens. Feedback insertion failure inside the transaction will
+ * roll back the stage change so the two never diverge.
+ */
 export async function updateIdeaStage(
   id: string,
   stage: string,
+  opts?: UpdateIdeaStageOptions,
 ): Promise<GeneratedIdea | null> {
   const db = getDb();
-  const rows = await db`
-    UPDATE generated_ideas
-    SET pipeline_stage = ${stage}
-    WHERE id = ${id}
-    RETURNING *
-  `;
-  return (rows[0] as GeneratedIdea) ?? null;
+  const kind = stageToFeedbackKind(stage);
+
+  return db.begin(async (tx) => {
+    const rows = await tx`
+      UPDATE generated_ideas
+      SET pipeline_stage = ${stage}
+      WHERE id = ${id}
+      RETURNING *
+    `;
+    const updated = (rows[0] as GeneratedIdea) ?? null;
+    if (!updated) return null;
+
+    if (kind) {
+      await tx`
+        INSERT INTO idea_feedback (idea_id, kind, actor, run_id, prompt_version, model)
+        VALUES (${id}, ${kind}, ${opts?.actor ?? null}, ${opts?.runId ?? null}, ${opts?.promptVersion ?? null}, ${opts?.model ?? null})
+      `;
+    }
+
+    return updated;
+  });
+}
+
+// ============================================================================
+// Idea Feedback Event Log (learning substrate)
+// ============================================================================
+
+/**
+ * Append a single feedback event. Append-only: never updates or deletes.
+ * Degrades gracefully — a logging failure must not break the caller's flow,
+ * so this returns the inserted row or null rather than throwing.
+ */
+export async function insertIdeaFeedback(
+  event: IdeaFeedbackEvent,
+): Promise<IdeaFeedbackRow | null> {
+  const db = getDb();
+  try {
+    const rows = await db`
+      INSERT INTO idea_feedback (idea_id, kind, rating, actor, run_id, prompt_version, model)
+      VALUES (
+        ${event.idea_id},
+        ${event.kind},
+        ${event.rating ?? null},
+        ${event.actor ?? null},
+        ${event.run_id ?? null},
+        ${event.prompt_version ?? null},
+        ${event.model ?? null}
+      )
+      RETURNING *
+    `;
+    return (rows[0] as IdeaFeedbackRow) ?? null;
+  } catch (err) {
+    log.warn("Failed to insert idea feedback event", {
+      ideaId: event.idea_id,
+      kind: event.kind,
+      err,
+    });
+    return null;
+  }
+}
+
+/**
+ * Read the full event history for a single idea, oldest first.
+ */
+export async function getIdeaFeedback(
+  ideaId: string,
+  limit = 200,
+): Promise<readonly IdeaFeedbackRow[]> {
+  const db = getDb();
+  const cappedLimit = Math.min(Math.max(1, limit), 1000);
+  return db`
+    SELECT * FROM idea_feedback
+    WHERE idea_id = ${ideaId}
+    ORDER BY created_at ASC
+    LIMIT ${cappedLimit}
+  ` as Promise<IdeaFeedbackRow[]>;
+}
+
+export interface FeedbackKindCount {
+  readonly kind: FeedbackKind;
+  readonly count: number;
+}
+
+/**
+ * Aggregate event counts by kind across the whole log (optionally since a
+ * given epoch second). Useful for eval dashboards and learning loops.
+ */
+export async function getFeedbackCountsByKind(
+  since?: number,
+): Promise<readonly FeedbackKindCount[]> {
+  const db = getDb();
+  if (since !== undefined) {
+    return db`
+      SELECT kind, COUNT(*)::int AS count
+      FROM idea_feedback
+      WHERE created_at >= ${since}
+      GROUP BY kind
+      ORDER BY count DESC
+    ` as Promise<FeedbackKindCount[]>;
+  }
+  return db`
+    SELECT kind, COUNT(*)::int AS count
+    FROM idea_feedback
+    GROUP BY kind
+    ORDER BY count DESC
+  ` as Promise<FeedbackKindCount[]>;
+}
+
+export interface ValidationCountBySource {
+  readonly source_table: string;
+  readonly validated_count: number;
+}
+
+/**
+ * Join validated feedback events back to the source items that produced the
+ * ideas, counting how many validations each source table contributed to.
+ * This is the raw signal for per-source credibility weighting.
+ *
+ * Best-effort: depends on source_ids_json being populated; a single idea's
+ * sources each count once per validation event. Returns [] on any failure
+ * (e.g. malformed JSON) so credibility computation degrades gracefully.
+ */
+export async function getValidationCountsBySource(): Promise<
+  readonly ValidationCountBySource[]
+> {
+  const db = getDb();
+  try {
+    return db`
+      SELECT src->>'table' AS source_table, COUNT(*)::int AS validated_count
+      FROM idea_feedback f
+      JOIN generated_ideas gi ON gi.id = f.idea_id
+      CROSS JOIN LATERAL jsonb_array_elements(
+        COALESCE(NULLIF(gi.source_ids_json, ''), '[]')::jsonb
+      ) AS src
+      WHERE f.kind = 'validated'
+        AND src->>'table' IS NOT NULL
+      GROUP BY src->>'table'
+      ORDER BY validated_count DESC
+    ` as Promise<ValidationCountBySource[]>;
+  } catch (err) {
+    log.warn("Failed to aggregate validation counts by source", { err });
+    return [];
+  }
 }
 
 // ============================================================================
