@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  giantConfigSchema,
+  GIANT_DEFAULT_WEIGHTS,
   ideasPipelineConfigSchema,
   opencrowConfigSchema,
   pipelinesConfigSchema,
@@ -22,6 +24,19 @@ describe("smartConfigSchema", () => {
       chainOfEvidence: true,
       rerankTopK: 6,
       rerankFetchK: 30,
+      giant: {
+        enabled: true,
+        enforceGates: false,
+        weights: {
+          acuteProblem: 0.22,
+          whyNow: 0.18,
+          demand: 0.18,
+          nonObviousness: 0.15,
+          defensibility: 0.12,
+          marketShape: 0.08,
+          founderFit: 0.07,
+        },
+      },
     });
   });
 
@@ -81,6 +96,65 @@ describe("smartConfigSchema", () => {
     });
     expect(parsed.sigeValuation).toBe(true);
     expect(parsed.rerankTopK).toBe(12);
+  });
+});
+
+describe("giantConfigSchema", () => {
+  test("computes + stores by default but enforces gates in SHADOW mode", () => {
+    const parsed = giantConfigSchema.parse(undefined);
+    expect(parsed.enabled).toBe(true);
+    expect(parsed.enforceGates).toBe(false);
+  });
+
+  test("applies the 7 default axis weights", () => {
+    const parsed = giantConfigSchema.parse({});
+    expect(parsed.weights).toEqual({
+      acuteProblem: 0.22,
+      whyNow: 0.18,
+      demand: 0.18,
+      nonObviousness: 0.15,
+      defensibility: 0.12,
+      marketShape: 0.08,
+      founderFit: 0.07,
+    });
+  });
+
+  test("default weights match the exported GIANT_DEFAULT_WEIGHTS", () => {
+    expect(giantConfigSchema.parse({}).weights).toEqual({
+      ...GIANT_DEFAULT_WEIGHTS,
+    });
+  });
+
+  test("default weights sum to 1.0", () => {
+    const sum = Object.values(GIANT_DEFAULT_WEIGHTS).reduce(
+      (acc, w) => acc + w,
+      0,
+    );
+    expect(sum).toBeCloseTo(1, 10);
+  });
+
+  test("enforceGates can be opted into for hard-gate enforcement", () => {
+    const parsed = giantConfigSchema.parse({ enforceGates: true });
+    expect(parsed.enforceGates).toBe(true);
+    // enabling enforcement does not implicitly disable compute/store
+    expect(parsed.enabled).toBe(true);
+  });
+
+  test("weights accept partial overrides and default the rest", () => {
+    const parsed = giantConfigSchema.parse({
+      weights: { acuteProblem: 0.3 },
+    });
+    expect(parsed.weights.acuteProblem).toBe(0.3);
+    expect(parsed.weights.whyNow).toBe(0.18);
+    expect(parsed.weights.founderFit).toBe(0.07);
+  });
+
+  test("is reachable via the documented smart.giant access path", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    const giant = cfg.pipelines.ideas.smart.giant;
+    expect(giant.enabled).toBe(true);
+    expect(giant.enforceGates).toBe(false);
+    expect(giant.weights.demand).toBe(0.18);
   });
 });
 

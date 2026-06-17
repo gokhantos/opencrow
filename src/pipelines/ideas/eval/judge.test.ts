@@ -1,39 +1,106 @@
 import { test, expect, describe } from "bun:test";
-import { parseJudgeVerdicts, verdictToSubscores } from "./judge";
+import {
+  parseJudgeVerdicts,
+  verdictToSubscores,
+  giantScoresToLegacy,
+} from "./judge";
 import { parseCritiqueSubscores } from "./store";
+import { GIANT_AXIS_KEYS } from "../giant";
 
-// ── parseJudgeVerdicts (pure) ───────────────────────────────────────────────────
+// A full, well-formed GIANT score block (all axes above gate thresholds).
+function fullScores(overrides: Partial<Record<string, number>> = {}) {
+  return {
+    acuteProblem: 4,
+    whyNow: 4,
+    demand: 4,
+    nonObviousness: 3,
+    defensibility: 3,
+    marketShape: 3,
+    founderFit: 3,
+    ...overrides,
+  };
+}
 
-describe("parseJudgeVerdicts", () => {
-  test("parses and clamps scores, accepts snake_case grounding", () => {
-    const verdicts = parseJudgeVerdicts({
-      verdicts: [
-        { id: "a", novelty: 1.4, feasibility: -0.2, signal_grounding: 0.6, rationale: "x" },
-      ],
-    });
+// ── parseJudgeVerdicts (pure, GIANT) ────────────────────────────────────────────
+
+describe("parseJudgeVerdicts (GIANT)", () => {
+  test("emits the full 7-axis GIANT vector + archetype + composite", () => {
+    const verdicts = parseJudgeVerdicts(
+      {
+        verdicts: [
+          {
+            id: "a",
+            scores: fullScores(),
+            archetype: "hard-fact",
+            evidence: { acuteProblem: "complaint cluster" },
+            rationale: "x",
+          },
+        ],
+      },
+      { hasDemandEvidence: true },
+    );
     expect(verdicts).toHaveLength(1);
-    expect(verdicts[0]).toEqual({
-      id: "a",
-      novelty: 1, // clamped
-      feasibility: 0, // clamped
-      signalGrounding: 0.6,
-      rationale: "x",
-    });
+    const v = verdicts[0]!;
+    expect(v.id).toBe("a");
+    expect(v.archetype).toBe("hard-fact");
+    for (const key of GIANT_AXIS_KEYS) {
+      expect(typeof v.giantScores[key]).toBe("number");
+    }
+    expect(v.gated).toBe(false);
+    expect(v.composite).toBeGreaterThan(0);
+    expect(v.composite).toBeLessThanOrEqual(5);
+    expect(v.rationale).toBe("x");
+    expect(v.evidence.acuteProblem).toBe("complaint cluster");
   });
 
-  test("accepts camelCase signalGrounding fallback", () => {
-    const v = parseJudgeVerdicts({ verdicts: [{ id: "a", signalGrounding: 0.3 }] });
-    expect(v[0]!.signalGrounding).toBe(0.3);
+  test("hard gate fires when acuteProblem <= 1", () => {
+    const v = parseJudgeVerdicts({
+      verdicts: [{ id: "a", scores: fullScores({ acuteProblem: 1 }) }],
+    })[0]!;
+    expect(v.gated).toBe(true);
+    expect(v.gateReasons.some((r) => r.startsWith("hard-gate:acuteProblem"))).toBe(
+      true,
+    );
   });
 
-  test("coerces string scores", () => {
-    const v = parseJudgeVerdicts({ verdicts: [{ id: "a", novelty: "0.5" }] });
-    expect(v[0]!.novelty).toBe(0.5);
+  test("demand evidence-gate caps demand and records a reason (not gated)", () => {
+    // No hasDemandEvidence → demand 5 capped to 2 in aggregation.
+    const v = parseJudgeVerdicts({
+      verdicts: [{ id: "a", scores: fullScores({ demand: 5 }) }],
+    })[0]!;
+    expect(v.gated).toBe(false);
+    expect(
+      v.gateReasons.some((r) => r.startsWith("demand-evidence-gate:")),
+    ).toBe(true);
+    // raw asserted score preserved on the scorecard
+    expect(v.giantScores.demand).toBe(5);
+  });
+
+  test("hasDemandEvidence:true suppresses the demand cap reason", () => {
+    const v = parseJudgeVerdicts(
+      { verdicts: [{ id: "a", scores: fullScores({ demand: 5 }) }] },
+      { hasDemandEvidence: true },
+    )[0]!;
+    expect(
+      v.gateReasons.some((r) => r.startsWith("demand-evidence-gate:")),
+    ).toBe(false);
+  });
+
+  test("malformed / partial scores degrade to safe defaults (never throws)", () => {
+    const v = parseJudgeVerdicts({ verdicts: [{ id: "a" }] })[0]!;
+    // all axes default to 0 → hard gates fire
+    for (const key of GIANT_AXIS_KEYS) expect(v.giantScores[key]).toBe(0);
+    expect(v.gated).toBe(true);
+    expect(v.archetype).toBe("hair-on-fire"); // default archetype
   });
 
   test("drops entries without a valid id", () => {
     const v = parseJudgeVerdicts({
-      verdicts: [{ novelty: 0.5 }, { id: "  ", novelty: 0.5 }, { id: "b", novelty: 0.5 }],
+      verdicts: [
+        { scores: fullScores() },
+        { id: "  ", scores: fullScores() },
+        { id: "b", scores: fullScores() },
+      ],
     });
     expect(v).toHaveLength(1);
     expect(v[0]!.id).toBe("b");
@@ -44,30 +111,52 @@ describe("parseJudgeVerdicts", () => {
     expect(parseJudgeVerdicts({})).toEqual([]);
   });
 
-  test("missing scores default to 0", () => {
-    const v = parseJudgeVerdicts({ verdicts: [{ id: "a" }] });
-    expect(v[0]).toEqual({
-      id: "a",
-      novelty: 0,
-      feasibility: 0,
-      signalGrounding: 0,
-      rationale: "",
-    });
+  test("clamps out-of-range axis scores into [0,5]", () => {
+    const v = parseJudgeVerdicts({
+      verdicts: [{ id: "a", scores: fullScores({ nonObviousness: 99, defensibility: -3 }) }],
+    })[0]!;
+    expect(v.giantScores.nonObviousness).toBe(5);
+    expect(v.giantScores.defensibility).toBe(0);
+  });
+
+  test("parses dated why-now shifts", () => {
+    const v = parseJudgeVerdicts({
+      verdicts: [
+        {
+          id: "a",
+          scores: fullScores(),
+          whyNow: [
+            { axis: "regulatory", claim: "new rule", date: "2025-03", strength: 0.8 },
+            { axis: "garbage", claim: "" }, // dropped (empty claim)
+          ],
+        },
+      ],
+    })[0]!;
+    expect(v.whyNow).toHaveLength(1);
+    expect(v.whyNow[0]!.axis).toBe("regulatory");
+    expect(v.whyNow[0]!.date).toBe("2025-03");
   });
 });
 
-// ── verdictToSubscores ──────────────────────────────────────────────────────────
+// ── giantScoresToLegacy / verdictToSubscores ────────────────────────────────────
+
+describe("giantScoresToLegacy", () => {
+  test("projects GIANT axes onto [0,1] legacy sub-scores", () => {
+    const legacy = giantScoresToLegacy(fullScores({ nonObviousness: 5, founderFit: 0, acuteProblem: 2.5 }));
+    expect(legacy.novelty).toBe(1); // 5/5
+    expect(legacy.feasibility).toBe(0); // 0/5
+    expect(legacy.signalGrounding).toBe(0.5); // 2.5/5
+  });
+});
 
 describe("verdictToSubscores", () => {
   test("maps verdict to critique subscores shape", () => {
-    const sub = verdictToSubscores({
-      id: "a",
-      novelty: 0.7,
-      feasibility: 0.8,
-      signalGrounding: 0.9,
-      rationale: "r",
-    });
-    expect(sub).toEqual({ novelty: 0.7, feasibility: 0.8, signalGrounding: 0.9 });
+    const v = parseJudgeVerdicts(
+      { verdicts: [{ id: "a", scores: fullScores({ nonObviousness: 5, founderFit: 5, acuteProblem: 5 }) }] },
+      { hasDemandEvidence: true },
+    )[0]!;
+    const sub = verdictToSubscores(v);
+    expect(sub).toEqual({ novelty: 1, feasibility: 1, signalGrounding: 1 });
   });
 });
 

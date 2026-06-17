@@ -76,7 +76,9 @@ function evalComparison(
   const right = resolveOperand(comparison.right, context);
 
   switch (comparison.op) {
-    case "==": return left == right; // intentional loose equality for flexibility
+    // biome-ignore lint/suspicious/noDoubleEquals: intentional loose equality for cross-type flexibility
+    case "==": return left == right;
+    // biome-ignore lint/suspicious/noDoubleEquals: intentional loose equality for cross-type flexibility
     case "!=": return left != right;
     case ">": return (left as number) > (right as number);
     case "<": return (left as number) < (right as number);

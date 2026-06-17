@@ -15,6 +15,11 @@ export {
   aggregateMeanSubscores,
   aggregateOutcomeRates,
   aggregateDedupQuality,
+  aggregateGiantRun,
+  computeEmbeddingNovelty,
+  cosineSimilarity,
+  cosineDistance,
+  meanPairwiseCosineDistance,
   roundOrNull,
   type EvalIdeaRow,
   type EvalOutcomeRow,
@@ -24,6 +29,12 @@ export {
   type MeanSubscores,
   type OutcomeRates,
   type DedupQuality,
+  type GiantScoredIdea,
+  type GiantRunAggregate,
+  type NoveltyItem,
+  type NoveltyEmbedDep,
+  type NoveltySearchDep,
+  type EmbeddingNoveltyMetric,
 } from "./aggregate";
 
 export {
@@ -48,6 +59,7 @@ export {
   judgeIdeas,
   parseJudgeVerdicts,
   verdictToSubscores,
+  giantScoresToLegacy,
   type JudgeIdeaInput,
   type JudgeVerdict,
   type JudgeOptions,
@@ -65,4 +77,12 @@ export {
   type PersistEvalSnapshotParams,
 } from "./store";
 
-export { runEval, type RunEvalOptions, type RunEvalResult } from "./harness";
+export {
+  runEval,
+  reJudgeStoredIdeas,
+  type RunEvalOptions,
+  type RunEvalResult,
+  type ReJudgeOptions,
+  type ReJudgeResult,
+  type GiantWeightOverrides,
+} from "./harness";

@@ -18,16 +18,29 @@
 import { createLogger } from "../../../logger";
 import {
   aggregateEval,
+  aggregateGiantRun,
+  computeEmbeddingNovelty,
   type DedupLabel,
+  type EmbeddingNoveltyMetric,
   type EvalAggregate,
   type EvalIdeaRow,
+  type GiantRunAggregate,
+  type GiantScoredIdea,
+  type NoveltyEmbedDep,
+  type NoveltySearchDep,
 } from "./aggregate";
+import type { GiantAxisKey } from "../giant";
 import {
   detectRegressions,
   type RegressionAlert,
   type RegressionOptions,
 } from "./regression";
-import { judgeIdeas, type JudgeOptions, type JudgeVerdict, verdictToSubscores } from "./judge";
+import {
+  judgeIdeas,
+  type JudgeOptions,
+  type JudgeVerdict,
+  verdictToSubscores,
+} from "./judge";
 import {
   loadEvalIdeas,
   loadEvalOutcomes,
@@ -201,5 +214,123 @@ export async function runEval(opts?: RunEvalOptions): Promise<RunEvalResult> {
       baselineCount: 0,
       snapshotId: null,
     };
+  }
+}
+
+// ── Re-judge stored ideas under GIANT ──────────────────────────────────────────
+
+/** Per-axis weight overrides for the GIANT run aggregate (defaults the rest). */
+export type GiantWeightOverrides = Partial<Record<GiantAxisKey, number>>;
+
+export interface ReJudgeOptions {
+  /** Scope which stored ideas to re-score (category / run / since / limit). */
+  readonly load?: LoadIdeasOptions;
+  /**
+   * LLM-judge config. Re-judging is the WHOLE point of this entrypoint, so the
+   * judge defaults to ENABLED here (unlike runEval) unless explicitly disabled.
+   */
+  readonly judge?: JudgeOptions;
+  /** GIANT axis weight overrides forwarded to the run aggregate. */
+  readonly weights?: GiantWeightOverrides;
+  /**
+   * Optional injected embedding dep for the objective novelty metric. Graceful:
+   * omitted → novelty metric is null. Kept injectable so the harness has no hard
+   * dependency on memory/Qdrant and the pure math stays unit-testable.
+   */
+  readonly embed?: NoveltyEmbedDep | null;
+  /** Optional injected corpus-search dep (known products/ideas). */
+  readonly search?: NoveltySearchDep | null;
+}
+
+export interface ReJudgeResult {
+  /** Re-scored verdicts keyed by idea id (GIANT 7-axis + composite + gate). */
+  readonly verdicts: ReadonlyMap<string, JudgeVerdict>;
+  /** Run-level GIANT aggregate over the re-scored batch (null when nothing scored). */
+  readonly giant: GiantRunAggregate | null;
+  /** Objective embedding-novelty metric (null when no embed dep / memory off). */
+  readonly embeddingNovelty: EmbeddingNoveltyMetric | null;
+  /** The ids that were loaded and submitted for re-judging. */
+  readonly ideaIds: readonly string[];
+}
+
+const EMPTY_REJUDGE: ReJudgeResult = {
+  verdicts: new Map(),
+  giant: null,
+  embeddingNovelty: null,
+  ideaIds: [],
+};
+
+/**
+ * Load existing generated_ideas and RE-SCORE them under the GIANT rubric.
+ *
+ * This is how we re-score the historical FoodMemory / BudgetBloom / LangLoop
+ * batch and confirm the generic ones rank LOWER on the non-compensatory
+ * composite. Returns the per-idea verdicts plus the run-level GIANT aggregate
+ * (per-axis means, gate-kill rate, composite distribution) and the objective
+ * embedding-novelty metric.
+ *
+ * NOT on the pipeline hot path. Never throws — every sub-step degrades to a
+ * best-effort partial result so a re-judge run can't break the caller.
+ */
+export async function reJudgeStoredIdeas(
+  opts?: ReJudgeOptions,
+): Promise<ReJudgeResult> {
+  try {
+    const ideas = await loadEvalIdeas(opts?.load);
+    if (ideas.length === 0) {
+      log.info("reJudgeStoredIdeas: no stored ideas to re-score");
+      return EMPTY_REJUDGE;
+    }
+
+    // Re-score under GIANT (judge ENABLED by default for this entrypoint).
+    const verdicts = await judgeIdeas(
+      ideas.map((i) => ({ id: i.id, title: i.title ?? "", summary: i.summary ?? "" })),
+      { enabled: true, ...opts?.judge },
+    );
+
+    // Run-level GIANT aggregate over whatever was scored.
+    const scored: readonly GiantScoredIdea[] = [...verdicts.values()].map((v) => ({
+      id: v.id,
+      scores: v.giantScores,
+      // Demand evidence presence is re-derived from the gate result the judge
+      // already computed: if its gateReasons carried no demand cap, the demand
+      // axis was treated as evidenced (or already <= cap).
+      hasDemandEvidence: !v.gateReasons.some((r) =>
+        r.startsWith("demand-evidence-gate:"),
+      ),
+    }));
+    const giant =
+      scored.length > 0
+        ? aggregateGiantRun(scored, { weights: opts?.weights })
+        : null;
+
+    // Objective embedding-novelty (optional + graceful).
+    const embeddingNovelty =
+      opts?.embed != null
+        ? await computeEmbeddingNovelty(
+            ideas.map((i) => ({
+              id: i.id,
+              text: `${i.title ?? ""}\n${i.summary ?? ""}`.trim(),
+            })),
+            { embed: opts.embed, search: opts.search ?? null },
+          )
+        : null;
+
+    log.info("reJudgeStoredIdeas complete", {
+      loaded: ideas.length,
+      scored: verdicts.size,
+      gateKillRate: giant?.gateKillRate ?? null,
+      compositeMean: giant?.compositeMean ?? null,
+    });
+
+    return {
+      verdicts,
+      giant,
+      embeddingNovelty,
+      ideaIds: ideas.map((i) => i.id),
+    };
+  } catch (err) {
+    log.error("reJudgeStoredIdeas failed; returning empty result", { err });
+    return EMPTY_REJUDGE;
   }
 }

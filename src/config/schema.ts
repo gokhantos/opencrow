@@ -458,6 +458,53 @@ export const sigeConfigSchema = z.object({
     }),
 });
 
+// Default weights for the 7 GIANT rubric axes. They are non-compensatory
+// inputs into a weighted geometric mean; the values intentionally sum to 1.0
+// but are not normalized here (the aggregation math owns that). Each axis is
+// scored 0..5; acuteProblem/whyNow are hard gates and demand is evidence-gated.
+export const GIANT_DEFAULT_WEIGHTS = {
+  acuteProblem: 0.22,
+  whyNow: 0.18,
+  demand: 0.18,
+  nonObviousness: 0.15,
+  defensibility: 0.12,
+  marketShape: 0.08,
+  founderFit: 0.07,
+} as const;
+
+// The single shared GIANT optimization target. Default: compute + store in
+// SHADOW mode (log would-kill decisions, never drop). Enforcement of hard gates
+// is opt-in via enforceGates so the live pipeline keeps producing ideas while
+// kill-logs are reviewed.
+export const giantConfigSchema = z
+  .object({
+    // Compute + store GIANT scores for every idea.
+    enabled: z.boolean().default(true),
+    // SHADOW mode by default: log would-kill decisions but do NOT drop gated
+    // ideas. Set true to actually enforce the hard gates / evidence gate.
+    enforceGates: z.boolean().default(false),
+    // Per-axis weights for the weighted geometric mean. Optional + fully
+    // defaulted so existing config stays backward-compatible.
+    weights: z
+      .object({
+        acuteProblem: z.number().default(GIANT_DEFAULT_WEIGHTS.acuteProblem),
+        whyNow: z.number().default(GIANT_DEFAULT_WEIGHTS.whyNow),
+        demand: z.number().default(GIANT_DEFAULT_WEIGHTS.demand),
+        nonObviousness: z
+          .number()
+          .default(GIANT_DEFAULT_WEIGHTS.nonObviousness),
+        defensibility: z.number().default(GIANT_DEFAULT_WEIGHTS.defensibility),
+        marketShape: z.number().default(GIANT_DEFAULT_WEIGHTS.marketShape),
+        founderFit: z.number().default(GIANT_DEFAULT_WEIGHTS.founderFit),
+      })
+      .default({ ...GIANT_DEFAULT_WEIGHTS }),
+  })
+  .default({
+    enabled: true,
+    enforceGates: false,
+    weights: { ...GIANT_DEFAULT_WEIGHTS },
+  });
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -479,6 +526,9 @@ export const smartConfigSchema = z.object({
   chainOfEvidence: z.boolean().default(true), // signal-ID binding + verify
   rerankTopK: z.number().int().min(4).max(50).default(6),
   rerankFetchK: z.number().int().min(10).max(100).default(30),
+  // The GIANT shared optimization target. Compute + store in SHADOW mode by
+  // default (enforceGates=false). Fully defaulted -> backward-compatible.
+  giant: giantConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -493,6 +543,11 @@ const SMART_IDEAS_DEFAULTS = {
   chainOfEvidence: true,
   rerankTopK: 6,
   rerankFetchK: 30,
+  giant: {
+    enabled: true,
+    enforceGates: false,
+    weights: { ...GIANT_DEFAULT_WEIGHTS },
+  },
 } as const;
 
 export const ideasPipelineConfigSchema = z
@@ -606,5 +661,6 @@ export type RateLimitPerSenderConfig = z.infer<typeof rateLimitPerSenderSchema>;
 export type MemoryEvictionConfig = z.infer<typeof memoryEvictionConfigSchema>;
 export type SigeConfig = z.infer<typeof sigeConfigSchema>;
 export type SmartIdeasConfig = z.infer<typeof smartConfigSchema>;
+export type GiantConfig = z.infer<typeof giantConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;

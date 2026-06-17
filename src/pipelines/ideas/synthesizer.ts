@@ -49,6 +49,12 @@ import {
   loadSignalCalibration,
   type SignalCalibration,
 } from "./signal-calibration";
+import {
+  parseGiant,
+  aggregateGiant,
+  type ParsedGiant,
+} from "./giant";
+import type { GiantConfig } from "../../config/schema";
 
 const log = createLogger("pipeline:synthesizer");
 
@@ -496,6 +502,18 @@ async function graphEvidence(
   }
 }
 
+// ── Schlep / defensibility instruction (shared by generation + critique) ───
+//
+// Steers generation toward HARD, UNGLAMOROUS, DEFENSIBLE ideas (the kind that
+// score high on the GIANT defensibility / nonObviousness axes) and away from
+// the templated "X for Y app" clones that pattern-match a top-ideas list but
+// have no moat. Injected into both generation prompts (Pass 2 + single-pass).
+const SCHLEP_INSTRUCTION = `SCHLEP & DEFENSIBILITY (CRITICAL):
+- Prefer HARD, UNGLAMOROUS, DEFENSIBLE ideas — the unsexy "schlep" work most builders avoid (gnarly integrations, regulated workflows, ops/back-office, vertical depth, data plumbing). The hard part IS the moat.
+- A fast-follower should NOT be able to copy the core in ~6 months. Reward counter-positioning and accruable advantages (proprietary data, hard-won integrations, trust/compliance, deep workflow lock-in).
+- PENALIZE templated "X for Y app" clones, thin ChatGPT wrappers, and ideas a weekend hacker reproduces. If it would appear on a generic "top AI app ideas" list, it is too obvious.
+- Anchor every idea in an ACUTE problem a nameable user wants solved NOW (a painkiller, not a vitamin) and a DATED "why now" shift — not "AI is hot" hand-waving.`;
+
 // ── Category Context ─────────────────────────────────────────────────────
 
 const CATEGORY_CONTEXT: Record<IdeaCategory, string> = {
@@ -508,7 +526,9 @@ WHAT MAKES A GREAT MOBILE APP IDEA:
 - Has a "10x moment" — a specific use case where it's 10x better than the current workaround
 - Revenue model works at mobile scale (freemium, subscription, or transaction-based)
 
-AVOID: Enterprise-only ideas, ideas requiring complex integrations, ideas that need a marketplace to work (chicken-and-egg), ideas where a website would work just as well.`,
+NOTE: B2B, vertical, ops/back-office, and devtools ideas are WELCOME when they have a deep, defensible wedge — do not discourage them. A gnarly integration or regulated workflow is often the moat, not a reason to avoid.
+
+AVOID: ideas that need a two-sided marketplace to even function (chicken-and-egg with no seed side), thin clones with no defensible wedge.`,
 
   crypto_project: `Generate crypto/blockchain project ideas (DeFi, infrastructure, tooling, consumer).
 
@@ -552,7 +572,9 @@ WHAT MAKES A GREAT PRODUCT IDEA:
 - Has a clear "why now" — something changed recently that makes this possible or necessary
 - The one-line pitch makes someone say "I need that" not just "that's interesting"
 
-AVOID: Platform plays that require multiple sides, ideas that need partnerships to launch, ideas where the main value is aggregation without unique insight.`,
+NOTE: Non-consumer-app categories are fully in scope — defensible B2B, devtools, ops, infrastructure, and vertical SaaS ideas are encouraged when they target an acute, deep need. The unglamorous, hard-to-copy idea often wins.
+
+AVOID: two-sided platform plays with no path to seed the first side, ideas where the main value is aggregation without unique insight or defensibility.`,
 };
 
 // ── Insights section builder ──────────────────────────────────────────────
@@ -872,6 +894,8 @@ DIVERSITY REQUIREMENT (CRITICAL):
 
 ${CATEGORY_CONTEXT[category]}
 
+${SCHLEP_INSTRUCTION}
+
 === VALIDATED INTERSECTION HYPOTHESES (ranked by signal strength) ===
 ${intersectionLines}
 ${sanitizeForPrompt(deepSearchContext)}
@@ -971,28 +995,89 @@ function normalizeSignalIds(
   return { ...candidate, supportingSignalIds: ids };
 }
 
-// ── Pass 3: Idea Critique ─────────────────────────────────────────────────
+// ── Pass 3: GIANT Critique ─────────────────────────────────────────────────
+//
+// The critique LLM pass now scores each idea against THE GIANT RUBRIC — the
+// single shared 7-axis optimization target (acuteProblem, whyNow, demand,
+// nonObviousness, defensibility, marketShape, founderFit, each 0..5) plus a
+// Sequoia archetype tag, a structured dated whyNow array, and a painSeverity.
+// It is still a SINGLE LLM call (no added cost) — only WHAT it scores changed.
+//
+// Aggregation is non-compensatory (weighted geometric mean) and runs in
+// SHADOW MODE: aggregateGiant always computes `gated` from the hard gates +
+// demand evidence-gate, but ideas are only actually dropped when
+// smart.giant.enforceGates is true. The composite (0..5) becomes qualityScore
+// so existing downstream code keeps working.
 
-interface CritiqueScore {
-  readonly specificity: number;
-  readonly signalGrounding: number;
-  readonly differentiation: number;
-  readonly buildability: number;
-}
+/** Strong per-axis anchors for the GIANT critique prompt (high vs low). */
+const GIANT_RUBRIC_PROMPT = `Score each idea against THE GIANT RUBRIC — 7 axes, each 0..5. Be ruthless; reserve 4-5 for genuine outliers. Reward HARD, UNGLAMOROUS, DEFENSIBLE ideas; penalize templated "X for Y app" clones.
 
-interface CritiquedIdea {
+1. acuteProblem (0..5) — Is this a PAINKILLER a nameable user wants v1 NOW, backed by complaint-cluster size/recency? HIGH(5): a specific user is bleeding from this today and hacking a workaround. LOW(0-1): a "nice to have" vitamin, no one is actively hurting. SCORE <=1 IS A HARD GATE — reject-worthy.
+2. whyNow (0..5) — Is there >=1 DATED, source-bound enabling shift (technological/regulatory/behavioral/economic) that makes this possible/necessary NOW? HIGH(5): a concrete dated shift you can cite. LOW(0-1): "AI is hot" hand-waving, nothing recent actually changed. SCORE <=1 IS A HARD GATE.
+3. demand (0..5) — MUST cite a real demand artifact (search-volume delta, job-posting count, funding round, waitlist size, "looking for a tool that..." posts). HIGH(5): a quantified, cited artifact. LOW(<=2): no cited artifact — if you cannot cite one, score this <=2. Never free-score demand on vibes.
+4. nonObviousness (0..5) — How far is this from the known-product corpus AND its in-batch siblings? HIGH(5): unsexy-but-defensible, would NOT show up on a "top AI app ideas" list. LOW(0-1): an obvious template ("Notion for X", "Uber for Y", "ChatGPT wrapper for Z").
+5. defensibility (0..5) — Is there a moat a fast-follower CANNOT copy in ~6 months (counter-positioning, accruable advantage, hard-won data/integration)? HIGH(5): a structural advantage. LOW(0-1): a thin UI a weekend hacker reproduces.
+6. marketShape (0..5) — Is there a deep BEACHHEAD user with an acute need plus a named path to a large TAM (a well, not a hole)? HIGH(5): narrow wedge → big market. LOW(0-1): a shallow hole with no expansion path.
+7. founderFit (0..5) — Execution difficulty judged AGAINST THE IDEA'S ARCHETYPE (not uniformly). A hard-fact idea SHOULD be hard; reward ideas whose difficulty matches a defensible archetype rather than easy-but-trivial.
+
+Also tag ARCHETYPE: "hair-on-fire" (acute pain, sell aspirin today) | "hard-fact" (a non-obvious truth about the world) | "future-vision" (bet on where things are going).
+Provide a structured whyNow array of dated, source-bound enabling shifts.
+Provide painSeverity = the acuteProblem axis value (0..5), for fast pain filtering.`;
+
+/** One parsed GIANT critique entry, keyed back to its idea by title. */
+interface GiantCritiqueEntry {
   readonly title: string;
-  readonly scores: CritiqueScore;
-  readonly avgScore: number;
+  readonly parsed: ParsedGiant;
+  readonly painSeverity: number;
   readonly verdict: string;
 }
 
+/**
+ * Whether the parsed GIANT carries a cited demand artifact, so the demand
+ * evidence-gate can decide whether to cap the demand axis. Heuristic + tolerant:
+ * a demand artifact is present when the demand evidence citation is non-empty OR
+ * any whyNow shift is bound to a real signal id. Errs toward NOT capping only
+ * when there is concrete evidence — un-evidenced demand stays capped (the GIANT
+ * default). Pure.
+ */
+export function hasDemandEvidence(parsed: ParsedGiant): boolean {
+  const demandEvidence = parsed.evidence.demand?.trim() ?? "";
+  if (demandEvidence.length > 0) return true;
+  return parsed.whyNow.some(
+    (shift) =>
+      typeof shift.boundSignalId === "string" &&
+      shift.boundSignalId.trim().length > 0,
+  );
+}
+
+/**
+ * Map a GIANT composite (0..5, weighted geometric mean) onto the legacy
+ * qualityScore scale (the rest of the pipeline reads qualityScore for sort /
+ * MMR / persistence). The composite IS a 0..5 scale already, so this is an
+ * identity clamp into [0, 5] — kept as a named seam so the derivation is
+ * explicit and testable. Pure.
+ */
+export function compositeToQualityScore(composite: number): number {
+  if (!Number.isFinite(composite)) return 0;
+  return Math.min(5, Math.max(0, composite));
+}
+
+/**
+ * Score candidates against the GIANT rubric in a single LLM call, then aggregate
+ * each into the non-compensatory composite. Shadow-mode by default: gated ideas
+ * are KEPT (with their GIANT scorecard attached) and merely logged unless
+ * `giant.enforceGates` is true, in which case gated ideas are dropped.
+ *
+ * Backward-compatible: on any parse/LLM failure the original candidates are
+ * returned unchanged so the optional GIANT path can't break the pipeline.
+ */
 async function critiqueIdeas(
   candidates: readonly GeneratedIdeaCandidate[],
   trendsSummary: string,
   painsSummary: string,
   capabilitiesSummary: string,
   model: string,
+  giant: GiantConfig,
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const ideaList = candidates.map((c, i) =>
     `${i + 1}. "${c.title}"\n   Summary: ${c.summary.slice(0, 300)}\n   Reasoning: ${c.reasoning.slice(0, 200)}\n   Target: ${c.targetAudience}\n   Features: ${c.keyFeatures.slice(0, 4).join(", ")}`,
@@ -1014,23 +1099,41 @@ ${rawContext}
 === IDEAS TO CRITIQUE ===
 ${ideaList}
 
-Score each idea on 4 criteria (0.0 to 1.0):
-- specificity: Is this a concrete product (high) or a vague category play (low)?
-- signalGrounding: Can each claim be traced to specific data points above (high) or is it generic (low)?
-- differentiation: Is this meaningfully different from obvious existing solutions (high) or incremental (low)?
-- buildability: Can a small team ship an MVP in 4-8 weeks (high) or does it require massive infrastructure (low)?
+${GIANT_RUBRIC_PROMPT}
 
 Return ONLY a JSON array with one entry per idea (in the same order):
 [
   {
     "title": "string — must match exactly",
     "scores": {
-      "specificity": number,
-      "signalGrounding": number,
-      "differentiation": number,
-      "buildability": number
+      "acuteProblem": number,
+      "whyNow": number,
+      "demand": number,
+      "nonObviousness": number,
+      "defensibility": number,
+      "marketShape": number,
+      "founderFit": number
     },
-    "avgScore": number,
+    "archetype": "hair-on-fire" | "hard-fact" | "future-vision",
+    "painSeverity": number,
+    "whyNow": [
+      {
+        "axis": "technological" | "regulatory" | "behavioral" | "economic",
+        "claim": "string — the dated enabling shift",
+        "boundSignalId": "string — a [id:...] token if this is bound to a real signal (optional)",
+        "date": "string — ISO-ish date of the shift (optional)",
+        "strength": number
+      }
+    ],
+    "evidence": {
+      "acuteProblem": "string — per-axis evidence citation",
+      "whyNow": "string",
+      "demand": "string — MUST cite a demand artifact or leave empty (demand is then capped low)",
+      "nonObviousness": "string",
+      "defensibility": "string",
+      "marketShape": "string",
+      "founderFit": "string"
+    },
     "verdict": "string — one sentence on the idea's core strength or fatal flaw"
   }
 ]`;
@@ -1041,72 +1144,110 @@ Return ONLY a JSON array with one entry per idea (in the same order):
 
   const response = await chat(messages, {
     ...buildChatOptions(model),
-    systemPrompt: "You are a ruthless product idea critic. Score each idea honestly. Output only valid JSON arrays.",
+    systemPrompt:
+      "You are a ruthless product idea critic scoring ideas against the GIANT rubric. Score honestly; cite per-axis evidence. Output only valid JSON arrays.",
   });
 
-  log.info("Pass 3 (critique) raw response", {
+  log.info("Pass 3 (GIANT critique) raw response", {
     length: response.text.length,
     preview: response.text.slice(0, 200),
   });
 
-  const critiques = parseJsonFromResponse<CritiquedIdea[]>(response.text, []);
+  const rawCritiques = parseJsonFromResponse<unknown[]>(response.text, []);
 
-  if (critiques.length === 0) {
+  if (rawCritiques.length === 0) {
     log.warn("Pass 3 returned no parseable critiques, returning candidates as-is");
     return candidates;
   }
 
-  // Build a lookup by title for matching
-  const critiqueByTitle = new Map<string, CritiquedIdea>();
-  for (const c of critiques) {
-    critiqueByTitle.set(c.title.toLowerCase().trim(), c);
+  // Tolerantly parse each raw critique into a normalized GIANT entry, keyed by
+  // title. parseGiant never throws, so a malformed row degrades to safe defaults
+  // rather than killing the whole pass.
+  const critiqueByTitle = new Map<string, GiantCritiqueEntry>();
+  for (const raw of rawCritiques) {
+    if (raw === null || typeof raw !== "object") continue;
+    const r = raw as Record<string, unknown>;
+    const title = typeof r.title === "string" ? r.title : "";
+    if (title.trim().length === 0) continue;
+    const parsed = parseGiant(raw);
+    const painSeverity =
+      typeof r.painSeverity === "number"
+        ? Math.min(5, Math.max(0, r.painSeverity))
+        : parsed.scores.acuteProblem;
+    critiqueByTitle.set(title.toLowerCase().trim(), {
+      title,
+      parsed,
+      painSeverity,
+      verdict: typeof r.verdict === "string" ? r.verdict : "",
+    });
   }
 
+  const enforceGates = giant.enforceGates === true;
   const survived: GeneratedIdeaCandidate[] = [];
 
   for (const candidate of candidates) {
     const critique = critiqueByTitle.get(candidate.title.toLowerCase().trim());
 
     if (!critique) {
-      // No critique found — keep with original score
-      log.warn("No critique found for idea, keeping with original score", { title: candidate.title });
+      // No critique found — keep with original score (degrade gracefully).
+      log.warn("No GIANT critique found for idea, keeping with original score", {
+        title: candidate.title,
+      });
       survived.push(candidate);
       continue;
     }
 
-    const { scores, avgScore } = critique;
+    const { parsed, painSeverity } = critique;
+    const demandEvidence = hasDemandEvidence(parsed);
+    const aggregate = aggregateGiant(parsed.scores, {
+      weights: giant.weights,
+      enforceGates,
+      hasDemandEvidence: demandEvidence,
+    });
 
-    // Kill if average < 0.5 or any single dimension <= 0.2
-    const minScore = Math.min(scores.specificity, scores.signalGrounding, scores.differentiation, scores.buildability);
-    if (avgScore < 0.5 || minScore <= 0.2) {
-      log.info("Idea killed by critique", {
+    const qualityScore = compositeToQualityScore(aggregate.composite);
+
+    const scored: GeneratedIdeaCandidate = {
+      ...candidate,
+      qualityScore,
+      giant: parsed.scores,
+      giantEvidence: parsed.evidence,
+      archetype: parsed.archetype,
+      whyNow: parsed.whyNow,
+      painSeverity,
+      giantComposite: aggregate.composite,
+      giantGated: aggregate.gated,
+      giantGateReasons: aggregate.gateReasons,
+    };
+
+    // SHADOW MODE: gating is always computed + stored; the idea is only actually
+    // dropped when enforcement is on. Otherwise we keep it and log the would-kill.
+    if (aggregate.gated) {
+      if (enforceGates) {
+        log.info("Idea KILLED by GIANT hard gate (enforced)", {
+          title: candidate.title,
+          composite: aggregate.composite,
+          gateReasons: aggregate.gateReasons,
+          verdict: critique.verdict,
+        });
+        continue;
+      }
+      log.info("Idea WOULD-KILL by GIANT gate (shadow mode, kept)", {
         title: candidate.title,
-        avgScore,
-        minScore,
+        composite: aggregate.composite,
+        gateReasons: aggregate.gateReasons,
         verdict: critique.verdict,
       });
-      continue;
     }
 
-    // Map 0-1 critique avg to 1-5 quality scale
-    const critiqueQualityScore = 1 + avgScore * 4;
-
-    survived.push({
-      ...candidate,
-      qualityScore: critiqueQualityScore,
-      critiqueSubscores: {
-        specificity: scores.specificity,
-        signalGrounding: scores.signalGrounding,
-        differentiation: scores.differentiation,
-        buildability: scores.buildability,
-      },
-    });
+    survived.push(scored);
   }
 
-  log.info("Pass 3 complete", {
+  log.info("Pass 3 (GIANT) complete", {
     input: candidates.length,
     survived: survived.length,
-    killed: candidates.length - survived.length,
+    dropped: candidates.length - survived.length,
+    enforceGates,
   });
 
   return survived;
@@ -1144,6 +1285,8 @@ async function singlePassSynthesis(input: {
 Your job: Find opportunities where existing apps FAIL to deliver what users clearly want, and where new capabilities make a BETTER solution possible now.
 
 ${CATEGORY_CONTEXT[category]}
+
+${SCHLEP_INSTRUCTION}
 
 === APP LANDSCAPE (4000+ apps across 28 categories — satisfaction scores, what they offer) ===
 ${sanitizeForPrompt(trends.summary || "No landscape data")}
@@ -1317,6 +1460,7 @@ export async function synthesizeFromTrends(input: {
       pains.summary,
       capabilities.summary,
       model,
+      smart.giant,
     );
   } catch (err) {
     log.error("Pass 3 failed, returning uncritiqued candidates", { err });

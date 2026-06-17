@@ -12,6 +12,12 @@
  */
 
 import type { SignalRankerReport } from "./signal-ranker";
+import {
+  GIANT_AXIS_KEYS,
+  aggregateGiant,
+  type GiantAxisKey,
+  type GiantAxisScores,
+} from "../giant";
 
 // ── Input row shapes (subset of generated_ideas / idea_feedback) ───────────────
 
@@ -129,6 +135,17 @@ export interface EvalAggregate {
    * ./signal-ranker.
    */
   readonly signalRanker: SignalRankerReport | null;
+  /**
+   * Run-level GIANT aggregates (per-axis means, gate-kill rate, geometric-mean
+   * composite distribution). Optional + null until GIANT scores are available
+   * for the batch, so existing snapshots stay shape-compatible.
+   */
+  readonly giant?: GiantRunAggregate | null;
+  /**
+   * Objective embedding-novelty metric (mean intra-batch + corpus distance).
+   * Optional + null when no embedding dep was supplied / memory unavailable.
+   */
+  readonly embeddingNovelty?: EmbeddingNoveltyMetric | null;
   readonly totalIdeas: number;
 }
 
@@ -300,6 +317,277 @@ export function aggregateDedupQuality(
   };
 }
 
+// ── Run-level GIANT aggregates ─────────────────────────────────────────────────
+
+/**
+ * One scored idea as far as the GIANT run-level aggregation cares: the full
+ * 7-axis vector plus whether a cited demand artifact backed the demand axis.
+ * `hasDemandEvidence` defaults to false at the call site (un-evidenced demand is
+ * evidence-capped) — callers with a real artifact check pass true.
+ */
+export interface GiantScoredIdea {
+  readonly id: string;
+  readonly scores: GiantAxisScores;
+  readonly hasDemandEvidence?: boolean;
+}
+
+/** Run-level GIANT aggregates over a batch of scored ideas. */
+export interface GiantRunAggregate {
+  /** Mean of each axis across the batch, or null per-axis when batch empty. */
+  readonly axisMeans: Readonly<Record<GiantAxisKey, number | null>>;
+  /** Mean non-compensatory composite across the batch, or null when empty. */
+  readonly compositeMean: number | null;
+  /** Composite distribution percentiles {p10,p50,p90}, or null when empty. */
+  readonly compositeDistribution: {
+    readonly p10: number | null;
+    readonly p50: number | null;
+    readonly p90: number | null;
+  };
+  /** Fraction of ideas a hard gate would kill, [0,1]. */
+  readonly gateKillRate: number;
+  /** Count of ideas a hard gate would kill. */
+  readonly gatedCount: number;
+  /** Count of ideas whose demand axis hit the evidence-gate cap. */
+  readonly demandEvidenceCappedCount: number;
+  readonly totalIdeas: number;
+}
+
+/** Nearest-rank percentile of a list (sorted ascending), or null when empty. */
+function percentileOrNull(values: readonly number[], p: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const rank = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil((p / 100) * sorted.length) - 1),
+  );
+  return sorted[rank] ?? null;
+}
+
+/**
+ * Aggregate run-level GIANT stats over a batch of scored ideas: per-axis means,
+ * the geometric-mean composite distribution, and the hard-gate kill rate.
+ *
+ * PURE — re-runs the shared {@link aggregateGiant} per idea (so gate semantics
+ * stay identical to scoring time) and rolls the results up. `weights` is
+ * forwarded so the run uses the same configured weighting as scoring.
+ */
+export function aggregateGiantRun(
+  ideas: readonly GiantScoredIdea[],
+  opts?: { readonly weights?: Partial<Record<GiantAxisKey, number>> },
+): GiantRunAggregate {
+  const total = ideas.length;
+
+  // Per-axis sums for means.
+  const axisSums = {} as Record<GiantAxisKey, number>;
+  for (const key of GIANT_AXIS_KEYS) axisSums[key] = 0;
+
+  const composites: number[] = [];
+  let gatedCount = 0;
+  let demandCappedCount = 0;
+
+  for (const idea of ideas) {
+    for (const key of GIANT_AXIS_KEYS) {
+      const v = idea.scores[key];
+      axisSums[key] += Number.isFinite(v) ? v : 0;
+    }
+    const agg = aggregateGiant(idea.scores, {
+      weights: opts?.weights,
+      hasDemandEvidence: idea.hasDemandEvidence === true,
+    });
+    composites.push(agg.composite);
+    if (agg.gated) gatedCount += 1;
+    if (agg.gateReasons.some((r) => r.startsWith("demand-evidence-gate:"))) {
+      demandCappedCount += 1;
+    }
+  }
+
+  const axisMeans = {} as Record<GiantAxisKey, number | null>;
+  for (const key of GIANT_AXIS_KEYS) {
+    axisMeans[key] = total === 0 ? null : roundOrNull(axisSums[key] / total);
+  }
+
+  return {
+    axisMeans,
+    compositeMean: roundOrNull(meanOrNull(composites)),
+    compositeDistribution: {
+      p10: roundOrNull(percentileOrNull(composites, 10)),
+      p50: roundOrNull(percentileOrNull(composites, 50)),
+      p90: roundOrNull(percentileOrNull(composites, 90)),
+    },
+    gateKillRate: total === 0 ? 0 : roundOrNull(gatedCount / total) ?? 0,
+    gatedCount,
+    demandEvidenceCappedCount: demandCappedCount,
+    totalIdeas: total,
+  };
+}
+
+// ── Objective embedding-novelty metric ─────────────────────────────────────────
+
+/** A batch item carrying the text we embed for the novelty metric. */
+export interface NoveltyItem {
+  readonly id: string;
+  readonly text: string;
+}
+
+/**
+ * Injected embedding dependency for the novelty metric. Mirrors the memory
+ * {@link import("../../../memory/types").EmbeddingProvider} surface (embed(texts)
+ * → vectors) but is accepted by interface so the pure distance math stays
+ * unit-testable with a stub.
+ */
+export interface NoveltyEmbedDep {
+  embed(texts: readonly string[]): Promise<readonly (readonly number[])[]>;
+}
+
+/**
+ * Injected corpus-search dependency: given a query vector, return the nearest
+ * known-product/idea corpus vectors' similarity scores (cosine in [0,1] or a
+ * raw distance — see `corpusScoresAreDistances`). Graceful: may return [] when
+ * the corpus / Qdrant is unavailable.
+ */
+export interface NoveltySearchDep {
+  /** Nearest-neighbour scores for one query vector against the known corpus. */
+  nearestCorpusScores(vector: readonly number[]): Promise<readonly number[]>;
+}
+
+export interface EmbeddingNoveltyMetric {
+  /** Mean pairwise embedding distance WITHIN the batch, [0,..], or null. */
+  readonly meanPairwiseDistance: number | null;
+  /** Mean distance from each item to the nearest known-corpus item, or null. */
+  readonly meanCorpusDistance: number | null;
+  /** Number of batch items that were successfully embedded. */
+  readonly embeddedCount: number;
+  /** Number of items that had a corpus neighbour to measure against. */
+  readonly corpusComparedCount: number;
+  /** True when corpus distance could not be measured (memory unavailable). */
+  readonly corpusUnavailable: boolean;
+}
+
+const ZERO_NOVELTY: EmbeddingNoveltyMetric = {
+  meanPairwiseDistance: null,
+  meanCorpusDistance: null,
+  embeddedCount: 0,
+  corpusComparedCount: 0,
+  corpusUnavailable: true,
+};
+
+/** Cosine similarity of two equal-length vectors, in [-1,1]; 0 when degenerate. PURE. */
+export function cosineSimilarity(
+  a: readonly number[],
+  b: readonly number[],
+): number {
+  const n = Math.min(a.length, b.length);
+  if (n === 0) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < n; i += 1) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    dot += x * y;
+    normA += x * x;
+    normB += y * y;
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+/**
+ * Cosine DISTANCE in [0,2] (1 - similarity). A bigger value = more novel /
+ * further apart. PURE.
+ */
+export function cosineDistance(
+  a: readonly number[],
+  b: readonly number[],
+): number {
+  return 1 - cosineSimilarity(a, b);
+}
+
+/**
+ * Mean pairwise cosine distance over all unordered pairs of vectors. Returns
+ * null when fewer than two vectors (no pair to compare). PURE.
+ */
+export function meanPairwiseCosineDistance(
+  vectors: readonly (readonly number[])[],
+): number | null {
+  if (vectors.length < 2) return null;
+  let sum = 0;
+  let pairs = 0;
+  for (let i = 0; i < vectors.length; i += 1) {
+    for (let j = i + 1; j < vectors.length; j += 1) {
+      sum += cosineDistance(vectors[i]!, vectors[j]!);
+      pairs += 1;
+    }
+  }
+  return pairs === 0 ? null : sum / pairs;
+}
+
+/**
+ * Compute the OBJECTIVE embedding-novelty metric for a batch: mean pairwise
+ * distance within the batch + mean distance from the known-product/idea corpus.
+ *
+ * Both deps are INJECTED so the distance math above stays pure/unit-testable;
+ * this wrapper owns the IO orchestration and degrades gracefully — any embed
+ * failure or missing corpus yields a partial/zeroed metric rather than throwing.
+ *
+ * `nearestCorpusScores` is expected to return cosine SIMILARITIES in [0,1]; we
+ * convert to distance (1 - max similarity) so "no near neighbour" reads as max
+ * novelty. When the search dep is absent or returns nothing for every item, the
+ * corpus distance is null and `corpusUnavailable` is true.
+ */
+export async function computeEmbeddingNovelty(
+  items: readonly NoveltyItem[],
+  deps: {
+    readonly embed: NoveltyEmbedDep | null;
+    readonly search?: NoveltySearchDep | null;
+  },
+): Promise<EmbeddingNoveltyMetric> {
+  if (!deps.embed || items.length === 0) return ZERO_NOVELTY;
+
+  let vectors: readonly (readonly number[])[];
+  try {
+    vectors = await deps.embed.embed(items.map((i) => i.text));
+  } catch {
+    return ZERO_NOVELTY;
+  }
+
+  // Keep only well-formed, non-empty vectors (and their alignment with items).
+  const usable: { readonly vector: readonly number[] }[] = [];
+  for (const v of vectors) {
+    if (Array.isArray(v) && v.length > 0) usable.push({ vector: v });
+  }
+  const usableVectors = usable.map((u) => u.vector);
+
+  const meanPairwiseDistance = meanPairwiseCosineDistance(usableVectors);
+
+  // Corpus distance (optional + graceful).
+  let corpusDistances: number[] = [];
+  let corpusUnavailable = true;
+  if (deps.search) {
+    corpusUnavailable = false;
+    for (const v of usableVectors) {
+      try {
+        const scores = await deps.search.nearestCorpusScores(v);
+        if (scores.length === 0) continue;
+        const maxSim = Math.max(...scores.filter((s) => Number.isFinite(s)));
+        if (!Number.isFinite(maxSim)) continue;
+        corpusDistances.push(1 - Math.max(0, Math.min(1, maxSim)));
+      } catch {
+        // skip this item; keep the run alive
+      }
+    }
+    if (corpusDistances.length === 0) corpusUnavailable = true;
+  }
+
+  return {
+    meanPairwiseDistance: roundOrNull(meanPairwiseDistance),
+    meanCorpusDistance: roundOrNull(meanOrNull(corpusDistances)),
+    embeddedCount: usableVectors.length,
+    corpusComparedCount: corpusDistances.length,
+    corpusUnavailable,
+  };
+}
+
 // ── Top-level aggregation ──────────────────────────────────────────────────────
 
 /**
@@ -316,13 +604,27 @@ export function aggregateEval(params: {
    * exist yet or the ranking layer is off.
    */
   readonly signalRanker?: SignalRankerReport | null;
+  /**
+   * Pre-computed run-level GIANT aggregate (built by the harness from GIANT
+   * scores). Optional & graceful: omit/null when no GIANT scores exist.
+   */
+  readonly giant?: GiantRunAggregate | null;
+  /**
+   * Pre-computed objective embedding-novelty metric (built by the harness via
+   * an injected embed/search dep). Optional & graceful: omit/null when memory
+   * is unavailable.
+   */
+  readonly embeddingNovelty?: EmbeddingNoveltyMetric | null;
 }): EvalAggregate {
-  const { ideas, outcomes, dedupLabels, signalRanker } = params;
+  const { ideas, outcomes, dedupLabels, signalRanker, giant, embeddingNovelty } =
+    params;
   return {
     meanSubscores: aggregateMeanSubscores(ideas),
     outcomeRates: aggregateOutcomeRates(ideas, outcomes),
     dedupQuality: dedupLabels ? aggregateDedupQuality(dedupLabels) : null,
     signalRanker: signalRanker ?? null,
+    giant: giant ?? null,
+    embeddingNovelty: embeddingNovelty ?? null,
     totalIdeas: ideas.length,
   };
 }
