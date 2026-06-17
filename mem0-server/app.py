@@ -15,14 +15,53 @@ ignored — graph extraction is always on server-side because a graph_store is c
 """
 import os
 import logging
+import secrets
 import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from mem0 import Memory
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("mem0-sidecar")
+
+
+# ─── Inbound auth ───────────────────────────────────────────────────────────
+# mem0ai (0.1.118) ships no auth on its memory API (GHSA-jfv9-68m5-gjjr). We add
+# a shared bearer-token check at the application layer as defense-in-depth on the
+# internal Docker network (the host port is already loopback-only). The expected
+# token is read once at import from MEM0_API_TOKEN.
+#
+# Fail-LOUD-but-safe when unconfigured: an unset/empty token does NOT silently
+# open the API — guarded endpoints reject with 503 "auth not configured" and a
+# prominent startup WARNING fires, so a misconfigured deploy is obvious instead
+# of silently unauthenticated. /health stays open regardless.
+_API_TOKEN = (os.environ.get("MEM0_API_TOKEN") or "").strip()
+
+# auto_error=False so we return our own 401 (with WWW-Authenticate) instead of
+# FastAPI's default 403 when the header is missing.
+_bearer = HTTPBearer(auto_error=False)
+
+
+def require_token(
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> None:
+    """Reject unless the request carries the matching shared bearer token."""
+    if not _API_TOKEN:
+        # Unconfigured → fail closed (loud, not silently open).
+        raise HTTPException(
+            status_code=503,
+            detail="mem0 sidecar auth not configured (MEM0_API_TOKEN unset)",
+        )
+    presented = creds.credentials if creds else ""
+    # Constant-time compare — never `==` on a secret.
+    if not secrets.compare_digest(presented, _API_TOKEN):
+        raise HTTPException(
+            status_code=401,
+            detail="invalid or missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 def _int_env(name: str, default: int) -> int:
@@ -189,6 +228,12 @@ app = FastAPI(title="OpenCrow Mem0 Sidecar")
 
 @app.on_event("startup")
 def _startup() -> None:
+    if not _API_TOKEN:
+        log.warning(
+            "MEM0_API_TOKEN is unset — /v1/memories/* will reject every request "
+            "with 503 until a token is configured. Set MEM0_API_TOKEN to enable "
+            "the sidecar (GHSA-jfv9-68m5-gjjr defense-in-depth)."
+        )
     # Init off-thread so the server can serve /health (and report "initializing")
     # while it retries connecting to Qdrant/Neo4j/Ollama on boot.
     import threading
@@ -201,7 +246,7 @@ def health() -> dict:
     return {"status": "ok" if _memory is not None else "initializing"}
 
 
-@app.post("/v1/memories/")
+@app.post("/v1/memories/", dependencies=[Depends(require_token)])
 def add_memories(body: AddBody) -> dict:
     mem = get_memory()
     try:
@@ -216,7 +261,7 @@ def add_memories(body: AddBody) -> dict:
     return _normalize(res)
 
 
-@app.post("/v1/memories/search/")
+@app.post("/v1/memories/search/", dependencies=[Depends(require_token)])
 def search_memories(body: SearchBody) -> dict:
     mem = get_memory()
     try:
@@ -227,7 +272,7 @@ def search_memories(body: SearchBody) -> dict:
     return _normalize(res)
 
 
-@app.get("/v1/memories/")
+@app.get("/v1/memories/", dependencies=[Depends(require_token)])
 def get_all_memories(user_id: str | None = None) -> dict:
     mem = get_memory()
     try:
@@ -238,7 +283,7 @@ def get_all_memories(user_id: str | None = None) -> dict:
     return _normalize(res)
 
 
-@app.delete("/v1/memories/{memory_id}/")
+@app.delete("/v1/memories/{memory_id}/", dependencies=[Depends(require_token)])
 def delete_memory(memory_id: str) -> dict:
     mem = get_memory()
     try:

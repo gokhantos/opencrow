@@ -152,12 +152,18 @@ function applyEnvOverrides(
   // relying solely on a DB override that only the override-aware loader sees.
   const sigeEnabled = boolEnv("OPENCROW_SIGE_ENABLED");
   const sigeMem0Url = process.env.OPENCROW_SIGE_MEM0_URL;
-  if (sigeEnabled !== undefined || sigeMem0Url) {
+  // Bearer token for the mem0 sidecar. Reuse the already-shared internal token
+  // (the same value compose hands to mem0 as MEM0_API_TOKEN) so the app and the
+  // sidecar agree without introducing a 4th secret. Empty string is treated as
+  // unset so a blank env var doesn't send "Bearer ".
+  const sigeMem0Token = process.env.OPENCROW_INTERNAL_TOKEN || undefined;
+  if (sigeEnabled !== undefined || sigeMem0Url || sigeMem0Token) {
     const sige = { ...((result.sige ?? {}) as Record<string, unknown>) };
     if (sigeEnabled !== undefined) sige.enabled = sigeEnabled;
-    if (sigeMem0Url) {
+    if (sigeMem0Url || sigeMem0Token) {
       const mem0 = { ...((sige.mem0 ?? {}) as Record<string, unknown>) };
-      mem0.baseUrl = sigeMem0Url;
+      if (sigeMem0Url) mem0.baseUrl = sigeMem0Url;
+      if (sigeMem0Token) mem0.apiToken = sigeMem0Token;
       sige.mem0 = mem0;
     }
     result.sige = sige;

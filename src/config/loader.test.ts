@@ -30,6 +30,28 @@ describe("deepMergeSigeOverride", () => {
       expect(mem0.userId).toBe("sige-global");
     });
 
+    test("env-derived mem0.apiToken survives a DB override of mem0.baseUrl", () => {
+      // Regression guard: a DB override that only changes baseUrl must not drop
+      // the env-derived apiToken, or SIGE would silently lose auth (401s).
+      const base: Record<string, unknown> = {
+        enabled: true,
+        mem0: {
+          baseUrl: "http://mem0:8000",
+          userId: "sige-global",
+          apiToken: "internal-token",
+        },
+      };
+      const dbOverride: Record<string, unknown> = {
+        mem0: { baseUrl: "http://override-host:9000" },
+      };
+
+      const result = deepMergeSigeOverride(base, dbOverride);
+
+      const mem0 = result.mem0 as Record<string, unknown>;
+      expect(mem0.baseUrl).toBe("http://override-host:9000");
+      expect(mem0.apiToken).toBe("internal-token");
+    });
+
     test("DB override that sets mem0.baseUrl wins over base mem0.baseUrl", () => {
       // Simulates: env sets mem0.baseUrl to X; DB override explicitly sets it to Y → Y wins
       const base: Record<string, unknown> = {

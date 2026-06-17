@@ -97,6 +97,11 @@ services:
     environment:
       QDRANT_HOST: qdrant
       QDRANT_PORT: "6333"
+      # Inbound bearer-token auth for /v1/memories/* (mem0ai ships none —
+      # GHSA-jfv9-68m5-gjjr). Same shared internal token the app sends; the app
+      # resolves it from OPENCROW_INTERNAL_TOKEN (.env) into its SIGE mem0 config.
+      # If unset, the sidecar fails closed (503 on guarded routes), never open.
+      MEM0_API_TOKEN: ${OPENCROW_INTERNAL_TOKEN}
       # Graph store: embedded Kùzu (in-process, no server/JVM), persisted to /data.
       MEM0_GRAPH_PROVIDER: kuzu
       MEM0_GRAPH_DB: /data/kuzu

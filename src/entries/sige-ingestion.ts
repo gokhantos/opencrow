@@ -458,7 +458,10 @@ async function main(): Promise<void> {
   }
 
   const sigeConfig = config.sige;
-  const mem0 = new Mem0Client({ baseUrl: sigeConfig.mem0.baseUrl });
+  const mem0 = new Mem0Client({
+    baseUrl: sigeConfig.mem0.baseUrl,
+    apiToken: sigeConfig.mem0.apiToken,
+  });
   const userId = sigeConfig.mem0.userId;
 
   log.info("SIGE ingestion process started", {

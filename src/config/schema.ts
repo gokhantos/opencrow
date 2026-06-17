@@ -400,6 +400,12 @@ export const sigeConfigSchema = z.object({
   mem0: z.object({
     baseUrl: z.string().url().default("http://127.0.0.1:8050"),
     userId: z.string().default("sige-global"),
+    // Shared bearer token sent on every /v1/memories/* request to the mem0
+    // sidecar (which has no upstream auth; GHSA-jfv9-68m5-gjjr). Optional so a
+    // tokenless dev run still boots — the sidecar then rejects with 503 and SIGE
+    // degrades gracefully via the client circuit breaker. Sourced from env in
+    // the loader (reuses OPENCROW_INTERNAL_TOKEN, already shared with mem0).
+    apiToken: z.string().optional(),
   }).default({
     baseUrl: "http://127.0.0.1:8050",
     userId: "sige-global",

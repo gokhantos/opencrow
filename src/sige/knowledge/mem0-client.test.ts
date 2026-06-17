@@ -149,3 +149,47 @@ describe("Mem0Client half-open recovery", () => {
     expect(client.isUnavailable()).toBe(false);
   });
 });
+
+describe("Mem0Client bearer auth", () => {
+  function captureHeaders(): { last: Headers | undefined } {
+    const ref: { last: Headers | undefined } = { last: undefined };
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      ref.last = new Headers(init?.headers);
+      return new Response(JSON.stringify({ results: [], relations: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    return ref;
+  }
+
+  test("sends Authorization: Bearer <token> when apiToken is set", async () => {
+    const ref = captureHeaders();
+    const client = new Mem0Client({
+      baseUrl: "http://127.0.0.1:9",
+      apiToken: "s3cret-token",
+    });
+
+    await client.search({ query: "x", userId: "u" });
+
+    expect(ref.last?.get("authorization")).toBe("Bearer s3cret-token");
+  });
+
+  test("omits Authorization when apiToken is absent", async () => {
+    const ref = captureHeaders();
+    const client = new Mem0Client({ baseUrl: "http://127.0.0.1:9" });
+
+    await client.search({ query: "x", userId: "u" });
+
+    expect(ref.last?.get("authorization")).toBeNull();
+  });
+
+  test("treats an empty/whitespace apiToken as absent (never sends 'Bearer ')", async () => {
+    const ref = captureHeaders();
+    const client = new Mem0Client({ baseUrl: "http://127.0.0.1:9", apiToken: "   " });
+
+    await client.search({ query: "x", userId: "u" });
+
+    expect(ref.last?.get("authorization")).toBeNull();
+  });
+});

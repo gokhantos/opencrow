@@ -1424,7 +1424,10 @@ async function applySigeValuation(
       deepSearchContext.trim().length > 0 ? deepSearchContext : synthesizeEnrichedSeed(candidates);
 
     const evaluations = await evaluateCandidates(sigeCandidates, {
-      mem0: new Mem0Client({ baseUrl: sigeConfig.mem0.baseUrl }),
+      mem0: new Mem0Client({
+        baseUrl: sigeConfig.mem0.baseUrl,
+        apiToken: sigeConfig.mem0.apiToken,
+      }),
       userId: sigeConfig.mem0.userId,
       enrichedSeed,
     });
@@ -2064,9 +2067,10 @@ function buildDeepSearchOptions(
 
   const baseUrl = sigeConfig?.mem0.baseUrl ?? "http://127.0.0.1:8050";
   const userId = sigeConfig?.mem0.userId ?? "sige-global";
+  const apiToken = sigeConfig?.mem0.apiToken;
 
   try {
-    return { model, mem0: new Mem0Client({ baseUrl }), userId };
+    return { model, mem0: new Mem0Client({ baseUrl, apiToken }), userId };
   } catch (err) {
     log.warn("Failed to build Mem0 client for graph retrieval — skipping graph branch", { err });
     return { model };

@@ -123,6 +123,11 @@ function isConnectionError(err: unknown): boolean {
 export class Mem0Client {
   private readonly baseUrl: string;
 
+  // Optional shared bearer token. The mem0 sidecar has no upstream auth
+  // (GHSA-jfv9-68m5-gjjr); when set, this is sent as `Authorization: Bearer
+  // <token>` on every request. Never logged.
+  private readonly apiToken?: string;
+
   // Circuit breaker: once a transport-level failure proves the service is
   // unreachable, short-circuit subsequent requests instead of re-dialing a dead
   // endpoint on every graph query. SIGE degrades to an empty graph gracefully,
@@ -138,8 +143,13 @@ export class Mem0Client {
   private openedAt = 0;
   private probing = false;
 
-  constructor(config: { readonly baseUrl: string }) {
+  constructor(config: { readonly baseUrl: string; readonly apiToken?: string }) {
     this.baseUrl = config.baseUrl.replace(/\/$/, "");
+    // Treat empty/whitespace token as absent so we never send "Bearer ".
+    // Store the trimmed value: the sidecar strips its expected token, so
+    // surrounding whitespace must not survive here or it would mismatch.
+    const trimmedToken = config.apiToken?.trim();
+    this.apiToken = trimmedToken ? trimmedToken : undefined;
   }
 
   /** True while the circuit breaker is open (short-circuiting requests). */
@@ -192,6 +202,9 @@ export class Mem0Client {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
+    if (this.apiToken) {
+      headers.Authorization = `Bearer ${this.apiToken}`;
+    }
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120_000); // 2 min timeout
