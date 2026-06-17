@@ -13,6 +13,7 @@ import {
   getSession,
   updateSessionStatus,
   countActiveAutonomousSessions,
+  claimNextPendingSession,
 } from "./store";
 import type { SigeSessionConfig } from "./types";
 
@@ -182,5 +183,42 @@ describe("countActiveAutonomousSessions", () => {
     const count = await countActiveAutonomousSessions();
     expect(typeof count).toBe("number");
     expect(Number.isFinite(count)).toBe(true);
+  });
+});
+
+describe("claimNextPendingSession — atomic work-queue claim", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    await cleanup();
+  });
+  afterEach(async () => {
+    await cleanup();
+    await closeDb();
+  });
+
+  it("claims a pending session and flips it off 'pending'", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    const claimed = await claimNextPendingSession();
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(id);
+    const reloaded = await getSession(id);
+    expect(reloaded!.status).not.toBe("pending");
+  });
+
+  it("returns null when there are no pending sessions", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    await updateSessionStatus(id, "completed", {});
+    expect(await claimNextPendingSession()).toBeNull();
+  });
+
+  it("two concurrent claims of one pending session yield exactly one winner", async () => {
+    await createTestSession({ origin: "auto", status: "pending" });
+    // Race two claims; SKIP LOCKED must hand the row to exactly one.
+    const [a, b] = await Promise.all([
+      claimNextPendingSession(),
+      claimNextPendingSession(),
+    ]);
+    const winners = [a, b].filter((s) => s !== null);
+    expect(winners.length).toBe(1);
   });
 });
