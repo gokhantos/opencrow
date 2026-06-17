@@ -54,7 +54,15 @@ import {
   aggregateGiant,
   type ParsedGiant,
 } from "./giant";
-import type { GiantConfig } from "../../config/schema";
+import type { GiantConfig, GenerateWideConfig } from "../../config/schema";
+import { inferSegment, type SegmentId } from "./segments";
+import {
+  parseVerbalizedSeeds,
+  planSegmentDirectives,
+  renderSegmentSpread,
+  selectWithNoveltyReserve,
+  type VerbalizedSeed,
+} from "./generate-wide";
 
 const log = createLogger("pipeline:synthesizer");
 
@@ -995,6 +1003,253 @@ function normalizeSignalIds(
   return { ...candidate, supportingSignalIds: ids };
 }
 
+// ── Pass 2 (wide): Verbalized-Sampling over-generation ──────────────────────
+//
+// Phase 1 "generate-wide": instead of ONE idea per intersection (single-category,
+// novelty-hostile), ask the model for a DISTRIBUTION of `seedsPerIntersection`
+// DISTINCT candidate ideas — each as an {idea, probability} pair (Verbalized
+// Sampling). The self-reported probability is captured as a diversity/coverage
+// prior ONLY (verbalizedProb), never as the quality score (qualityScore stays
+// owned by the GIANT critique). Every seed MUST keep its supportingSignalIds so
+// breadth never drifts off the grounding signals (groundedness is the gate).
+//
+// When multiSegment is on, the prompt also carries a per-segment spread quota so
+// the pool SPANS opportunity spaces (consumer/b2b_saas/devtools/...) instead of
+// collapsing to consumer-mobile. Every candidate is tagged with its segment.
+//
+// Backward-compatible + graceful: any failure here is caught by the caller, which
+// falls back to the legacy single-idea developIdeas path.
+
+/**
+ * Coerce a free-text/unknown segment value emitted by the model into a known
+ * SegmentId, inferring from the idea text when the emitted value is missing or
+ * not a recognized id. Pure.
+ */
+function resolveSegment(
+  emitted: unknown,
+  candidate: GeneratedIdeaCandidate,
+): SegmentId {
+  if (typeof emitted === "string") {
+    const normalized = emitted.toLowerCase().trim().replace(/[\s-]+/g, "_");
+    const match = SEGMENT_IDS_SET.has(normalized)
+      ? (normalized as SegmentId)
+      : null;
+    if (match) return match;
+  }
+  return inferSegment(
+    `${candidate.category} ${candidate.title} ${candidate.summary}`,
+  );
+}
+
+const SEGMENT_IDS_SET: ReadonlySet<string> = new Set([
+  "consumer",
+  "b2b_saas",
+  "devtools",
+  "fintech",
+  "healthcare",
+  "vertical_ops",
+  "marketplace",
+  "infrastructure",
+  "ai_native",
+]);
+
+/**
+ * Turn a parsed VerbalizedSeed into a GeneratedIdeaCandidate, carrying the
+ * verbalized probability (diversity prior) and a resolved segment tag. Tolerant
+ * of missing fields (the critique/normalize passes backfill / validate). Pure.
+ */
+function seedToCandidate(
+  seed: VerbalizedSeed,
+  category: IdeaCategory,
+  multiSegment: boolean,
+  chainOfEvidence: boolean,
+): GeneratedIdeaCandidate {
+  const idea = seed.idea;
+  const str = (v: unknown, fallback = ""): string =>
+    typeof v === "string" ? v : fallback;
+  const arr = (v: unknown): readonly string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+
+  const base: GeneratedIdeaCandidate = {
+    title: str(idea.title),
+    summary: str(idea.summary),
+    reasoning: str(idea.reasoning),
+    designDescription: str(idea.designDescription),
+    monetizationDetail: str(idea.monetizationDetail),
+    sourceLinks: Array.isArray(idea.sourceLinks)
+      ? (idea.sourceLinks as GeneratedIdeaCandidate["sourceLinks"])
+      : [],
+    sourcesUsed: str(idea.sourcesUsed),
+    category: str(idea.category, category),
+    qualityScore:
+      typeof idea.qualityScore === "number" ? idea.qualityScore : 0,
+    targetAudience: str(idea.targetAudience),
+    keyFeatures: arr(idea.keyFeatures),
+    revenueModel: str(idea.revenueModel),
+    trendIntersection: str(idea.trendIntersection),
+    verbalizedProb: seed.probability,
+  };
+
+  const withSignals = chainOfEvidence
+    ? normalizeSignalIds({
+        ...base,
+        supportingSignalIds: (idea as { supportingSignalIds?: unknown })
+          .supportingSignalIds as readonly string[] | undefined,
+      })
+    : base;
+
+  if (!multiSegment) return withSignals;
+  return { ...withSignals, segment: resolveSegment(idea.segment, withSignals) };
+}
+
+/**
+ * VERBALIZED-SAMPLING over-generation for ONE batch of intersections. Asks the
+ * model for `seedsPerIntersection` distinct {idea, probability} seeds per
+ * intersection, parses + tags them, and caps to `maxCandidates`. Never throws on
+ * a parse miss (returns []), but a chat() failure propagates so the caller can
+ * fall back to the legacy path.
+ */
+async function developIdeasWide(
+  topIntersections: readonly IntersectionHypothesis[],
+  category: IdeaCategory,
+  saturatedThemes: string,
+  deepSearchContext: string,
+  model: string,
+  validatedExemplars: string,
+  chainOfEvidence: boolean,
+  generateWide: GenerateWideConfig,
+): Promise<readonly GeneratedIdeaCandidate[]> {
+  const intersectionLines = topIntersections
+    .map(
+      (h, i) =>
+        `${i + 1}. "${h.title}"\n   Pain: ${h.painSignal}\n   Capability: ${h.capabilitySignal}\n   Market: ${h.marketSignal}\n   Hypothesis: ${h.hypothesis}\n   Signal strength: ${h.signalStrength.toFixed(2)}`,
+    )
+    .join("\n\n");
+
+  const seedsPer = generateWide.seedsPerIntersection;
+  // Plan the segment spread over the FULL over-generated target so the pool spans
+  // opportunity spaces (multiSegment only — empty block otherwise).
+  const target = Math.min(
+    topIntersections.length * seedsPer,
+    generateWide.maxCandidates,
+  );
+  const segmentSpread = generateWide.multiSegment
+    ? renderSegmentSpread(planSegmentDirectives(target))
+    : "";
+
+  const saturatedSection = saturatedThemes
+    ? `\nPREVIOUSLY GENERATED (avoid these themes):\n${saturatedThemes}`
+    : "";
+  const exemplarSection = validatedExemplarSection(validatedExemplars);
+
+  const evidenceInstruction = chainOfEvidence
+    ? `\n  - supportingSignalIds: array of [id:...] tokens from the SIGNAL CITATIONS / capability annotations above that ground THIS idea. Cite only signals you actually used. EVERY seed MUST stay bound to its grounding signals.`
+    : "";
+  const evidenceField = chainOfEvidence
+    ? `,\n      "supportingSignalIds": ["string"]`
+    : "";
+  const segmentField = generateWide.multiSegment
+    ? `,\n      "segment": "string — one of: consumer, b2b_saas, devtools, fintech, healthcare, vertical_ops, marketplace, infrastructure, ai_native"`
+    : "";
+
+  const existingIdeasContext = await buildExistingIdeasContext();
+
+  const prompt = `You are developing validated market intersection hypotheses into a DIVERSE DISTRIBUTION of concrete product ideas (Verbalized Sampling).
+
+OVER-GENERATION REQUIREMENT (CRITICAL):
+- For EACH hypothesis below, propose ${seedsPer} DISTINCT product ideas — not one. Cover genuinely different angles, buyers, and wedges for the same underlying signals.
+- Return a DISTRIBUTION: each idea carries a self-reported "probability" (0.0-1.0) = how likely YOU think this specific framing is the strongest realization of the signals. The probabilities across a hypothesis's seeds need not sum to 1; treat them as relative confidence. We use them ONLY for coverage/diversity, so DO include lower-probability "long-shot" framings — do not collapse to the single safest idea.
+- Every seed MUST stay grounded in the SAME intersection signals. Breadth must NOT drift off the evidence.
+
+DIVERSITY REQUIREMENT (CRITICAL):
+- Spread ideas across DIFFERENT market segments and user types — not all consumer mobile apps.
+- No two seeds should be near-duplicates; if two sound similar, replace the weaker with a fundamentally different angle.
+
+${CATEGORY_CONTEXT[category]}
+
+${SCHLEP_INSTRUCTION}
+${segmentSpread}
+
+=== VALIDATED INTERSECTION HYPOTHESES (ranked by signal strength) ===
+${intersectionLines}
+${sanitizeForPrompt(deepSearchContext)}
+${exemplarSection}
+${saturatedSection}
+${existingIdeasContext}
+
+For EACH seed, develop a full product idea grounded in the hypothesis signals above. Each idea requires:
+  - title: Creative 2-3 word name
+  - summary: Full paragraph (4-6 sentences). What is it? Who specifically uses it? The "10x moment"? Why is timing perfect?
+  - reasoning: Full paragraph tracing each signal (pain + capability + market shift). Why couldn't this exist 12 months ago?
+  - trendIntersection: One sentence — "Trending X + Pain Y + Capability Z = this idea"
+  - designDescription: Full paragraph. Key screens, core user journey, visual style.
+  - monetizationDetail: Full paragraph. Pricing tiers, TAM estimate, path to $1M ARR, comps.
+  - sourceLinks: References traceable to real data signals (can be [])
+  - sourcesUsed: Which data sources provided evidence for each signal
+  - category: "${category}"
+  - qualityScore: 1.0-5.0 (self-assessed — will be overridden by critique pass)
+  - targetAudience: Specific person (job title, age, situation)
+  - keyFeatures: 5-7 specific features tied to the hypothesis signals
+  - revenueModel: One-line summary${evidenceInstruction}
+
+Return ONLY a JSON array of {idea, probability} seeds (${seedsPer} per hypothesis):
+[
+  {
+    "probability": number,
+    "idea": {
+      "title": "string",
+      "summary": "string",
+      "reasoning": "string",
+      "trendIntersection": "string",
+      "designDescription": "string",
+      "monetizationDetail": "string",
+      "sourceLinks": [{"title": "string", "url": "string", "source": "string"}],
+      "sourcesUsed": "string",
+      "category": "${category}",
+      "qualityScore": number,
+      "targetAudience": "string",
+      "keyFeatures": ["string"],
+      "revenueModel": "string"${segmentField}${evidenceField}
+    }
+  }
+]`;
+
+  const messages: ConversationMessage[] = [
+    { role: "user", content: prompt, timestamp: Date.now() },
+  ];
+
+  const response = await chat(messages, {
+    ...buildChatOptions(model),
+    systemPrompt:
+      "You are a product strategist emitting a DIVERSE DISTRIBUTION of grounded product ideas via Verbalized Sampling. Each idea is a {idea, probability} pair. Output only a valid JSON array.",
+  });
+
+  log.info("Pass 2 (wide over-generation) raw response", {
+    length: response.text.length,
+    preview: response.text.slice(0, 200),
+  });
+
+  const parsed = parseJsonFromResponse<unknown[]>(response.text, []);
+  const seeds = parseVerbalizedSeeds(parsed, generateWide.maxCandidates);
+
+  const candidates = seeds
+    .map((seed) =>
+      seedToCandidate(seed, category, generateWide.multiSegment, chainOfEvidence),
+    )
+    // Drop empty-title noise (a seed with no idea payload is unusable).
+    .filter((c) => c.title.trim().length > 0)
+    .slice(0, generateWide.maxCandidates);
+
+  log.info("Pass 2 (wide) complete", {
+    seeds: seeds.length,
+    candidates: candidates.length,
+    seedsPerIntersection: seedsPer,
+    multiSegment: generateWide.multiSegment,
+  });
+
+  return candidates;
+}
+
 // ── Pass 3: GIANT Critique ─────────────────────────────────────────────────
 //
 // The critique LLM pass now scores each idea against THE GIANT RUBRIC — the
@@ -1369,11 +1624,23 @@ export async function synthesizeFromTrends(input: {
    * only when smart.validatedExemplars is on AND the caller supplies it.
    */
   readonly validatedExemplars?: string;
+  /**
+   * Phase 1 "generate-wide" SIGE divergent merge (flag-gated, default OFF): extra
+   * UNSCORED candidates produced by the SIGE divergent-generation pool that the
+   * Pipeline phase folds into the synthesizer pool. They are merged BEFORE Pass 3
+   * so they flow through the SAME GIANT critique + novelty-reserve selection as
+   * the over-generated candidates (keeping the whole pool evidence-tethered and
+   * comparably scored). Optional — backward-compatible; empty/absent → today's
+   * behavior. The total pool (over-generated + extra) is capped at
+   * smart.generateWide.maxCandidates.
+   */
+  readonly extraCandidates?: readonly GeneratedIdeaCandidate[];
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
 
   const smart = loadConfig().pipelines.ideas.smart;
   const chainOfEvidence = smart.chainOfEvidence;
+  const generateWide = smart.generateWide;
   // Gate the positive few-shot: only inject when the flag is ON.
   const validatedExemplars = smart.validatedExemplars ? input.validatedExemplars ?? "" : "";
 
@@ -1426,18 +1693,65 @@ export async function synthesizeFromTrends(input: {
   });
 
   // ── Pass 2: Develop ideas from intersections ─────────────────────────
+  // Phase 1 "generate-wide": when overGenerate is ON, request a DISTRIBUTION of
+  // seeds per intersection (verbalized sampling) + segment spread to WIDEN the
+  // pool. Any failure degrades to the legacy single-idea path, then to single-
+  // pass — so the optional widening can never break the pipeline.
   let rawCandidates: readonly GeneratedIdeaCandidate[];
 
   try {
-    rawCandidates = await developIdeas(
-      topIntersections,
-      category,
-      saturatedThemes,
-      deepSearchContext,
-      model,
-      validatedExemplars,
-      chainOfEvidence,
-    );
+    if (generateWide.overGenerate) {
+      try {
+        rawCandidates = await developIdeasWide(
+          topIntersections,
+          category,
+          saturatedThemes,
+          deepSearchContext,
+          model,
+          validatedExemplars,
+          chainOfEvidence,
+          generateWide,
+        );
+        if (rawCandidates.length === 0) {
+          log.warn(
+            "Over-generation produced no candidates, falling back to single-idea developIdeas",
+          );
+          rawCandidates = await developIdeas(
+            topIntersections,
+            category,
+            saturatedThemes,
+            deepSearchContext,
+            model,
+            validatedExemplars,
+            chainOfEvidence,
+          );
+        }
+      } catch (wideErr) {
+        log.warn(
+          "Over-generation path failed, falling back to single-idea developIdeas",
+          { err: wideErr },
+        );
+        rawCandidates = await developIdeas(
+          topIntersections,
+          category,
+          saturatedThemes,
+          deepSearchContext,
+          model,
+          validatedExemplars,
+          chainOfEvidence,
+        );
+      }
+    } else {
+      rawCandidates = await developIdeas(
+        topIntersections,
+        category,
+        saturatedThemes,
+        deepSearchContext,
+        model,
+        validatedExemplars,
+        chainOfEvidence,
+      );
+    }
   } catch (err) {
     log.error("Pass 2 failed, falling back to single-pass synthesis", { err });
     return singlePassSynthesis({ ...input, validatedExemplars });
@@ -1447,6 +1761,17 @@ export async function synthesizeFromTrends(input: {
     log.warn("No ideas developed in Pass 2, returning empty result");
     return { candidates: [], totalGenerated: 0 };
   }
+
+  // SIGE DIVERGENT MERGE (generate-wide, flag-gated by the Pipeline phase): fold
+  // any extra UNSCORED candidates into the pool BEFORE Pass 3 so they flow through
+  // the SAME GIANT critique + novelty-reserve selection. Title-dedup against the
+  // over-generated set, then cap the merged pool at maxCandidates so cost stays
+  // bounded. No-op when the caller supplies none (default path).
+  rawCandidates = mergeExtraCandidates(
+    rawCandidates,
+    input.extraCandidates ?? [],
+    generateWide.maxCandidates,
+  );
 
   log.info("Pass 2 complete — proceeding to Pass 3", { count: rawCandidates.length });
 
@@ -1468,7 +1793,14 @@ export async function synthesizeFromTrends(input: {
   }
 
   // ── QUICK WIN: sort by quality desc, then MMR diversity before slicing ──
-  const finalCandidates = sortAndDiversify(critiquedCandidates, maxIdeas);
+  // Phase 1 "generate-wide": when over-generating, reserve a slice of the final
+  // slots for high-novelty / high-originality candidates so the widened pool is
+  // not collapsed back to the highest-self-reported-signal lookalikes.
+  const finalCandidates = sortAndDiversify(
+    critiquedCandidates,
+    maxIdeas,
+    generateWide.overGenerate,
+  );
 
   return {
     candidates: finalCandidates,
@@ -1485,9 +1817,43 @@ export async function synthesizeFromTrends(input: {
  * SearchResult-shaped objects ({ chunk: { content: title+summary }, score }).
  * Falls back to a plain quality sort + slice on any error (never throws).
  */
+/**
+ * Merge extra (SIGE-divergent) candidates into the primary pool, deduping by
+ * lowercased title against the primary set, then cap the combined pool at
+ * `maxCandidates`. Primary candidates always take precedence on a title clash.
+ * Pure + immutable; returns the primary set unchanged when there is nothing to
+ * merge. The cap protects total cost (more candidates → more critique tokens).
+ */
+function mergeExtraCandidates(
+  primary: readonly GeneratedIdeaCandidate[],
+  extra: readonly GeneratedIdeaCandidate[],
+  maxCandidates: number,
+): readonly GeneratedIdeaCandidate[] {
+  if (extra.length === 0) return primary.slice(0, maxCandidates);
+
+  const seen = new Set(primary.map((c) => c.title.toLowerCase().trim()));
+  const merged: GeneratedIdeaCandidate[] = [...primary];
+  for (const candidate of extra) {
+    const key = candidate.title.toLowerCase().trim();
+    if (key.length === 0 || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(candidate);
+  }
+
+  log.info("SIGE-divergent merge complete", {
+    primary: primary.length,
+    extra: extra.length,
+    merged: merged.length,
+    capped: Math.min(merged.length, maxCandidates),
+  });
+
+  return merged.slice(0, maxCandidates);
+}
+
 function sortAndDiversify(
   candidates: readonly GeneratedIdeaCandidate[],
   maxIdeas: number,
+  reserveNovelty = false,
 ): readonly GeneratedIdeaCandidate[] {
   if (candidates.length <= 1 || maxIdeas <= 0) {
     return candidates.slice(0, maxIdeas);
@@ -1496,29 +1862,41 @@ function sortAndDiversify(
   const sorted = [...candidates].sort((a, b) => b.qualityScore - a.qualityScore);
   if (sorted.length <= maxIdeas) return sorted;
 
+  // NOVELTY-RESERVE (generate-wide): reserve final slots for high-surprise /
+  // high-originality candidates so the quality sort cannot starve out the
+  // surprising ideas the widening produced. This narrows to exactly `maxIdeas`
+  // candidates that MUST be kept; the MMR pass below then only REORDERS that set
+  // (k === set size cannot drop a reserved member). Pure + total — degrades to
+  // the plain quality sort on any issue. When off, MMR runs over the full sort.
+  const mmrInput = reserveNovelty
+    ? selectWithNoveltyReserve(sorted, maxIdeas)
+    : sorted;
+  const targetCount = Math.min(maxIdeas, mmrInput.length);
+
   try {
     // Adapt to SearchResult shape; applyMmr only reads `chunk.content` + `score`
     // and maps back by index, so a minimal structural object is sufficient.
-    const adapted = sorted.map((c) => ({
+    const adapted = mmrInput.map((c) => ({
       chunk: { content: `${c.title}\n${c.summary}` },
       score: c.qualityScore,
     })) as unknown as readonly SearchResult[];
 
-    const diversified = applyMmr(adapted, 0.7, maxIdeas);
+    const diversified = applyMmr(adapted, 0.7, targetCount);
     const byContent = new Map<string, GeneratedIdeaCandidate>();
-    sorted.forEach((c) => byContent.set(`${c.title}\n${c.summary}`, c));
+    mmrInput.forEach((c) => byContent.set(`${c.title}\n${c.summary}`, c));
 
     const result: GeneratedIdeaCandidate[] = [];
     for (const r of diversified) {
       const match = byContent.get(r.chunk.content);
       if (match) result.push(match);
     }
-    // Safety: if mapping lost entries, fall back to the quality-sorted slice.
-    return result.length === Math.min(maxIdeas, sorted.length)
+    // Safety: if mapping lost entries, fall back to the (novelty-reserved or
+    // quality-sorted) slice.
+    return result.length === targetCount
       ? result
-      : sorted.slice(0, maxIdeas);
+      : mmrInput.slice(0, maxIdeas);
   } catch (err) {
     log.warn("sort+MMR diversity pass failed, using quality sort", { err });
-    return sorted.slice(0, maxIdeas);
+    return mmrInput.slice(0, maxIdeas);
   }
 }

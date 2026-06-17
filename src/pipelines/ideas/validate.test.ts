@@ -4,8 +4,17 @@ import {
   buildValidSignalTokens,
   verifyCandidateEvidence,
   verifyEvidence,
+  computeOriginality,
+  nearestProductLabel,
+  annotateOriginality,
+  KNOWN_PRODUCT_KINDS,
 } from "./validate";
 import type { Capability, GeneratedIdeaCandidate } from "./types";
+import type {
+  MemoryManager,
+  SearchOptions,
+  SearchResult,
+} from "../../memory/types";
 
 // ── Test fixtures ───────────────────────────────────────────────────────────
 
@@ -175,5 +184,166 @@ describe("verifyEvidence", () => {
     expect(result.kept).toEqual([]);
     expect(result.notes).toEqual([]);
     expect(result.groundingByTitle.size).toBe(0);
+  });
+});
+
+// ── computeOriginality (pure math) ──────────────────────────────────────────
+
+describe("computeOriginality", () => {
+  test("empty similarities → neutral 1 (no prior art found)", () => {
+    expect(computeOriginality([])).toBe(1);
+  });
+
+  test("uses MAX similarity (nearest neighbor), not mean", () => {
+    // mean would be 0.5 → originality 0.5; max is 0.9 → originality 0.1.
+    expect(computeOriginality([0.1, 0.9])).toBeCloseTo(0.1, 10);
+  });
+
+  test("near-identical product → originality near 0", () => {
+    expect(computeOriginality([0.98])).toBeCloseTo(0.02, 10);
+  });
+
+  test("distant product → high originality", () => {
+    expect(computeOriginality([0.2])).toBeCloseTo(0.8, 10);
+  });
+
+  test("clamps to [0, 1] for out-of-range similarities", () => {
+    expect(computeOriginality([1.4])).toBe(0);
+    expect(computeOriginality([-0.3])).toBe(1);
+  });
+});
+
+// ── nearestProductLabel (pure) ──────────────────────────────────────────────
+
+function searchResult(
+  content: string,
+  score: number,
+  metadata: Record<string, string> = {},
+): SearchResult {
+  return {
+    chunk: {
+      id: "c1",
+      sourceId: "s1",
+      content,
+      chunkIndex: 0,
+      tokenCount: 1,
+      createdAt: 0,
+    },
+    score,
+    source: {
+      id: "s1",
+      kind: "producthunt_product",
+      agentId: "shared",
+      channel: null,
+      chatId: null,
+      metadata,
+      createdAt: 0,
+    },
+  };
+}
+
+describe("nearestProductLabel", () => {
+  test("prefers metadata.title when present", () => {
+    const r = searchResult("ignored content", 0.5, { title: "Acme Inc" });
+    expect(nearestProductLabel(r)).toBe("Acme Inc");
+  });
+
+  test("falls back to product-name prefix of chunk content", () => {
+    const r = searchResult(
+      "Notion (#3, 1200 votes): the all-in-one workspace\nLong description...",
+      0.5,
+    );
+    expect(nearestProductLabel(r)).toBe("Notion (#3, 1200 votes)");
+  });
+
+  test("handles app-ranking style chunk content", () => {
+    const r = searchResult(
+      "[appstore] Calm by Calm.com | Category: Health\nMeditation app",
+      0.5,
+    );
+    expect(nearestProductLabel(r)).toBe(
+      "[appstore] Calm by Calm.com | Category",
+    );
+  });
+
+  test("empty content → unknown product", () => {
+    expect(nearestProductLabel(searchResult("", 0.5))).toBe("unknown product");
+  });
+});
+
+// ── annotateOriginality (orchestration, injected memory) ────────────────────
+
+function fakeMemory(
+  handler: (query: string, opts?: SearchOptions) => readonly SearchResult[],
+): MemoryManager {
+  const search: MemoryManager["search"] = async (_agentId, query, opts) =>
+    handler(query, opts);
+  return { search } as unknown as MemoryManager;
+}
+
+describe("annotateOriginality", () => {
+  test("no memory manager → neutral originality 1, no nearestProduct", async () => {
+    const out = await annotateOriginality([candidate("Solo")], null);
+    expect(out[0]!.originality).toBe(1);
+    expect(out[0]!.nearestProduct).toBeUndefined();
+  });
+
+  test("empty search results → neutral originality, no nearestProduct", async () => {
+    const mem = fakeMemory(() => []);
+    const out = await annotateOriginality([candidate("Novel")], mem);
+    expect(out[0]!.originality).toBe(1);
+    expect(out[0]!.nearestProduct).toBeUndefined();
+  });
+
+  test("annotates originality + nearestProduct from nearest hit", async () => {
+    const mem = fakeMemory(() => [
+      searchResult("FarApp: unrelated", 0.3),
+      searchResult("CloseApp (#1): twin product", 0.85),
+    ]);
+    const out = await annotateOriginality([candidate("Twin")], mem);
+    expect(out[0]!.originality).toBeCloseTo(0.15, 10);
+    expect(out[0]!.nearestProduct).toBe("CloseApp (#1)");
+    expect(out[0]!.nearestSimilarity).toBe(0.85);
+  });
+
+  test("searches ONLY the known-product corpus kinds", async () => {
+    let seenKinds: readonly string[] | undefined;
+    const mem = fakeMemory((_q, opts) => {
+      seenKinds = opts?.kinds;
+      return [];
+    });
+    await annotateOriginality([candidate("Probe")], mem);
+    expect(seenKinds).toEqual(KNOWN_PRODUCT_KINDS);
+  });
+
+  test("graceful: search throws → neutral originality, candidate kept", async () => {
+    const mem = fakeMemory(() => {
+      throw new Error("qdrant down");
+    });
+    const out = await annotateOriginality([candidate("Resilient")], mem);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.originality).toBe(1);
+    expect(out[0]!.title).toBe("Resilient");
+  });
+
+  test("does not drop candidates and preserves order", async () => {
+    const mem = fakeMemory((q) =>
+      q.startsWith("B") ? [searchResult("Dup: x", 0.9)] : [],
+    );
+    const out = await annotateOriginality(
+      [candidate("A"), candidate("B"), candidate("C")],
+      mem,
+    );
+    expect(out.map((c) => c.title)).toEqual(["A", "B", "C"]);
+    expect(out[0]!.originality).toBe(1);
+    expect(out[1]!.originality).toBeCloseTo(0.1, 10);
+    expect(out[2]!.originality).toBe(1);
+  });
+
+  test("does not mutate the input candidate", async () => {
+    const c = candidate("Immutable");
+    const mem = fakeMemory(() => [searchResult("X: y", 0.7)]);
+    await annotateOriginality([c], mem);
+    expect("originality" in c).toBe(false);
   });
 });

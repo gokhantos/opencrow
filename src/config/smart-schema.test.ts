@@ -37,6 +37,13 @@ describe("smartConfigSchema", () => {
           founderFit: 0.07,
         },
       },
+      generateWide: {
+        overGenerate: true,
+        seedsPerIntersection: 5,
+        maxCandidates: 40,
+        multiSegment: true,
+        sigeDivergent: false,
+      },
     });
   });
 
