@@ -175,6 +175,14 @@ export function verifyCandidateEvidence(
     return { candidate, signalGrounding: 1, fabricated: [] };
   }
 
+  // No verifiable token set this run (e.g. no capabilities were registered, or
+  // the run is landscape/review-only). We cannot prove fabrication against an
+  // empty set, so treat citations as UNVERIFIED — neutral grounding, keep the
+  // candidate and its citations intact, strip nothing.
+  if (validTokens.size === 0) {
+    return { candidate, signalGrounding: 0.5, fabricated: [] };
+  }
+
   const real: string[] = [];
   const fabricated: string[] = [];
   for (const token of cited) {
@@ -232,15 +240,22 @@ export function verifyEvidence(
 
     const cited = candidate.supportingSignalIds ?? [];
 
-    // Drop candidates whose grounding is entirely fabricated.
+    // Citations cited but none matched the run's verifiable token set. With the
+    // current citation scheme this is frequently a namespace mismatch (the model
+    // emits descriptive slugs, not <source>_<index> tokens), not genuine
+    // fabrication — so PENALIZE grounding to 0 and keep the idea (annotate,
+    // don't drop). The grounding score flows to critique_subscores/eval; a
+    // future stricter gate can act on it once the ID scheme is aligned.
     if (cited.length > 0 && signalGrounding === 0) {
       notes.push(
-        `${candidate.title} [FABRICATED] cited ${cited.length} signal(s), none real: ${fabricated.join(", ")}`,
+        `${candidate.title} [UNVERIFIED] cited ${cited.length} signal(s), none matched this run's tokens: ${fabricated.join(", ")}`,
       );
-      log.info("Idea dropped — fully fabricated chain-of-evidence", {
+      log.info("Idea citations unverified — kept with grounding penalized", {
         title: candidate.title,
         fabricated,
       });
+      groundingByTitle.set(verified.title, 0);
+      kept.push(verified);
       continue;
     }
 

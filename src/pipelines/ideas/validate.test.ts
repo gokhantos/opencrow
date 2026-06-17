@@ -133,21 +133,33 @@ describe("verifyCandidateEvidence", () => {
 describe("verifyEvidence", () => {
   const capabilities = [cap("hackernews", "A"), cap("producthunt", "B")];
 
-  test("drops fully-fabricated candidates, keeps grounded ones", () => {
+  test("keeps all candidates (annotate-don't-drop); penalizes unverified grounding", () => {
     const result = verifyEvidence(
       [
         candidate("Grounded", ["hackernews_0"]),
-        candidate("Fabricated", ["ghost_9"]),
+        candidate("Unverified", ["ghost_9"]),
         candidate("NoCite"),
       ],
       capabilities,
     );
 
     const titles = result.kept.map((c) => c.title);
+    // No candidate is dropped — even fully-unverified citations are kept.
     expect(titles).toContain("Grounded");
     expect(titles).toContain("NoCite");
-    expect(titles).not.toContain("Fabricated");
-    expect(result.notes.some((n) => n.includes("FABRICATED"))).toBe(true);
+    expect(titles).toContain("Unverified");
+    // The unverified one is penalized to grounding 0 and noted.
+    expect(result.groundingByTitle.get("Unverified")).toBe(0);
+    expect(result.notes.some((n) => n.includes("UNVERIFIED"))).toBe(true);
+  });
+
+  test("empty token set (no capabilities) → keep all, neutral grounding", () => {
+    const result = verifyEvidence(
+      [candidate("LandscapeOnly", ["starbucks_ios_rating"])],
+      [],
+    );
+    expect(result.kept.map((c) => c.title)).toContain("LandscapeOnly");
+    expect(result.groundingByTitle.get("LandscapeOnly")).toBe(0.5);
   });
 
   test("records grounding scores by title for kept candidates", () => {
