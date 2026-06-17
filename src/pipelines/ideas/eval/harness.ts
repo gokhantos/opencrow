@@ -19,6 +19,7 @@ import { createLogger } from "../../../logger";
 import {
   aggregateEval,
   aggregateGiantRun,
+  compareSigeAb,
   computeEmbeddingNovelty,
   type DedupLabel,
   type EmbeddingNoveltyMetric,
@@ -28,6 +29,8 @@ import {
   type GiantScoredIdea,
   type NoveltyEmbedDep,
   type NoveltySearchDep,
+  type SigeAbPair,
+  type SigeAbReport,
 } from "./aggregate";
 import type { GiantAxisKey } from "../giant";
 import {
@@ -337,4 +340,121 @@ export async function reJudgeStoredIdeas(
     log.error("reJudgeStoredIdeas failed; returning empty result", { err });
     return EMPTY_REJUDGE;
   }
+}
+
+// ── Hardened-SIGE vs self-critique A/B ──────────────────────────────────────────
+
+export interface RunSigeAbOptions {
+  /**
+   * Id-paired GIANT scores: each idea scored by the hardened SIGE jury AND by
+   * the synthesizer self-critique. The impure jury/SIGE LLM calls are the
+   * caller's (pipeline-phase) responsibility — they MUST be gated behind
+   * `smart.sigeValuation` (default OFF). This entrypoint only does the pure
+   * comparison math + regression detection + persistence.
+   */
+  readonly pairs: readonly SigeAbPair[];
+  /**
+   * One boolean per evaluated SIGE round (true = convergence-vetoed). Drives the
+   * convergenceVetoRate. Empty when no round-level health was measured.
+   */
+  readonly vetoes?: readonly boolean[];
+  /** Tolerance below which a negative groundedness delta is still "flat". Default 0.05. */
+  readonly groundednessTolerance?: number;
+  /** Number of trailing snapshots to baseline against. Default 5. */
+  readonly baselineWindow?: number;
+  /** Regression-alert thresholds (see RegressionOptions). */
+  readonly regression?: RegressionOptions;
+  /** Scope label for trailing-baseline lookup (category). */
+  readonly category?: string | null;
+  /** When false, the computed snapshot is NOT written. Default false (A/B is exploratory). */
+  readonly persist?: boolean;
+  /** Optional pipeline run id to stamp on a persisted snapshot. */
+  readonly pipelineRunId?: string | null;
+}
+
+export interface RunSigeAbResult {
+  /** The hardened-SIGE vs self-critique comparison report. */
+  readonly report: SigeAbReport;
+  /**
+   * The A/B report folded into a run-level aggregate (so `sigeLift` /
+   * `sigeGroundednessDelta` flow through the standard regression tracker).
+   */
+  readonly aggregate: EvalAggregate;
+  readonly alerts: readonly RegressionAlert[];
+  readonly baselineCount: number;
+  readonly snapshotId: string | null;
+}
+
+/**
+ * Run the hardened-SIGE vs self-critique A/B GATE on a set of id-paired GIANT
+ * scores. Reports the headline `sigeLift`, the groundedness delta (must be
+ * flat-or-up), jury agreement, dissent distribution, and the convergence-veto
+ * rate — then runs the standard regression tracker so a regression in lift or
+ * groundedness alerts like any other tracked metric.
+ *
+ * This is the decision gate for ever defaulting `smart.sigeValuation` on: a real
+ * win is `report.liftWithoutGroundednessRegression === true`.
+ *
+ * NOT on the pipeline hot path. Never throws — degrades to a best-effort result.
+ */
+export async function runSigeAb(
+  opts: RunSigeAbOptions,
+): Promise<RunSigeAbResult> {
+  const baselineWindow = opts.baselineWindow ?? DEFAULT_BASELINE_WINDOW;
+  const category = opts.category ?? null;
+  const persist = opts.persist ?? false;
+
+  let report: SigeAbReport;
+  try {
+    report = compareSigeAb(opts.pairs, opts.vetoes ?? [], {
+      groundednessTolerance: opts.groundednessTolerance,
+    });
+  } catch (err) {
+    // compareSigeAb is pure and defensive, but never let the gate break a run.
+    log.error("compareSigeAb failed; returning empty A/B report", { err });
+    report = compareSigeAb([], []);
+  }
+
+  const aggregate = aggregateEval({ ideas: [], outcomes: [], sigeAb: report });
+
+  let alerts: readonly RegressionAlert[] = [];
+  let baselineCount = 0;
+  try {
+    const trailing = await loadTrailingAggregates(baselineWindow, category);
+    baselineCount = trailing.length;
+    alerts = detectRegressions(aggregate, trailing, opts.regression);
+  } catch (err) {
+    log.warn("SIGE A/B baseline load failed; skipping regression alerts", {
+      err,
+    });
+  }
+
+  let snapshotId: string | null = null;
+  if (persist) {
+    try {
+      snapshotId = await persistEvalSnapshot({
+        aggregate,
+        alerts,
+        judgeEnabled: true,
+        category,
+        pipelineRunId: opts.pipelineRunId ?? null,
+      });
+    } catch (err) {
+      log.warn("SIGE A/B snapshot persist failed", { err });
+    }
+  }
+
+  log.info("SIGE A/B gate complete", {
+    pairedCount: report.pairedCount,
+    sigeLift: report.sigeLift,
+    groundednessDelta: report.groundednessDelta,
+    liftWithoutGroundednessRegression: report.liftWithoutGroundednessRegression,
+    meanJuryAgreement: report.meanJuryAgreement,
+    dissentMean: report.dissentDistribution.mean,
+    convergenceVetoRate: report.convergenceVetoRate,
+    alerts: alerts.length,
+    snapshotId,
+  });
+
+  return { report, aggregate, alerts, baselineCount, snapshotId };
 }
