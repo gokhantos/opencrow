@@ -4,6 +4,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { loadConfig } from "../../config/loader";
 import { PIPELINE_DEFINITIONS } from "../../pipelines/types";
 import type { PipelineConfig } from "../../pipelines/types";
 import {
@@ -273,19 +274,44 @@ export function createPipelineRoutes(deps?: {
   // POST /pipelines/autonomous-sige/run
   // Immediately enqueues and fire-and-forgets one autonomous SIGE run.
   // Returns the runId so the caller can poll /pipelines-runs/:runId for status.
-  // Body: optional { model?: string } (other fields reserved for future use).
-  // Default-OFF: enabled only when smart.sigeAuto.enabled is true; the handler
-  // always succeeds regardless — it is the pipeline itself that reads the flag.
+  // Default-OFF: returns HTTP 503 when smart.sigeAuto.enabled is false.
+  // The model field is intentionally omitted from the body — the autonomous path
+  // always uses the cheap Haiku default defined inside pipeline-autonomous.ts.
+
+  // Allowlist of cheap models permitted for an autonomous run override.
+  // Kept narrow: the autonomous path is Haiku-only; Sonnet is NOT listed because
+  // it would multiply per-run cost significantly. Add models here as Phase D
+  // validated pricing allows them.
+  const AUTONOMOUS_SIGE_ALLOWED_MODELS = [
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+  ] as const;
 
   const autonomousSigeBodySchema = z
     .object({
-      model: z.string().optional(),
+      model: z.enum(AUTONOMOUS_SIGE_ALLOWED_MODELS).optional(),
     })
     .strict();
 
   app.post("/pipelines/autonomous-sige/run", async (c) => {
+    // FIX 1 — Enabled-gate: reject the request when the feature is disabled.
+    // This prevents any bearer-auth holder from triggering an expensive
+    // autonomous run while sigeAuto.enabled is false (the default).
+    const appConfig = loadConfig();
+    if (!appConfig.pipelines.ideas.smart.sigeAuto.enabled) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "autonomous SIGE is not enabled; set smart.sigeAuto.enabled=true",
+        },
+        503,
+      );
+    }
+
+    // FIX 2 — Model allowlist: body accepts only cheap Haiku-family models.
     // Parse optional body; silently default on missing/invalid JSON.
-    let model: string | undefined;
+    let model: (typeof AUTONOMOUS_SIGE_ALLOWED_MODELS)[number] | undefined;
     try {
       const rawBody = await c.req.json().catch(() => ({}));
       const parsed = autonomousSigeBodySchema.safeParse(rawBody);

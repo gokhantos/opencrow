@@ -23,6 +23,7 @@ import { Mem0Client } from "../../sige/knowledge/mem0-client";
 import type { BroadCorpus } from "../../sige/discovery/frontier-discovery";
 import { discoverFrontiers } from "../../sige/discovery/frontier-discovery";
 import { generateDivergentIdeas } from "../../sige/run";
+import { acquireSigeRunSlot } from "../../sige/auto/run-guard";
 import { getDb } from "../../store/db";
 import {
   createPipelineStep,
@@ -58,6 +59,9 @@ export const AUTONOMOUS_SIGE_PIPELINE_ID = "autonomous-sige";
 const log = createLogger("pipeline:autonomous");
 
 const AGENT_ID = "autonomous-sige-pipeline";
+
+/** Wall-clock ceiling for a single autonomous pipeline run (mirrors sige/run.ts). */
+const RUN_TIMEOUT_MS = 90 * 60 * 1_000;
 
 function nowMs(): number {
   return Date.now();
@@ -129,6 +133,32 @@ export async function runAutonomousSige(
     config,
     startedAt: now(),
   });
+
+  // FIX 3 — Single-flight slot: prevent concurrent autonomous pipeline runs.
+  // acquireSigeRunSlot uses pg_try_advisory_lock (non-blocking) so a second
+  // caller (route OR resume path) returns immediately rather than queuing.
+  const slot = await acquireSigeRunSlot(1);
+  if (!slot.acquired) {
+    log.warn("runAutonomousSige: another run holds the slot — skipping", { runId });
+    const summary = buildEmptySummary(nowMs() - startTime);
+    await updatePipelineRun(runId, {
+      status: "completed",
+      resultSummary: {
+        ...summary,
+        topThemes: ["busy — another autonomous SIGE run holds the slot"],
+      },
+      finishedAt: now(),
+    });
+    return { runId, summary };
+  }
+
+  // FIX 3 — Per-run wall-clock timeout: abort a stuck run after 90 minutes.
+  const timeoutController = new AbortController();
+  const timeoutId = setTimeout(() => {
+    timeoutController.abort();
+    log.warn("runAutonomousSige: wall-clock timeout reached (90 min)", { runId });
+  }, RUN_TIMEOUT_MS);
+  const runSignal = timeoutController.signal;
 
   try {
     const appConfig = loadConfig();
@@ -218,6 +248,7 @@ export async function runAutonomousSige(
           broadPoolSize: sigeAutoConfig.broadPoolSize,
           maxDeepFrontiers: sigeAutoConfig.maxDeepFrontiers,
           userId,
+          signal: runSignal,
         }),
       (d) =>
         `${d.frontiers.length} frontiers from ${d.candidates.length} broad candidates`,
@@ -265,6 +296,7 @@ export async function runAutonomousSige(
           const divergent = await generateDivergentIdeas(frontier.seedText, {
             maxCandidates: sigeAutoConfig.broadPoolSize,
             userId,
+            signal: runSignal,
           });
           return divergent.map((d) => mapDivergentToCandidate(d, { sourceTag: "sige-frontier" }));
         },
@@ -489,6 +521,9 @@ export async function runAutonomousSige(
       finishedAt: now(),
     });
     throw err;
+  } finally {
+    clearTimeout(timeoutId);
+    await slot.release();
   }
 }
 

@@ -668,7 +668,11 @@ export const sigeAutoConfigSchema = z
     maxConcurrent: z.number().int().min(1).max(1).default(1),
     /** Write back autonomous top-ideas to Mem0. Default false avoids feedback-loop risk. */
     memoryWriteback: z.boolean().default(false),
-    /** Soft per-run cost ceiling in USD. 0 = no ceiling enforced. */
+    /**
+     * RESERVED — not yet enforced; placeholder for a future per-run token-cost
+     * abort. No recordTokenUsage / abort wiring exists today: setting this field
+     * does NOT cap spending. Do not rely on it as a cost guard.
+     */
     perRunCostCeilingUsd: z.number().min(0).default(0),
   })
   .default({
