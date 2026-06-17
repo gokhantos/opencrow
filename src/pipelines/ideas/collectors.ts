@@ -1041,7 +1041,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
       SELECT id, author_username, author_verified, text, likes, retweets, views,
              likes_velocity, scraped_at
       FROM x_scraped_tweets
-      WHERE scraped_at >= NOW() - INTERVAL '7 days'
+      WHERE scraped_at >= ${nowSec - 7 * 24 * 3600}
       ORDER BY COALESCE(likes_velocity, 0) DESC, scraped_at DESC LIMIT 50
     `) as Array<Record<string, unknown>>;
 
