@@ -12,6 +12,7 @@ import {
   findResumableRuns,
   incrementResumeAttempts,
   markRunFailed,
+  failIncompleteStepsForRun,
 } from "./store";
 
 const TEST_PIPELINE = "test-resume-pipeline";
@@ -246,6 +247,50 @@ describe("pipeline resume store layer", () => {
         [runId!],
       );
       expect((after[0] as { c: number }).c).toBe(0);
+    });
+  });
+
+  describe("failIncompleteStepsForRun", () => {
+    it("marks running and pending steps as failed, leaves completed untouched, returns count", async () => {
+      const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+
+      // One completed step (checkpoint to preserve).
+      const comp = await createPipelineStep({ runId: runId!, stepName: "landscape" });
+      await updatePipelineStep(comp.id, {
+        status: "completed",
+        outputSummary: "done",
+        outputJson: { ok: true },
+      });
+
+      // One running step (ghost — should be failed).
+      await createPipelineStep({ runId: runId!, stepName: "reviews" });
+      // left 'running'
+
+      const count = await failIncompleteStepsForRun(runId!, "test reason");
+      expect(count).toBe(1);
+
+      const steps = await getStepsForRun(runId!);
+      const byName = new Map(steps.map((s) => [s.stepName, s]));
+
+      expect(byName.get("landscape")!.status).toBe("completed"); // preserved
+      expect(byName.get("reviews")!.status).toBe("failed");
+      expect(byName.get("reviews")!.error).toBe("test reason");
+      expect(byName.get("reviews")!.finishedAt).not.toBeNull();
+      expect(byName.get("reviews")!.lastHeartbeat).toBeNull();
+    });
+
+    it("returns 0 and is a no-op when no incomplete steps exist", async () => {
+      const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+      const comp = await createPipelineStep({ runId: runId!, stepName: "landscape" });
+      await updatePipelineStep(comp.id, { status: "completed", outputSummary: "done" });
+
+      const count = await failIncompleteStepsForRun(runId!, "no-op");
+      expect(count).toBe(0);
+    });
+
+    it("returns 0 for an unknown run id (no rows touched)", async () => {
+      const count = await failIncompleteStepsForRun(crypto.randomUUID(), "ghost run");
+      expect(count).toBe(0);
     });
   });
 });

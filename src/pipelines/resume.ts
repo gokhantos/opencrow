@@ -21,6 +21,7 @@ import {
   markRunRunning,
   getPipelineRun,
   hasFreshHeartbeat,
+  failIncompleteStepsForRun,
 } from "./store";
 import { isRunActive } from "./active-runs";
 import { runIdeasPipeline } from "./ideas/pipeline";
@@ -133,6 +134,13 @@ export async function resumeInterruptedRuns(
       }
 
       const attempt = await incrementResumeAttempts(run.id);
+      const failedSteps = await failIncompleteStepsForRun(
+        run.id,
+        "interrupted by restart — superseded by resume",
+      );
+      if (failedSteps > 0) {
+        log.info("Reconciled dangling steps before resume", { runId: run.id, failedSteps });
+      }
       log.info("Resuming interrupted pipeline run", {
         runId: run.id,
         pipelineId: run.pipelineId,
@@ -188,6 +196,13 @@ export async function resumeRunById(
   }
 
   await markRunRunning(runId);
+  const failedSteps = await failIncompleteStepsForRun(
+    runId,
+    "interrupted by restart — superseded by resume",
+  );
+  if (failedSteps > 0) {
+    log.info("Reconciled dangling steps before resume", { runId, failedSteps });
+  }
   log.info("Manually re-triggering pipeline run", {
     runId,
     pipelineId: run.pipelineId,

@@ -4,6 +4,7 @@ import { getDb } from "./store/db";
 import { createCoreClient, type CoreClient } from "./web/core-client";
 import { createWebApp } from "./web/app";
 import { resumeInterruptedRuns } from "./pipelines/resume";
+import { reapStuckRuns } from "./pipelines/reaper";
 import { createBookmarkProcessor } from "./sources/x/bookmarks/processor";
 import { createAutolikeProcessor } from "./sources/x/interactions/processor";
 import { createAutofollowProcessor } from "./sources/x/follow/processor";
@@ -110,6 +111,20 @@ async function main(): Promise<void> {
       }
     })
     .catch(() => {});
+
+  // Periodic reaper: fail stuck pipeline runs (running, no heartbeat, no executor).
+  // Runs every 60s — generous enough to not interfere with slow-but-alive steps.
+  setInterval(() => {
+    reapStuckRuns()
+      .then(({ reaped }) => {
+        if (reaped > 0) {
+          log.info("Reaper: reaped stuck pipeline runs", { reaped });
+        }
+      })
+      .catch((err) => {
+        log.warn("Reaper sweep failed", { err });
+      });
+  }, 60_000);
 
   // Periodic agent reload — skip if config unchanged
   let lastConfigHash = "";
