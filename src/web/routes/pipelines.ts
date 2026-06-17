@@ -19,6 +19,7 @@ import {
 } from "../../pipelines/store";
 import { updateIdeaStage } from "../../sources/ideas/store";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
+import { resumeRunById } from "../../pipelines/resume";
 import type { MemoryManager } from "../../memory/types";
 import { createLogger } from "../../logger";
 
@@ -226,6 +227,25 @@ export function createPipelineRoutes(deps?: {
     const runId = c.req.param("runId");
     const ideas = await getIdeasForRun(runId);
     return c.json({ success: true, data: ideas });
+  });
+
+  // Manually (re-)trigger a previous run by id, on demand. Resumes from the
+  // last completed step when checkpoints exist; otherwise re-runs from scratch
+  // under the same run id. Fire-and-forget.
+  app.post("/pipelines-runs/:runId/resume", async (c) => {
+    const runId = c.req.param("runId");
+    const result = await resumeRunById(runId, deps?.memoryManager);
+    if (!result.ok) {
+      return c.json({ success: false, error: "Run not found" }, 404);
+    }
+    log.info("Resuming pipeline run on demand", {
+      runId,
+      pipelineId: result.pipelineId,
+    });
+    return c.json(
+      { success: true, message: "Run resuming", runId: result.runId },
+      202,
+    );
   });
 
   // ── Pipeline Ideas endpoints ──────────────────────────────────────

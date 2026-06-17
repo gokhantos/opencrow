@@ -337,6 +337,21 @@ export async function markRunFailed(id: string, error: string): Promise<void> {
   `;
 }
 
+/**
+ * Reset a run to 'running' for a deliberate manual re-trigger: clears the
+ * prior error / finish time and resets the resume attempt counter (a manual
+ * resume is intentional, so it should not count against the auto-resume cap).
+ */
+export async function markRunRunning(id: string): Promise<void> {
+  const db = getDb();
+  await db`
+    UPDATE pipeline_runs
+    SET status = 'running', resume_attempts = 0, error = NULL,
+        finished_at = NULL, started_at = ${now()}
+    WHERE id = ${id}
+  `;
+}
+
 export async function getStepsForRun(
   runId: string,
 ): Promise<readonly PipelineStep[]> {

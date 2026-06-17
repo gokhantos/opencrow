@@ -13,12 +13,26 @@
 
 import { createLogger } from "../logger";
 import type { MemoryManager } from "../memory/types";
+import type { PipelineConfig } from "./types";
 import {
   findResumableRuns,
   incrementResumeAttempts,
   markRunFailed,
+  markRunRunning,
+  getPipelineRun,
 } from "./store";
 import { runIdeasPipeline } from "./ideas/pipeline";
+
+/**
+ * The pipeline dispatcher signature. Defaulted to runIdeasPipeline; injectable
+ * so the manual-resume path can be unit-tested without firing a real pipeline.
+ */
+export type PipelineDispatcher = (
+  pipelineId: string,
+  config: PipelineConfig,
+  runId: string,
+  memoryManager?: MemoryManager | null,
+) => Promise<unknown>;
 
 const log = createLogger("pipeline:resume");
 
@@ -100,4 +114,44 @@ export async function resumeInterruptedRuns(
   }
 
   return { resumed, failed };
+}
+
+export type ResumeByIdResult =
+  | { readonly ok: true; readonly runId: string; readonly pipelineId: string }
+  | { readonly ok: false; readonly reason: "not_found" };
+
+/**
+ * Manually (re-)trigger a single previous run by id, on demand — without
+ * waiting for a process boot. Resets the run to 'running' (clearing its prior
+ * error and the resume attempt cap) and re-dispatches it: a run WITH persisted
+ * step checkpoints resumes from its last completed step; a run without them
+ * (e.g. one created before checkpointing) re-runs from scratch under the same
+ * id. Fire-and-forget — the run continues in the background.
+ *
+ * CAUTION: this does not detect whether the run is ALREADY executing; resuming
+ * a genuinely-live run would double-execute it. Intended for interrupted
+ * ('running' but dead) or finished ('failed'/'completed') runs.
+ */
+export async function resumeRunById(
+  runId: string,
+  memoryManager?: MemoryManager | null,
+  dispatch: PipelineDispatcher = runIdeasPipeline,
+): Promise<ResumeByIdResult> {
+  const run = await getPipelineRun(runId);
+  if (run === null) {
+    return { ok: false, reason: "not_found" };
+  }
+
+  await markRunRunning(runId);
+  log.info("Manually re-triggering pipeline run", {
+    runId,
+    pipelineId: run.pipelineId,
+    priorStatus: run.status,
+  });
+
+  dispatch(run.pipelineId, run.config, runId, memoryManager).catch((err) => {
+    log.error("Manually resumed run failed", { runId, err });
+  });
+
+  return { ok: true, runId, pipelineId: run.pipelineId };
 }
