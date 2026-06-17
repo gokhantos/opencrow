@@ -14,9 +14,26 @@ export function getDb(): InstanceType<typeof SQL> {
   return db;
 }
 
+/**
+ * Fallback pool ceiling, applied only when a caller omits { max }. Every
+ * spawned process passes its own `dbPoolSize` explicitly (see bootstrap.ts:
+ * cron 10, web/agent/sige 5, scraper 2, core 3), so this governs only the
+ * stragglers: CLI setup, the secrets lazy fallback, and tests. Kept small so
+ * those paths don't add idle connections to pg_stat_activity.
+ */
+const DEFAULT_POOL_MAX = 3;
+
+/**
+ * How long (in seconds) an idle connection is kept open before being closed.
+ * 0 = no timeout (Bun default, leads to connection sprawl in a multi-process
+ * setup). 30 s gives idle backends time to close on their own so Postgres sees
+ * fewer connections at rest.
+ */
+const DEFAULT_IDLE_TIMEOUT_SEC = 30;
+
 export async function initDb(
   url?: string,
-  opts?: { max?: number },
+  opts?: { max?: number; idleTimeout?: number },
 ): Promise<InstanceType<typeof SQL>> {
   const connUrl = url ?? process.env.DATABASE_URL;
   if (!connUrl) {
@@ -27,7 +44,8 @@ export async function initDb(
 
   db = new SQL({
     url: connUrl,
-    max: opts?.max ?? 20,
+    max: opts?.max ?? DEFAULT_POOL_MAX,
+    idleTimeout: opts?.idleTimeout ?? DEFAULT_IDLE_TIMEOUT_SEC,
   });
   await runMigrations(db);
   return db;

@@ -7,7 +7,54 @@ services:
       POSTGRES_USER: opencrow
       POSTGRES_PASSWORD: opencrow
       POSTGRES_DB: opencrow
-    command: ["postgres", "-c", "max_connections=2000"]
+    # ---------------------------------------------------------------------------
+    # DEV/LOCAL Postgres tuning. This stack runs inside an x86_64 Colima/QEMU VM
+    # on Apple Silicon, so every instruction is emulated (~7x cost) and per-query
+    # I/O overhead dominates CPU. These flags trade durability for far less
+    # CPU/I/O. SAFE ONLY for a throwaway dev DB that can be recreated from
+    # migrations — DO NOT ship these to a production deployment.
+    # ---------------------------------------------------------------------------
+    command:
+      - "postgres"
+      # Pool sizing: app uses ~5 conns/process across ~5-8 processes. 50 gives
+      # generous headroom while avoiding the per-connection memory/bookkeeping
+      # that the old max_connections=2000 wasted under emulation.
+      - "-c"
+      - "max_connections=50"
+      # Don't block COMMIT on WAL flush to disk. Biggest single CPU/I/O win under
+      # emulation. Risk: a crash can lose the last few committed txns (dev only).
+      - "-c"
+      - "synchronous_commit=off"
+      # Skip fsync entirely — no forced disk syncs. Risk: an OS/VM crash mid-write
+      # can corrupt the data dir. Acceptable: this DB is disposable (recreate via
+      # `docker compose down -v` + migrations). NEVER set in prod.
+      - "-c"
+      - "fsync=off"
+      # No full-page images in WAL (paired with fsync=off — only meaningful with
+      # fsync on). Cuts WAL write volume and CPU. Risk: torn pages on crash.
+      - "-c"
+      - "full_page_writes=off"
+      # Small dev working set; 128MB is plenty and keeps VM RAM pressure low.
+      - "-c"
+      - "shared_buffers=128MB"
+      # Per-sort/hash memory. 8MB suits the app's small dev queries without
+      # inflating peak memory across connections.
+      - "-c"
+      - "work_mem=8MB"
+      # Keep autovacuum ON (prevents bloat) but relax the cost limit so its I/O
+      # bursts don't spike emulated CPU; raising the delay throttles it gently.
+      - "-c"
+      - "autovacuum_vacuum_cost_delay=20ms"
+    # Bound CPU so a runaway Postgres can't monopolize the 8-vCPU emulated VM and
+    # starve the Mac. At ~38 txn/s of real work, 2 CPUs is ample headroom; the
+    # idle ~674% spike was emulation overhead, not logical load. deploy.resources
+    # is honored by `docker compose up` (Compose v2+/v5) under Colima — verified
+    # that limits.cpus maps to the container's NanoCpus.
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -27,6 +74,12 @@ services:
       nofile:
         soft: 65535
         hard: 65535
+    # Cap so vector indexing bursts can't monopolize the emulated VM (dev/local).
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
     restart: unless-stopped
 
   # Mem0 sidecar — exposes the /v1/memories/ contract the SIGE client expects,
@@ -65,6 +118,12 @@ services:
     ports:
       # Loopback-only; the app reaches it in-network at http://mem0:8000.
       - "127.0.0.1:8050:8000"
+    # Cap the extraction/embedding sidecar (dev/local).
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
     restart: unless-stopped
 
   app:
@@ -96,6 +155,14 @@ services:
     extra_hosts:
       # Reach host-native Ollama (embeddings) at host.docker.internal:11434.
       - "host.docker.internal:host-gateway"
+    # The app runs the orchestrator + web + cron + agents/scrapers as child
+    # processes; give it the largest slice but still bounded so it can't starve
+    # the host (dev/local).
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
     restart: unless-stopped
 
 volumes:
