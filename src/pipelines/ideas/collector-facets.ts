@@ -118,7 +118,7 @@ export async function aggregateFacets(
     const rows = (await db`
       SELECT problem_type, target_audience, jtbd, sentiment
       FROM signal_facets
-      WHERE source_table = ANY(${kinds as string[]})
+      WHERE source_table IN ${db(kinds as string[])}
     `) as Array<Record<string, unknown>>;
 
     if (rows.length === 0) return EMPTY_AGGREGATE;

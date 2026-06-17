@@ -211,7 +211,7 @@ async function loadRankFacetsForHits(
     const rows = (await db`
       SELECT source_id, importance, relevance_to_ideas
       FROM signal_facets
-      WHERE source_id = ANY(${ids as string[]})
+      WHERE source_id IN ${db(ids as string[])}
         AND importance IS NOT NULL
     `) as Array<{
       source_id: string;

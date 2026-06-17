@@ -134,7 +134,7 @@ export async function loadEvalOutcomes(
     const rows = (await db`
       SELECT idea_id, kind, actor
       FROM idea_feedback
-      WHERE idea_id = ANY(${ideaIds as string[]})
+      WHERE idea_id IN ${db(ideaIds as string[])}
     `) as RawOutcomeRow[];
     return rows.map((r) => ({ idea_id: r.idea_id, kind: r.kind, actor: r.actor }));
   } catch (err) {
