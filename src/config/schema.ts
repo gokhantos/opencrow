@@ -651,6 +651,41 @@ export const tasteConfigSchema = z
     goldenMinHumanLabels: 10,
   });
 
+// Phase 5 "autonomous SIGE": cadence-driven seedless idea generation.
+// Every field defaults to the safe/off value so that with no config change
+// the system behaves byte-for-byte as before. Master switch is `enabled: false`.
+export const sigeAutoConfigSchema = z
+  .object({
+    /** Master switch. Must be false (default) until Phase D staged enablement. */
+    enabled: z.boolean().default(false),
+    /** Max full expert-game runs per discovery cycle. Hard-capped at 3. */
+    maxDeepFrontiers: z.number().int().min(1).max(3).default(1),
+    /** Max cheap broad-pool candidates from Round-1 generation. Hard-capped at 200. */
+    broadPoolSize: z.number().int().min(1).max(200).default(50),
+    /** Auto-tick cadence. 'daily' = 86.4M ms; 'manual' = never auto-ticks. */
+    cadence: z.enum(["daily", "manual"]).default("daily"),
+    /** Concurrent deep-game slots. Locked at 1 via schema (forward-compat only). */
+    maxConcurrent: z.number().int().min(1).max(1).default(1),
+    /** Write back autonomous top-ideas to Mem0. Default false avoids feedback-loop risk. */
+    memoryWriteback: z.boolean().default(false),
+    /**
+     * RESERVED — not yet enforced; placeholder for a future per-run token-cost
+     * abort. No recordTokenUsage / abort wiring exists today: setting this field
+     * does NOT cap spending. Do not rely on it as a cost guard.
+     */
+    perRunCostCeilingUsd: z.number().min(0).default(0),
+  })
+  .default({
+    enabled: false,
+    maxDeepFrontiers: 1,
+    broadPoolSize: 50,
+    cadence: "daily",
+    maxConcurrent: 1,
+    memoryWriteback: false,
+    perRunCostCeilingUsd: 0,
+  });
+export type SigeAutoConfig = z.infer<typeof sigeAutoConfigSchema>;
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -689,6 +724,9 @@ export const smartConfigSchema = z.object({
   // bootstrap, auto-proxy labels, optional GIANT axis-weight calibration.
   // Fully defaulted -> backward-compatible.
   taste: tasteConfigSchema,
+  // Phase 5 "autonomous SIGE": seedless autonomous idea generation driven by
+  // SIGE breadth + depth stages. Default OFF — no behavior change until enabled.
+  sigeAuto: sigeAutoConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -737,6 +775,15 @@ const SMART_IDEAS_DEFAULTS = {
     calibrateGiantWeights: false,
     exemplarCount: 4,
     goldenMinHumanLabels: 10,
+  },
+  sigeAuto: {
+    enabled: false,
+    maxDeepFrontiers: 1,
+    broadPoolSize: 50,
+    cadence: "daily",
+    maxConcurrent: 1,
+    memoryWriteback: false,
+    perRunCostCeilingUsd: 0,
   },
 } as const;
 
@@ -858,3 +905,4 @@ export type SigeHardeningConfig = z.infer<typeof sigeHardeningConfigSchema>;
 export type TasteConfig = z.infer<typeof tasteConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;
+// SigeAutoConfig is also exported directly from the schema declaration above.

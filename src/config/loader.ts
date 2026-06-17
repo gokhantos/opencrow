@@ -112,10 +112,37 @@ function applyEnvOverrides(
     smartEnv.signalImportanceFloor =
       process.env.OPENCROW_SMART_SIGNAL_IMPORTANCE_FLOOR;
   }
-  if (Object.keys(smartEnv).length > 0) {
+  // OPENCROW_SMART_SIGE_AUTO_* overrides for the autonomous SIGE feature block.
+  const sigeAutoEnv: Record<string, unknown> = {};
+  const sigeAutoEnabled = boolEnv("OPENCROW_SMART_SIGE_AUTO_ENABLED");
+  if (sigeAutoEnabled !== undefined) sigeAutoEnv.enabled = sigeAutoEnabled;
+  const sigeAutoMaxDeepFrontiers = Number(process.env.OPENCROW_SMART_SIGE_AUTO_MAX_DEEP_FRONTIERS ?? "");
+  if (!Number.isNaN(sigeAutoMaxDeepFrontiers) && process.env.OPENCROW_SMART_SIGE_AUTO_MAX_DEEP_FRONTIERS !== undefined) {
+    sigeAutoEnv.maxDeepFrontiers = sigeAutoMaxDeepFrontiers;
+  }
+  const sigeAutoBroadPoolSize = Number(process.env.OPENCROW_SMART_SIGE_AUTO_BROAD_POOL_SIZE ?? "");
+  if (!Number.isNaN(sigeAutoBroadPoolSize) && process.env.OPENCROW_SMART_SIGE_AUTO_BROAD_POOL_SIZE !== undefined) {
+    sigeAutoEnv.broadPoolSize = sigeAutoBroadPoolSize;
+  }
+  if (process.env.OPENCROW_SMART_SIGE_AUTO_CADENCE) {
+    sigeAutoEnv.cadence = process.env.OPENCROW_SMART_SIGE_AUTO_CADENCE;
+  }
+  const sigeAutoMaxConcurrent = Number(process.env.OPENCROW_SMART_SIGE_AUTO_MAX_CONCURRENT ?? "");
+  if (!Number.isNaN(sigeAutoMaxConcurrent) && process.env.OPENCROW_SMART_SIGE_AUTO_MAX_CONCURRENT !== undefined) {
+    sigeAutoEnv.maxConcurrent = sigeAutoMaxConcurrent;
+  }
+  const sigeAutoMemoryWriteback = boolEnv("OPENCROW_SMART_SIGE_AUTO_MEMORY_WRITEBACK");
+  if (sigeAutoMemoryWriteback !== undefined) sigeAutoEnv.memoryWriteback = sigeAutoMemoryWriteback;
+
+  if (Object.keys(smartEnv).length > 0 || Object.keys(sigeAutoEnv).length > 0) {
     const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
     const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
-    const smart = { ...((ideas.smart ?? {}) as Record<string, unknown>), ...smartEnv };
+    const existingSmart = (ideas.smart ?? {}) as Record<string, unknown>;
+    const smart: Record<string, unknown> = { ...existingSmart, ...smartEnv };
+    if (Object.keys(sigeAutoEnv).length > 0) {
+      const existingSigeAuto = (existingSmart.sigeAuto ?? {}) as Record<string, unknown>;
+      smart.sigeAuto = { ...existingSigeAuto, ...sigeAutoEnv };
+    }
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }
 

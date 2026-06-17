@@ -11,6 +11,7 @@ import type {
   Player,
   SignalSpace,
 } from "./types";
+import { UNTRUSTED_PREAMBLE, sanitizeScrapedField, wrapUntrusted } from "./untrusted";
 
 const log = createLogger("sige:game-formulation");
 
@@ -80,15 +81,35 @@ const VALID_CONSTRAINT_TYPES = new Set(["budget", "legal", "resource", "temporal
 // ─── Prompts ──────────────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT =
+  `${UNTRUSTED_PREAMBLE} ` +
   "You are a game theory expert. Analyze strategic situations and formulate them as formal games. Return only valid JSON — no markdown, no explanation.";
 
-function buildUserPrompt(seedInput: string, graphContext: string): string {
+/** Maximum character length for a sanitized seed before fencing. */
+const MAX_SEED_LEN = 4000;
+
+/**
+ * Build the user prompt for game formulation.
+ *
+ * @param seedInput       The seed text. May be operator-provided (seeded path) or
+ *                        scraper-derived (autonomous path, `isScrapedSeed=true`).
+ * @param graphContext    Pre-built graph context string (may contain Mem0 recall).
+ * @param isScrapedSeed   When true, sanitize `seedInput` before fencing (autonomous path).
+ */
+function buildUserPrompt(
+  seedInput: string,
+  graphContext: string,
+  isScrapedSeed = false,
+): string {
+  const safeSeed = isScrapedSeed ? sanitizeScrapedField(seedInput, MAX_SEED_LEN) : seedInput;
+  const fencedSeed = wrapUntrusted("market-intel", safeSeed);
+  const fencedGraph = wrapUntrusted("graph-memory", graphContext);
+
   return `You are a game theory expert. Analyze the following strategic situation and formulate it as a formal game.
 
 ## Seed Question/Context
-${seedInput}
+${fencedSeed}
 
-${graphContext}
+${fencedGraph}
 
 ## Task
 Identify the game structure:
@@ -527,10 +548,16 @@ export async function formulateGame(
     readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
     readonly sessionId: string;
     readonly preferredGameType?: GameType;
+    /**
+     * Set to true when seedInput is scraper-derived (autonomous path: frontier.seedText).
+     * Triggers sanitizeScrapedField before fencing so injected directives are stripped.
+     * Defaults to false (seeded/operator path — trust the enriched seed as-is).
+     */
+    readonly isScrapedSeed?: boolean;
   },
 ): Promise<GameFormulation> {
   const graphContext = buildGraphContext(graphView);
-  const userContent = buildUserPrompt(seedInput, graphContext);
+  const userContent = buildUserPrompt(seedInput, graphContext, options.isScrapedSeed ?? false);
 
   const messages: readonly ConversationMessage[] = [
     {

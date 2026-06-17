@@ -222,11 +222,56 @@ function printResult(result: CheckResult): void {
   }
 }
 
+/**
+ * Detect autonomous SIGE misconfig: the two switches must be consistent.
+ *
+ * - sige.enabled     — required for the SIGE process to run at all (manifest.ts).
+ * - smart.sigeAuto.enabled — required for the autonomous scheduler to tick.
+ *
+ * Both must be true for autonomous SIGE to function. Common misconfig cases:
+ *   sigeAuto ON but sige OFF  → scheduler ticks but no worker processes sessions.
+ *   sige ON but sigeAuto OFF  → normal seeded-only mode (this is the default; not a problem).
+ */
+async function checkSigeAutoConfig(): Promise<CheckResult[]> {
+  try {
+    const { loadConfig } = await import("../config/loader");
+    const cfg = loadConfig();
+    const sigeEnabled = cfg.sige?.enabled === true;
+    const sigeAutoEnabled = cfg.pipelines.ideas.smart.sigeAuto.enabled;
+    const results: CheckResult[] = [];
+
+    if (sigeAutoEnabled && !sigeEnabled) {
+      results.push({
+        name: "Autonomous SIGE config",
+        status: "warn",
+        message:
+          "smart.sigeAuto.enabled=true but sige.enabled=false — autonomous scheduler ticks but the SIGE process is disabled; sessions will pile up unprocessed.",
+        repair: "Set sige.enabled=true in your config, or disable sigeAuto.enabled",
+      });
+    }
+
+    if (sigeEnabled && sigeAutoEnabled) {
+      results.push({
+        name: "Autonomous SIGE config",
+        status: "pass",
+        message: "Both sige.enabled and smart.sigeAuto.enabled are true — autonomous mode active",
+      });
+    }
+
+    return results;
+  } catch {
+    // Config load failure is surfaced by other checks; don't double-report.
+    return [];
+  }
+}
+
 export async function runDoctor(): Promise<void> {
   p.intro(`OpenCrow v${getVersion()} — Health Check`);
 
   const env = readEnvVars();
   const hasQdrant = Boolean(env.QDRANT_URL);
+
+  const sigeAutoChecks = await checkSigeAutoConfig();
 
   const checks = await Promise.all([
     checkBun(),
@@ -237,15 +282,17 @@ export async function runDoctor(): Promise<void> {
     checkDiskSpace(),
   ]);
 
+  const allChecks = [...checks, ...sigeAutoChecks];
+
   console.log("");
-  for (const check of checks) {
+  for (const check of allChecks) {
     printResult(check);
   }
   console.log("");
 
-  const fails = checks.filter((c) => c.status === "fail").length;
-  const warns = checks.filter((c) => c.status === "warn").length;
-  const passes = checks.filter((c) => c.status === "pass").length;
+  const fails = allChecks.filter((c) => c.status === "fail").length;
+  const warns = allChecks.filter((c) => c.status === "warn").length;
+  const passes = allChecks.filter((c) => c.status === "pass").length;
 
   if (fails > 0) {
     p.outro(`${passes} passed, ${warns} warnings, ${fails} failures`);

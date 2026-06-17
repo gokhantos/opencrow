@@ -1,6 +1,7 @@
 import { getDb } from "../store/db"
 import type {
   SigeSession,
+  SigeSessionOrigin,
   SigeSessionStatus,
   SigeSessionConfig,
   AgentAction,
@@ -37,9 +38,19 @@ function rowToSession(row: Record<string, unknown>): SigeSession {
       ? JSON.parse(row.fused_scores_json as string)
       : undefined
 
+  // seed_input is nullable after migration 020; map NULL -> undefined.
+  const seedInput = (row.seed_input as string | null) ?? undefined;
+  // origin column added by migration 019; default 'human' for pre-migration rows.
+  const origin = ((row.origin as string | null) ?? "human") as SigeSessionOrigin;
+
   return {
     id: row.id as string,
-    seedInput: row.seed_input as string,
+    seedInput,
+    origin,
+    // Derive mode from the hydrated origin/seedInput so `session.mode` is always
+    // trustworthy for callers (run.ts branches on it; without this it would always
+    // be undefined for DB-loaded sessions).
+    mode: origin === "auto" || seedInput === undefined ? "autonomous" : "seeded",
     status: row.status as SigeSessionStatus,
     config,
     gameFormulation,
@@ -101,14 +112,15 @@ function rowToFusedScore(row: Record<string, unknown>): FusedScore {
 
 export async function createSession(session: {
   readonly id: string
-  readonly seedInput: string
+  readonly seedInput?: string | null
+  readonly origin: SigeSessionOrigin
   readonly status: SigeSessionStatus
   readonly configJson: string
 }): Promise<void> {
   const db = getDb()
   await db`
-    INSERT INTO sige_sessions (id, seed_input, status, config_json)
-    VALUES (${session.id}, ${session.seedInput}, ${session.status}, ${session.configJson})
+    INSERT INTO sige_sessions (id, seed_input, origin, status, config_json)
+    VALUES (${session.id}, ${session.seedInput ?? null}, ${session.origin}, ${session.status}, ${session.configJson})
   `
 }
 
@@ -216,6 +228,38 @@ export async function getPendingSessions(): Promise<readonly SigeSession[]> {
     ORDER BY created_at ASC
   `
   return (rows as Record<string, unknown>[]).map(rowToSession)
+}
+
+/**
+ * Count autonomous sessions that are currently active (not in a terminal state).
+ * Used by the scheduler to enforce single-flight before enqueuing a new session.
+ */
+export async function countActiveAutonomousSessions(): Promise<number> {
+  const db = getDb()
+  const rows = await db`
+    SELECT COUNT(*) AS cnt FROM sige_sessions
+    WHERE origin = 'auto'
+      AND status NOT IN ('completed', 'failed', 'cancelled')
+  `
+  return Number((rows[0] as { cnt: string | number }).cnt)
+}
+
+/**
+ * Count sessions that are still pending (queued but not yet started), across
+ * both human and autonomous origins. Used by the POST /sige/sessions route to
+ * enforce a pending-queue ceiling (DoS guard).
+ *
+ * NOTE: Stage C introduces `countRunnableSessions()` in src/sige/auto/run-guard.ts
+ * which also accounts for in-flight (non-terminal) sessions. Once that lands, the
+ * route should switch to it; this helper is the minimal pending-only stand-in.
+ */
+export async function countPendingSessions(): Promise<number> {
+  const db = getDb()
+  const rows = await db`
+    SELECT COUNT(*) AS cnt FROM sige_sessions
+    WHERE status = 'pending'
+  `
+  return Number((rows[0] as { cnt: string | number }).cnt)
 }
 
 // ─── Agent Action Operations ──────────────────────────────────────────────────

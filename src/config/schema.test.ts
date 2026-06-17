@@ -9,6 +9,7 @@ import {
   cronConfigSchema,
   modelParamsSchema,
   opencrowConfigSchema,
+  sigeAutoConfigSchema,
   DEFAULT_AGENT_WORKSPACE,
   DEFAULT_BLOCKED_COMMANDS,
 } from "./schema";
@@ -216,5 +217,127 @@ describe("opencrowConfigSchema", () => {
 
   test("invalid logLevel is rejected", () => {
     expect(() => opencrowConfigSchema.parse({ logLevel: "verbose" })).toThrow();
+  });
+});
+
+// ── sigeAutoConfigSchema ──────────────────────────────────────────────────────
+
+describe("sigeAutoConfigSchema", () => {
+  test("parses an empty object with all defaults", () => {
+    const result = sigeAutoConfigSchema.parse({});
+    expect(result.enabled).toBe(false);
+    expect(result.maxDeepFrontiers).toBe(1);
+    expect(result.broadPoolSize).toBe(50);
+    expect(result.cadence).toBe("daily");
+    expect(result.maxConcurrent).toBe(1);
+    expect(result.memoryWriteback).toBe(false);
+    expect(result.perRunCostCeilingUsd).toBe(0);
+  });
+
+  test("default enabled is false (master switch OFF)", () => {
+    const result = sigeAutoConfigSchema.parse({});
+    expect(result.enabled).toBe(false);
+  });
+
+  test("enabled=true parses correctly", () => {
+    const result = sigeAutoConfigSchema.parse({ enabled: true });
+    expect(result.enabled).toBe(true);
+  });
+
+  test("maxDeepFrontiers=1 is valid (minimum)", () => {
+    const result = sigeAutoConfigSchema.parse({ maxDeepFrontiers: 1 });
+    expect(result.maxDeepFrontiers).toBe(1);
+  });
+
+  test("maxDeepFrontiers=3 is valid (maximum)", () => {
+    const result = sigeAutoConfigSchema.parse({ maxDeepFrontiers: 3 });
+    expect(result.maxDeepFrontiers).toBe(3);
+  });
+
+  test("maxDeepFrontiers > 3 is rejected", () => {
+    expect(() => sigeAutoConfigSchema.parse({ maxDeepFrontiers: 4 })).toThrow();
+  });
+
+  test("maxDeepFrontiers = 0 is rejected (below minimum)", () => {
+    expect(() => sigeAutoConfigSchema.parse({ maxDeepFrontiers: 0 })).toThrow();
+  });
+
+  test("broadPoolSize=1 is valid (minimum)", () => {
+    const result = sigeAutoConfigSchema.parse({ broadPoolSize: 1 });
+    expect(result.broadPoolSize).toBe(1);
+  });
+
+  test("broadPoolSize=200 is valid (maximum)", () => {
+    const result = sigeAutoConfigSchema.parse({ broadPoolSize: 200 });
+    expect(result.broadPoolSize).toBe(200);
+  });
+
+  test("broadPoolSize > 200 is rejected", () => {
+    expect(() => sigeAutoConfigSchema.parse({ broadPoolSize: 201 })).toThrow();
+  });
+
+  test("broadPoolSize = 0 is rejected (below minimum)", () => {
+    expect(() => sigeAutoConfigSchema.parse({ broadPoolSize: 0 })).toThrow();
+  });
+
+  test("cadence='daily' is valid", () => {
+    const result = sigeAutoConfigSchema.parse({ cadence: "daily" });
+    expect(result.cadence).toBe("daily");
+  });
+
+  test("cadence='manual' is valid", () => {
+    const result = sigeAutoConfigSchema.parse({ cadence: "manual" });
+    expect(result.cadence).toBe("manual");
+  });
+
+  test("unknown cadence value is rejected", () => {
+    expect(() => sigeAutoConfigSchema.parse({ cadence: "hourly" })).toThrow();
+    expect(() => sigeAutoConfigSchema.parse({ cadence: "weekly" })).toThrow();
+  });
+
+  test("maxConcurrent=1 is valid (only valid value per schema)", () => {
+    const result = sigeAutoConfigSchema.parse({ maxConcurrent: 1 });
+    expect(result.maxConcurrent).toBe(1);
+  });
+
+  test("maxConcurrent > 1 is rejected (schema hard-caps at 1)", () => {
+    expect(() => sigeAutoConfigSchema.parse({ maxConcurrent: 2 })).toThrow();
+  });
+
+  test("memoryWriteback=true parses correctly", () => {
+    const result = sigeAutoConfigSchema.parse({ memoryWriteback: true });
+    expect(result.memoryWriteback).toBe(true);
+  });
+
+  test("perRunCostCeilingUsd=0 is valid (no ceiling)", () => {
+    const result = sigeAutoConfigSchema.parse({ perRunCostCeilingUsd: 0 });
+    expect(result.perRunCostCeilingUsd).toBe(0);
+  });
+
+  test("perRunCostCeilingUsd=5.5 is valid (positive ceiling)", () => {
+    const result = sigeAutoConfigSchema.parse({ perRunCostCeilingUsd: 5.5 });
+    expect(result.perRunCostCeilingUsd).toBe(5.5);
+  });
+
+  test("perRunCostCeilingUsd < 0 is rejected", () => {
+    expect(() => sigeAutoConfigSchema.parse({ perRunCostCeilingUsd: -1 })).toThrow();
+  });
+
+  test("full valid config object parses correctly", () => {
+    const result = sigeAutoConfigSchema.parse({
+      enabled: true,
+      maxDeepFrontiers: 2,
+      broadPoolSize: 100,
+      cadence: "manual",
+      maxConcurrent: 1,
+      memoryWriteback: true,
+      perRunCostCeilingUsd: 2.5,
+    });
+    expect(result.enabled).toBe(true);
+    expect(result.maxDeepFrontiers).toBe(2);
+    expect(result.broadPoolSize).toBe(100);
+    expect(result.cadence).toBe("manual");
+    expect(result.memoryWriteback).toBe(true);
+    expect(result.perRunCostCeilingUsd).toBe(2.5);
   });
 });

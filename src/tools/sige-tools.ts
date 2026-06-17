@@ -80,6 +80,7 @@ function createStartSessionTool(deps: SigeToolDeps): ToolDefinition {
         await createSession({
           id,
           seedInput,
+          origin: "human",
           status: "pending",
           configJson,
         });
@@ -190,7 +191,7 @@ function createListSessionsTool(): ToolDefinition {
 
         const rows = sessions.map((s) => ({
           id: s.id,
-          seedInput: s.seedInput.slice(0, 100),
+          seedInput: (s.seedInput ?? "(autonomous)").slice(0, 100),
           status: s.status,
           createdAt: s.createdAt.toISOString(),
           finishedAt: s.finishedAt?.toISOString() ?? null,
@@ -244,7 +245,7 @@ function createQueryGameHistoryTool(): ToolDefinition {
         const queryLower = query.toLowerCase();
 
         const matched = allSessions
-          .filter((s) => s.seedInput.toLowerCase().includes(queryLower))
+          .filter((s) => (s.seedInput ?? "").toLowerCase().includes(queryLower))
           .slice(0, limit);
 
         if (matched.length === 0) {
@@ -256,7 +257,7 @@ function createQueryGameHistoryTool(): ToolDefinition {
 
         const rows = matched.map((s) => ({
           id: s.id,
-          seedInput: s.seedInput,
+          seedInput: s.seedInput ?? null,
           status: s.status,
           gameType: s.gameFormulation?.gameType ?? null,
           playerCount: s.gameFormulation?.players.length ?? null,
@@ -322,7 +323,7 @@ function createSearchStrategicIdeasTool(): ToolDefinition {
           const allSessions = await listSessions({ limit: 200 });
           const queryLower = query.toLowerCase();
           sessionIds = allSessions
-            .filter((s) => s.seedInput.toLowerCase().includes(queryLower))
+            .filter((s) => (s.seedInput ?? "").toLowerCase().includes(queryLower))
             .map((s) => s.id);
         }
 

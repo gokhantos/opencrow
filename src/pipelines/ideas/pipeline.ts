@@ -11,90 +11,95 @@
  * 7. store — Save ideas
  */
 
-import { createLogger } from "../../logger";
-import { getDb } from "../../store/db";
+import type { AiProvider } from "../../agent/types";
 import { loadConfig } from "../../config/loader";
+import type {
+  DemandConfig,
+  GenerateWideConfig,
+  GiantConfig,
+  SigeConfig,
+  SigeHardeningConfig,
+  SmartIdeasConfig,
+  TasteConfig,
+} from "../../config/schema";
+import { createLogger } from "../../logger";
 import type { MemoryManager } from "../../memory/types";
-import { insertIdea, getIdeasByStage } from "../../sources/ideas/store";
-import type { PipelineConfig, PipelineResultSummary } from "../types";
+import { Mem0Client } from "../../sige/knowledge/mem0-client";
+import type { DivergentCandidate } from "../../sige/run";
+import { DEFAULT_SIGE_SESSION_CONFIG, generateDivergentIdeas } from "../../sige/run";
+import type { CandidateEvaluation, CandidateIdea } from "../../sige/simulation/expert-game";
+import { evaluateCandidates } from "../../sige/simulation/expert-game";
+import type { ScoredIdea } from "../../sige/types";
+import { getIdeasByStage, insertIdea, insertIdeaFeedback } from "../../sources/ideas/store";
+import { getDb } from "../../store/db";
 import {
-  updatePipelineRun,
-  getPipelineRun,
   createPipelineStep,
-  updatePipelineStep,
-  touchPipelineStep,
   findCompletedStep,
+  getPipelineRun,
+  touchPipelineStep,
+  updatePipelineRun,
+  updatePipelineStep,
 } from "../store";
 import { beginRun, endRun } from "../active-runs";
-import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
+import type { PipelineConfig, PipelineResultSummary } from "../types";
 import type { CollectorContext } from "./collectors";
+import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
+import { getConsumedIds, markConsumed } from "./consumption";
+import { credibilityKey, getSourceCredibility } from "./credibility";
 import {
-  synthesizeFromTrends,
-  deepSearch,
-  buildValidatedExemplars,
-  signalCitationToken,
-  compositeToQualityScore,
-} from "./synthesizer";
-import type { ValidatedExemplar, DeepSearchOptions } from "./synthesizer";
-import type { SmartIdeasConfig, SigeConfig, GiantConfig, DemandConfig } from "../../config/schema";
-import { aggregateGiant } from "./giant";
-import type { GiantAxisScores, GiantAxisKey } from "./giant";
-import { enrichDemand, DEFAULT_DEMAND_PROBES } from "./demand-probes";
-import type { EnrichDemandConfig } from "./demand-probes";
-import {
-  hasCitedDemand,
-  demandArtifactSchema,
   DEMAND_SCORE_MAX,
   type DemandArtifact,
   type DemandCandidateText,
+  demandArtifactSchema,
+  hasCitedDemand,
 } from "./demand";
-import { checkForDuplicates, verifyEvidence, annotateOriginality } from "./validate";
-import { getConsumedIds, markConsumed } from "./consumption";
-import { getSourceCredibility, credibilityKey } from "./credibility";
-import { evaluateCandidates } from "../../sige/simulation/expert-game";
-import type { CandidateIdea, CandidateEvaluation } from "../../sige/simulation/expert-game";
-import { Mem0Client } from "../../sige/knowledge/mem0-client";
-import { generateDivergentIdeas, DEFAULT_SIGE_SESSION_CONFIG } from "../../sige/run";
-import type { DivergentCandidate } from "../../sige/run";
-import { selectWithNoveltyReserve } from "./generate-wide";
-import { inferSegment, inferSegmentMatch, SEGMENT_IDS } from "./segments";
-import type { SegmentId } from "./segments";
-import type { GenerateWideConfig, SigeHardeningConfig } from "../../config/schema";
-import type { Capability, GeneratedIdeaCandidate } from "./types";
+import type { EnrichDemandConfig } from "./demand-probes";
+import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
 import {
-  judgeWithJury,
-  fuseJury,
-  anonymizeCandidates,
-  DEFAULT_JURY_PANEL,
-  type JuryVerdict,
-  type JudgeModel,
-} from "./jury";
-import {
-  convergenceVeto,
-  dissentAdjustedScore,
-  paretoFrontier,
-  bradleyTerryRank,
-  type ConvergenceSignal,
-  type PairwiseWin,
-} from "./sige-select";
-import { GIANT_AXIS_KEYS } from "./giant";
-import type { AiProvider } from "../../agent/types";
-import {
-  selectGoldenExemplars,
-  selectAntiExemplars,
-  renderGoldenBlock,
-  renderAntiBlock,
-  type ScoredIdeaRow,
-} from "./taste";
-import {
+  DEFAULT_PROXY_OPTIONS,
   deriveProxyLabels,
   loadGiantWeights,
   parseGiantScores,
-  DEFAULT_PROXY_OPTIONS,
   type ScoredIdeaForProxy,
 } from "./feedback-bootstrap";
-import { insertIdeaFeedback } from "../../sources/ideas/store";
-import type { TasteConfig } from "../../config/schema";
+import { selectWithNoveltyReserve } from "./generate-wide";
+import type { GiantAxisKey, GiantAxisScores } from "./giant";
+import { aggregateGiant, GIANT_AXIS_KEYS } from "./giant";
+import {
+  anonymizeCandidates,
+  DEFAULT_JURY_PANEL,
+  fuseJury,
+  type JudgeModel,
+  type JuryVerdict,
+  judgeWithJury,
+} from "./jury";
+import type { SegmentId } from "./segments";
+import { inferSegment, inferSegmentMatch, SEGMENT_IDS } from "./segments";
+import {
+  bradleyTerryRank,
+  type ConvergenceSignal,
+  convergenceVeto,
+  dissentAdjustedScore,
+  type PairwiseWin,
+  paretoFrontier,
+} from "./sige-select";
+import type { DeepSearchOptions, ValidatedExemplar } from "./synthesizer";
+import {
+  buildValidatedExemplars,
+  compositeToQualityScore,
+  deepSearch,
+  signalCitationToken,
+  synthesizeFromTrends,
+} from "./synthesizer";
+import {
+  renderAntiBlock,
+  renderGoldenBlock,
+  type ScoredIdeaRow,
+  selectAntiExemplars,
+  selectGoldenExemplars,
+} from "./taste";
+import type { Capability, GeneratedIdeaCandidate } from "./types";
+import { annotateOriginality, checkForDuplicates, verifyEvidence } from "./validate";
 
 const log = createLogger("pipeline:ideas");
 
@@ -248,7 +253,13 @@ function tokenize(title: string): readonly string[] {
     .filter((w) => w.length >= 3);
 }
 
-function extractThemesByNgrams(
+/**
+ * Bigram/trigram theme extraction over idea rows (fast, no LLM). Exported so the
+ * autonomous-SIGE frontier discovery stage (`frontier-discovery.ts`) reuses the
+ * SAME n-gram logic for saturation overlap instead of drifting a parallel copy.
+ * PURE.
+ */
+export function extractThemesByNgrams(
   rows: ReadonlyArray<{ readonly title: string; readonly summary: string }>,
 ): readonly string[] {
   const bigramCounts = new Map<string, string[]>();
@@ -1748,7 +1759,14 @@ export function buildSignalsContext(parts: {
  * unscored (Pass-3 critique sets the real score). Provenance is tagged via
  * sourcesUsed so divergent ideas are auditable. PURE.
  */
-export function mapDivergentToCandidate(divergent: DivergentCandidate): GeneratedIdeaCandidate {
+export function mapDivergentToCandidate(
+  divergent: DivergentCandidate,
+  opts?: { readonly sourceTag?: string },
+): GeneratedIdeaCandidate {
+  // Backward compatible: the existing pipeline-phase caller passes no opts, so
+  // the provenance tag stays `sige-divergent`. The autonomous discovery stage
+  // passes sourceTag='sige-discovery' to distinguish broad-pool provenance.
+  const tag = opts?.sourceTag ?? "sige-divergent";
   return {
     title: divergent.title,
     summary: divergent.summary,
@@ -1756,7 +1774,7 @@ export function mapDivergentToCandidate(divergent: DivergentCandidate): Generate
     designDescription: "",
     monetizationDetail: "",
     sourceLinks: [],
-    sourcesUsed: `sige-divergent (${divergent.proposedBy})`,
+    sourcesUsed: `${tag} (${divergent.proposedBy})`,
     category: "",
     qualityScore: 0,
     targetAudience: "",
@@ -1767,6 +1785,77 @@ export function mapDivergentToCandidate(divergent: DivergentCandidate): Generate
       ? { supportingSignalIds: divergent.supportingSignalIds }
       : {}),
   };
+}
+
+/**
+ * AUTONOMOUS SIGE (depth stage) — Map one ranked {@link ScoredIdea} from the
+ * EXISTING expert game into an UNSCORED {@link GeneratedIdeaCandidate} so it
+ * competes on the SAME GIANT scorecard / dedup as every other candidate.
+ *
+ * Critically, this emits UNSCORED sentinels (`qualityScore=0`, `category=""`,
+ * no `giant`/`giantComposite`): the back-half Pass-3 GIANT critique assigns the
+ * real score and category. It deliberately does NOT follow
+ * `cross-write.ts:scoredIdeaToCandidate`, which PRE-scores ideas (qualityScore
+ * from fusedScore, category='sige') to bypass the synthesizer — pre-scoring
+ * here would let autonomous (un-reviewed) deep-game output skip the GIANT jury.
+ *
+ * `ScoredIdea` carries no separate problem statement, signal-id array, or
+ * structured fields, so those are left as empty sentinels. PURE.
+ */
+export function mapDeepGameRankedToCandidate(
+  idea: ScoredIdea,
+  opts?: { readonly sessionId?: string },
+): GeneratedIdeaCandidate {
+  return {
+    title: idea.title,
+    summary: idea.description,
+    reasoning: idea.description,
+    designDescription: "",
+    monetizationDetail: "",
+    sourceLinks: [],
+    sourcesUsed: `sige-deep (${opts?.sessionId ?? "session"})`,
+    category: "",
+    qualityScore: 0,
+    targetAudience: "",
+    keyFeatures: [],
+    revenueModel: "",
+    trendIntersection: "",
+    // supportingSignalIds omitted: ScoredIdea carries no signal-id array.
+    // giant/giantComposite NOT stamped: must not pre-score before the GIANT jury.
+  };
+}
+
+/**
+ * AUTONOMOUS SIGE — Merge the deep-game winners and the broad discovery pool
+ * into a single candidate set for the back-half.
+ *
+ * Order: deep-game winners FIRST (they carry the ~45-min expert-game valuation),
+ * then broad candidates whose title is not already present. Dedup key is
+ * `title.trim().toLowerCase()` (case/whitespace-insensitive). Capped at
+ * `opts.maxPool` (default 40 = generateWide.maxCandidates). PURE + immutable:
+ * returns a new array and never mutates the inputs.
+ */
+export function mergeSigeCandidates(
+  broad: readonly GeneratedIdeaCandidate[],
+  deep: readonly GeneratedIdeaCandidate[],
+  opts?: { readonly maxPool?: number },
+): readonly GeneratedIdeaCandidate[] {
+  const maxPool = opts?.maxPool ?? 40;
+  if (maxPool <= 0) return [];
+
+  const seen = new Set<string>();
+  const merged: GeneratedIdeaCandidate[] = [];
+  const key = (c: GeneratedIdeaCandidate): string => c.title.trim().toLowerCase();
+
+  for (const c of [...deep, ...broad]) {
+    if (merged.length >= maxPool) break;
+    const k = key(c);
+    if (k.length === 0 || seen.has(k)) continue;
+    seen.add(k);
+    merged.push(c);
+  }
+
+  return merged;
 }
 
 /**
@@ -1791,7 +1880,7 @@ async function fetchDivergentCandidates(
     });
     const mapped = divergent
       .filter((d) => d.title.trim().length > 0)
-      .map(mapDivergentToCandidate)
+      .map((d) => mapDivergentToCandidate(d))
       .slice(0, generateWide.maxCandidates);
     log.info("SIGE divergent pool generated", {
       raw: divergent.length,
@@ -2102,6 +2191,33 @@ export async function runIdeasPipeline(
       return { runId, summary };
     }
 
+    // ── Demotion guard (default-OFF): when autonomous SIGE is the primary idea ─
+    // ── engine, this pipeline's role is SIGNAL COLLECTOR only. The collectors  ─
+    // ── above consumed and persisted signals; synthesis is SIGE's responsibility.
+    // ── Default OFF (sigeAuto.enabled=false) = zero behavioral change.         ─
+    if (smart.sigeAuto.enabled) {
+      log.info(
+        "Pipeline demoted to signal collector (smart.sigeAuto.enabled=true) — skipping synthesis",
+        { runId },
+      );
+      const demotedSummary: PipelineResultSummary = {
+        totalSourcesQueried: 8,
+        totalSignalsFound: 0,
+        totalIdeasGenerated: 0,
+        totalIdeasKept: 0,
+        totalIdeasDuplicate: 0,
+        topThemes: [],
+        ideaIds: [],
+        durationMs: nowMs() - startTime,
+      };
+      await updatePipelineRun(runId, {
+        status: "completed",
+        resultSummary: demotedSummary,
+        finishedAt: now(),
+      });
+      return { runId, summary: demotedSummary };
+    }
+
     // ── Step 4: Deep search (optional) ────────────────────────────────
     // #13 — when knowledgeGraphRetrieval is on, supply a Mem0 client + userId
     // so deepSearch can add a graph-retrieval branch. deepSearch reads the
@@ -2139,7 +2255,8 @@ export async function runIdeasPipeline(
     //    goldenMinHumanLabels. Anti-exemplars are the higher-leverage, safer
     //    genericness lever. Both honor the existing smart.validatedExemplars flag
     //    via synthesizeFromTrends' own re-gate. ──────────────────────────────────
-    const scoredRows = taste.syntheticGolden || taste.antiExemplars ? await fetchScoredIdeaRows() : [];
+    const scoredRows =
+      taste.syntheticGolden || taste.antiExemplars ? await fetchScoredIdeaRows() : [];
     const tasteBlocks = buildTasteBlocks(scoredRows, taste, rotationSeed);
 
     // #5 — positive few-shot. When syntheticGolden is ON the taste golden block
@@ -2508,7 +2625,10 @@ export async function runIdeasPipeline(
     // PHASE 4 (taste loop) — capture each successfully-stored idea alongside its
     // candidate so auto-proxy labels can be derived AFTER the store step from the
     // same demand/gate signals computed above. Filled inside the store loop.
-    const storedPairs: Array<{ readonly ideaId: string; readonly candidate: GeneratedIdeaCandidate }> = [];
+    const storedPairs: Array<{
+      readonly ideaId: string;
+      readonly candidate: GeneratedIdeaCandidate;
+    }> = [];
 
     const ideaIds = await runStep(
       runId,
@@ -2672,21 +2792,22 @@ export async function runIdeasPipeline(
         // segment in this pipeline, so we leave it UNSET — the conjunctive
         // auto-VALIDATE simply won't over-fire (safe), keeping proxy labeling
         // biased toward the cheaper-to-trust ARCHIVE counter-evidence.
-        const proxyInputs: readonly ScoredIdeaForProxy[] = storedPairs.map(({ ideaId, candidate }) =>
-          toScoredIdeaForProxy({
-            ideaId,
-            candidate,
-            gate: giantGateByCandidate.get(candidate),
-            artifact: demandByCandidate.get(candidate),
-            // grounded ⇒ chain-of-evidence / boundSignalId / cited-demand presence.
-            // candidateHasDemandEvidence reads exactly those signal-bound fields;
-            // OR-in the demand artifact's cited rows so a code-cited demand probe
-            // also counts as grounded.
-            grounded:
-              candidateHasDemandEvidence(candidate) ||
-              (demandByCandidate.get(candidate)?.evidence.length ?? 0) > 0,
-            ...(convergenceVetoed !== undefined ? { convergenceVeto: convergenceVetoed } : {}),
-          }),
+        const proxyInputs: readonly ScoredIdeaForProxy[] = storedPairs.map(
+          ({ ideaId, candidate }) =>
+            toScoredIdeaForProxy({
+              ideaId,
+              candidate,
+              gate: giantGateByCandidate.get(candidate),
+              artifact: demandByCandidate.get(candidate),
+              // grounded ⇒ chain-of-evidence / boundSignalId / cited-demand presence.
+              // candidateHasDemandEvidence reads exactly those signal-bound fields;
+              // OR-in the demand artifact's cited rows so a code-cited demand probe
+              // also counts as grounded.
+              grounded:
+                candidateHasDemandEvidence(candidate) ||
+                (demandByCandidate.get(candidate)?.evidence.length ?? 0) > 0,
+              ...(convergenceVetoed !== undefined ? { convergenceVeto: convergenceVetoed } : {}),
+            }),
         );
 
         const proxyLabels = deriveProxyLabels(proxyInputs, DEFAULT_PROXY_OPTIONS, runId);

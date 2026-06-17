@@ -4,6 +4,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { loadConfig } from "../../config/loader";
 import { PIPELINE_DEFINITIONS } from "../../pipelines/types";
 import type { PipelineConfig } from "../../pipelines/types";
 import {
@@ -19,6 +20,11 @@ import {
 } from "../../pipelines/store";
 import { updateIdeaStage } from "../../sources/ideas/store";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
+import { DEFAULT_PIPELINE_CONFIG } from "../../pipelines/types";
+import {
+  AUTONOMOUS_SIGE_PIPELINE_ID,
+  runAutonomousSige,
+} from "../../pipelines/ideas/pipeline-autonomous";
 import { resumeRunById, resumeAllInterrupted } from "../../pipelines/resume";
 import type { MemoryManager } from "../../memory/types";
 import { createLogger } from "../../logger";
@@ -261,6 +267,90 @@ export function createPipelineRoutes(deps?: {
       { success: true, message: "Run resuming", runId: result.runId },
       202,
     );
+  });
+
+  // ── Autonomous SIGE pipeline trigger ─────────────────────────────
+  //
+  // POST /pipelines/autonomous-sige/run
+  // Immediately enqueues and fire-and-forgets one autonomous SIGE run.
+  // Returns the runId so the caller can poll /pipelines-runs/:runId for status.
+  // Default-OFF: returns HTTP 503 when smart.sigeAuto.enabled is false.
+  // The model field is intentionally omitted from the body — the autonomous path
+  // always uses the cheap Haiku default defined inside pipeline-autonomous.ts.
+
+  // Allowlist of cheap models permitted for an autonomous run override.
+  // Kept narrow: the autonomous path is Haiku-only; Sonnet is NOT listed because
+  // it would multiply per-run cost significantly. Add models here as Phase D
+  // validated pricing allows them.
+  const AUTONOMOUS_SIGE_ALLOWED_MODELS = [
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+  ] as const;
+
+  const autonomousSigeBodySchema = z
+    .object({
+      model: z.enum(AUTONOMOUS_SIGE_ALLOWED_MODELS).optional(),
+    })
+    .strict();
+
+  app.post("/pipelines/autonomous-sige/run", async (c) => {
+    // FIX 1 — Enabled-gate: reject the request when the feature is disabled.
+    // This prevents any bearer-auth holder from triggering an expensive
+    // autonomous run while sigeAuto.enabled is false (the default).
+    const appConfig = loadConfig();
+    if (!appConfig.pipelines.ideas.smart.sigeAuto.enabled) {
+      return c.json(
+        {
+          success: false,
+          error:
+            "autonomous SIGE is not enabled; set smart.sigeAuto.enabled=true",
+        },
+        503,
+      );
+    }
+
+    // FIX 2 — Model allowlist: body accepts only cheap Haiku-family models.
+    // Parse optional body; silently default on missing/invalid JSON.
+    let model: (typeof AUTONOMOUS_SIGE_ALLOWED_MODELS)[number] | undefined;
+    try {
+      const rawBody = await c.req.json().catch(() => ({}));
+      const parsed = autonomousSigeBodySchema.safeParse(rawBody);
+      if (parsed.success) {
+        model = parsed.data.model;
+      } else {
+        return c.json(
+          {
+            success: false,
+            error: `Invalid body: ${parsed.error.issues.map((i) => i.message).join(", ")}`,
+          },
+          400,
+        );
+      }
+    } catch {
+      // No body — use defaults
+    }
+
+    const lockResult = await acquirePipelineLock(AUTONOMOUS_SIGE_PIPELINE_ID);
+
+    const pipelineConfig: PipelineConfig = {
+      ...DEFAULT_PIPELINE_CONFIG,
+      ...(model !== undefined ? { model } : {}),
+    };
+
+    log.info("Starting autonomous SIGE pipeline run", {
+      runId: lockResult.runId,
+    });
+
+    runAutonomousSige(AUTONOMOUS_SIGE_PIPELINE_ID, pipelineConfig, lockResult.runId!, deps?.memoryManager).catch(
+      (err) => {
+        log.error("Autonomous SIGE pipeline run failed", {
+          runId: lockResult.runId,
+          err,
+        });
+      },
+    );
+
+    return c.json({ success: true, runId: lockResult.runId }, 202);
   });
 
   // ── Pipeline Ideas endpoints ──────────────────────────────────────

@@ -1,6 +1,7 @@
 import { chat } from "../agent/chat";
 import type { ConversationMessage } from "../agent/types";
 import { createLogger } from "../logger";
+import { UNTRUSTED_PREAMBLE, wrapUntrusted } from "./untrusted";
 
 const log = createLogger("sige:signal-synthesis");
 
@@ -87,7 +88,9 @@ interface RawSynthesizedSignals {
 
 // ─── Prompts ──────────────────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a Signal Intelligence Analyst specializing in market opportunity detection.
+const SYSTEM_PROMPT = `${UNTRUSTED_PREAMBLE}
+
+You are a Signal Intelligence Analyst specializing in market opportunity detection.
 
 Your job is NOT to summarize data — it is to find NON-OBVIOUS PATTERNS across multiple data sources.
 
@@ -103,7 +106,7 @@ Return only valid JSON — no markdown, no explanation.`;
 function buildUserPrompt(enrichedSeed: string): string {
   return `Analyze the following multi-source market intelligence data and extract structured insights.
 
-${enrichedSeed}
+${wrapUntrusted("market-intel", enrichedSeed)}
 
 ## Task
 Synthesize the above data into structured signals by finding cross-source patterns.

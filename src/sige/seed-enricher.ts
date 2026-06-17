@@ -7,10 +7,24 @@
  * a failure in one never blocks the others.  If every source fails, the
  * original seed is returned unchanged so the pipeline is never blocked.
  */
-import { getDb } from "../store/db";
+
 import { createLogger } from "../logger";
+import { getDb } from "../store/db";
+import { sanitizeScrapedField, wrapUntrusted } from "./untrusted";
 
 const log = createLogger("sige:seed-enricher");
+
+/**
+ * Per-field hard cap for scraped strings before they enter the LLM prompt.
+ * Scraped fields are already truncated at the query level (e.g. substring 1..200);
+ * this is a defense-in-depth ceiling applied uniformly via sanitizeScrapedField.
+ */
+const FIELD_MAX_LEN = 500;
+
+/** Sanitize a single scraped string field at the standard field-length cap. */
+function san(value: string): string {
+  return sanitizeScrapedField(value, FIELD_MAX_LEN);
+}
 
 // ─── Row types ────────────────────────────────────────────────────────────────
 
@@ -184,9 +198,7 @@ async function fetchNewsArticles(): Promise<readonly NewsArticleRow[]> {
   }
 }
 
-async function fetchAppStoreCategories(): Promise<
-  readonly AppStoreCategoryRow[]
-> {
+async function fetchAppStoreCategories(): Promise<readonly AppStoreCategoryRow[]> {
   try {
     const db = getDb();
     const rows = (await db`
@@ -204,9 +216,7 @@ async function fetchAppStoreCategories(): Promise<
   }
 }
 
-async function fetchPlayStoreCategories(): Promise<
-  readonly PlayStoreCategoryRow[]
-> {
+async function fetchPlayStoreCategories(): Promise<readonly PlayStoreCategoryRow[]> {
   try {
     const db = getDb();
     const rows = (await db`
@@ -264,7 +274,7 @@ async function fetchTweets(): Promise<readonly TweetRow[]> {
 function buildAppStoreSection(rows: readonly AppStoreReviewRow[]): string {
   if (rows.length === 0) return "";
   const lines = rows
-    .map((r) => `- [${r.app_name}] "${r.title}" (★${r.rating}): ${r.content}`)
+    .map((r) => `- [${san(r.app_name)}] "${san(r.title)}" (★${r.rating}): ${san(r.content)}`)
     .join("\n");
   return `## App Store User Pain Points (Low Ratings)\n${lines}`;
 }
@@ -274,7 +284,7 @@ function buildPlayStoreSection(rows: readonly PlayStoreReviewRow[]): string {
   const lines = rows
     .map((r) => {
       const upvotes = r.thumbs_up != null ? `, ${r.thumbs_up} upvotes` : "";
-      return `- [${r.app_name}] "${r.title}" (★${r.rating}${upvotes}): ${r.content}`;
+      return `- [${san(r.app_name)}] "${san(r.title)}" (★${r.rating}${upvotes}): ${san(r.content)}`;
     })
     .join("\n");
   return `## Play Store User Pain Points (Most Upvoted Complaints)\n${lines}`;
@@ -283,7 +293,7 @@ function buildPlayStoreSection(rows: readonly PlayStoreReviewRow[]): string {
 function buildPhSection(rows: readonly PhProductRow[]): string {
   if (rows.length === 0) return "";
   const lines = rows
-    .map((r) => `- **${r.name}** (${r.votes_count} votes): ${r.tagline}`)
+    .map((r) => `- **${san(r.name)}** (${r.votes_count} votes): ${san(r.tagline)}`)
     .join("\n");
   return `## Product Hunt Trending Products\n${lines}`;
 }
@@ -291,7 +301,7 @@ function buildPhSection(rows: readonly PhProductRow[]): string {
 function buildHnSection(rows: readonly HnStoryRow[]): string {
   if (rows.length === 0) return "";
   const lines = rows
-    .map((r) => `- ${r.title} (${r.points} pts, ${r.comment_count} comments)`)
+    .map((r) => `- ${san(r.title)} (${r.points} pts, ${r.comment_count} comments)`)
     .join("\n");
   return `## Hacker News Top Stories\n${lines}`;
 }
@@ -301,7 +311,7 @@ function buildRedditSection(rows: readonly RedditPostRow[]): string {
   const lines = rows
     .map(
       (r) =>
-        `- [r/${r.subreddit}] ${r.title} (${r.score} upvotes, ${r.num_comments} comments)`,
+        `- [r/${san(r.subreddit)}] ${san(r.title)} (${r.score} upvotes, ${r.num_comments} comments)`,
     )
     .join("\n");
   return `## Reddit Top Discussions\n${lines}`;
@@ -310,39 +320,28 @@ function buildRedditSection(rows: readonly RedditPostRow[]): string {
 function buildNewsSection(rows: readonly NewsArticleRow[]): string {
   if (rows.length === 0) return "";
   const lines = rows
-    .map((r) => `- [${r.category}] ${r.title} — ${r.summary}`)
+    .map((r) => `- [${san(r.category)}] ${san(r.title)} — ${san(r.summary)}`)
     .join("\n");
   return `## Recent News & Market Signals\n${lines}`;
 }
 
-function buildAppStoreCategorySection(
-  rows: readonly AppStoreCategoryRow[],
-): string {
+function buildAppStoreCategorySection(rows: readonly AppStoreCategoryRow[]): string {
   if (rows.length === 0) return "";
-  const lines = rows
-    .map((r) => `- ${r.category}: ${r.app_count} apps`)
-    .join("\n");
+  const lines = rows.map((r) => `- ${san(r.category)}: ${r.app_count} apps`).join("\n");
   return `## App Store Category Landscape\n${lines}`;
 }
 
-function buildPlayStoreCategorySection(
-  rows: readonly PlayStoreCategoryRow[],
-): string {
+function buildPlayStoreCategorySection(rows: readonly PlayStoreCategoryRow[]): string {
   if (rows.length === 0) return "";
   const lines = rows
-    .map(
-      (r) =>
-        `- ${r.category}: ${r.app_count} apps, avg rating ${r.avg_rating}★`,
-    )
+    .map((r) => `- ${san(r.category)}: ${r.app_count} apps, avg rating ${r.avg_rating}★`)
     .join("\n");
   return `## Play Store Category Gaps (Lowest Rated)\n${lines}`;
 }
 
 function buildGithubSection(rows: readonly GithubRepoRow[]): string {
   if (rows.length === 0) return "";
-  const lines = rows
-    .map((r) => `- **${r.name}**: ${r.description}`)
-    .join("\n");
+  const lines = rows.map((r) => `- **${san(r.name)}**: ${san(r.description)}`).join("\n");
   return `## GitHub Trending Repos\n${lines}`;
 }
 
@@ -351,7 +350,7 @@ function buildTweetSection(rows: readonly TweetRow[]): string {
   const lines = rows
     .map(
       (r) =>
-        `- @${r.author_username} (${r.likes} likes, ${r.retweets} RTs): ${r.text.slice(0, 200)}`,
+        `- @${san(r.author_username)} (${r.likes} likes, ${r.retweets} RTs): ${san(r.text.slice(0, 200))}`,
     )
     .join("\n");
   return `## Social Signals (X/Twitter)\n${lines}`;
@@ -364,9 +363,7 @@ function buildTweetSection(rows: readonly TweetRow[]): string {
  * briefing drawn from all project data sources.  Never throws — returns the
  * original seed on total failure.
  */
-export async function enrichSeedWithProjectData(
-  seedInput: string,
-): Promise<string> {
+export async function enrichSeedWithProjectData(seedInput: string): Promise<string> {
   try {
     const [
       appStoreReviews,
@@ -405,8 +402,13 @@ export async function enrichSeedWithProjectData(
       tweets: tweets.length,
     });
 
-    const sections = [
-      `## User Query\n${seedInput}`,
+    // The operator-supplied seed is the only trusted instruction surface; it is
+    // kept OUTSIDE the untrusted fence. Every scraped section (reviews, posts,
+    // tweets, repos, …) is third-party data and is wrapped in an UNTRUSTED_DATA
+    // fence so downstream prompts treat it as data, never as instructions.
+    const userQuerySection = `## User Query\n${seedInput}`;
+
+    const scrapedSections = [
       buildAppStoreSection(appStoreReviews),
       buildPlayStoreSection(playStoreReviews),
       buildPhSection(phProducts),
@@ -419,7 +421,13 @@ export async function enrichSeedWithProjectData(
       buildTweetSection(tweets),
     ].filter((s) => s.length > 0);
 
-    return sections.join("\n\n");
+    if (scrapedSections.length === 0) {
+      return userQuerySection;
+    }
+
+    const wrappedCorpus = wrapUntrusted("scraped-corpus", scrapedSections.join("\n\n"));
+
+    return [userQuerySection, wrappedCorpus].join("\n\n");
   } catch (err) {
     log.warn("Seed enrichment failed, falling back to original seed", { err });
     return seedInput;

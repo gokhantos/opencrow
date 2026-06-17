@@ -11,41 +11,36 @@
  *   knowledge construction → game formulation → expert game →
  *   social simulation → scoring → report generation.
  */
-import { Mem0Client } from "./knowledge/mem0-client";
-import { getFullGraph } from "./knowledge/graph-query";
+
 import { formulateGame } from "./game-formulation";
+import { getFullGraph } from "./knowledge/graph-query";
+import { Mem0Client } from "./knowledge/mem0-client";
 import {
-  runExpertGame,
-  generateDivergentCandidates,
   type DivergentCandidate,
   type GenerateDivergentCandidatesOptions,
+  generateDivergentCandidates,
+  runExpertGame,
 } from "./simulation/expert-game";
 
 // Re-export the divergent-candidate shape so pipeline-phase callers (the ideas
 // pipeline's generate-wide pool merge) can import it from the same module that
 // exposes `generateDivergentIdeas`, rather than reaching into `expert-game`.
 export type { DivergentCandidate } from "./simulation/expert-game";
-import { runSocialSimulation } from "./simulation/social-sim";
-import { fuseScores, computeSocialViabilityScore } from "./simulation/score-fusion";
-import { computeIncentives, applyIncentives } from "./incentives";
-import { generateReport } from "./report-agent";
-import {
-  updateSessionStatus,
-  saveIdeaScore,
-} from "./store";
-import type {
-  SigeSession,
-  SigeSessionConfig,
-  SigeReport,
-  ScoredIdea,
-  FusedScore,
-} from "./types";
-import { enrichSeedWithProjectData } from "./seed-enricher";
-import { synthesizeSignals, signalsToPromptContext } from "./signal-synthesis";
-import { crossWriteSigeIdeas, SIGE_AGENT_ID } from "./cross-write";
+
 import { loadConfig } from "../config/loader";
 import { createLogger } from "../logger";
 import type { MemoryManager } from "../memory/types";
+import { crossWriteSigeIdeas, SIGE_AGENT_ID } from "./cross-write";
+import type { BroadCorpus, DiscoverFrontiersOptions, DiscoveryResult } from "./discovery/frontier-discovery";
+import { discoverFrontiers } from "./discovery/frontier-discovery";
+import { applyIncentives, computeIncentives } from "./incentives";
+import { generateReport } from "./report-agent";
+import { enrichSeedWithProjectData } from "./seed-enricher";
+import { signalsToPromptContext, synthesizeSignals } from "./signal-synthesis";
+import { computeSocialViabilityScore, fuseScores } from "./simulation/score-fusion";
+import { runSocialSimulation } from "./simulation/social-sim";
+import { saveIdeaScore, updateSessionStatus } from "./store";
+import type { FusedScore, ScoredIdea, SigeReport, SigeSession, SigeSessionConfig } from "./types";
 
 const log = createLogger("sige:run");
 
@@ -83,13 +78,8 @@ async function buildSigeMemoryManager(): Promise<MemoryManager | null> {
       embeddingsOverride ?? config.embeddings ?? {},
     );
     const apiKey =
-      (await getSecret("OPENROUTER_API_KEY")) ??
-      (await getSecret("VOYAGE_API_KEY")) ??
-      undefined;
-    const embeddingProvider = createEmbeddingProviderFromConfig(
-      embeddingsConfig,
-      apiKey,
-    );
+      (await getSecret("OPENROUTER_API_KEY")) ?? (await getSecret("VOYAGE_API_KEY")) ?? undefined;
+    const embeddingProvider = createEmbeddingProviderFromConfig(embeddingsConfig, apiKey);
 
     const memSearch = config.memorySearch;
     const qdrantUrl = (await getSecret("QDRANT_URL")) ?? memSearch.qdrant.url;
@@ -100,10 +90,7 @@ async function buildSigeMemoryManager(): Promise<MemoryManager | null> {
     });
 
     if (qdrantClient.available) {
-      await qdrantClient.ensureCollection(
-        qdrantCollection,
-        embeddingsConfig.dimensions,
-      );
+      await qdrantClient.ensureCollection(qdrantCollection, embeddingsConfig.dimensions);
     }
 
     return createMemoryManager({
@@ -157,9 +144,7 @@ export const DEFAULT_SIGE_SESSION_CONFIG: SigeSessionConfig = {
  * Handy for headless callers that only want to tweak a couple of fields
  * (e.g. provider/model) without restating the whole config object.
  */
-export function buildSessionConfig(
-  partial?: Partial<SigeSessionConfig>,
-): SigeSessionConfig {
+export function buildSessionConfig(partial?: Partial<SigeSessionConfig>): SigeSessionConfig {
   if (!partial) return DEFAULT_SIGE_SESSION_CONFIG;
   return {
     ...DEFAULT_SIGE_SESSION_CONFIG,
@@ -186,17 +171,140 @@ export async function runSession(
   userId: string,
   signal: AbortSignal,
 ): Promise<void> {
-  const { id: sessionId, seedInput, config } = session;
+  const { id: sessionId, seedInput, mode } = session;
 
-  log.info("Starting SIGE session pipeline", { sessionId, userId });
+  log.info("Starting SIGE session pipeline", { sessionId, userId, mode: mode ?? "seeded" });
+
+  // ── AUTONOMOUS PATH (new, default-OFF) ──────────────────────────────────────
+  //
+  // When the session has no seedInput (origin='auto', mode='autonomous'), run
+  // the seedless frontier-discovery → depth-game path. Each top frontier
+  // provides a synthetic enrichedSeed that drives the EXISTING steps 1-6
+  // byte-for-byte unchanged; the broad pool feeds pipeline-autonomous.ts.
+  //
+  // A per-run wall-clock timeout (90 min) is combined with the process-level
+  // signal via AbortSignal.any so a stuck game never outlasts its budget.
+  if (mode === "autonomous" || seedInput === undefined) {
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => {
+      timeoutController.abort();
+      log.warn("Autonomous SIGE session timed out (90 min wall-clock)", { sessionId });
+    }, 90 * 60 * 1_000);
+
+    const combinedSignal = AbortSignal.any([signal, timeoutController.signal]);
+
+    try {
+      await runAutonomousSession(session, mem0, userId, combinedSignal);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+    return;
+  }
+
+  // ── SEEDED PATH (byte-for-byte unchanged) ────────────────────────────────────
+
+  // Enrich seed with existing project data before knowledge construction
+  const enrichedSeed = await enrichSeedWithProjectData(seedInput);
+
+  await runSeededSteps(session, mem0, userId, signal, enrichedSeed);
+}
+
+/**
+ * Autonomous (seedless) SIGE run: frontier discovery → per-frontier depth game.
+ *
+ * Uses an intentionally minimal BroadCorpus (empty trend/pain/capability
+ * summaries) so that `discoverFrontiers` runs `generateDivergentIdeas` with
+ * no pre-synthesized signals. This is correct for the autonomous SIGE session
+ * path: the real signal collection with markConsumed bookkeeping is owned by
+ * `pipeline-autonomous.ts` (which calls the collectors properly with its own
+ * CollectorContext). Here we only need frontier discovery so that
+ * `frontier.seedText` can seed the depth game.
+ *
+ * With maxDeepFrontiers=1 (default) the status transitions fire exactly once
+ * per stage — identical to a seeded run. With maxDeepFrontiers>1 they repeat
+ * (one cycle per frontier); documented and capped at 3 by config.
+ */
+async function runAutonomousSession(
+  session: SigeSession,
+  mem0: Mem0Client,
+  userId: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const { id: sessionId } = session;
+  const smartConfig = loadConfig().pipelines.ideas.smart;
+  const sigeAutoConfig = smartConfig.sigeAuto;
+
+  // Minimal empty corpus: discovery will run generateDivergentIdeas with an
+  // empty signalsContext (accepted — the function makes signals optional).
+  const emptyCorpus: BroadCorpus = {
+    trends: { trendingCategories: [], risingApps: [], summary: "" },
+    pains: { clusters: [], summary: "" },
+    capabilities: { capabilities: [], summary: "" },
+  };
+
+  const discoveryOpts: DiscoverFrontiersOptions = {
+    broadPoolSize: sigeAutoConfig.broadPoolSize,
+    maxDeepFrontiers: sigeAutoConfig.maxDeepFrontiers,
+    userId,
+    config: session.config,
+    signal,
+  };
+
+  const discovery: DiscoveryResult = await discoverFrontiers(emptyCorpus, mem0, discoveryOpts);
+
+  if (discovery.frontiers.length === 0) {
+    log.warn("autonomous: no frontiers discovered — completing without deep game", { sessionId });
+    const finishedAt = Math.floor(Date.now() / 1000);
+    await updateSessionStatus(sessionId, "completed", { finishedAt });
+    return;
+  }
+
+  // Run the EXISTING steps 1-6 on each top frontier's seedText as enrichedSeed.
+  const topFrontiers = discovery.frontiers.slice(0, sigeAutoConfig.maxDeepFrontiers);
+
+  log.info("autonomous: running depth game on top frontiers", {
+    sessionId,
+    topFrontiers: topFrontiers.length,
+    broadPool: discovery.candidates.length,
+  });
+
+  for (const frontier of topFrontiers) {
+    if (signal.aborted) break;
+    log.info("autonomous: depth game for frontier", {
+      sessionId,
+      theme: frontier.theme,
+      score: frontier.score,
+    });
+    // Use frontier.seedText as the enrichedSeed for the standard steps 1-6.
+    // isScrapedSeed=true: frontier.seedText is scraper-derived and must be
+    // sanitized before entering game-formulation LLM prompts.
+    await runSeededSteps(session, mem0, userId, signal, frontier.seedText, true);
+  }
+}
+
+/**
+ * Run SIGE steps 1-6 with a pre-built enrichedSeed. Called by both the seeded
+ * path (with the actual operator seed) and the autonomous path (with a frontier
+ * seedText). Byte-for-byte identical for both callers: the only difference is
+ * the enrichedSeed text that drives knowledge construction.
+ *
+ * @param isScrapedSeed When true (autonomous path), `enrichedSeed` is
+ *   scraper-derived and must be sanitized before entering LLM prompts.
+ */
+async function runSeededSteps(
+  session: SigeSession,
+  mem0: Mem0Client,
+  userId: string,
+  signal: AbortSignal,
+  enrichedSeed: string,
+  isScrapedSeed = false,
+): Promise<void> {
+  const { id: sessionId, config } = session;
 
   // ── Step 1: Knowledge construction ──────────────────────────────────────────
 
   await updateSessionStatus(sessionId, "knowledge_construction");
   log.info("Status → knowledge_construction", { sessionId });
-
-  // Enrich seed with existing project data before knowledge construction
-  const enrichedSeed = await enrichSeedWithProjectData(seedInput);
 
   // Run signal synthesis (LLM) and graph query (Mem0) in parallel — they're independent
   const signalSynthesisPromise = synthesizeSignals(enrichedSeed, {
@@ -205,16 +313,16 @@ export async function runSession(
   })
     .then((signals) => signalsToPromptContext(signals))
     .catch((err) => {
-      log.warn("Signal synthesis failed — continuing without synthesized signals", { sessionId, err });
+      log.warn("Signal synthesis failed — continuing without synthesized signals", {
+        sessionId,
+        err,
+      });
       return undefined;
     });
 
   const graphViewPromise = getFullGraph(mem0, userId);
 
-  const [signalsContext, graphView] = await Promise.all([
-    signalSynthesisPromise,
-    graphViewPromise,
-  ]);
+  const [signalsContext, graphView] = await Promise.all([signalSynthesisPromise, graphViewPromise]);
 
   // ── Step 2: Game formulation ─────────────────────────────────────────────────
 
@@ -225,6 +333,7 @@ export async function runSession(
     model: config.model,
     provider: config.provider,
     sessionId,
+    isScrapedSeed,
   });
 
   await updateSessionStatus(sessionId, "game_formulation", {
@@ -316,9 +425,7 @@ export async function runSession(
   const scoreMap = new Map(fusedScores.map((f) => [f.ideaId, f]));
   const enrichedRankedIdeas: readonly ScoredIdea[] = expertResult.rankedIdeas.map((idea) => {
     const fused = scoreMap.get(idea.id);
-    return fused
-      ? { ...idea, fusedScore: fused.fusedScore, socialScore: fused.socialScore }
-      : idea;
+    return fused ? { ...idea, fusedScore: fused.fusedScore, socialScore: fused.socialScore } : idea;
   });
 
   const enrichedExpertResult = { ...expertResult, rankedIdeas: enrichedRankedIdeas };
@@ -338,8 +445,7 @@ export async function runSession(
   try {
     const appConfig = loadConfig();
     const sigeCrossWriteEnabled =
-      appConfig.pipelines.ideas.smart.sigeValuation &&
-      appConfig.sige?.enabled === true;
+      appConfig.pipelines.ideas.smart.sigeValuation && appConfig.sige?.enabled === true;
 
     if (sigeCrossWriteEnabled) {
       // Build a vector MemoryManager so the Qdrant (>0.65) semantic dedup layer
@@ -348,11 +454,7 @@ export async function runSession(
       // (the prior behavior). Never breaks the session.
       const memoryManager = await buildSigeMemoryManager();
 
-      const result = await crossWriteSigeIdeas(
-        enrichedRankedIdeas,
-        sessionId,
-        memoryManager,
-      );
+      const result = await crossWriteSigeIdeas(enrichedRankedIdeas, sessionId, memoryManager);
       log.info("SIGE cross-write into generated_ideas", {
         sessionId,
         inserted: result.inserted,
@@ -395,21 +497,43 @@ export async function runSession(
   log.info("Status → report_generation", { sessionId });
 
   // ── Cross-session write-back: persist top ideas to Mem0 for future sessions ─
+  //
+  // Seeded (origin='human') sessions are operator-initiated and write back
+  // exactly as before. Autonomous (origin='auto') sessions are NOT operator-
+  // reviewed before write-back, so they close a memory-poisoning feedback loop
+  // (scraped injection → idea → Mem0 → next session's graph context). They are
+  // therefore gated behind smart.sigeAuto.memoryWriteback (default OFF) and
+  // tagged trust:'autonomous-unvetted' so the graph reader can treat them as
+  // untrusted downstream.
+  const isAutonomous = session.origin === "auto";
+  const autonomousWritebackEnabled = loadConfig().pipelines.ideas.smart.sigeAuto.memoryWriteback;
+  const shouldWriteBack = !isAutonomous || autonomousWritebackEnabled;
 
-  const topIdeasForMemory = enrichedRankedIdeas.slice(0, 5);
-  await mem0
-    .addMemories({
-      items: topIdeasForMemory.map((idea) => ({
-        content: `SIGE finding: "${idea.title}" — ${idea.description}. Score: ${idea.fusedScore?.toFixed(3) ?? "N/A"}`,
-        metadata: { source: "sige_session", sessionId, ideaId: idea.id },
-      })),
-      userId,
-      enableGraph: true,
-      maxConcurrent: 2,
-    })
-    .catch((err) => {
-      log.warn("Failed to write top ideas back to Mem0 (non-fatal)", { sessionId, err });
-    });
+  if (shouldWriteBack) {
+    const topIdeasForMemory = enrichedRankedIdeas.slice(0, 5);
+    await mem0
+      .addMemories({
+        items: topIdeasForMemory.map((idea) => ({
+          content: `SIGE finding: "${idea.title}" — ${idea.description}. Score: ${idea.fusedScore?.toFixed(3) ?? "N/A"}`,
+          metadata: isAutonomous
+            ? {
+                source: "sige_session",
+                sessionId,
+                ideaId: idea.id,
+                trust: "autonomous-unvetted",
+              }
+            : { source: "sige_session", sessionId, ideaId: idea.id },
+        })),
+        userId,
+        enableGraph: true,
+        maxConcurrent: 2,
+      })
+      .catch((err) => {
+        log.warn("Failed to write top ideas back to Mem0 (non-fatal)", { sessionId, err });
+      });
+  } else {
+    log.info("Skipping autonomous Mem0 write-back (memoryWriteback disabled)", { sessionId });
+  }
 
   const report = await generateReport({
     session: {
@@ -523,10 +647,9 @@ export async function generateDivergentIdeas(
   try {
     return await generateDivergentCandidates({ ...opts, signalsContext });
   } catch (err) {
-    log.warn(
-      "generateDivergentIdeas failed — returning no divergent candidates (non-fatal)",
-      { err },
-    );
+    log.warn("generateDivergentIdeas failed — returning no divergent candidates (non-fatal)", {
+      err,
+    });
     return [];
   }
 }

@@ -8,6 +8,7 @@ import {
   updateSessionStatus,
   getIdeaScores,
   getPopulationDynamics,
+  countPendingSessions,
 } from "../../sige/store";
 import type { SigeSessionStatus, SigeSessionConfig } from "../../sige/types";
 
@@ -53,9 +54,19 @@ const sessionConfigSchema = z.object({
 });
 
 const createSessionSchema = z.object({
-  seedInput: z.string().min(1, "seedInput is required").max(10_000),
+  // Optional: an absent seedInput selects the autonomous (seedless) path. When
+  // present it must be non-empty — an empty string is a client error, not an
+  // autonomous request.
+  seedInput: z
+    .string()
+    .min(1, "seedInput must be non-empty if provided")
+    .max(10_000)
+    .optional(),
   config: sessionConfigSchema.optional(),
 });
+
+/** Max sessions allowed in the pending queue before new creates are rejected. */
+const MAX_PENDING_SESSIONS = 3;
 
 const DEFAULT_CONFIG: SigeSessionConfig = {
   expertRounds: 4,
@@ -118,10 +129,29 @@ export function createSigeRoutes(): Hono {
     const config = mergeConfig(partialConfig as Partial<SigeSessionConfig>);
     const id = crypto.randomUUID();
 
+    // DoS guard: reject creation when the pending queue is already saturated. The
+    // same ceiling applies to human and autonomous enqueues.
+    // NOTE: Stage C introduces countRunnableSessions() in run-guard.ts which also
+    // counts in-flight sessions; switch this check to it once that lands.
+    try {
+      const pending = await countPendingSessions();
+      if (pending >= MAX_PENDING_SESSIONS) {
+        log.warn("Rejecting SIGE session create — pending queue saturated", { pending });
+        return c.json(
+          { success: false, error: "Too many pending sessions" },
+          429,
+        );
+      }
+    } catch (err) {
+      log.error("Failed to check pending session count", { err });
+      return c.json({ success: false, error: "Failed to create session" }, 500);
+    }
+
     try {
       await createSession({
         id,
-        seedInput,
+        seedInput: seedInput ?? null,
+        origin: "human",
         status: "pending",
         configJson: JSON.stringify(config),
       });

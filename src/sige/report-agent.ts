@@ -130,7 +130,7 @@ export async function generateReport(
   const recommendedNextSession = extractSettledString(
     nextSessionResult,
     "recommended_next_session",
-    `Continue exploring the domain seeded by: "${session.seedInput}".`,
+    `Continue exploring the domain seeded by: "${session.seedInput ?? "(autonomous)"}".`,
   )
 
   log.info("generateReport: complete", { sessionId: session.id })
@@ -334,7 +334,7 @@ async function generateOpportunityMap(params: {
   const forgeResult = await insightForge(
     mem0,
     userId,
-    `unexplored strategy space around: ${session.seedInput}`,
+    `unexplored strategy space around: ${session.seedInput ?? "(autonomous)"}`,
     { maxResults: 12 },
   ).catch((err) => {
     log.warn("generateOpportunityMap: insightForge failed", { err })
@@ -350,7 +350,7 @@ Focus on:
 
 Output 2-3 paragraphs of plain prose. No headers or lists.`
 
-  const userMessage = `SESSION SEED: "${session.seedInput}"
+  const userMessage = `SESSION SEED: "${session.seedInput ?? "(autonomous)"}"
 
 IDEAS PRODUCED: ${effectiveScores.length}
 COVERED IDEA IDs: ${effectiveScores.map((s) => s.ideaId).join(", ")}
@@ -491,7 +491,7 @@ async function generateRecommendedNextSession(params: {
 }): Promise<string> {
   const { session, topScores, mem0, userId, model, provider } = params
 
-  const adjacentQuery = `strategic follow-up to: ${session.seedInput}`
+  const adjacentQuery = `strategic follow-up to: ${session.seedInput ?? "(autonomous)"}`
   const adjacentResult = await quickSearch(mem0, userId, adjacentQuery, {
     maxResults: 8,
   }).catch((err) => {
@@ -509,7 +509,7 @@ Provide:
 
 Output 2 paragraphs of plain prose followed by a short bulleted list of concrete recommendations.`
 
-  const userMessage = `CURRENT SESSION SEED: "${session.seedInput}"
+  const userMessage = `CURRENT SESSION SEED: "${session.seedInput ?? "(autonomous)"}"
 
 TOP PERFORMING IDEAS THIS SESSION:
 ${topScores
@@ -545,7 +545,7 @@ function buildSectionContext(
 ): string {
   const baseContext = [
     `Session ID: ${session.id}`,
-    `Seed input: "${session.seedInput}"`,
+    `Seed input: "${session.seedInput ?? "(autonomous)"}"`,
     `Status: ${session.status}`,
     `Game type: ${session.gameFormulation?.gameType ?? "not formulated"}`,
     `Expert rounds: ${session.config.expertRounds}`,
