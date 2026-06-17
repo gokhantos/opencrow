@@ -205,6 +205,14 @@ export interface EvalAggregate {
    * Optional + null when no embedding dep was supplied / memory unavailable.
    */
   readonly embeddingNovelty?: EmbeddingNoveltyMetric | null;
+  /**
+   * Hardened-SIGE vs self-critique A/B comparison over the SAME ideas (per-axis
+   * GIANT deltas, groundedness delta, jury agreement / dissent distribution,
+   * convergence-veto rate). This is the GATE for ever defaulting
+   * `smart.sigeValuation` on. Optional + null on default (SIGE-off) runs, so
+   * existing snapshots stay shape-compatible.
+   */
+  readonly sigeAb?: SigeAbReport | null;
   readonly totalIdeas: number;
 }
 
@@ -571,6 +579,178 @@ export function aggregateGiantRun(
   };
 }
 
+// ── SIGE-hardened vs self-critique A/B comparison ──────────────────────────────
+
+/**
+ * One idea scored TWICE on the SAME GIANT rubric: once by the hardened SIGE jury
+ * (cross-family, anonymized, dissent-aware) and once by the synthesizer's own
+ * self-critique. The pairing is by idea id so the comparison controls for the
+ * idea itself — we are measuring the JUDGE, not the candidates.
+ *
+ * `juryAgreement` (0..1, conformity) and `dissent` (0..5, polarization) are the
+ * jury-side signals carried through from {@link import("../jury").JuryVerdict}.
+ * They are surfaced (distribution + mean) — never used to penalize a candidate
+ * here — so the A/B can show whether lift comes WITH or WITHOUT consensus.
+ */
+export interface SigeAbPair {
+  readonly id: string;
+  /** Hardened-SIGE / jury GIANT 7-axis scores (0..5). */
+  readonly sigeScores: GiantAxisScores;
+  /** Synthesizer self-critique GIANT 7-axis scores (0..5). */
+  readonly critiqueScores: GiantAxisScores;
+  /** Inter-judge agreement for this idea, [0,1]. Optional (no jury → omit). */
+  readonly juryAgreement?: number;
+  /** Jury dissent magnitude for this idea, [0,5]. Optional. */
+  readonly dissent?: number;
+}
+
+/** Distribution summary (mean + nearest-rank percentiles) of a scalar. */
+export interface DistributionSummary {
+  readonly mean: number | null;
+  readonly p10: number | null;
+  readonly p50: number | null;
+  readonly p90: number | null;
+  readonly count: number;
+}
+
+/**
+ * Run-level comparison of hardened SIGE vs self-critique over the SAME ideas.
+ *
+ * This is the GATE that decides whether `smart.sigeValuation` should ever be
+ * defaulted on: a real win is `sigeLift > 0` (GIANT axes go up) WITHOUT a
+ * groundedness regression (`groundednessDelta >= -tolerance`). The demand axis is
+ * the groundedness proxy — it is the only axis that is evidence-gated, so a SIGE
+ * judge that inflates scores by hallucinating demand shows up as a NEGATIVE
+ * groundedness delta even when the headline lift is positive.
+ */
+export interface SigeAbReport {
+  /** Per-axis mean delta = mean(sige - critique) over paired ideas, or null. */
+  readonly axisDeltas: Readonly<Record<GiantAxisKey, number | null>>;
+  /**
+   * Headline lift: the mean of the per-axis deltas (overall GIANT movement).
+   * Positive ⇒ SIGE scored ideas higher on average. null when no pairs.
+   */
+  readonly sigeLift: number | null;
+  /**
+   * Groundedness delta = mean(sige.demand - critique.demand). MUST be flat-or-up
+   * for a SIGE rollout to be safe; a negative value means SIGE traded
+   * groundedness for headline lift. null when no pairs.
+   */
+  readonly groundednessDelta: number | null;
+  /**
+   * True iff sigeLift > 0 AND groundednessDelta >= -groundednessTolerance. This
+   * is the single boolean the rollout decision keys off.
+   */
+  readonly liftWithoutGroundednessRegression: boolean;
+  /** Mean inter-judge agreement across paired ideas that carried a jury, or null. */
+  readonly meanJuryAgreement: number | null;
+  /** Dissent distribution (mean + p10/p50/p90) across paired ideas, or nulls. */
+  readonly dissentDistribution: DistributionSummary;
+  /**
+   * Fraction of evaluated rounds the convergence-veto fired on, [0,1]. A high
+   * veto rate means SIGE rounds keep collapsing into conformity (sycophancy),
+   * which undercuts the value of the jury even if lift looks good.
+   */
+  readonly convergenceVetoRate: number;
+  readonly vetoedRounds: number;
+  readonly totalRounds: number;
+  /** Number of id-paired ideas that contributed to the deltas. */
+  readonly pairedCount: number;
+}
+
+/** Tolerance below which a negative groundedness delta is still "flat". */
+const DEFAULT_GROUNDEDNESS_TOLERANCE = 0.05;
+
+/** Build a distribution summary (mean + p10/p50/p90) over a scalar list. */
+function summarizeDistribution(values: readonly number[]): DistributionSummary {
+  return {
+    mean: roundOrNull(meanOrNull(values)),
+    p10: roundOrNull(percentileOrNull(values, 10)),
+    p50: roundOrNull(percentileOrNull(values, 50)),
+    p90: roundOrNull(percentileOrNull(values, 90)),
+    count: values.length,
+  };
+}
+
+/**
+ * Compare hardened-SIGE GIANT scores against self-critique GIANT scores over the
+ * SAME, id-paired ideas, plus the round-level convergence-veto outcomes.
+ *
+ * PURE. Safe on empty input (yields null deltas, zeroed rates). Non-finite axis
+ * scores are skipped per-axis so a partial vector does not poison a mean. The
+ * `vetoes` list is one boolean per evaluated SIGE round (true = vetoed); it is
+ * independent of the pairs because a veto is a round property, not a per-idea one.
+ */
+export function compareSigeAb(
+  pairs: readonly SigeAbPair[],
+  vetoes: readonly boolean[] = [],
+  opts?: { readonly groundednessTolerance?: number },
+): SigeAbReport {
+  const tolerance =
+    opts?.groundednessTolerance ?? DEFAULT_GROUNDEDNESS_TOLERANCE;
+
+  // Per-axis delta accumulation. Each axis has its own denominator so a missing
+  // axis on one side does not bias another axis's mean.
+  const axisDeltaLists = {} as Record<GiantAxisKey, number[]>;
+  for (const key of GIANT_AXIS_KEYS) axisDeltaLists[key] = [];
+
+  const agreements: number[] = [];
+  const dissents: number[] = [];
+
+  for (const pair of pairs) {
+    for (const key of GIANT_AXIS_KEYS) {
+      const s = pair.sigeScores[key];
+      const c = pair.critiqueScores[key];
+      if (Number.isFinite(s) && Number.isFinite(c)) {
+        axisDeltaLists[key].push(s - c);
+      }
+    }
+    if (
+      typeof pair.juryAgreement === "number" &&
+      Number.isFinite(pair.juryAgreement)
+    ) {
+      agreements.push(pair.juryAgreement);
+    }
+    if (typeof pair.dissent === "number" && Number.isFinite(pair.dissent)) {
+      dissents.push(pair.dissent);
+    }
+  }
+
+  const axisDeltas = {} as Record<GiantAxisKey, number | null>;
+  const axisMeanValues: number[] = [];
+  for (const key of GIANT_AXIS_KEYS) {
+    const mean = meanOrNull(axisDeltaLists[key]);
+    axisDeltas[key] = roundOrNull(mean);
+    if (mean !== null) axisMeanValues.push(mean);
+  }
+
+  const sigeLift = roundOrNull(meanOrNull(axisMeanValues));
+  const groundednessDelta = roundOrNull(meanOrNull(axisDeltaLists.demand));
+
+  const liftWithoutGroundednessRegression =
+    sigeLift !== null &&
+    sigeLift > 0 &&
+    groundednessDelta !== null &&
+    groundednessDelta >= -tolerance;
+
+  const totalRounds = vetoes.length;
+  const vetoedRounds = vetoes.reduce((n, v) => n + (v ? 1 : 0), 0);
+
+  return {
+    axisDeltas,
+    sigeLift,
+    groundednessDelta,
+    liftWithoutGroundednessRegression,
+    meanJuryAgreement: roundOrNull(meanOrNull(agreements)),
+    dissentDistribution: summarizeDistribution(dissents),
+    convergenceVetoRate:
+      totalRounds === 0 ? 0 : roundOrNull(vetoedRounds / totalRounds) ?? 0,
+    vetoedRounds,
+    totalRounds,
+    pairedCount: pairs.length,
+  };
+}
+
 // ── Objective embedding-novelty metric ─────────────────────────────────────────
 
 /** A batch item carrying the text we embed for the novelty metric. */
@@ -765,9 +945,22 @@ export function aggregateEval(params: {
    * is unavailable.
    */
   readonly embeddingNovelty?: EmbeddingNoveltyMetric | null;
+  /**
+   * Pre-computed hardened-SIGE vs self-critique A/B report (built by the harness
+   * from paired GIANT scores). Optional & graceful: omit/null on default
+   * (SIGE-off) runs.
+   */
+  readonly sigeAb?: SigeAbReport | null;
 }): EvalAggregate {
-  const { ideas, outcomes, dedupLabels, signalRanker, giant, embeddingNovelty } =
-    params;
+  const {
+    ideas,
+    outcomes,
+    dedupLabels,
+    signalRanker,
+    giant,
+    embeddingNovelty,
+    sigeAb,
+  } = params;
   return {
     meanSubscores: aggregateMeanSubscores(ideas),
     outcomeRates: aggregateOutcomeRates(ideas, outcomes),
@@ -776,6 +969,7 @@ export function aggregateEval(params: {
     signalRanker: signalRanker ?? null,
     giant: giant ?? null,
     embeddingNovelty: embeddingNovelty ?? null,
+    sigeAb: sigeAb ?? null,
     totalIdeas: ideas.length,
   };
 }

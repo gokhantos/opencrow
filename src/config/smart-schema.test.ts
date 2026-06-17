@@ -6,6 +6,8 @@ import {
   ideasPipelineConfigSchema,
   opencrowConfigSchema,
   pipelinesConfigSchema,
+  SIGE_DEFAULT_JUDGE_MODELS,
+  sigeHardeningConfigSchema,
   smartConfigSchema,
 } from "./schema";
 
@@ -50,6 +52,17 @@ describe("smartConfigSchema", () => {
         fundingSignal: true,
         externalTrends: false,
         minMatches: 2,
+      },
+      sige: {
+        independentJudge: true,
+        judgeModels: [
+          { provider: "anthropic", model: "claude-haiku-4-5" },
+          { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
+          { provider: "alibaba", model: "qwen3.5-plus" },
+        ],
+        dissentWeight: 0.15,
+        convergenceVetoThreshold: 0.85,
+        deepTier: true,
       },
     });
   });
@@ -169,6 +182,71 @@ describe("giantConfigSchema", () => {
     expect(giant.enabled).toBe(true);
     expect(giant.enforceGates).toBe(false);
     expect(giant.weights.demand).toBe(0.18);
+  });
+});
+
+describe("sigeHardeningConfigSchema", () => {
+  test("applies hardening defaults when no fields are provided", () => {
+    const parsed = sigeHardeningConfigSchema.parse(undefined);
+    expect(parsed.independentJudge).toBe(true);
+    expect(parsed.dissentWeight).toBe(0.15);
+    expect(parsed.convergenceVetoThreshold).toBe(0.85);
+    expect(parsed.deepTier).toBe(true);
+  });
+
+  test("default judgeModels are a cross-family set (>1 provider)", () => {
+    const parsed = sigeHardeningConfigSchema.parse({});
+    expect(parsed.judgeModels.length).toBeGreaterThanOrEqual(2);
+    const providers = new Set(parsed.judgeModels.map((m) => m.provider));
+    expect(providers.size).toBeGreaterThanOrEqual(2);
+    expect(parsed.judgeModels).toEqual([
+      { provider: "anthropic", model: "claude-haiku-4-5" },
+      { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
+      { provider: "alibaba", model: "qwen3.5-plus" },
+    ]);
+  });
+
+  test("default judgeModels match exported SIGE_DEFAULT_JUDGE_MODELS", () => {
+    expect(sigeHardeningConfigSchema.parse({}).judgeModels).toEqual([
+      ...SIGE_DEFAULT_JUDGE_MODELS,
+    ]);
+  });
+
+  test("honors explicit overrides on every field", () => {
+    const parsed = sigeHardeningConfigSchema.parse({
+      independentJudge: false,
+      judgeModels: [{ provider: "anthropic", model: "claude-sonnet-4-6" }],
+      dissentWeight: 0.4,
+      convergenceVetoThreshold: 0.7,
+      deepTier: false,
+    });
+    expect(parsed.independentJudge).toBe(false);
+    expect(parsed.judgeModels).toEqual([
+      { provider: "anthropic", model: "claude-sonnet-4-6" },
+    ]);
+    expect(parsed.dissentWeight).toBe(0.4);
+    expect(parsed.convergenceVetoThreshold).toBe(0.7);
+    expect(parsed.deepTier).toBe(false);
+  });
+
+  test("rejects judgeModels missing provider/model", () => {
+    expect(() =>
+      sigeHardeningConfigSchema.parse({ judgeModels: [{ provider: "x" }] }),
+    ).toThrow();
+  });
+
+  test("is reachable via the documented smart.sige access path", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    const sige = cfg.pipelines.ideas.smart.sige;
+    expect(sige.independentJudge).toBe(true);
+    expect(sige.convergenceVetoThreshold).toBe(0.85);
+    expect(sige.judgeModels.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("smart.sige defaults when smart parsed empty", () => {
+    const smart = smartConfigSchema.parse({});
+    expect(smart.sige.deepTier).toBe(true);
+    expect(smart.sige.dissentWeight).toBe(0.15);
   });
 });
 

@@ -17,6 +17,7 @@ export {
   aggregateDedupQuality,
   aggregateGiantRun,
   aggregateDemandCoverage,
+  compareSigeAb,
   computeEmbeddingNovelty,
   cosineSimilarity,
   cosineDistance,
@@ -37,6 +38,9 @@ export {
   type NoveltyEmbedDep,
   type NoveltySearchDep,
   type EmbeddingNoveltyMetric,
+  type SigeAbPair,
+  type SigeAbReport,
+  type DistributionSummary,
 } from "./aggregate";
 
 export {
@@ -82,9 +86,12 @@ export {
 export {
   runEval,
   reJudgeStoredIdeas,
+  runSigeAb,
   type RunEvalOptions,
   type RunEvalResult,
   type ReJudgeOptions,
   type ReJudgeResult,
   type GiantWeightOverrides,
+  type RunSigeAbOptions,
+  type RunSigeAbResult,
 } from "./harness";

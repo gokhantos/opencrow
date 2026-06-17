@@ -6,6 +6,7 @@ import {
   aggregateEval,
   aggregateGiantRun,
   aggregateDemandCoverage,
+  compareSigeAb,
   computeEmbeddingNovelty,
   cosineSimilarity,
   cosineDistance,
@@ -15,6 +16,7 @@ import {
   type EvalOutcomeRow,
   type DedupLabel,
   type GiantScoredIdea,
+  type SigeAbPair,
 } from "./aggregate";
 import { GIANT_AXIS_KEYS, type GiantAxisScores } from "../giant";
 import type { DemandArtifact, DemandEvidence } from "../demand";
@@ -635,5 +637,145 @@ describe("computeEmbeddingNovelty", () => {
     });
     expect(r.corpusUnavailable).toBe(true);
     expect(r.meanCorpusDistance).toBeNull();
+  });
+});
+
+// ── compareSigeAb (SIGE-hardened vs self-critique A/B) ──────────────────────────
+
+/** Build a full 7-axis GIANT vector; every axis defaults to `base`. */
+function giant(
+  base: number,
+  over: Partial<GiantAxisScores> = {},
+): GiantAxisScores {
+  const scores = {} as GiantAxisScores;
+  for (const key of GIANT_AXIS_KEYS) scores[key] = base;
+  return { ...scores, ...over };
+}
+
+function pair(
+  id: string,
+  sige: GiantAxisScores,
+  critique: GiantAxisScores,
+  over: Partial<SigeAbPair> = {},
+): SigeAbPair {
+  return { id, sigeScores: sige, critiqueScores: critique, ...over };
+}
+
+describe("compareSigeAb", () => {
+  test("empty input → null deltas, zeroed rates", () => {
+    const r = compareSigeAb([]);
+    expect(r.sigeLift).toBeNull();
+    expect(r.groundednessDelta).toBeNull();
+    expect(r.liftWithoutGroundednessRegression).toBe(false);
+    expect(r.meanJuryAgreement).toBeNull();
+    expect(r.dissentDistribution.mean).toBeNull();
+    expect(r.dissentDistribution.count).toBe(0);
+    expect(r.convergenceVetoRate).toBe(0);
+    expect(r.totalRounds).toBe(0);
+    expect(r.pairedCount).toBe(0);
+    for (const key of GIANT_AXIS_KEYS) expect(r.axisDeltas[key]).toBeNull();
+  });
+
+  test("uniform +1 lift across every axis", () => {
+    const pairs = [
+      pair("a", giant(4), giant(3)),
+      pair("b", giant(5), giant(4)),
+    ];
+    const r = compareSigeAb(pairs);
+    for (const key of GIANT_AXIS_KEYS) expect(r.axisDeltas[key]).toBe(1);
+    expect(r.sigeLift).toBe(1);
+    expect(r.groundednessDelta).toBe(1);
+    expect(r.liftWithoutGroundednessRegression).toBe(true);
+    expect(r.pairedCount).toBe(2);
+  });
+
+  test("sigeLift is the mean of per-axis deltas, not a per-idea mean", () => {
+    // One axis up by 7, the rest flat → lift = 7/7 = 1.
+    const sige = giant(3, { acuteProblem: 10 });
+    const critique = giant(3, { acuteProblem: 3 });
+    const r = compareSigeAb([pair("a", sige, critique)]);
+    expect(r.axisDeltas.acuteProblem).toBe(7);
+    expect(r.axisDeltas.whyNow).toBe(0);
+    expect(r.sigeLift).toBeCloseTo(1, 6); // 7 / 7 axes
+  });
+
+  test("groundedness regression vetoes the gate even when lift is positive", () => {
+    // Big lift on non-demand axes, but demand axis DROPS by 1.
+    const sige = giant(5, { demand: 2 });
+    const critique = giant(3, { demand: 3 });
+    const r = compareSigeAb([pair("a", sige, critique)]);
+    expect(r.sigeLift).toBeGreaterThan(0);
+    expect(r.groundednessDelta).toBe(-1);
+    expect(r.liftWithoutGroundednessRegression).toBe(false);
+  });
+
+  test("tiny groundedness dip within tolerance still passes", () => {
+    const sige = giant(5, { demand: 3.96 });
+    const critique = giant(3, { demand: 4 });
+    const r = compareSigeAb([pair("a", sige, critique)], [], {
+      groundednessTolerance: 0.05,
+    });
+    expect(r.groundednessDelta).toBeCloseTo(-0.04, 6);
+    expect(r.liftWithoutGroundednessRegression).toBe(true);
+  });
+
+  test("zero lift does not count as a win", () => {
+    const r = compareSigeAb([pair("a", giant(3), giant(3))]);
+    expect(r.sigeLift).toBe(0);
+    expect(r.liftWithoutGroundednessRegression).toBe(false);
+  });
+
+  test("non-finite axis scores are skipped per-axis without poisoning others", () => {
+    const sige = giant(4, { whyNow: Number.NaN });
+    const critique = giant(3, { whyNow: 3 });
+    const r = compareSigeAb([pair("a", sige, critique)]);
+    // whyNow had a NaN on the sige side → that axis has no contributing pair.
+    expect(r.axisDeltas.whyNow).toBeNull();
+    expect(r.axisDeltas.acuteProblem).toBe(1);
+    // lift averages only the axes that had a finite delta.
+    expect(r.sigeLift).toBe(1);
+  });
+
+  test("jury agreement + dissent distribution surfaced (not penalized)", () => {
+    const pairs = [
+      pair("a", giant(4), giant(3), { juryAgreement: 0.9, dissent: 0.5 }),
+      pair("b", giant(4), giant(3), { juryAgreement: 0.7, dissent: 2.5 }),
+      pair("c", giant(4), giant(3), { juryAgreement: 0.5, dissent: 4.5 }),
+    ];
+    const r = compareSigeAb(pairs);
+    expect(r.meanJuryAgreement).toBeCloseTo(0.7, 6);
+    expect(r.dissentDistribution.count).toBe(3);
+    expect(r.dissentDistribution.mean).toBeCloseTo((0.5 + 2.5 + 4.5) / 3, 6);
+    expect(r.dissentDistribution.p10).toBe(0.5);
+    expect(r.dissentDistribution.p90).toBe(4.5);
+    // dissent never lowers the lift — these are pure +1 lifts.
+    expect(r.sigeLift).toBe(1);
+  });
+
+  test("ideas without jury signals are excluded from agreement/dissent means", () => {
+    const pairs = [
+      pair("a", giant(4), giant(3), { juryAgreement: 0.8, dissent: 1 }),
+      pair("b", giant(4), giant(3)), // no jury fields
+    ];
+    const r = compareSigeAb(pairs);
+    expect(r.meanJuryAgreement).toBe(0.8);
+    expect(r.dissentDistribution.count).toBe(1);
+    expect(r.pairedCount).toBe(2);
+  });
+
+  test("convergence-veto rate counts vetoed rounds over total", () => {
+    const r = compareSigeAb(
+      [pair("a", giant(4), giant(3))],
+      [true, false, true, false],
+    );
+    expect(r.totalRounds).toBe(4);
+    expect(r.vetoedRounds).toBe(2);
+    expect(r.convergenceVetoRate).toBe(0.5);
+  });
+
+  test("no rounds → veto rate is 0 not NaN", () => {
+    const r = compareSigeAb([pair("a", giant(4), giant(3))], []);
+    expect(r.convergenceVetoRate).toBe(0);
+    expect(Number.isNaN(r.convergenceVetoRate)).toBe(false);
   });
 });

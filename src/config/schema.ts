@@ -561,6 +561,52 @@ export const demandConfigSchema = z
     minMatches: 2,
   });
 
+// Cross-family default jury for the hardened SIGE judge. These models are ONLY
+// instantiated when smart.sigeValuation is ON; any provider without a key is
+// gracefully skipped at runtime. The mix is intentionally multi-family so the
+// independent judge does not share a model lineage with the generators.
+export const SIGE_DEFAULT_JUDGE_MODELS: readonly { provider: string; model: string }[] =
+  [
+    { provider: "anthropic", model: "claude-haiku-4-5" },
+    { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
+    { provider: "alibaba", model: "qwen3.5-plus" },
+  ];
+
+// Phase-3 SIGE hardening: an independent, anonymized, multi-family judge with
+// first-class dissent weighting and a convergence veto. Fully defaulted so the
+// flags only take effect once smart.sigeValuation is turned ON.
+export const sigeHardeningConfigSchema = z
+  .object({
+    // Score candidates with a judge separated from the generators (different
+    // model family, anonymized inputs) instead of mean-pooling proposer scores.
+    independentJudge: z.boolean().default(true),
+    // Cross-family jury used by the independent judge. Each entry maps to
+    // chat() options.provider/model; missing keys are skipped gracefully.
+    judgeModels: z
+      .array(
+        z.object({
+          provider: z.string(),
+          model: z.string(),
+        }),
+      )
+      .default(SIGE_DEFAULT_JUDGE_MODELS.map((m) => ({ ...m }))),
+    // Weight applied to the first-class dissent term so contrarian/red-team
+    // signal is not averaged away by conformity.
+    dissentWeight: z.number().default(0.15),
+    // Convergence-veto gate: when computeMetaGameHealth convergenceRate exceeds
+    // this threshold the round is treated as collapsed (sycophancy) and vetoed.
+    convergenceVetoThreshold: z.number().default(0.85),
+    // Enable the expensive deep-reasoning tier of the judge.
+    deepTier: z.boolean().default(true),
+  })
+  .default({
+    independentJudge: true,
+    judgeModels: SIGE_DEFAULT_JUDGE_MODELS.map((m) => ({ ...m })),
+    dissentWeight: 0.15,
+    convergenceVetoThreshold: 0.85,
+    deepTier: true,
+  });
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -591,6 +637,10 @@ export const smartConfigSchema = z.object({
   // Phase 2 "demand-side grounding": cited, deterministic buyer-intent evidence
   // per idea. Fully defaulted -> backward-compatible.
   demand: demandConfigSchema,
+  // Phase 3 SIGE hardening: independent multi-family judge, first-class dissent,
+  // convergence veto. Only active when sigeValuation is ON. Fully defaulted ->
+  // backward-compatible.
+  sige: sigeHardeningConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -623,6 +673,13 @@ const SMART_IDEAS_DEFAULTS = {
     fundingSignal: true,
     externalTrends: false,
     minMatches: 2,
+  },
+  sige: {
+    independentJudge: true,
+    judgeModels: SIGE_DEFAULT_JUDGE_MODELS.map((m) => ({ ...m })),
+    dissentWeight: 0.15,
+    convergenceVetoThreshold: 0.85,
+    deepTier: true,
   },
 } as const;
 
@@ -740,5 +797,6 @@ export type SmartIdeasConfig = z.infer<typeof smartConfigSchema>;
 export type GiantConfig = z.infer<typeof giantConfigSchema>;
 export type GenerateWideConfig = z.infer<typeof generateWideConfigSchema>;
 export type DemandConfig = z.infer<typeof demandConfigSchema>;
+export type SigeHardeningConfig = z.infer<typeof sigeHardeningConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;

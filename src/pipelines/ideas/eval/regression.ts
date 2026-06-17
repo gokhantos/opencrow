@@ -52,6 +52,22 @@ export const TRACKED_METRICS: readonly {
     direction: "higher_is_better",
     extract: (a) => a.signalRanker?.highTierRate ?? null,
   },
+  {
+    // Hardened-SIGE GIANT lift vs self-critique. Higher = the jury pulls the
+    // GIANT axes up; a drop relative to baseline means the SIGE advantage is
+    // eroding. null on default (SIGE-off) runs so it never alerts there.
+    key: "sigeLift",
+    direction: "higher_is_better",
+    extract: (a) => a.sigeAb?.sigeLift ?? null,
+  },
+  {
+    // Groundedness delta (demand axis) of SIGE vs self-critique. MUST stay
+    // flat-or-up: a regression here means SIGE is buying lift with hallucinated
+    // demand. Tracked as higher_is_better so any drop trips an alert.
+    key: "sigeGroundednessDelta",
+    direction: "higher_is_better",
+    extract: (a) => a.sigeAb?.groundednessDelta ?? null,
+  },
 ];
 
 /** Extract the tracked metric snapshots from an aggregate. */

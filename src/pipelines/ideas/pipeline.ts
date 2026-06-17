@@ -17,11 +17,7 @@ import { loadConfig } from "../../config/loader";
 import type { MemoryManager } from "../../memory/types";
 import { insertIdea, getIdeasByStage } from "../../sources/ideas/store";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
-import {
-  updatePipelineRun,
-  createPipelineStep,
-  updatePipelineStep,
-} from "../store";
+import { updatePipelineRun, createPipelineStep, updatePipelineStep } from "../store";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
 import type { CollectorContext } from "./collectors";
 import {
@@ -32,18 +28,10 @@ import {
   compositeToQualityScore,
 } from "./synthesizer";
 import type { ValidatedExemplar, DeepSearchOptions } from "./synthesizer";
-import type {
-  SmartIdeasConfig,
-  SigeConfig,
-  GiantConfig,
-  DemandConfig,
-} from "../../config/schema";
+import type { SmartIdeasConfig, SigeConfig, GiantConfig, DemandConfig } from "../../config/schema";
 import { aggregateGiant } from "./giant";
 import type { GiantAxisScores, GiantAxisKey } from "./giant";
-import {
-  enrichDemand,
-  DEFAULT_DEMAND_PROBES,
-} from "./demand-probes";
+import { enrichDemand, DEFAULT_DEMAND_PROBES } from "./demand-probes";
 import type { EnrichDemandConfig } from "./demand-probes";
 import {
   hasCitedDemand,
@@ -55,18 +43,33 @@ import { checkForDuplicates, verifyEvidence, annotateOriginality } from "./valid
 import { getConsumedIds, markConsumed } from "./consumption";
 import { getSourceCredibility, credibilityKey } from "./credibility";
 import { evaluateCandidates } from "../../sige/simulation/expert-game";
-import type { CandidateIdea } from "../../sige/simulation/expert-game";
+import type { CandidateIdea, CandidateEvaluation } from "../../sige/simulation/expert-game";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
-import {
-  generateDivergentIdeas,
-  DEFAULT_SIGE_SESSION_CONFIG,
-} from "../../sige/run";
+import { generateDivergentIdeas, DEFAULT_SIGE_SESSION_CONFIG } from "../../sige/run";
 import type { DivergentCandidate } from "../../sige/run";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import { inferSegment, inferSegmentMatch, SEGMENT_IDS } from "./segments";
 import type { SegmentId } from "./segments";
-import type { GenerateWideConfig } from "../../config/schema";
+import type { GenerateWideConfig, SigeHardeningConfig } from "../../config/schema";
 import type { Capability, GeneratedIdeaCandidate } from "./types";
+import {
+  judgeWithJury,
+  fuseJury,
+  anonymizeCandidates,
+  DEFAULT_JURY_PANEL,
+  type JuryVerdict,
+  type JudgeModel,
+} from "./jury";
+import {
+  convergenceVeto,
+  dissentAdjustedScore,
+  paretoFrontier,
+  bradleyTerryRank,
+  type ConvergenceSignal,
+  type PairwiseWin,
+} from "./sige-select";
+import { GIANT_AXIS_KEYS } from "./giant";
+import type { AiProvider } from "../../agent/types";
 
 const log = createLogger("pipeline:ideas");
 
@@ -128,14 +131,53 @@ async function runStep<T>(
 }
 
 const STOP_WORDS = new Set([
-  "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
-  "of", "with", "by", "from", "is", "it", "that", "this", "are", "was",
-  "be", "has", "had", "have", "will", "can", "do", "does", "your", "you",
-  "app", "tool", "platform", "system", "based", "using", "new", "smart",
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "but",
+  "in",
+  "on",
+  "at",
+  "to",
+  "for",
+  "of",
+  "with",
+  "by",
+  "from",
+  "is",
+  "it",
+  "that",
+  "this",
+  "are",
+  "was",
+  "be",
+  "has",
+  "had",
+  "have",
+  "will",
+  "can",
+  "do",
+  "does",
+  "your",
+  "you",
+  "app",
+  "tool",
+  "platform",
+  "system",
+  "based",
+  "using",
+  "new",
+  "smart",
 ]);
 
 function tokenize(title: string): readonly string[] {
-  return title.toLowerCase().split(/\s+/).map((w) => w.replace(/[^a-z]/g, "")).filter((w) => w.length >= 3);
+  return title
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-z]/g, ""))
+    .filter((w) => w.length >= 3);
 }
 
 function extractThemesByNgrams(
@@ -219,11 +261,11 @@ async function extractSemanticThemes(
   for (const row of rows) {
     if (lines.length >= 5) break;
     try {
-      const results = await memoryManager.search(
-        "shared",
-        `${row.title}: ${row.summary}`,
-        { limit: 3, minScore: 0.7, kinds: ["idea"] },
-      );
+      const results = await memoryManager.search("shared", `${row.title}: ${row.summary}`, {
+        limit: 3,
+        minScore: 0.7,
+        kinds: ["idea"],
+      });
       const matches = results.filter((r) => r.score >= 0.7);
       if (matches.length >= 2) {
         lines.push(`- Theme around "${row.title}" (similar to ${matches.length} existing ideas)`);
@@ -348,11 +390,9 @@ async function stampIdeaGiant(
       scores: candidate.giant,
       evidence: candidate.giantEvidence ?? {},
     });
-    const whyNowJson =
-      candidate.whyNow !== undefined ? JSON.stringify(candidate.whyNow) : null;
+    const whyNowJson = candidate.whyNow !== undefined ? JSON.stringify(candidate.whyNow) : null;
     const archetype = candidate.archetype ?? null;
-    const painSeverity =
-      candidate.painSeverity ?? candidate.giant.acuteProblem ?? null;
+    const painSeverity = candidate.painSeverity ?? candidate.giant.acuteProblem ?? null;
 
     const db = getDb();
     await db`
@@ -367,6 +407,43 @@ async function stampIdeaGiant(
     `;
   } catch (err) {
     log.warn("Failed to stamp idea GIANT scores", { ideaId, err });
+  }
+}
+
+/**
+ * PHASE 3 (SIGE hardening) — Best-effort persistence of the independent-jury /
+ * dissent / convergence signals so the eval A/B (SIGE-hardened vs self-critique)
+ * can read them back per idea. No new migration: the payload is MERGED into the
+ * existing giant_scores_json JSONB blob under a `sige` key via jsonb `||` (so it
+ * coexists with the GIANT scorecard already stamped). COALESCE seeds an empty
+ * object when no GIANT scorecard was stamped. Swallows errors (e.g. pre-migration
+ * DBs / missing column) so it never blocks or breaks the core insert.
+ */
+async function stampIdeaSigeSignals(
+  ideaId: string,
+  signals: SigeSignals | undefined,
+): Promise<void> {
+  if (signals === undefined) return;
+  try {
+    const payload = JSON.stringify({
+      sige: {
+        expertScore: signals.expertScore,
+        ...(signals.juryScore !== undefined ? { juryScore: signals.juryScore } : {}),
+        ...(signals.juryAgreement !== undefined ? { juryAgreement: signals.juryAgreement } : {}),
+        ...(signals.dissent !== undefined ? { dissent: signals.dissent } : {}),
+        ...(signals.judgeCount !== undefined ? { judgeCount: signals.judgeCount } : {}),
+        ...(signals.evolved ? { evolved: true } : {}),
+      },
+    });
+    const db = getDb();
+    await db`
+      UPDATE generated_ideas
+      SET giant_scores_json =
+        COALESCE(giant_scores_json, '{}'::jsonb) || ${payload}::jsonb
+      WHERE id = ${ideaId}
+    `;
+  } catch (err) {
+    log.warn("Failed to stamp idea SIGE signals", { ideaId, err });
   }
 }
 
@@ -430,15 +507,11 @@ function buildIdeaProvenance(
  * a real signal id. Errs toward CAPPING (false) when there is no concrete
  * evidence, matching the GIANT default. Pure.
  */
-export function candidateHasDemandEvidence(
-  candidate: GeneratedIdeaCandidate,
-): boolean {
+export function candidateHasDemandEvidence(candidate: GeneratedIdeaCandidate): boolean {
   const demandEvidence = candidate.giantEvidence?.demand?.trim() ?? "";
   if (demandEvidence.length > 0) return true;
   return (candidate.whyNow ?? []).some(
-    (shift) =>
-      typeof shift.boundSignalId === "string" &&
-      shift.boundSignalId.trim().length > 0,
+    (shift) => typeof shift.boundSignalId === "string" && shift.boundSignalId.trim().length > 0,
   );
 }
 
@@ -503,9 +576,7 @@ export function evaluateCandidateGiantGate(
  * demand subsystem tokenizes. `reasoning` is this pipeline's problem statement.
  * PURE — no IO; just a field projection so keyword extraction stays deterministic.
  */
-export function toDemandCandidateText(
-  candidate: GeneratedIdeaCandidate,
-): DemandCandidateText {
+export function toDemandCandidateText(candidate: GeneratedIdeaCandidate): DemandCandidateText {
   return {
     title: candidate.title,
     summary: candidate.summary,
@@ -536,16 +607,12 @@ export function buildEnrichDemandConfig(
     minMatches: demand.minMatches,
     ...(knobs.windowSec !== undefined ? { windowSec: knobs.windowSec } : {}),
     ...(knobs.limit !== undefined ? { limit: knobs.limit } : {}),
-    ...(knobs.supplyDensity !== undefined
-      ? { supplyDensity: knobs.supplyDensity }
-      : {}),
+    ...(knobs.supplyDensity !== undefined ? { supplyDensity: knobs.supplyDensity } : {}),
   };
 }
 
 /** Provenance entries carried by a demand artifact's cited evidence rows. */
-function demandProvenanceEntries(
-  artifact: DemandArtifact,
-): readonly ProvenanceEntry[] {
+function demandProvenanceEntries(artifact: DemandArtifact): readonly ProvenanceEntry[] {
   const tableByKind: Readonly<Record<string, string>> = {
     reddit_intent: "reddit_posts",
     funding_news: "news_articles",
@@ -706,18 +773,10 @@ async function stampIdeaDemand(
   segment: SegmentId,
 ): Promise<void> {
   try {
-    const parsed =
-      artifact !== undefined
-        ? demandArtifactSchema.safeParse(artifact)
-        : undefined;
-    const demandJson =
-      parsed !== undefined && parsed.success
-        ? JSON.stringify(parsed.data)
-        : null;
-    const demandScore =
-      parsed !== undefined && parsed.success ? parsed.data.score : null;
-    const whitespace =
-      parsed !== undefined && parsed.success ? parsed.data.whitespace : null;
+    const parsed = artifact !== undefined ? demandArtifactSchema.safeParse(artifact) : undefined;
+    const demandJson = parsed !== undefined && parsed.success ? JSON.stringify(parsed.data) : null;
+    const demandScore = parsed !== undefined && parsed.success ? parsed.data.score : null;
+    const whitespace = parsed !== undefined && parsed.success ? parsed.data.whitespace : null;
 
     const db = getDb();
     await db`
@@ -774,59 +833,631 @@ async function loadCredibilityPosteriors(): Promise<ReadonlyMap<string, number>>
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 3 "SIGE hardening" — make SIGE a TRUSTWORTHY convergent judge: an
+// INDEPENDENT, anonymized, cross-family jury on top of the native SIGE expert
+// score; first-class DISSENT; a CONVERGENCE-VETO so a collapsed (sycophantic)
+// round is not over-trusted; a UNION read-back that no longer drops SIGE's
+// Round-3 evolved/recombined children; and a Pareto (originality × quality)
+// selection that replaces the scalar sort. Everything stays behind
+// smart.sigeValuation (default OFF) so the default run is byte-for-byte
+// unchanged. Every impure call is wrapped so a SIGE/jury failure FALLS BACK to
+// the critique scores — it can never break the run.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** SIGE expertScore is in [0,1]; the pipeline qualityScore is on the 1..5 scale. */
+function expertToQuality(expertScore: number): number {
+  return 1 + Math.min(Math.max(expertScore, 0), 1) * 4;
+}
+
+/** The 1..5 qualityScore mapped back to a [0,1] expert prior. PURE. */
+function qualityToExpert(qualityScore: number): number {
+  return Math.min(Math.max((qualityScore - 1) / 4, 0), 1);
+}
+
 /**
- * #7 — Route survivors through the SIGE expert game and override each
- * candidate's qualityScore with the agent-graded expertScore (mapped 0-1 → 1-5,
- * matching the critique-score scale). Results join by TITLE. Any candidate the
- * game drops (blank title) keeps its critique score as a fallback.
+ * PHASE 3 — A defensive view over the EXTENDED {@link CandidateEvaluation} that
+ * SIGE returns. The extra GIANT/jury/dissent fields are OPTIONAL on the contract
+ * (added by the expert-game extension), so we read them through this accessor —
+ * which never assumes they are present — to stay backward-compatible whether or
+ * not the producer has stamped them. PURE.
+ */
+interface SigeEvalView {
+  readonly title: string;
+  readonly expertScore: number;
+  readonly description?: string;
+  readonly giantScores?: GiantAxisScores;
+  readonly evidenceRef?: readonly string[];
+  /** First-class red-team / contrarian disagreement in [0,1] (already normalized by SIGE). */
+  readonly dissent?: number;
+  /** "evolved" ⇒ a Round-3 mutated/recombined child the legacy join silently dropped. */
+  readonly origin?: "seed" | "evolved";
+}
+
+function readEvaluation(ev: CandidateEvaluation): SigeEvalView {
+  const raw = ev as CandidateEvaluation & {
+    readonly description?: unknown;
+    readonly giantScores?: unknown;
+    readonly evidenceRef?: unknown;
+    readonly dissent?: unknown;
+    readonly origin?: unknown;
+  };
+  const giantScores = isGiantAxisScores(raw.giantScores) ? raw.giantScores : undefined;
+  const evidenceRef = Array.isArray(raw.evidenceRef)
+    ? raw.evidenceRef.filter((e): e is string => typeof e === "string")
+    : undefined;
+  const origin = raw.origin === "evolved" || raw.origin === "seed" ? raw.origin : undefined;
+  return {
+    title: ev.title,
+    expertScore: ev.expertScore,
+    ...(typeof raw.description === "string" ? { description: raw.description } : {}),
+    ...(giantScores !== undefined ? { giantScores } : {}),
+    ...(evidenceRef !== undefined && evidenceRef.length > 0 ? { evidenceRef } : {}),
+    ...(typeof raw.dissent === "number" && Number.isFinite(raw.dissent)
+      ? { dissent: raw.dissent }
+      : {}),
+    ...(origin !== undefined ? { origin } : {}),
+  };
+}
+
+/** Runtime guard for a 7-axis GIANT scorecard (every axis a finite number). PURE. */
+function isGiantAxisScores(value: unknown): value is GiantAxisScores {
+  if (typeof value !== "object" || value === null) return false;
+  const rec = value as Record<string, unknown>;
+  return GIANT_AXIS_KEYS.every((key) => typeof rec[key] === "number" && Number.isFinite(rec[key]));
+}
+
+/**
+ * PHASE 3 — First-class DISSENT signals carried alongside a candidate through
+ * the hardened path. Stored in a side-map (like demand/giant-gate) so the
+ * pipeline never has to widen the shared {@link GeneratedIdeaCandidate} type.
+ */
+export interface SigeSignals {
+  /** SIGE's native (self-graded) expert score in [0,1]. */
+  readonly expertScore: number;
+  /** Independent cross-family jury GIANT composite (0..5), when a jury ran. */
+  readonly juryScore?: number;
+  /** Inter-judge agreement (0..1); the conformity inverse of dissent. */
+  readonly juryAgreement?: number;
+  /** First-class dissent magnitude (0..1) folded into selection, never averaged away. */
+  readonly dissent?: number;
+  /** Combined GIANT scorecard (SIGE self-grade × independent jury), when available. */
+  readonly giantScores?: GiantAxisScores;
+  /** How many independent judges scored this candidate. */
+  readonly judgeCount?: number;
+  /** True when the candidate is a SIGE Round-3 evolved/recombined child (read-back union). */
+  readonly evolved?: boolean;
+}
+
+/**
+ * PHASE 3 — Combine SIGE's SELF-graded GIANT axes with the INDEPENDENT jury's
+ * GIANT axes into one scorecard. The jury is the anti-sycophancy check on SIGE's
+ * own score, so we blend per-axis (default: equal weight) rather than trust
+ * either alone. When only one source is present we use it directly. PURE.
+ */
+export function combineGiantScores(
+  sigeGiant: GiantAxisScores | undefined,
+  juryGiant: GiantAxisScores | undefined,
+  juryWeight = 0.5,
+): GiantAxisScores | undefined {
+  if (sigeGiant === undefined && juryGiant === undefined) return undefined;
+  if (sigeGiant === undefined) return juryGiant;
+  if (juryGiant === undefined) return sigeGiant;
+  const w = Math.min(Math.max(juryWeight, 0), 1);
+  const combined = {} as GiantAxisScores;
+  for (const key of GIANT_AXIS_KEYS) {
+    combined[key] = (1 - w) * sigeGiant[key] + w * juryGiant[key];
+  }
+  return combined;
+}
+
+/**
+ * PHASE 3 — Normalise a jury dissent magnitude (0..5 axis spread) into the
+ * [0,1] term {@link dissentAdjustedScore} expects. PURE.
+ */
+export function normalizeDissent(dissent: number | undefined): number {
+  if (dissent === undefined || !Number.isFinite(dissent)) return 0;
+  return Math.min(Math.max(dissent / 5, 0), 1);
+}
+
+/**
+ * PHASE 3 — Map the configured cross-family judge models (provider/model pairs
+ * from smart.sige.judgeModels) onto the jury's {@link JudgeModel} panel. Each
+ * non-anthropic provider is gated on its conventional API-key env var so a
+ * provider with no key is gracefully skipped by {@link judgeWithJury}. Falls
+ * back to {@link DEFAULT_JURY_PANEL} when the config carries no usable entry.
+ * PURE.
+ */
+const PROVIDER_SECRET: Readonly<Record<string, string>> = {
+  openrouter: "OPENROUTER_API_KEY",
+  alibaba: "ALIBABA_API_KEY",
+};
+
+const KNOWN_PROVIDERS: ReadonlySet<string> = new Set<AiProvider>([
+  "openrouter",
+  "agent-sdk",
+  "alibaba",
+  "anthropic",
+]);
+
+export function buildJuryPanel(
+  judgeModels: readonly { readonly provider: string; readonly model: string }[],
+): readonly JudgeModel[] {
+  const panel: JudgeModel[] = [];
+  for (const jm of judgeModels) {
+    const provider = jm.provider.trim().toLowerCase();
+    if (!KNOWN_PROVIDERS.has(provider) || jm.model.trim().length === 0) {
+      continue;
+    }
+    const secret = PROVIDER_SECRET[provider];
+    panel.push({
+      label: `${provider}:${jm.model}`,
+      provider: provider as AiProvider,
+      model: jm.model,
+      ...(secret !== undefined ? { requiredSecret: secret } : {}),
+    });
+  }
+  return panel.length > 0 ? panel : DEFAULT_JURY_PANEL;
+}
+
+/**
+ * PHASE 3 — Build position-switched pairwise A>B votes from the jury verdicts so
+ * {@link bradleyTerryRank} can stabilise the ordering against position bias.
+ * For every unordered pair we emit ONE comparison in EACH direction's framing
+ * (A-first then B-first) and let the higher juryScore win each framing; equal
+ * scores emit no vote (a genuine tie). This makes the resulting strengths
+ * symmetric to presentation order. PURE.
+ */
+export function buildPairwiseWins(
+  verdicts: readonly { readonly candidateId: string; readonly juryScore: number }[],
+): readonly PairwiseWin[] {
+  const wins: PairwiseWin[] = [];
+  for (let i = 0; i < verdicts.length; i++) {
+    for (let j = i + 1; j < verdicts.length; j++) {
+      const a = verdicts[i]!;
+      const b = verdicts[j]!;
+      if (a.juryScore === b.juryScore) continue;
+      const winner = a.juryScore > b.juryScore ? a.candidateId : b.candidateId;
+      const loser = a.juryScore > b.juryScore ? b.candidateId : a.candidateId;
+      // Two framings (A-first, B-first) → both register the same winner, so the
+      // winner is reinforced regardless of presentation order (position-switch).
+      wins.push({ winner, loser });
+      wins.push({ winner, loser });
+    }
+  }
+  return wins;
+}
+
+/**
+ * PHASE 3 — The result of the hardened SIGE valuation: the (possibly UNIONed)
+ * candidate set rescored on the combined SIGE×jury judgment, plus the side-band
+ * signals the caller persists for the eval A/B and feeds into Pareto selection.
+ */
+export interface SigeHardenedResult {
+  readonly candidates: readonly GeneratedIdeaCandidate[];
+  /**
+   * SIGE/jury/dissent signals keyed by the STABLE join-id (normalized title), NOT
+   * by candidate object identity — downstream phases (demand rescore, GIANT gate,
+   * originality re-annotation) replace candidate objects, so a title-keyed map
+   * survives the immutable rescores and rejoins reliably.
+   */
+  readonly signalsByTitle: ReadonlyMap<string, SigeSignals>;
+}
+
+/**
+ * PHASE 3 — A stable id for joining SIGE/jury verdicts back to candidates. We
+ * derive it from the normalized title so it is reproducible across the SIGE
+ * round (which keys results by title) and the jury (which is given this id). PURE.
+ */
+function candidateJoinId(title: string): string {
+  return title.toLowerCase().trim();
+}
+
+/**
+ * PHASE 3 — Re-bind a SIGE Round-3 evolved/recombined CHILD (a title returned by
+ * SIGE that did NOT exist in the input pool) into a {@link GeneratedIdeaCandidate}
+ * so it competes in the SAME selection as the seed pool. The child is tagged
+ * origin "sige-evolved"; verifyEvidence later HARD-PENALIZES it if it cannot be
+ * re-grounded against this run's real signals. PURE.
+ */
+export function mapEvolvedEvaluation(view: SigeEvalView): GeneratedIdeaCandidate {
+  return {
+    title: view.title,
+    summary: view.description ?? "",
+    reasoning: view.description ?? "",
+    designDescription: "",
+    monetizationDetail: "",
+    sourceLinks: [],
+    sourcesUsed: "sige-evolved (round-3 recombination)",
+    category: "",
+    qualityScore: expertToQuality(view.expertScore),
+    targetAudience: "",
+    keyFeatures: [],
+    revenueModel: "",
+    trendIntersection: "",
+    ...(view.evidenceRef !== undefined && view.evidenceRef.length > 0
+      ? { supportingSignalIds: view.evidenceRef }
+      : {}),
+    ...(view.giantScores !== undefined ? { giant: view.giantScores } : {}),
+  };
+}
+
+/**
+ * #7 / PHASE 3 — Route survivors through the SIGE expert game, then HARDEN the
+ * result against sycophancy collapse:
  *
- * EXPENSIVE: makes multi-agent LLM calls. Caller must already have checked the
- * smart.sigeValuation + config.sige.enabled gate. Wrapped so SIGE failure
- * degrades to the unchanged critique-scored candidates (never throws).
+ *   1. READ-BACK UNION — SIGE Round-3 may EVOLVE/RECOMBINE children (titles not
+ *      in the input pool). The old title-join silently dropped them; we now
+ *      UNION them back as origin "sige-evolved" candidates and re-bind each via
+ *      verifyEvidence so a child that cannot be re-grounded is hard-penalized.
+ *   2. INDEPENDENT JURY — when smart.sige.independentJudge is on, an anonymized,
+ *      position-switched cross-family jury scores every survivor's GIANT axes.
+ *      The jury is the anti-sycophancy CHECK on SIGE's self-grade: the combined
+ *      GIANT (SIGE × jury) re-derives qualityScore. No jury key ⇒ graceful
+ *      fall-back to the native SIGE expertScore (scores are never zeroed).
+ *   3. FIRST-CLASS DISSENT — jury dissent + agreement are surfaced into the
+ *      side-band signals (consumed by Pareto/Bradley-Terry), never averaged away.
+ *
+ * EXPENSIVE: multi-agent SIGE calls + one LLM call per available judge over the
+ * whole batch. Caller must already have checked smart.sigeValuation +
+ * config.sige.enabled. Wrapped so any SIGE/jury failure degrades to the
+ * unchanged critique-scored candidates (never throws).
  */
 async function applySigeValuation(
   candidates: readonly GeneratedIdeaCandidate[],
   sigeConfig: SigeConfig,
+  sigeHardening: SigeHardeningConfig,
   deepSearchContext: string,
-): Promise<readonly GeneratedIdeaCandidate[]> {
+  capabilities: readonly Capability[],
+): Promise<SigeHardenedResult> {
+  const passthrough: SigeHardenedResult = {
+    candidates,
+    signalsByTitle: new Map(),
+  };
+
   try {
     const sigeCandidates: CandidateIdea[] = candidates.map((c) => ({
       title: c.title,
       summary: c.summary,
       description: c.reasoning,
       // Seed prior from the critique score (1-5) back to [0,1].
-      expertScore: Math.min(Math.max((c.qualityScore - 1) / 4, 0), 1),
+      expertScore: qualityToExpert(c.qualityScore),
     }));
+
+    // Always synthesize a NON-EMPTY enrichedSeed so SIGE's taste-filter grounding
+    // gate never silently skips (an empty seed disables the gate). Fall back to a
+    // compact synopsis of the candidate pool when no deep-search context exists.
+    const enrichedSeed =
+      deepSearchContext.trim().length > 0 ? deepSearchContext : synthesizeEnrichedSeed(candidates);
 
     const evaluations = await evaluateCandidates(sigeCandidates, {
       mem0: new Mem0Client({ baseUrl: sigeConfig.mem0.baseUrl }),
       userId: sigeConfig.mem0.userId,
-      enrichedSeed: deepSearchContext || undefined,
+      enrichedSeed,
     });
 
-    const scoreByTitle = new Map<string, number>();
-    for (const ev of evaluations) {
-      scoreByTitle.set(ev.title.toLowerCase().trim(), ev.expertScore);
+    const views = evaluations.map(readEvaluation);
+
+    // ── 1) READ-BACK UNION: split SIGE results into matched-seed vs evolved ──
+    const inputIds = new Set(candidates.map((c) => candidateJoinId(c.title)));
+    const viewByJoinId = new Map<string, SigeEvalView>();
+    for (const view of views) {
+      viewByJoinId.set(candidateJoinId(view.title), view);
     }
 
-    const rescored = candidates.map((c) => {
-      const expert = scoreByTitle.get(c.title.toLowerCase().trim());
-      if (expert === undefined) return c;
-      // Map SIGE expertScore [0,1] → 1-5 quality scale.
-      const sigeQuality = 1 + Math.min(Math.max(expert, 0), 1) * 4;
-      return { ...c, qualityScore: sigeQuality };
+    // A child is "evolved" when SIGE tags origin:"evolved" (authoritative) OR —
+    // when the producer left origin undefined — when its title was not in the
+    // input pool (the legacy title-join's silent-drop signal).
+    const evolvedViews = views.filter((v) =>
+      v.origin !== undefined ? v.origin === "evolved" : !inputIds.has(candidateJoinId(v.title)),
+    );
+
+    // Re-bind evolved children through verifyEvidence; a child that cannot be
+    // re-grounded (no bindable evidence against this run's signals) is
+    // hard-penalized rather than trusted at face value.
+    let evolvedCandidates: readonly GeneratedIdeaCandidate[] = [];
+    if (evolvedViews.length > 0) {
+      const mapped = evolvedViews.map(mapEvolvedEvaluation);
+      const verified = verifyEvidence(mapped, capabilities);
+      evolvedCandidates = verified.kept.map((child) => {
+        const grounding = verified.groundingByTitle.get(child.title);
+        // origin:evolved + no bindable evidence → low grounding → hard penalty.
+        const penalized =
+          grounding === undefined || grounding <= 0
+            ? Math.max(1, child.qualityScore * 0.5)
+            : child.qualityScore;
+        return penalized === child.qualityScore ? child : { ...child, qualityScore: penalized };
+      });
+      log.info("SIGE read-back: unioned evolved children", {
+        evolved: evolvedViews.length,
+        keptAfterRebind: evolvedCandidates.length,
+      });
+    }
+
+    // Rescore the matched seed pool from SIGE's expert score + extended GIANT.
+    const seedRescored = candidates.map((c) => {
+      const view = viewByJoinId.get(candidateJoinId(c.title));
+      if (view === undefined) return c;
+      const next: GeneratedIdeaCandidate = {
+        ...c,
+        qualityScore: expertToQuality(view.expertScore),
+        ...(view.giantScores !== undefined ? { giant: view.giantScores } : {}),
+      };
+      return next;
     });
 
-    log.info("SIGE valuation applied", {
+    const unioned: readonly GeneratedIdeaCandidate[] = [...seedRescored, ...evolvedCandidates];
+
+    // Seed the side-band signals from the native SIGE expert grade.
+    const signals = new Map<GeneratedIdeaCandidate, SigeSignals>();
+    for (const c of seedRescored) {
+      const view = viewByJoinId.get(candidateJoinId(c.title));
+      signals.set(c, {
+        expertScore: view?.expertScore ?? qualityToExpert(c.qualityScore),
+        ...(view?.giantScores !== undefined ? { giantScores: view.giantScores } : {}),
+        ...(view?.dissent !== undefined ? { dissent: view.dissent } : {}),
+      });
+    }
+    for (const c of evolvedCandidates) {
+      const view = viewByJoinId.get(candidateJoinId(c.title));
+      signals.set(c, {
+        expertScore: view?.expertScore ?? qualityToExpert(c.qualityScore),
+        evolved: true,
+        ...(view?.giantScores !== undefined ? { giantScores: view.giantScores } : {}),
+        ...(view?.dissent !== undefined ? { dissent: view.dissent } : {}),
+      });
+    }
+
+    // ── 2) INDEPENDENT JURY (anti-sycophancy check) ──────────────────────────
+    let rescored = unioned;
+    if (sigeHardening.independentJudge && unioned.length > 0) {
+      const juryResult = await runIndependentJury(unioned, sigeHardening, signals);
+      rescored = juryResult.candidates;
+    }
+
+    log.info("SIGE valuation applied (hardened)", {
       candidates: candidates.length,
       evaluated: evaluations.length,
+      evolvedUnioned: evolvedCandidates.length,
+      jury: sigeHardening.independentJudge,
     });
 
-    return rescored;
+    return {
+      candidates: rescored,
+      signalsByTitle: remapSignals(signals),
+    };
   } catch (err) {
     log.warn("SIGE valuation failed — keeping critique scores", { err });
-    return candidates;
+    return passthrough;
   }
+}
+
+/**
+ * PHASE 3 — Run the INDEPENDENT cross-family jury over the (post-union) survivors
+ * and combine its GIANT judgment with SIGE's self-grade. Anonymizes candidates
+ * (provenance stripped) before judging and joins verdicts back by a STABLE id so
+ * the read-back is reliable. An EMPTY jury (no provider key) is a graceful
+ * fall-back: the native SIGE expertScore is kept (scores are NEVER zeroed). The
+ * combined GIANT re-derives qualityScore; dissent + agreement are surfaced into
+ * the side-band signals. Mutates the passed `signals` map in place with the new
+ * jury fields (the map is pipeline-internal scratch). Never throws.
+ */
+async function runIndependentJury(
+  candidates: readonly GeneratedIdeaCandidate[],
+  sigeHardening: SigeHardeningConfig,
+  signals: Map<GeneratedIdeaCandidate, SigeSignals>,
+): Promise<{ readonly candidates: readonly GeneratedIdeaCandidate[] }> {
+  try {
+    const panel = buildJuryPanel(sigeHardening.judgeModels);
+
+    // Anonymize: pass raw candidate objects (with a STABLE id) THROUGH
+    // anonymizeCandidates — it strips provenance + author/score before judging.
+    const rawCands = candidates.map((c) => ({
+      id: candidateJoinId(c.title),
+      title: c.title,
+      description: c.summary,
+    }));
+    const juryRaw = await judgeWithJury(anonymizeCandidates(rawCands), panel);
+
+    if (juryRaw.length === 0) {
+      // No judge available — graceful fall-back to native SIGE scores.
+      log.info("SIGE jury: no judge available — keeping native SIGE scores");
+      return { candidates };
+    }
+
+    const verdicts = fuseJury(juryRaw);
+    const verdictById = new Map<string, JuryVerdict>();
+    for (const v of verdicts) verdictById.set(v.candidateId, v);
+
+    const combined = candidates.map((c) => {
+      const verdict = verdictById.get(candidateJoinId(c.title));
+      if (verdict === undefined) return c;
+
+      const prior = signals.get(c);
+      const sigeGiant = prior?.giantScores ?? c.giant;
+      const mergedGiant = combineGiantScores(sigeGiant, verdict.giantScores);
+
+      // Re-derive qualityScore from the COMBINED GIANT composite so the jury is a
+      // genuine independent check, not a tie-breaker. Fall back to the jury's own
+      // composite when no GIANT axes are available.
+      const composite =
+        mergedGiant !== undefined ? aggregateGiant(mergedGiant, {}).composite : verdict.juryScore;
+
+      const dissentNorm = normalizeDissent(verdict.dissent);
+
+      signals.set(c, {
+        expertScore: prior?.expertScore ?? qualityToExpert(c.qualityScore),
+        juryScore: verdict.juryScore,
+        juryAgreement: verdict.juryAgreement,
+        dissent: dissentNorm,
+        judgeCount: verdict.judgeCount,
+        ...(prior?.evolved ? { evolved: true } : {}),
+        ...(mergedGiant !== undefined ? { giantScores: mergedGiant } : {}),
+      });
+
+      return {
+        ...c,
+        qualityScore: compositeToQualityScore(composite),
+        ...(mergedGiant !== undefined ? { giant: mergedGiant } : {}),
+      };
+    });
+
+    log.info("SIGE independent jury fused", {
+      judges: juryRaw.length,
+      verdicts: verdicts.length,
+      meanAgreement: Number(
+        (verdicts.reduce((s, v) => s + v.juryAgreement, 0) / Math.max(verdicts.length, 1)).toFixed(
+          2,
+        ),
+      ),
+    });
+
+    return { candidates: combined };
+  } catch (err) {
+    // Jury failure must NEVER break the run — keep the native SIGE scores.
+    log.warn("SIGE jury failed — keeping native SIGE scores", { err });
+    return { candidates };
+  }
+}
+
+/**
+ * PHASE 3 — Re-key a candidate→signals side-map onto a TITLE-keyed map (by the
+ * stable join id), so signals survive the immutable rescores downstream (which
+ * produce NEW candidate objects) and rejoin reliably. PURE.
+ */
+function remapSignals(
+  signals: ReadonlyMap<GeneratedIdeaCandidate, SigeSignals>,
+): ReadonlyMap<string, SigeSignals> {
+  const byJoinId = new Map<string, SigeSignals>();
+  for (const [cand, sig] of signals) {
+    byJoinId.set(candidateJoinId(cand.title), sig);
+  }
+  return byJoinId;
+}
+
+/**
+ * PHASE 3 — Always-non-empty enrichedSeed for SIGE's taste filter. An empty seed
+ * disables the grounding gate; when no deep-search context exists we synthesize a
+ * compact synopsis of the candidate pool so the gate ALWAYS has something to
+ * judge against. PURE.
+ */
+export function synthesizeEnrichedSeed(candidates: readonly GeneratedIdeaCandidate[]): string {
+  const lines = candidates.slice(0, 20).map((c) => `- ${c.title}: ${c.summary}`.slice(0, 240));
+  const body = lines.join("\n").trim();
+  return body.length > 0
+    ? `=== CANDIDATE POOL SYNOPSIS ===\n${body}`
+    : "=== CANDIDATE POOL SYNOPSIS ===\n(no candidate text available)";
+}
+
+/**
+ * PHASE 3 — Select a stable top-K via a Pareto frontier over (originality ×
+ * dissent-adjusted quality) plus a Bradley-Terry pairwise tie-break, replacing
+ * the scalar sort when SIGE is on. originalityOf = the Qdrant-distance originality
+ * (0..1) from annotateOriginality; qualityOf = the dissent-folded SIGE/jury score.
+ * Degrades gracefully when the frontier is smaller than K (the ranked walk
+ * back-fills) and when no signals exist (quality falls back to qualityScore).
+ * PURE.
+ */
+export function paretoSelect(
+  candidates: readonly GeneratedIdeaCandidate[],
+  signals: ReadonlyMap<string, SigeSignals>,
+  limit: number,
+  dissentWeight: number,
+): readonly GeneratedIdeaCandidate[] {
+  if (limit <= 0) return [];
+  if (candidates.length <= limit) return [...candidates];
+
+  const idOf = (c: GeneratedIdeaCandidate): string => candidateJoinId(c.title);
+
+  const qualityOf = (c: GeneratedIdeaCandidate): number => {
+    const sig = signals.get(idOf(c));
+    const base =
+      sig?.juryScore ??
+      (sig?.expertScore !== undefined ? expertToQuality(sig.expertScore) : c.qualityScore);
+    return dissentAdjustedScore(base, sig?.dissent ?? 0, dissentWeight);
+  };
+  const originalityOf = (c: GeneratedIdeaCandidate): number =>
+    typeof c.originality === "number" ? c.originality : 1;
+
+  const pareto = paretoFrontier(candidates, originalityOf, qualityOf);
+
+  // Bradley-Terry tie-break / stabilization from position-switched jury votes.
+  const verdictRows = candidates
+    .map((c) => {
+      const sig = signals.get(idOf(c));
+      return sig?.juryScore !== undefined
+        ? { candidateId: idOf(c), juryScore: sig.juryScore }
+        : undefined;
+    })
+    .filter((r): r is { candidateId: string; juryScore: number } => r !== undefined);
+
+  const bt = verdictRows.length >= 2 ? bradleyTerryRank(buildPairwiseWins(verdictRows)) : undefined;
+  const btRank = new Map<string, number>();
+  if (bt !== undefined) {
+    bt.ranking.forEach((id, i) => btRank.set(id, i));
+  }
+
+  // Walk the Pareto-ranked order; within equal Pareto rank, Bradley-Terry
+  // ordering breaks ties. Stable: preserve the Pareto walk otherwise.
+  const ranked = pareto.ranked.map((p, paretoIdx) => ({
+    candidate: p.item,
+    paretoIdx,
+    btIdx: btRank.get(idOf(p.item)) ?? Number.POSITIVE_INFINITY,
+  }));
+
+  const ordered = [...ranked].sort((a, b) => {
+    if (a.paretoIdx !== b.paretoIdx) return a.paretoIdx - b.paretoIdx;
+    return a.btIdx - b.btIdx;
+  });
+
+  return ordered.slice(0, limit).map((r) => r.candidate);
+}
+
+/**
+ * PHASE 3 — Derive a {@link ConvergenceSignal} from the independent jury's fused
+ * signals and run {@link convergenceVeto}. The SIGE rounds are not exposed by
+ * evaluateCandidates, so the jury's inter-judge AGREEMENT is the robust,
+ * always-available convergence proxy: high mean agreement ⇒ the field collapsed
+ * onto a consensus (sycophancy-collapse risk), and the unique-title ratio gives a
+ * direct diversity index. Folds the mean dissent back into diversity so a
+ * polarizing (high-dissent) round is NOT mistaken for a collapsed one. PURE — the
+ * MetaGameHealth shape is structurally assignable to ConvergenceSignal, so this
+ * stays a drop-in for computeMetaGameHealth(rounds, definitions) if the SIGE
+ * contract later exposes the rounds.
+ */
+export function computeSigeConvergenceVeto(
+  signals: ReadonlyMap<string, SigeSignals>,
+  threshold: number,
+): {
+  readonly vetoed: boolean;
+  readonly reasons: readonly string[];
+  readonly convergenceRate: number;
+  readonly diversityIndex: number;
+} {
+  const entries = [...signals.entries()];
+  const agreements = entries
+    .map(([, s]) => s.juryAgreement)
+    .filter((a): a is number => typeof a === "number");
+  const dissents = entries
+    .map(([, s]) => s.dissent)
+    .filter((d): d is number => typeof d === "number");
+
+  const meanAgreement =
+    agreements.length > 0 ? agreements.reduce((a, b) => a + b, 0) / agreements.length : 0;
+  const meanDissent =
+    dissents.length > 0 ? dissents.reduce((a, b) => a + b, 0) / dissents.length : 0;
+
+  // Unique-title ratio over the candidate set; high dissent re-inflates it so a
+  // polarizing round reads as diverse, not collapsed.
+  const titles = entries.map(([id]) => id);
+  const uniqueRatio = titles.length > 0 ? new Set(titles).size / titles.length : 1;
+  const diversityIndex = Math.min(1, uniqueRatio * (1 + meanDissent) - meanDissent);
+
+  const signal: ConvergenceSignal = {
+    convergenceRate: meanAgreement,
+    diversityIndex: Math.max(0, diversityIndex),
+  };
+  return convergenceVeto(signal, { maxConvergenceRate: threshold });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -868,9 +1499,7 @@ export function buildSignalsContext(parts: {
  * unscored (Pass-3 critique sets the real score). Provenance is tagged via
  * sourcesUsed so divergent ideas are auditable. PURE.
  */
-export function mapDivergentToCandidate(
-  divergent: DivergentCandidate,
-): GeneratedIdeaCandidate {
+export function mapDivergentToCandidate(divergent: DivergentCandidate): GeneratedIdeaCandidate {
   return {
     title: divergent.title,
     summary: divergent.summary,
@@ -937,9 +1566,7 @@ async function fetchDivergentCandidates(
  */
 function resolveCandidateSegment(candidate: GeneratedIdeaCandidate): SegmentId {
   if (candidate.segment !== undefined) return candidate.segment;
-  return inferSegment(
-    `${candidate.category} ${candidate.title} ${candidate.summary}`,
-  );
+  return inferSegment(`${candidate.category} ${candidate.title} ${candidate.summary}`);
 }
 
 /**
@@ -1014,9 +1641,7 @@ export interface SegmentSpreadStats {
 export function summarizeSegmentSpread(
   candidates: readonly GeneratedIdeaCandidate[],
 ): SegmentSpreadStats {
-  const counts = Object.fromEntries(
-    SEGMENT_IDS.map((id) => [id, 0]),
-  ) as Record<SegmentId, number>;
+  const counts = Object.fromEntries(SEGMENT_IDS.map((id) => [id, 0])) as Record<SegmentId, number>;
 
   let signalled = 0;
   for (const candidate of candidates) {
@@ -1025,9 +1650,7 @@ export function summarizeSegmentSpread(
     if (candidate.segment !== undefined) {
       signalled += 1;
     } else if (
-      inferSegmentMatch(
-        `${candidate.category} ${candidate.title} ${candidate.summary}`,
-      ).score > 0
+      inferSegmentMatch(`${candidate.category} ${candidate.title} ${candidate.summary}`).score > 0
     ) {
       signalled += 1;
     }
@@ -1139,19 +1762,22 @@ export async function runIdeasPipeline(
       runId,
       "landscape",
       () => analyzeAppLandscape(model, collectorCtx),
-      (t) => `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points${t.insights ? " (with LLM insights)" : ""}`,
+      (t) =>
+        `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points${t.insights ? " (with LLM insights)" : ""}`,
     );
 
     // ── Step 2: Cluster reviews (complaints + praises) ────────────────
-    const focusCategories = trends.trendingCategories.length > 0
-      ? trends.trendingCategories.map((c) => c.category)
-      : undefined;
+    const focusCategories =
+      trends.trendingCategories.length > 0
+        ? trends.trendingCategories.map((c) => c.category)
+        : undefined;
 
     const pains = await runStep(
       runId,
       "reviews",
       () => clusterReviews(focusCategories, model, collectorCtx),
-      (p) => `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)${p.insights ? " (with LLM insights)" : ""}`,
+      (p) =>
+        `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)${p.insights ? " (with LLM insights)" : ""}`,
     );
 
     // ── Step 3: Scan capabilities ─────────────────────────────────────
@@ -1159,7 +1785,8 @@ export async function runIdeasPipeline(
       runId,
       "capabilities",
       () => scanCapabilities(model, collectorCtx),
-      (c) => `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
+      (c) =>
+        `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
     );
 
     // ── Guard: short-circuit if no fresh source data ──────────────────
@@ -1168,7 +1795,10 @@ export async function runIdeasPipeline(
       trends.trendingCategories.length === 0 &&
       pains.clusters.length === 0
     ) {
-      log.warn("No fresh source data available — all sources already consumed. Skipping synthesis.", { runId });
+      log.warn(
+        "No fresh source data available — all sources already consumed. Skipping synthesis.",
+        { runId },
+      );
 
       const summary: PipelineResultSummary = {
         totalSourcesQueried: 8,
@@ -1220,9 +1850,7 @@ export async function runIdeasPipeline(
 
     // #5 — positive few-shot from human-validated ideas. Built unconditionally;
     // synthesizeFromTrends re-gates injection via smart.validatedExemplars.
-    const validatedExemplars = buildValidatedExemplars(
-      await fetchValidatedExemplars(),
-    );
+    const validatedExemplars = buildValidatedExemplars(await fetchValidatedExemplars());
 
     // ── PHASE 1 (generate-wide): SIGE divergent pool merge (flag-gated) ──────
     // When smart.generateWide.sigeDivergent is ON, generate an extra UNSCORED
@@ -1237,11 +1865,7 @@ export async function runIdeasPipeline(
       capabilitiesSummary: capabilities.summary,
       deepSearchContext,
     });
-    const extraCandidates = await fetchDivergentCandidates(
-      generateWide,
-      signalsContext,
-      model,
-    );
+    const extraCandidates = await fetchDivergentCandidates(generateWide, signalsContext, model);
 
     const synthesis = await runStep(
       runId,
@@ -1261,9 +1885,7 @@ export async function runIdeasPipeline(
         }),
       (s) =>
         `Generated ${s.totalGenerated} idea candidates from trend intersections` +
-        (extraCandidates.length > 0
-          ? ` (incl. ${extraCandidates.length} SIGE-divergent)`
-          : ""),
+        (extraCandidates.length > 0 ? ` (incl. ${extraCandidates.length} SIGE-divergent)` : ""),
     );
 
     // ── Step 6: Validate (3-layer dedup: exact + fuzzy + semantic) ────
@@ -1299,9 +1921,7 @@ export async function runIdeasPipeline(
           agentId: AGENT_ID,
         });
         kept = annotated;
-        const withPriorArt = annotated.filter(
-          (c) => c.nearestProduct !== undefined,
-        ).length;
+        const withPriorArt = annotated.filter((c) => c.nearestProduct !== undefined).length;
         log.info("generate-wide: originality annotated", {
           candidates: annotated.length,
           withPriorArt,
@@ -1333,13 +1953,62 @@ export async function runIdeasPipeline(
       }
     }
 
-    // ── #7: SIGE valuation gate (DEFAULT OFF) ─────────────────────────
+    // ── #7 / PHASE 3: SIGE-hardened valuation gate (DEFAULT OFF) ──────────────
     // When smart.sigeValuation AND config.sige.enabled, route survivors through
-    // the SIGE expert game and override qualityScore with the expertScore (1-5
-    // scale). Wrapped in try/catch so a SIGE failure leaves the critique-based
-    // scores untouched (never breaks the run).
+    // the HARDENED SIGE path: native expert game → read-back UNION of Round-3
+    // evolved children (re-grounded via verifyEvidence) → an INDEPENDENT
+    // cross-family jury whose GIANT judgment is combined with SIGE's self-grade →
+    // first-class DISSENT surfaced into the side-band signals consumed by Pareto
+    // selection below. Wrapped so any SIGE/jury failure leaves the critique-based
+    // scores untouched (never breaks the run). The side-band signals + the
+    // convergence verdict are persisted (best-effort) for the eval A/B.
+    let sigeSignals: ReadonlyMap<string, SigeSignals> = new Map();
+    let sigeOn = false;
     if (smart.sigeValuation && sigeConfig?.enabled && kept.length > 0) {
-      kept = await applySigeValuation(kept, sigeConfig, deepSearchContext);
+      sigeOn = true;
+      const hardened = await applySigeValuation(
+        kept,
+        sigeConfig,
+        smart.sige,
+        deepSearchContext,
+        capabilities.capabilities,
+      );
+      kept = hardened.candidates;
+      sigeSignals = hardened.signalsByTitle;
+
+      // The read-back UNION may have introduced evolved children AFTER the
+      // originality annotation above — re-annotate so every candidate (including
+      // evolved ones) carries an originality score for Pareto selection. Graceful
+      // (annotateOriginality never throws and degrades to neutral originality 1).
+      try {
+        kept = await annotateOriginality(kept, memoryManager, {
+          agentId: AGENT_ID,
+        });
+      } catch (err) {
+        log.warn("SIGE: re-annotation of originality failed — proceeding", {
+          err,
+        });
+      }
+
+      // CONVERGENCE-VETO: computeMetaGameHealth MEASURES convergence but nothing
+      // GATES on it. Derive the signal from the jury's inter-judge agreement as a
+      // robust, always-available proxy (a fully-converged jury ⇒ high agreement ⇒
+      // collapse risk); fold dissent into diversity. When vetoed we log + do NOT
+      // over-trust the consensus (selection below still runs, but the audit line
+      // tells the eval A/B the round was collapse-prone so it can widen).
+      const veto = computeSigeConvergenceVeto(sigeSignals, smart.sige.convergenceVetoThreshold);
+      if (veto.vetoed) {
+        log.warn("SIGE convergence veto fired — consensus is collapse-prone", {
+          reasons: veto.reasons,
+          convergenceRate: Number(veto.convergenceRate.toFixed(3)),
+          diversityIndex: Number(veto.diversityIndex.toFixed(3)),
+        });
+      } else {
+        log.info("SIGE convergence health OK", {
+          convergenceRate: Number(veto.convergenceRate.toFixed(3)),
+          diversityIndex: Number(veto.diversityIndex.toFixed(3)),
+        });
+      }
     }
 
     // ── PHASE 2 (demand-side grounding): cited demand enrichment + rescore ──
@@ -1399,10 +2068,7 @@ export async function runIdeasPipeline(
     // smart.giant.enforceGates is true do we actually filter gated candidates.
     // The whole branch is gated behind smart.giant.enabled and degrades to a
     // no-op (the existing minQualityScore filter still runs) otherwise.
-    const giantGateByCandidate = new Map<
-      GeneratedIdeaCandidate,
-      CandidateGiantGate
-    >();
+    const giantGateByCandidate = new Map<GeneratedIdeaCandidate, CandidateGiantGate>();
     let giantSurvivors = kept;
 
     if (smart.giant.enabled && kept.length > 0) {
@@ -1432,9 +2098,7 @@ export async function runIdeasPipeline(
         }
 
         if (enforceGiantGates) {
-          giantSurvivors = kept.filter(
-            (c) => giantGateByCandidate.get(c)?.gated !== true,
-          );
+          giantSurvivors = kept.filter((c) => giantGateByCandidate.get(c)?.gated !== true);
         }
 
         log.info("GIANT shadow gate summary", {
@@ -1453,26 +2117,42 @@ export async function runIdeasPipeline(
       }
     }
 
-    const qualityFiltered = giantSurvivors.filter(
-      (c) => c.qualityScore >= config.minQualityScore,
-    );
+    const qualityFiltered = giantSurvivors.filter((c) => c.qualityScore >= config.minQualityScore);
 
-    // ── PHASE 1 (generate-wide): final selection (novelty-reserve + spread) ──
+    // ── PHASE 1/3: final selection (Pareto when SIGE on, else novelty-reserve) ──
     // The widened pool now carries originality (annotated above) the in-
-    // synthesizer novelty-reserve could not see. Re-run the novelty-reserve at
-    // the pipeline level so high-originality survivors win their reserved slots,
-    // then enforce a rough segment cap so the final set cannot collapse to one
-    // segment (the homogeneity bug). Both are PURE, deterministic, and never
-    // grow the set beyond config.maxIdeas. Default-path safe: with originality
-    // neutral (no memory) novelty-reserve falls back to inverted verbalizedProb,
-    // and the spread cap only binds when the pool exceeds maxIdeas.
+    // synthesizer novelty-reserve could not see.
+    //
+    //   • SIGE ON (PHASE 3): replace the scalar sort with a Pareto frontier over
+    //     (originality × dissent-adjusted SIGE/jury quality) + a Bradley-Terry
+    //     pairwise tie-break, so a generic-but-polished idea cannot win on quality
+    //     alone and principled dissent is never washed out. Then still enforce the
+    //     segment cap so the SIGE-selected set cannot collapse to one segment.
+    //   • SIGE OFF (default, PHASE 1): byte-for-byte the prior behaviour — re-run
+    //     the novelty-reserve so high-originality survivors win reserved slots.
+    //
+    // Both paths are PURE, deterministic, and never grow the set beyond
+    // config.maxIdeas. Default-path safe.
     let finalSelected: readonly GeneratedIdeaCandidate[] = qualityFiltered;
     if (qualityFiltered.length > config.maxIdeas) {
-      const reserved = selectWithNoveltyReserve(
-        qualityFiltered,
-        config.maxIdeas,
-      );
-      finalSelected = enforceSegmentSpread(reserved, config.maxIdeas);
+      if (sigeOn) {
+        const paretoSelected = paretoSelect(
+          qualityFiltered,
+          sigeSignals,
+          config.maxIdeas,
+          smart.sige.dissentWeight,
+        );
+        finalSelected = enforceSegmentSpread(paretoSelected, config.maxIdeas);
+        log.info("SIGE Pareto selection applied", {
+          pool: qualityFiltered.length,
+          selected: finalSelected.length,
+          maxIdeas: config.maxIdeas,
+          dissentWeight: smart.sige.dissentWeight,
+        });
+      } else {
+        const reserved = selectWithNoveltyReserve(qualityFiltered, config.maxIdeas);
+        finalSelected = enforceSegmentSpread(reserved, config.maxIdeas);
+      }
     }
 
     const spread = summarizeSegmentSpread(finalSelected);
@@ -1496,7 +2176,8 @@ export async function runIdeasPipeline(
         giantGated: kept.length - giantSurvivors.length,
         fabricatedDropped: evidenceNotes.length,
       }),
-      (r) => `${r.kept} kept, ${r.semanticDupes} semantic duplicates, ${r.belowThreshold} below threshold, ${r.giantGated} GIANT-gated, ${r.fabricatedDropped} evidence-flagged`,
+      (r) =>
+        `${r.kept} kept, ${r.semanticDupes} semantic duplicates, ${r.belowThreshold} below threshold, ${r.giantGated} GIANT-gated, ${r.fabricatedDropped} evidence-flagged`,
     );
 
     // ── Step 7: Store ideas ───────────────────────────────────────────
@@ -1504,9 +2185,7 @@ export async function runIdeasPipeline(
     // each candidate's cited signal tokens (chain-of-evidence binding).
     const runLevelProvenance: readonly ProvenanceEntry[] = [
       ...collectorCtx.selected.entries(),
-    ].flatMap(([table, selectedIds]) =>
-      selectedIds.map((id) => ({ table, id })),
-    );
+    ].flatMap(([table, selectedIds]) => selectedIds.map((id) => ({ table, id })));
 
     const ideaIds = await runStep(
       runId,
@@ -1553,17 +2232,11 @@ export async function runIdeasPipeline(
             // demand grounding is auditable alongside the capability citations.
             // Deduped by {table,id}; absent demand artifact contributes nothing.
             const demandArtifact = demandByCandidate.get(candidate);
-            const demandProvenance = demandArtifact
-              ? demandProvenanceEntries(demandArtifact)
-              : [];
-            const provenanceSeen = new Set(
-              baseProvenance.map((e) => `${e.table}:${e.id}`),
-            );
+            const demandProvenance = demandArtifact ? demandProvenanceEntries(demandArtifact) : [];
+            const provenanceSeen = new Set(baseProvenance.map((e) => `${e.table}:${e.id}`));
             const ideaProvenance: readonly ProvenanceEntry[] = [
               ...baseProvenance,
-              ...demandProvenance.filter(
-                (e) => !provenanceSeen.has(`${e.table}:${e.id}`),
-              ),
+              ...demandProvenance.filter((e) => !provenanceSeen.has(`${e.table}:${e.id}`)),
             ];
 
             const idea = await insertIdea({
@@ -1616,6 +2289,12 @@ export async function runIdeasPipeline(
               resolveCandidateSegment(candidate),
             );
 
+            // PHASE 3 (SIGE hardening) — persist the jury / dissent / convergence
+            // signals (best-effort, merged into giant_scores_json under `sige`)
+            // so the eval A/B can compare SIGE-hardened vs self-critique. Empty
+            // when SIGE was off, so the default path stamps nothing.
+            await stampIdeaSigeSignals(idea.id, sigeSignals.get(candidateJoinId(candidate.title)));
+
             if (memoryManager) {
               try {
                 await memoryManager.indexIdea(AGENT_ID, {
@@ -1649,7 +2328,8 @@ export async function runIdeasPipeline(
     // ── Finalize ──────────────────────────────────────────────────────
     const summary: PipelineResultSummary = {
       totalSourcesQueried: 8,
-      totalSignalsFound: trends.risingApps.length + pains.clusters.length + capabilities.capabilities.length,
+      totalSignalsFound:
+        trends.risingApps.length + pains.clusters.length + capabilities.capabilities.length,
       totalIdeasGenerated: synthesis.totalGenerated,
       totalIdeasKept: ideaIds.length,
       totalIdeasDuplicate: dedupRejected.length,
