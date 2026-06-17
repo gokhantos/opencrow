@@ -71,6 +71,15 @@ async function readOAuthCredentials(): Promise<OAuthCredentials> {
  * the same endpoint and client ID that OpenClaw uses.
  */
 async function getApiKey(): Promise<string> {
+  // Headless / container auth: a long-lived OAuth token supplied via
+  // CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) takes precedence over the
+  // on-disk ~/.claude/.credentials.json, which does not exist in Docker/CI. Used
+  // directly as the OAuth bearer (the request already sends the oauth beta headers).
+  const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+  if (envToken) {
+    return envToken;
+  }
+
   // Re-read credentials if we don't have them or they're about to expire
   if (!_cachedCreds || Date.now() > _cachedCreds.expires - 60_000) {
     _cachedCreds = await readOAuthCredentials();
