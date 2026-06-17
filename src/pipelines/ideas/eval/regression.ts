@@ -38,6 +38,11 @@ export const TRACKED_METRICS: readonly {
   { key: "killedRate", direction: "lower_is_better", extract: (a) => a.outcomeRates.killedRate },
   { key: "dedupF1", direction: "higher_is_better", extract: (a) => a.dedupQuality?.f1 ?? null },
   {
+    key: "demandCoverage",
+    direction: "higher_is_better",
+    extract: (a) => a.demand?.demandCoverage ?? null,
+  },
+  {
     key: "signalRankerLift",
     direction: "higher_is_better",
     extract: (a) => a.signalRanker?.lift ?? null,

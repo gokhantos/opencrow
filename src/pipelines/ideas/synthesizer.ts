@@ -1461,6 +1461,15 @@ Return ONLY a JSON array with one entry per idea (in the same order):
 
   const response = await chat(messages, {
     ...buildChatOptions(model),
+    // The GIANT critique scales with the (over-generated) pool: one scorecard per
+    // candidate, each ~7 scores + 7 evidence strings + a whyNow array + verdict.
+    // With generate-wide ON (default, up to maxCandidates ideas) the default 16k
+    // output cap TRUNCATES this array mid-stream. A truncated response made the
+    // non-lenient parser below yield ZERO critiques → every candidate fell through
+    // the "no critique" branch WITHOUT a GIANT scorecard, so candidate.giant stayed
+    // undefined all the way to the store and giant_* columns persisted NULL on live
+    // runs. Raise the budget to match the wide over-generation pass.
+    maxOutputTokens: 32000,
     systemPrompt:
       "You are a ruthless product idea critic scoring ideas against the GIANT rubric. Score honestly; cite per-axis evidence. Output only valid JSON arrays.",
   });
@@ -1470,7 +1479,22 @@ Return ONLY a JSON array with one entry per idea (in the same order):
     preview: response.text.slice(0, 200),
   });
 
-  const rawCritiques = parseJsonFromResponse<unknown[]>(response.text, []);
+  // Truncation-tolerant parse (mirrors the wide over-generation pass): recover
+  // every COMPLETE scorecard even if the array was cut off at the token cap. The
+  // legacy non-lenient parser yielded NOTHING on truncation, which silently
+  // stripped GIANT from the entire pool. Fall back to the lenient walker whenever
+  // the strict parse comes back empty so a single late-truncated entry can no
+  // longer drop the GIANT scorecards the model DID emit.
+  let rawCritiques = parseJsonFromResponse<unknown[]>(response.text, []);
+  if (rawCritiques.length === 0) {
+    const recovered = parseJsonArrayLenient(response.text);
+    if (recovered.length > 0) {
+      log.info("Pass 3 strict parse empty; recovered critiques leniently", {
+        recovered: recovered.length,
+      });
+      rawCritiques = recovered;
+    }
+  }
 
   if (rawCritiques.length === 0) {
     log.warn("Pass 3 returned no parseable critiques, returning candidates as-is");
@@ -1478,9 +1502,14 @@ Return ONLY a JSON array with one entry per idea (in the same order):
   }
 
   // Tolerantly parse each raw critique into a normalized GIANT entry, keyed by
-  // title. parseGiant never throws, so a malformed row degrades to safe defaults
-  // rather than killing the whole pass.
+  // title AND retained in emission order. parseGiant never throws, so a malformed
+  // row degrades to safe defaults rather than killing the whole pass. The ordered
+  // list backs a POSITIONAL fallback below: the critic is instructed to return one
+  // entry per idea "in the same order", so when the model lightly rewords a title
+  // (common on the wide path) we can still bind the scorecard by index instead of
+  // dropping GIANT for that candidate.
   const critiqueByTitle = new Map<string, GiantCritiqueEntry>();
+  const critiquesInOrder: GiantCritiqueEntry[] = [];
   for (const raw of rawCritiques) {
     if (raw === null || typeof raw !== "object") continue;
     const r = raw as Record<string, unknown>;
@@ -1491,19 +1520,29 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       typeof r.painSeverity === "number"
         ? Math.min(5, Math.max(0, r.painSeverity))
         : parsed.scores.acuteProblem;
-    critiqueByTitle.set(title.toLowerCase().trim(), {
+    const entry: GiantCritiqueEntry = {
       title,
       parsed,
       painSeverity,
       verdict: typeof r.verdict === "string" ? r.verdict : "",
-    });
+    };
+    critiqueByTitle.set(title.toLowerCase().trim(), entry);
+    critiquesInOrder.push(entry);
   }
+
+  // Positional fallback is only sound when the critic returned exactly one entry
+  // per candidate (the prompt's "same order" contract). Otherwise we never guess
+  // by index and fall back to keeping the original score.
+  const positionalAligned = critiquesInOrder.length === candidates.length;
 
   const enforceGates = giant.enforceGates === true;
   const survived: GeneratedIdeaCandidate[] = [];
 
-  for (const candidate of candidates) {
-    const critique = critiqueByTitle.get(candidate.title.toLowerCase().trim());
+  for (let idx = 0; idx < candidates.length; idx++) {
+    const candidate = candidates[idx]!;
+    const critique =
+      critiqueByTitle.get(candidate.title.toLowerCase().trim()) ??
+      (positionalAligned ? critiquesInOrder[idx] : undefined);
 
     if (!critique) {
       // No critique found — keep with original score (degrade gracefully).

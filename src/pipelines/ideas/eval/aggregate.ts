@@ -18,6 +18,7 @@ import {
   type GiantAxisKey,
   type GiantAxisScores,
 } from "../giant";
+import { hasCitedDemand, type DemandArtifact } from "../demand";
 
 // ── Input row shapes (subset of generated_ideas / idea_feedback) ───────────────
 
@@ -37,6 +38,23 @@ export interface EvalIdeaRow {
   readonly title?: string;
   /** Idea summary — only needed by the optional LLM judge. */
   readonly summary?: string;
+  /**
+   * Persisted deterministic demand artifact (migration 015 `demand_json`), or
+   * null when the idea predates demand-grounding / carried no signal. Optional +
+   * null so pre-feature rows stay shape-compatible. The artifact's evidence[]
+   * carries auditable reddit_posts/news_articles citations.
+   */
+  readonly demand?: DemandArtifact | null;
+  /**
+   * Persisted demand strength score 0..5 (migration 015 `demand_score`). When
+   * absent, falls back to `demand.score`. Optional + null pre-feature.
+   */
+  readonly demand_score?: number | null;
+  /**
+   * Persisted whitespace 0..1 = demand intensity minus supply density (migration
+   * 015 `whitespace`). When absent, falls back to `demand.whitespace`.
+   */
+  readonly whitespace?: number | null;
 }
 
 /**
@@ -124,10 +142,51 @@ export interface DedupQuality {
   readonly labeled: number;
 }
 
+/**
+ * Run-level demand-grounding coverage. Proves the GIANT demand axis stopped
+ * being a hallucination: it reports what FRACTION of ideas carry a CITED demand
+ * artifact (deterministic, row-counted buyer-intent) versus none, the mean
+ * deterministic demand score / whitespace, and the evidence-gated (capped) vs
+ * evidenced split. A LOW `demandCoverage` means most ideas are still
+ * demand-blind (their demand axis is evidence-capped <= 2, not earned).
+ */
+export interface DemandCoverage {
+  /**
+   * Fraction of ideas carrying a CITED demand artifact (>=1 real evidence row
+   * AND score cleared the absence cap), [0,1]. This is the headline metric.
+   */
+  readonly demandCoverage: number;
+  /** Mean deterministic demand score (0..5) over ideas with an artifact, or null. */
+  readonly meanDemandScore: number | null;
+  /** Mean whitespace (0..1) over ideas with an artifact, or null. */
+  readonly meanWhitespace: number | null;
+  /** Mean artifact confidence (0..1) over ideas with an artifact, or null. */
+  readonly meanConfidence: number | null;
+  /** Ideas whose demand axis is backed by cited evidence (gate opened). */
+  readonly evidencedCount: number;
+  /**
+   * Ideas with a demand artifact present but NOT cited (absence-capped) — the
+   * demand axis stays evidence-gated <= cap for these.
+   */
+  readonly evidenceGatedCount: number;
+  /** Ideas that carried any demand artifact at all (evidenced + gated). */
+  readonly withArtifactCount: number;
+  /** Ideas with no demand artifact persisted (pre-feature / not yet enriched). */
+  readonly missingArtifactCount: number;
+  readonly totalIdeas: number;
+}
+
 export interface EvalAggregate {
   readonly meanSubscores: MeanSubscores;
   readonly outcomeRates: OutcomeRates;
   readonly dedupQuality: DedupQuality | null;
+  /**
+   * Run-level demand-grounding coverage (cited-artifact rate, mean demand
+   * score/whitespace, evidence-gated vs evidenced split). Optional + null until
+   * demand-grounding (migration 015) is populated, so existing snapshots stay
+   * shape-compatible.
+   */
+  readonly demand?: DemandCoverage | null;
   /**
    * Ranker-precision section for the signal-ranking layer: per-bucket validation
    * rate, calibration gap, and ranker lift. null when no labeled signal rows
@@ -314,6 +373,97 @@ export function aggregateDedupQuality(
     falseNegatives: fn,
     trueNegatives: tn,
     labeled: labels.length,
+  };
+}
+
+// ── Demand-grounding coverage ──────────────────────────────────────────────────
+
+/**
+ * Resolve the demand score for an idea: prefer the persisted scalar
+ * `demand_score`, fall back to the artifact's score. Returns null when neither
+ * is a finite number. PURE.
+ */
+function resolveDemandScore(idea: EvalIdeaRow): number | null {
+  const scalar = idea.demand_score;
+  if (typeof scalar === "number" && Number.isFinite(scalar)) return scalar;
+  const fromArtifact = idea.demand?.score;
+  if (typeof fromArtifact === "number" && Number.isFinite(fromArtifact)) {
+    return fromArtifact;
+  }
+  return null;
+}
+
+/**
+ * Resolve the whitespace for an idea: prefer the persisted scalar `whitespace`,
+ * fall back to the artifact's whitespace. Returns null when neither is finite. PURE.
+ */
+function resolveWhitespace(idea: EvalIdeaRow): number | null {
+  const scalar = idea.whitespace;
+  if (typeof scalar === "number" && Number.isFinite(scalar)) return scalar;
+  const fromArtifact = idea.demand?.whitespace;
+  if (typeof fromArtifact === "number" && Number.isFinite(fromArtifact)) {
+    return fromArtifact;
+  }
+  return null;
+}
+
+/**
+ * Compute run-level demand-grounding coverage over the idea set.
+ *
+ * The headline `demandCoverage` is the fraction of ideas carrying a CITED demand
+ * artifact (>=1 real evidence row AND score cleared the absence cap, per
+ * {@link hasCitedDemand}). This is exactly the signal that lets the GIANT demand
+ * axis score 3-5 instead of being evidence-capped <= 2, so a low coverage means
+ * most ideas are still demand-blind.
+ *
+ * Means are taken over ideas that carry an artifact (so a sea of pre-feature
+ * rows without demand_json does not dilute them toward zero). Ideas with no
+ * artifact are counted in `missingArtifactCount` and excluded from the means but
+ * INCLUDED in the `totalIdeas` denominator of `demandCoverage` — absence is not
+ * a free pass. PURE; safe on empty input.
+ */
+export function aggregateDemandCoverage(
+  ideas: readonly EvalIdeaRow[],
+): DemandCoverage {
+  const total = ideas.length;
+
+  const demandScores: number[] = [];
+  const whitespaces: number[] = [];
+  const confidences: number[] = [];
+
+  let evidencedCount = 0;
+  let evidenceGatedCount = 0;
+  let withArtifactCount = 0;
+
+  for (const idea of ideas) {
+    const artifact = idea.demand ?? null;
+    if (!artifact) continue;
+
+    withArtifactCount += 1;
+
+    const score = resolveDemandScore(idea);
+    if (score !== null) demandScores.push(score);
+    const ws = resolveWhitespace(idea);
+    if (ws !== null) whitespaces.push(ws);
+    const conf = artifact.confidence;
+    if (typeof conf === "number" && Number.isFinite(conf)) confidences.push(conf);
+
+    if (hasCitedDemand(artifact)) evidencedCount += 1;
+    else evidenceGatedCount += 1;
+  }
+
+  const missingArtifactCount = total - withArtifactCount;
+
+  return {
+    demandCoverage: total === 0 ? 0 : roundOrNull(evidencedCount / total) ?? 0,
+    meanDemandScore: roundOrNull(meanOrNull(demandScores)),
+    meanWhitespace: roundOrNull(meanOrNull(whitespaces)),
+    meanConfidence: roundOrNull(meanOrNull(confidences)),
+    evidencedCount,
+    evidenceGatedCount,
+    withArtifactCount,
+    missingArtifactCount,
+    totalIdeas: total,
   };
 }
 
@@ -622,6 +772,7 @@ export function aggregateEval(params: {
     meanSubscores: aggregateMeanSubscores(ideas),
     outcomeRates: aggregateOutcomeRates(ideas, outcomes),
     dedupQuality: dedupLabels ? aggregateDedupQuality(dedupLabels) : null,
+    demand: aggregateDemandCoverage(ideas),
     signalRanker: signalRanker ?? null,
     giant: giant ?? null,
     embeddingNovelty: embeddingNovelty ?? null,

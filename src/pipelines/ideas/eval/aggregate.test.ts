@@ -5,6 +5,7 @@ import {
   aggregateDedupQuality,
   aggregateEval,
   aggregateGiantRun,
+  aggregateDemandCoverage,
   computeEmbeddingNovelty,
   cosineSimilarity,
   cosineDistance,
@@ -16,6 +17,7 @@ import {
   type GiantScoredIdea,
 } from "./aggregate";
 import { GIANT_AXIS_KEYS, type GiantAxisScores } from "../giant";
+import type { DemandArtifact, DemandEvidence } from "../demand";
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -30,6 +32,41 @@ function idea(
     pipeline_stage: stage,
     critique_subscores: sub,
     created_at: 1000,
+  };
+}
+
+function evidence(
+  kind: DemandEvidence["kind"],
+  count: number,
+): DemandEvidence {
+  return { kind, query: "k", count };
+}
+
+/** Build a demand artifact with sensible defaults. */
+function artifact(over: Partial<DemandArtifact> = {}): DemandArtifact {
+  return {
+    score: 0,
+    confidence: 0,
+    whitespace: 0,
+    evidence: [],
+    ...over,
+  };
+}
+
+/** An idea row carrying a persisted demand artifact (migration 015 fields). */
+function demandIdea(
+  id: string,
+  demand: DemandArtifact | null,
+  over: Partial<EvalIdeaRow> = {},
+): EvalIdeaRow {
+  return {
+    id,
+    category: "mobile_app",
+    pipeline_stage: "idea",
+    critique_subscores: null,
+    created_at: 1000,
+    demand,
+    ...over,
   };
 }
 
@@ -260,6 +297,126 @@ describe("aggregateEval", () => {
     const r = aggregateEval({ ideas: [], outcomes: [] });
     expect(r.giant).toBeNull();
     expect(r.embeddingNovelty).toBeNull();
+  });
+
+  test("always carries a demand-coverage section (computed from ideas)", () => {
+    const r = aggregateEval({
+      ideas: [
+        demandIdea("a", artifact({ score: 4, evidence: [evidence("reddit_intent", 5)] })),
+      ],
+      outcomes: [],
+    });
+    expect(r.demand).not.toBeNull();
+    expect(r.demand!.totalIdeas).toBe(1);
+    expect(r.demand!.demandCoverage).toBe(1);
+    expect(r.demand!.evidencedCount).toBe(1);
+  });
+});
+
+// ── aggregateDemandCoverage ─────────────────────────────────────────────────────
+
+describe("aggregateDemandCoverage", () => {
+  test("empty → zeroed coverage with null means", () => {
+    const r = aggregateDemandCoverage([]);
+    expect(r.demandCoverage).toBe(0);
+    expect(r.meanDemandScore).toBeNull();
+    expect(r.meanWhitespace).toBeNull();
+    expect(r.meanConfidence).toBeNull();
+    expect(r.evidencedCount).toBe(0);
+    expect(r.evidenceGatedCount).toBe(0);
+    expect(r.withArtifactCount).toBe(0);
+    expect(r.missingArtifactCount).toBe(0);
+    expect(r.totalIdeas).toBe(0);
+  });
+
+  test("cited artifact (score>cap, evidence>0) counts as evidenced", () => {
+    const r = aggregateDemandCoverage([
+      demandIdea(
+        "a",
+        artifact({ score: 4, confidence: 0.8, whitespace: 0.5, evidence: [evidence("funding_news", 3)] }),
+      ),
+    ]);
+    expect(r.demandCoverage).toBe(1);
+    expect(r.evidencedCount).toBe(1);
+    expect(r.evidenceGatedCount).toBe(0);
+    expect(r.meanDemandScore).toBe(4);
+    expect(r.meanWhitespace).toBe(0.5);
+    expect(r.meanConfidence).toBe(0.8);
+  });
+
+  test("absence-capped artifact (score<=cap) is evidence-gated, NOT evidenced", () => {
+    // score 1 == ABSENCE_SCORE_CAP → hasCitedDemand false even with evidence rows.
+    const r = aggregateDemandCoverage([
+      demandIdea("a", artifact({ score: 1, evidence: [evidence("reddit_intent", 1)] })),
+    ]);
+    expect(r.demandCoverage).toBe(0);
+    expect(r.evidencedCount).toBe(0);
+    expect(r.evidenceGatedCount).toBe(1);
+    expect(r.withArtifactCount).toBe(1);
+  });
+
+  test("artifact with no evidence rows is evidence-gated (absence)", () => {
+    const r = aggregateDemandCoverage([
+      demandIdea("a", artifact({ score: 0, confidence: 0.1, evidence: [] })),
+    ]);
+    expect(r.evidencedCount).toBe(0);
+    expect(r.evidenceGatedCount).toBe(1);
+    expect(r.demandCoverage).toBe(0);
+  });
+
+  test("ideas missing an artifact penalize coverage (denominator), not means", () => {
+    const r = aggregateDemandCoverage([
+      demandIdea("cited", artifact({ score: 4, whitespace: 0.6, evidence: [evidence("hiring", 4)] })),
+      demandIdea("missing", null), // pre-feature / not enriched
+    ]);
+    // 1 evidenced of 2 total → coverage 0.5 (absence is NOT a free pass)
+    expect(r.demandCoverage).toBe(0.5);
+    expect(r.evidencedCount).toBe(1);
+    expect(r.withArtifactCount).toBe(1);
+    expect(r.missingArtifactCount).toBe(1);
+    // mean taken only over the idea that carried an artifact
+    expect(r.meanWhitespace).toBe(0.6);
+    expect(r.totalIdeas).toBe(2);
+  });
+
+  test("prefers persisted scalar demand_score/whitespace over artifact values", () => {
+    const r = aggregateDemandCoverage([
+      demandIdea(
+        "a",
+        artifact({ score: 2, whitespace: 0.2, evidence: [evidence("reddit_intent", 9)] }),
+        { demand_score: 5, whitespace: 0.9 },
+      ),
+    ]);
+    expect(r.meanDemandScore).toBe(5); // scalar wins over artifact.score=2
+    expect(r.meanWhitespace).toBe(0.9); // scalar wins over artifact.whitespace=0.2
+  });
+
+  test("falls back to artifact values when scalars absent/non-finite", () => {
+    const r = aggregateDemandCoverage([
+      demandIdea(
+        "a",
+        artifact({ score: 3, whitespace: 0.4, evidence: [evidence("reddit_intent", 6)] }),
+        { demand_score: null, whitespace: Number.NaN },
+      ),
+    ]);
+    expect(r.meanDemandScore).toBe(3);
+    expect(r.meanWhitespace).toBe(0.4);
+  });
+
+  test("mixed batch: coverage = evidenced / total, gated split is exact", () => {
+    const r = aggregateDemandCoverage([
+      demandIdea("e1", artifact({ score: 4, evidence: [evidence("reddit_intent", 5)] })),
+      demandIdea("e2", artifact({ score: 3, evidence: [evidence("funding_news", 2)] })),
+      demandIdea("g1", artifact({ score: 1, evidence: [evidence("reddit_intent", 1)] })), // capped
+      demandIdea("g2", artifact({ score: 0, evidence: [] })), // absence
+      demandIdea("m1", null), // missing
+    ]);
+    expect(r.totalIdeas).toBe(5);
+    expect(r.withArtifactCount).toBe(4);
+    expect(r.missingArtifactCount).toBe(1);
+    expect(r.evidencedCount).toBe(2);
+    expect(r.evidenceGatedCount).toBe(2);
+    expect(r.demandCoverage).toBe(0.4); // 2 / 5
   });
 });
 

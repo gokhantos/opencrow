@@ -533,6 +533,34 @@ export const generateWideConfigSchema = z
     sigeDivergent: false,
   });
 
+// Phase 2 "demand-side grounding": give every idea an external truth source so
+// the GIANT demand / why-now axes score on CITED buyer-intent extracted
+// deterministically from EXISTING scraped tables (reddit_posts / news_articles)
+// instead of LLM guesses. Fully defaulted -> backward-compatible. The core
+// reddit-intent + funding-news probes default ON (no external/paid calls); the
+// externalTrends probe (paid search-volume vendors) defaults OFF / stubbed.
+export const demandConfigSchema = z
+  .object({
+    // Master switch for the demand-grounding stage. Default ON.
+    enabled: z.boolean().default(true),
+    // Reddit buyer-intent probe over existing reddit_posts. Default ON.
+    redditIntent: z.boolean().default(true),
+    // Funding-mention probe over existing news_articles. Default ON.
+    fundingSignal: z.boolean().default(true),
+    // Pluggable external search-volume / trends vendor. Default OFF (stubbed).
+    externalTrends: z.boolean().default(false),
+    // Minimum matched rows before demand evidence is considered corroborated;
+    // below this the artifact takes the absence penalty (low score/confidence).
+    minMatches: z.number().int().min(1).default(2),
+  })
+  .default({
+    enabled: true,
+    redditIntent: true,
+    fundingSignal: true,
+    externalTrends: false,
+    minMatches: 2,
+  });
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -560,6 +588,9 @@ export const smartConfigSchema = z.object({
   // Phase 1 "generate-wide": over-generation + multi-segment spread + optional
   // SIGE divergent merge. Fully defaulted -> backward-compatible.
   generateWide: generateWideConfigSchema,
+  // Phase 2 "demand-side grounding": cited, deterministic buyer-intent evidence
+  // per idea. Fully defaulted -> backward-compatible.
+  demand: demandConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -585,6 +616,13 @@ const SMART_IDEAS_DEFAULTS = {
     maxCandidates: 40,
     multiSegment: true,
     sigeDivergent: false,
+  },
+  demand: {
+    enabled: true,
+    redditIntent: true,
+    fundingSignal: true,
+    externalTrends: false,
+    minMatches: 2,
   },
 } as const;
 
@@ -701,5 +739,6 @@ export type SigeConfig = z.infer<typeof sigeConfigSchema>;
 export type SmartIdeasConfig = z.infer<typeof smartConfigSchema>;
 export type GiantConfig = z.infer<typeof giantConfigSchema>;
 export type GenerateWideConfig = z.infer<typeof generateWideConfigSchema>;
+export type DemandConfig = z.infer<typeof demandConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;
