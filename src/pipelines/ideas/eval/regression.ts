@@ -68,6 +68,31 @@ export const TRACKED_METRICS: readonly {
     direction: "higher_is_better",
     extract: (a) => a.sigeAb?.groundednessDelta ?? null,
   },
+  {
+    // Cohen's kappa between the judge's accept/reject (GIANT composite over
+    // threshold) and the realized outcome label (validated/archived, human +
+    // proxy). This is the taste-loop's honest self-check: a DROP means the
+    // judge's taste is drifting away from what actually validates. null until
+    // outcome labels exist, so it never alerts cold-start.
+    key: "judgeOutcomeKappa",
+    direction: "higher_is_better",
+    extract: (a) => a.tasteLoop?.kappa.kappa ?? null,
+  },
+  {
+    // Spearman rank correlation between the GIANT-composite ranking and the
+    // outcome ranking (validated > archived). A drop means the judge's RANKING
+    // is losing alignment with reality even if accept/reject still agrees.
+    key: "judgeOutcomeSpearman",
+    direction: "higher_is_better",
+    extract: (a) => a.tasteLoop?.rankCorrelation.spearman ?? null,
+  },
+  {
+    // Fraction of ideas carrying any outcome label (human ∪ proxy). The
+    // learning loops are inert at 0; a drop means the bootstrap is starving.
+    key: "tasteLoopLabeledFraction",
+    direction: "higher_is_better",
+    extract: (a) => a.tasteLoop?.coverage.labeledFraction ?? null,
+  },
 ];
 
 /** Extract the tracked metric snapshots from an aggregate. */

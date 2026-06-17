@@ -9,6 +9,7 @@ import {
   SIGE_DEFAULT_JUDGE_MODELS,
   sigeHardeningConfigSchema,
   smartConfigSchema,
+  tasteConfigSchema,
 } from "./schema";
 
 describe("smartConfigSchema", () => {
@@ -63,6 +64,14 @@ describe("smartConfigSchema", () => {
         dissentWeight: 0.15,
         convergenceVetoThreshold: 0.85,
         deepTier: true,
+      },
+      taste: {
+        antiExemplars: true,
+        syntheticGolden: true,
+        autoProxyLabels: true,
+        calibrateGiantWeights: false,
+        exemplarCount: 4,
+        goldenMinHumanLabels: 10,
       },
     });
   });
@@ -247,6 +256,84 @@ describe("sigeHardeningConfigSchema", () => {
     const smart = smartConfigSchema.parse({});
     expect(smart.sige.deepTier).toBe(true);
     expect(smart.sige.dissentWeight).toBe(0.15);
+  });
+});
+
+describe("tasteConfigSchema", () => {
+  test("applies cold-start taste defaults when no fields are provided", () => {
+    const parsed = tasteConfigSchema.parse(undefined);
+    expect(parsed).toEqual({
+      antiExemplars: true,
+      syntheticGolden: true,
+      autoProxyLabels: true,
+      calibrateGiantWeights: false,
+      exemplarCount: 4,
+      goldenMinHumanLabels: 10,
+    });
+  });
+
+  test("safe levers default ON, weight calibration defaults OFF", () => {
+    const parsed = tasteConfigSchema.parse({});
+    expect(parsed.antiExemplars).toBe(true);
+    expect(parsed.syntheticGolden).toBe(true);
+    expect(parsed.autoProxyLabels).toBe(true);
+    expect(parsed.calibrateGiantWeights).toBe(false);
+  });
+
+  test("exemplarCount bounds are enforced (anti-mode-collapse: low + bounded)", () => {
+    expect(() => tasteConfigSchema.parse({ exemplarCount: 0 })).toThrow();
+    expect(() => tasteConfigSchema.parse({ exemplarCount: 13 })).toThrow();
+    expect(tasteConfigSchema.parse({ exemplarCount: 1 }).exemplarCount).toBe(1);
+    expect(tasteConfigSchema.parse({ exemplarCount: 12 }).exemplarCount).toBe(
+      12,
+    );
+  });
+
+  test("goldenMinHumanLabels accepts zero and positive integers", () => {
+    expect(tasteConfigSchema.parse({ goldenMinHumanLabels: 0 }).goldenMinHumanLabels).toBe(
+      0,
+    );
+    expect(
+      tasteConfigSchema.parse({ goldenMinHumanLabels: 25 }).goldenMinHumanLabels,
+    ).toBe(25);
+    expect(() =>
+      tasteConfigSchema.parse({ goldenMinHumanLabels: -1 }),
+    ).toThrow();
+    expect(() =>
+      tasteConfigSchema.parse({ goldenMinHumanLabels: 1.5 }),
+    ).toThrow();
+  });
+
+  test("honors explicit overrides on every field", () => {
+    const parsed = tasteConfigSchema.parse({
+      antiExemplars: false,
+      syntheticGolden: false,
+      autoProxyLabels: false,
+      calibrateGiantWeights: true,
+      exemplarCount: 6,
+      goldenMinHumanLabels: 3,
+    });
+    expect(parsed.antiExemplars).toBe(false);
+    expect(parsed.syntheticGolden).toBe(false);
+    expect(parsed.autoProxyLabels).toBe(false);
+    expect(parsed.calibrateGiantWeights).toBe(true);
+    expect(parsed.exemplarCount).toBe(6);
+    expect(parsed.goldenMinHumanLabels).toBe(3);
+  });
+
+  test("smart.taste defaults when smart parsed empty", () => {
+    const smart = smartConfigSchema.parse({});
+    expect(smart.taste.antiExemplars).toBe(true);
+    expect(smart.taste.calibrateGiantWeights).toBe(false);
+    expect(smart.taste.exemplarCount).toBe(4);
+  });
+
+  test("is reachable via the documented smart.taste access path", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    const taste = cfg.pipelines.ideas.smart.taste;
+    expect(taste.antiExemplars).toBe(true);
+    expect(taste.syntheticGolden).toBe(true);
+    expect(taste.goldenMinHumanLabels).toBe(10);
   });
 });
 
