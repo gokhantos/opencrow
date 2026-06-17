@@ -27,6 +27,13 @@ export {
 } from "./aggregate";
 
 export {
+  aggregateSignalRanker,
+  type RankerEvalRow,
+  type BucketPrecision,
+  type SignalRankerReport,
+} from "./signal-ranker";
+
+export {
   detectRegressions,
   computeBaseline,
   extractMetrics,
@@ -49,9 +56,11 @@ export {
 export {
   loadEvalIdeas,
   loadEvalOutcomes,
+  loadSignalRankerRows,
   loadTrailingAggregates,
   persistEvalSnapshot,
   parseCritiqueSubscores,
+  projectSignalRankerRows,
   type LoadIdeasOptions,
   type PersistEvalSnapshotParams,
 } from "./store";

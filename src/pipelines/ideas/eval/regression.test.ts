@@ -16,6 +16,7 @@ function agg(overrides: {
   humanValidatedRate?: number;
   killedRate?: number;
   dedupF1?: number | null;
+  signalRankerLift?: number | null;
 }): EvalAggregate {
   return {
     totalIdeas: 10,
@@ -47,6 +48,18 @@ function agg(overrides: {
             trueNegatives: 0,
             labeled: 0,
           },
+    signalRanker:
+      overrides.signalRankerLift === undefined
+        ? null
+        : {
+            buckets: [],
+            totalLabeled: 0,
+            lowTierRate: null,
+            highTierRate: null,
+            lift: overrides.signalRankerLift,
+            monotonic: null,
+            meanAbsCalibrationGap: null,
+          },
   };
 }
 
@@ -60,6 +73,19 @@ describe("extractMetrics", () => {
     expect(byKey.get("meanNovelty")?.direction).toBe("higher_is_better");
     expect(byKey.get("killedRate")?.value).toBe(0.3);
     expect(byKey.get("killedRate")?.direction).toBe("lower_is_better");
+  });
+
+  test("tracks signalRankerLift (higher is better), null when section absent", () => {
+    const withLift = new Map(
+      extractMetrics(agg({ signalRankerLift: 2.5 })).map((m) => [m.key, m]),
+    );
+    expect(withLift.get("signalRankerLift")?.value).toBe(2.5);
+    expect(withLift.get("signalRankerLift")?.direction).toBe("higher_is_better");
+
+    const noSection = new Map(
+      extractMetrics(agg({})).map((m) => [m.key, m]),
+    );
+    expect(noSection.get("signalRankerLift")?.value).toBeNull();
   });
 });
 

@@ -11,6 +11,8 @@
  * event log (migration 008) rather than over a live LLM verdict.
  */
 
+import type { SignalRankerReport } from "./signal-ranker";
+
 // ── Input row shapes (subset of generated_ideas / idea_feedback) ───────────────
 
 /**
@@ -120,6 +122,13 @@ export interface EvalAggregate {
   readonly meanSubscores: MeanSubscores;
   readonly outcomeRates: OutcomeRates;
   readonly dedupQuality: DedupQuality | null;
+  /**
+   * Ranker-precision section for the signal-ranking layer: per-bucket validation
+   * rate, calibration gap, and ranker lift. null when no labeled signal rows
+   * exist yet (ranking disabled / cold start / pre-migration). See
+   * ./signal-ranker.
+   */
+  readonly signalRanker: SignalRankerReport | null;
   readonly totalIdeas: number;
 }
 
@@ -301,12 +310,19 @@ export function aggregateEval(params: {
   readonly ideas: readonly EvalIdeaRow[];
   readonly outcomes: readonly EvalOutcomeRow[];
   readonly dedupLabels?: readonly DedupLabel[];
+  /**
+   * Pre-computed ranker-precision report (built from labeled signal rows by the
+   * harness). Optional & graceful: omit/null when no signal facets/feedback
+   * exist yet or the ranking layer is off.
+   */
+  readonly signalRanker?: SignalRankerReport | null;
 }): EvalAggregate {
-  const { ideas, outcomes, dedupLabels } = params;
+  const { ideas, outcomes, dedupLabels, signalRanker } = params;
   return {
     meanSubscores: aggregateMeanSubscores(ideas),
     outcomeRates: aggregateOutcomeRates(ideas, outcomes),
     dedupQuality: dedupLabels ? aggregateDedupQuality(dedupLabels) : null,
+    signalRanker: signalRanker ?? null,
     totalIdeas: ideas.length,
   };
 }

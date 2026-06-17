@@ -465,6 +465,13 @@ export const smartConfigSchema = z.object({
   knowledgeGraphRetrieval: z.boolean().default(false),
   deepSearchReranker: z.boolean().default(false),
   signalFacets: z.boolean().default(false),
+  // Importance/relevance SCORING + CALIBRATION + retrieval filtering for
+  // scraped signals. Layered on top of signalFacets; default OFF.
+  signalRanking: z.boolean().default(false),
+  // Retrieval filter floor for ranked-signal importance buckets.
+  signalImportanceFloor: z
+    .enum(["noise", "low", "medium", "high"])
+    .default("low"),
   // Pure-logic improvements: safe, default ON (they change default idea
   // output by design but add no external calls).
   adaptiveCollection: z.boolean().default(true), // velocity/credibility/corroboration ordering
@@ -479,6 +486,8 @@ const SMART_IDEAS_DEFAULTS = {
   knowledgeGraphRetrieval: false,
   deepSearchReranker: false,
   signalFacets: false,
+  signalRanking: false,
+  signalImportanceFloor: "low",
   adaptiveCollection: true,
   validatedExemplars: true,
   chainOfEvidence: true,

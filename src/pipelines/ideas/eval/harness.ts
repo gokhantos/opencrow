@@ -31,10 +31,12 @@ import { judgeIdeas, type JudgeOptions, type JudgeVerdict, verdictToSubscores } 
 import {
   loadEvalIdeas,
   loadEvalOutcomes,
+  loadSignalRankerRows,
   loadTrailingAggregates,
   persistEvalSnapshot,
   type LoadIdeasOptions,
 } from "./store";
+import { aggregateSignalRanker, type SignalRankerReport } from "./signal-ranker";
 
 const log = createLogger("ideas:eval:harness");
 
@@ -53,6 +55,12 @@ export interface RunEvalOptions {
   readonly judge?: JudgeOptions;
   /** When false, the computed snapshot is NOT written to idea_eval_runs. Default true. */
   readonly persist?: boolean;
+  /**
+   * When false, skip loading + aggregating the signal-ranker precision section.
+   * Default true; the section is independently graceful (null when no labeled
+   * signal rows exist), so leaving it on is safe even pre-feature.
+   */
+  readonly signalRanker?: boolean;
 }
 
 export interface RunEvalResult {
@@ -85,6 +93,24 @@ function ideasFromJudge(
 }
 
 /**
+ * Load + aggregate the ranker-precision section, fully guarded. Returns null
+ * when disabled, when no labeled signal rows exist (cold start / ranking off /
+ * pre-migration), or on any read failure — so it never breaks the eval run.
+ */
+async function loadSignalRankerSection(
+  enabled: boolean,
+): Promise<SignalRankerReport | null> {
+  if (!enabled) return null;
+  try {
+    const rows = await loadSignalRankerRows();
+    return aggregateSignalRanker(rows);
+  } catch (err) {
+    log.warn("signal-ranker section failed; omitting from eval", { err });
+    return null;
+  }
+}
+
+/**
  * Run one offline eval pass. Never throws — failures degrade to a best-effort
  * result with whatever could be computed.
  */
@@ -97,10 +123,15 @@ export async function runEval(opts?: RunEvalOptions): Promise<RunEvalResult> {
     const ideas = await loadEvalIdeas(opts?.load);
     const outcomes = await loadEvalOutcomes(ideas.map((i) => i.id));
 
+    // Ranker-precision section (graceful, optional). Loads the labeled
+    // signal_facets ↔ idea-outcome join and folds it into the run aggregate.
+    const signalRanker = await loadSignalRankerSection(opts?.signalRanker ?? true);
+
     const aggregate = aggregateEval({
       ideas,
       outcomes,
       dedupLabels: opts?.dedupLabels,
+      signalRanker,
     });
 
     // Optional LLM-as-judge re-scoring (gated inside judgeIdeas).
@@ -114,6 +145,7 @@ export async function runEval(opts?: RunEvalOptions): Promise<RunEvalResult> {
             ideas: ideasFromJudge(ideas, judgeVerdicts),
             outcomes,
             dedupLabels: opts?.dedupLabels,
+            signalRanker,
           })
         : null;
 
@@ -146,6 +178,8 @@ export async function runEval(opts?: RunEvalOptions): Promise<RunEvalResult> {
       humanValidatedRate: aggregate.outcomeRates.humanValidatedRate,
       alerts: alerts.length,
       judged: judgeVerdicts.size,
+      signalRankerLabeled: signalRanker?.totalLabeled ?? 0,
+      signalRankerLift: signalRanker?.lift ?? null,
       snapshotId,
     });
 
