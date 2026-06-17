@@ -205,7 +205,17 @@ export async function createQdrantClient(
         }
 
         // Ensure payload indices exist (idempotent — Qdrant ignores if already present)
-        const indices = ["sourceId", "agentId", "kind"];
+        // Facet fields are populated only when signal-facet extraction is enabled
+        // (pipelines.ideas.smart.signalFacets); indexing them is harmless otherwise.
+        const indices = [
+          "sourceId",
+          "agentId",
+          "kind",
+          "facetSentiment",
+          "facetProblemType",
+          "facetTargetAudience",
+          "facetEntities",
+        ];
         for (const field of indices) {
           try {
             await request("PUT", `/collections/${name}/index`, {

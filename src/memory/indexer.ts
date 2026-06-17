@@ -20,6 +20,12 @@ import { NEWS_SOURCE_KIND_MAP } from "./types";
 import type { QdrantClient } from "./qdrant";
 import { updateChunkFts } from "./fts";
 import { getChunkProfileWithOverrides } from "./chunk-profiles";
+import {
+  extractSignalFacets,
+  persistSignalFacets,
+  type SignalFacets,
+} from "./signal-facets";
+import { loadConfig } from "../config/loader";
 import type { TransactionSQL } from "bun";
 
 const log = createLogger("memory-indexer");
@@ -52,6 +58,71 @@ interface PreparedChunks {
 interface ChunkResult {
   readonly id: string;
   readonly textIndex: number;
+}
+
+/**
+ * Flatten an extracted facet profile into Qdrant-payload-safe scalar fields.
+ * Returns an empty object when facets are absent (e.g. extraction disabled or
+ * failed), so the default payload shape is unchanged.
+ */
+function facetsToPayload(
+  facets: SignalFacets | null,
+): Record<string, string | number> {
+  if (!facets) {
+    return {};
+  }
+  const payload: Record<string, string | number> = {
+    facetSentiment: facets.sentiment,
+  };
+  if (facets.problemType) payload.facetProblemType = facets.problemType;
+  if (facets.targetAudience)
+    payload.facetTargetAudience = facets.targetAudience;
+  if (facets.jtbd) payload.facetJtbd = facets.jtbd;
+  if (facets.entities.length > 0) {
+    payload.facetEntities = facets.entities.join(", ");
+  }
+  return payload;
+}
+
+/**
+ * Best-effort facet extraction for a source, gated behind
+ * `pipelines.ideas.smart.signalFacets` (default OFF). When the flag is off, or
+ * extraction fails, returns `null` and the index path behaves exactly as before.
+ */
+async function maybeExtractFacets(
+  sourceId: string,
+  sourceTable: MemorySourceKind,
+  chunks: readonly string[],
+): Promise<SignalFacets | null> {
+  let signalFacetsEnabled = false;
+  try {
+    signalFacetsEnabled = loadConfig().pipelines.ideas.smart.signalFacets;
+  } catch {
+    // Config not loadable — treat as disabled (default behavior).
+    return null;
+  }
+
+  if (!signalFacetsEnabled || chunks.length === 0) {
+    return null;
+  }
+
+  try {
+    const text = chunks.join("\n\n");
+    const facets = await extractSignalFacets(text);
+    if (!facets) {
+      return null;
+    }
+    await persistSignalFacets({ sourceTable, sourceId, facets });
+    log.debug("Extracted signal facets", {
+      sourceId,
+      sourceTable,
+      sentiment: facets.sentiment,
+    });
+    return facets;
+  } catch (error) {
+    log.error("Signal facet step failed (non-fatal)", { sourceId, error });
+    return null;
+  }
 }
 
 export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
@@ -190,6 +261,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     prepared: PreparedChunks,
     insertedChunks: readonly ChunkResult[],
     now: number,
+    facets: SignalFacets | null,
   ): Promise<void> {
     if (insertedChunks.length === 0) {
       log.debug("All chunks deduplicated at insert time", { sourceId });
@@ -197,6 +269,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     }
 
     const { filteredIndices, newTexts, embeddings } = prepared;
+    const facetPayload = facetsToPayload(facets);
 
     // Upsert vectors to Qdrant — only for actually inserted chunks,
     // with semantic dedup to skip near-duplicates (same story, different source).
@@ -221,6 +294,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
                 chunkIndex: filteredIndices[textIndex]!,
                 kind,
                 createdAt: now,
+                ...facetPayload,
               },
             });
           }
@@ -307,6 +381,10 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     // Prepare outside the transaction: dedup reads + embeddings (I/O-heavy)
     const prepared = await prepareChunks(sourceId, chunks);
 
+    // Optional, flag-gated facet extraction (default OFF). Runs alongside
+    // preparation; failures degrade to null and do not affect indexing.
+    const facets = await maybeExtractFacets(sourceId, kind, chunks);
+
     // Wrap source INSERT + chunk INSERTs in a single transaction so an
     // interrupted process cannot leave an orphaned source row without chunks.
     let insertedChunks: readonly ChunkResult[] = [];
@@ -323,7 +401,15 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
 
     // Post-commit: Qdrant vectors + FTS (safe to run after transaction commits)
     if (prepared !== null) {
-      await postCommit(sourceId, agentId, kind, prepared, insertedChunks, now);
+      await postCommit(
+        sourceId,
+        agentId,
+        kind,
+        prepared,
+        insertedChunks,
+        now,
+        facets,
+      );
     }
 
     return sourceId;

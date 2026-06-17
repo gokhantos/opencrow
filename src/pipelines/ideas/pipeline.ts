@@ -13,8 +13,9 @@
 
 import { createLogger } from "../../logger";
 import { getDb } from "../../store/db";
+import { loadConfig } from "../../config/loader";
 import type { MemoryManager } from "../../memory/types";
-import { insertIdea, findSimilarIdeas, getAllExistingIdeas } from "../../sources/ideas/store";
+import { insertIdea, getIdeasByStage } from "../../sources/ideas/store";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
 import {
   updatePipelineRun,
@@ -23,13 +24,32 @@ import {
 } from "../store";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
 import type { CollectorContext } from "./collectors";
-import { synthesizeFromTrends, deepSearch } from "./synthesizer";
+import {
+  synthesizeFromTrends,
+  deepSearch,
+  buildValidatedExemplars,
+  signalCitationToken,
+} from "./synthesizer";
+import type { ValidatedExemplar, DeepSearchOptions } from "./synthesizer";
+import type { SmartIdeasConfig, SigeConfig } from "../../config/schema";
+import { checkForDuplicates, verifyEvidence } from "./validate";
 import { getConsumedIds, markConsumed } from "./consumption";
-import type { GeneratedIdeaCandidate } from "./types";
+import { getSourceCredibility, credibilityKey } from "./credibility";
+import { evaluateCandidates } from "../../sige/simulation/expert-game";
+import type { CandidateIdea } from "../../sige/simulation/expert-game";
+import { Mem0Client } from "../../sige/knowledge/mem0-client";
+import type { Capability, GeneratedIdeaCandidate } from "./types";
 
 const log = createLogger("pipeline:ideas");
 
 const AGENT_ID = "idea-pipeline";
+
+/**
+ * Version tag stamped on generated_ideas.prompt_version. Bump when the
+ * synthesis/critique prompt structure changes so learning loops can segment
+ * outcomes by prompt generation.
+ */
+const PROMPT_VERSION = "trend-intersection-v2";
 
 function nowMs(): number {
   return Date.now();
@@ -218,87 +238,217 @@ async function buildSaturatedThemes(memoryManager?: MemoryManager | null): Promi
   }
 }
 
-async function checkForDuplicates(
+interface StampIdeaQualityMetaParams {
+  readonly promptVersion: string;
+  readonly model: string;
+  /**
+   * Per-idea signalGrounding in [0,1] from the chain-of-evidence verifier.
+   * Persisted into critique_subscores_json when present.
+   */
+  readonly signalGrounding?: number;
+}
+
+/**
+ * #12 part1 — Best-effort stamp of prompt_version, model, and critique
+ * sub-scores onto a stored idea (columns added by migration 010). Done as a
+ * separate UPDATE so it never blocks or breaks the core insert; swallows errors
+ * (e.g. pre-migration DBs) gracefully.
+ */
+async function stampIdeaQualityMeta(
+  ideaId: string,
+  params: StampIdeaQualityMetaParams,
+): Promise<void> {
+  try {
+    const subscores =
+      params.signalGrounding !== undefined
+        ? JSON.stringify({ signalGrounding: params.signalGrounding })
+        : null;
+    const db = getDb();
+    await db`
+      UPDATE generated_ideas
+      SET prompt_version = ${params.promptVersion},
+          model = ${params.model},
+          critique_subscores_json = ${subscores}::jsonb
+      WHERE id = ${ideaId}
+    `;
+  } catch (err) {
+    log.warn("Failed to stamp idea quality meta", { ideaId, err });
+  }
+}
+
+/**
+ * Maps a capability's scraper `source` id to its underlying DB table, so a
+ * cited signal token can be narrowed to the source rows that produced it.
+ */
+const SOURCE_TO_TABLE: Readonly<Record<string, string>> = {
+  producthunt: "ph_products",
+  hackernews: "hn_stories",
+  github: "github_repos",
+  reddit: "reddit_posts",
+  news: "news_articles",
+  x: "x_scraped_tweets",
+};
+
+/** A {table, id} provenance entry written into generated_ideas.source_ids_json. */
+interface ProvenanceEntry {
+  readonly table: string;
+  readonly id: string;
+}
+
+/**
+ * #4 part1 — Build PER-IDEA provenance. Resolves a candidate's emitted signal
+ * tokens (`<source>_<index>` over capabilities.capabilities) to the source
+ * TABLES they came from, then scopes the run-level provenance to just those
+ * tables. Falls back to the full run-level provenance when the candidate cited
+ * nothing or no citation resolved to a known table. Pure.
+ */
+function buildIdeaProvenance(
+  candidate: GeneratedIdeaCandidate,
+  capabilities: readonly Capability[],
+  runLevelEntries: readonly ProvenanceEntry[],
+): readonly ProvenanceEntry[] {
+  const cited = candidate.supportingSignalIds ?? [];
+  if (cited.length === 0) return runLevelEntries;
+
+  // Map each cited token to a capability index, then to its source table.
+  const tables = new Set<string>();
+  capabilities.forEach((cap, index) => {
+    const token = signalCitationToken(cap.source, index);
+    if (cited.some((c) => c.toLowerCase() === token)) {
+      const table = SOURCE_TO_TABLE[cap.source.toLowerCase()];
+      if (table) tables.add(table);
+    }
+  });
+
+  if (tables.size === 0) return runLevelEntries;
+
+  const scoped = runLevelEntries.filter((e) => tables.has(e.table));
+  // If scoping produced nothing (e.g. cited table had no selected ids this run),
+  // fall back to run-level so provenance is never empty for a stored idea.
+  return scoped.length > 0 ? scoped : runLevelEntries;
+}
+
+/**
+ * #5 — Fetch human-validated ideas to use as positive few-shot exemplars.
+ * Degrades to [] on any error; the caller passes the rendered block
+ * unconditionally (synthesizeFromTrends re-gates it via smart.validatedExemplars).
+ */
+async function fetchValidatedExemplars(limit = 12): Promise<readonly ValidatedExemplar[]> {
+  try {
+    const validated = await getIdeasByStage("validated", limit);
+    return validated.map((i) => ({
+      title: i.title,
+      summary: i.summary,
+      category: i.category,
+    }));
+  } catch (err) {
+    log.warn("Failed to fetch validated exemplars", { err });
+    return [];
+  }
+}
+
+/**
+ * #4 part2 — Load Beta-Bernoulli source-credibility posteriors keyed by
+ * credibilityKey(source_table, signal_type, category). Fully graceful: returns
+ * an empty map when no feedback exists yet. The map is informational for the
+ * collector ordering (collectors already rank by per-row credibility); folding
+ * the posterior into selection requires a CollectorContext field — see the
+ * notesForNextPhase seam.
+ */
+async function loadCredibilityPosteriors(): Promise<ReadonlyMap<string, number>> {
+  try {
+    const creds = await getSourceCredibility();
+    const map = new Map<string, number>();
+    for (const c of creds) {
+      map.set(credibilityKey(c.source_table, c.signal_type, c.category), c.mean);
+    }
+    return map;
+  } catch (err) {
+    log.warn("Failed to load source-credibility posteriors", { err });
+    return new Map();
+  }
+}
+
+/**
+ * #7 — Route survivors through the SIGE expert game and override each
+ * candidate's qualityScore with the agent-graded expertScore (mapped 0-1 → 1-5,
+ * matching the critique-score scale). Results join by TITLE. Any candidate the
+ * game drops (blank title) keeps its critique score as a fallback.
+ *
+ * EXPENSIVE: makes multi-agent LLM calls. Caller must already have checked the
+ * smart.sigeValuation + config.sige.enabled gate. Wrapped so SIGE failure
+ * degrades to the unchanged critique-scored candidates (never throws).
+ */
+async function applySigeValuation(
   candidates: readonly GeneratedIdeaCandidate[],
-  memoryManager: MemoryManager | null | undefined,
-): Promise<{
-  readonly kept: readonly GeneratedIdeaCandidate[];
-  readonly rejected: readonly string[];
-}> {
-  const kept: GeneratedIdeaCandidate[] = [];
-  const rejected: string[] = [];
+  sigeConfig: SigeConfig,
+  deepSearchContext: string,
+): Promise<readonly GeneratedIdeaCandidate[]> {
+  try {
+    const sigeCandidates: CandidateIdea[] = candidates.map((c) => ({
+      title: c.title,
+      summary: c.summary,
+      description: c.reasoning,
+      // Seed prior from the critique score (1-5) back to [0,1].
+      expertScore: Math.min(Math.max((c.qualityScore - 1) / 4, 0), 1),
+    }));
 
-  // Pre-load all existing idea titles for exact-match layer
-  const existingIdeas = await getAllExistingIdeas();
-  const normalizedExisting = new Set(
-    existingIdeas.map((i) =>
-      i.title.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim(),
-    ),
-  );
+    const evaluations = await evaluateCandidates(sigeCandidates, {
+      mem0: new Mem0Client({ baseUrl: sigeConfig.mem0.baseUrl }),
+      userId: sigeConfig.mem0.userId,
+      enrichedSeed: deepSearchContext || undefined,
+    });
 
-  for (const candidate of candidates) {
-    const normalizedTitle = candidate.title
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    // ── Layer 1: Exact normalized title match ──────────────────────────
-    if (normalizedExisting.has(normalizedTitle)) {
-      rejected.push(`${candidate.title} [EXACT] matches existing idea`);
-      log.info("Idea rejected by exact title match", { title: candidate.title });
-      continue;
+    const scoreByTitle = new Map<string, number>();
+    for (const ev of evaluations) {
+      scoreByTitle.set(ev.title.toLowerCase().trim(), ev.expertScore);
     }
 
-    // ── Layer 2: Fuzzy DB match via pg_trgm ────────────────────────────
-    const similarIdeas = await findSimilarIdeas(candidate.title, candidate.summary, 3);
-    const fuzzyMatch = similarIdeas.find(
-      (s) => s.title_similarity > 0.4 || s.summary_similarity > 0.5,
-    );
-    if (fuzzyMatch) {
-      rejected.push(
-        `${candidate.title} [FUZZY] similar to "${fuzzyMatch.title}" (title: ${fuzzyMatch.title_similarity.toFixed(2)}, summary: ${fuzzyMatch.summary_similarity.toFixed(2)})`,
-      );
-      log.info("Idea rejected by fuzzy DB match", {
-        title: candidate.title,
-        matchedTitle: fuzzyMatch.title,
-        titleSim: fuzzyMatch.title_similarity,
-        summarySim: fuzzyMatch.summary_similarity,
-      });
-      continue;
-    }
+    const rescored = candidates.map((c) => {
+      const expert = scoreByTitle.get(c.title.toLowerCase().trim());
+      if (expert === undefined) return c;
+      // Map SIGE expertScore [0,1] → 1-5 quality scale.
+      const sigeQuality = 1 + Math.min(Math.max(expert, 0), 1) * 4;
+      return { ...c, qualityScore: sigeQuality };
+    });
 
-    // ── Layer 3: Semantic vector match (stricter threshold: 0.65) ──────
-    if (memoryManager) {
-      try {
-        const results = await memoryManager.search(
-          "shared",
-          `${candidate.title}: ${candidate.summary}`,
-          { limit: 1, minScore: 0.65, kinds: ["idea"] },
-        );
+    log.info("SIGE valuation applied", {
+      candidates: candidates.length,
+      evaluated: evaluations.length,
+    });
 
-        if (results.length > 0 && results[0]!.score > 0.65) {
-          const existing = results[0]!.source.metadata.title ?? "unknown";
-          rejected.push(
-            `${candidate.title} [SEMANTIC] similar to "${existing}" (score: ${results[0]!.score.toFixed(2)})`,
-          );
-          log.info("Idea rejected by semantic match", {
-            title: candidate.title,
-            matchedTitle: existing,
-            score: results[0]!.score,
-          });
-          continue;
-        }
-      } catch {
-        // keep on search failure
-      }
-    }
+    return rescored;
+  } catch (err) {
+    log.warn("SIGE valuation failed — keeping critique scores", { err });
+    return candidates;
+  }
+}
 
-    // All 3 layers passed — keep the idea
-    kept.push(candidate);
+/**
+ * #13 — Assemble the optional deepSearch dependencies. The reranker `model` is
+ * always supplied (deepSearch falls back to LLM-listwise rerank when no embedder
+ * is present and the flag is on). The Mem0 client + userId are only built when
+ * smart.knowledgeGraphRetrieval is on, so the default path constructs nothing.
+ * deepSearch itself gates each enrichment on the smart flags it reads directly.
+ */
+function buildDeepSearchOptions(
+  model: string,
+  smart: SmartIdeasConfig,
+  sigeConfig: SigeConfig | undefined,
+): DeepSearchOptions {
+  if (!smart.knowledgeGraphRetrieval) {
+    return { model };
   }
 
-  return { kept, rejected };
+  const baseUrl = sigeConfig?.mem0.baseUrl ?? "http://127.0.0.1:8050";
+  const userId = sigeConfig?.mem0.userId ?? "sige-global";
+
+  try {
+    return { model, mem0: new Mem0Client({ baseUrl }), userId };
+  } catch (err) {
+    log.warn("Failed to build Mem0 client for graph retrieval — skipping graph branch", { err });
+    return { model };
+  }
 }
 
 export async function runIdeasPipeline(
@@ -318,6 +468,20 @@ export async function runIdeasPipeline(
 
   try {
     const model = config.model ?? "claude-sonnet-4-6";
+    const smart = loadConfig().pipelines.ideas.smart;
+    const sigeConfig = loadConfig().sige;
+
+    // ── #4 part2: Load source-credibility posteriors (graceful, [] when no
+    //    feedback). Used to bias collection ordering when adaptiveCollection is
+    //    on; degrades to a no-op when empty. ──────────────────────────────────
+    const credibilityPosteriors = smart.adaptiveCollection
+      ? await loadCredibilityPosteriors()
+      : new Map<string, number>();
+    if (credibilityPosteriors.size > 0) {
+      log.info("Loaded source-credibility posteriors", {
+        keys: credibilityPosteriors.size,
+      });
+    }
 
     // ── Pre-collectors: load consumed signals for all capability source tables ─
     const capabilityTables = [
@@ -394,16 +558,23 @@ export async function runIdeasPipeline(
     }
 
     // ── Step 4: Deep search (optional) ────────────────────────────────
+    // #13 — when knowledgeGraphRetrieval is on, supply a Mem0 client + userId
+    // so deepSearch can add a graph-retrieval branch. deepSearch reads the
+    // smart flags itself; we only pass the dependencies. Building the client
+    // never throws (it's a thin fetch wrapper) and the branch is silently
+    // skipped inside deepSearch when the flag is off.
     let deepSearchContext = "";
     if (memoryManager && trends.trendingCategories.length > 0) {
       const searchThemes = trends.trendingCategories
         .slice(0, 6)
         .map((c) => `${c.category} mobile app opportunity`);
 
+      const deepSearchOptions = buildDeepSearchOptions(model, smart, sigeConfig);
+
       deepSearchContext = await runStep(
         runId,
         "deep_search",
-        () => deepSearch(searchThemes, memoryManager),
+        () => deepSearch(searchThemes, memoryManager, deepSearchOptions),
         (ctx) => {
           const count = (ctx.match(/\[.*?\]/g) ?? []).length;
           return `Found ${count} supporting results for ${searchThemes.length} themes`;
@@ -413,6 +584,12 @@ export async function runIdeasPipeline(
 
     // ── Step 5: Synthesize ideas at trend intersections ───────────────
     const saturatedThemes = await buildSaturatedThemes(memoryManager);
+
+    // #5 — positive few-shot from human-validated ideas. Built unconditionally;
+    // synthesizeFromTrends re-gates injection via smart.validatedExemplars.
+    const validatedExemplars = buildValidatedExemplars(
+      await fetchValidatedExemplars(),
+    );
 
     const synthesis = await runStep(
       runId,
@@ -424,6 +601,7 @@ export async function runIdeasPipeline(
           capabilities,
           deepSearchContext,
           saturatedThemes,
+          validatedExemplars,
           category: config.category,
           maxIdeas: config.maxIdeas,
           model,
@@ -441,6 +619,34 @@ export async function runIdeasPipeline(
       dedupRejected = dedupResult.rejected;
     }
 
+    // ── #8 part3: Chain-of-evidence verification ──────────────────────
+    // Cross-check each candidate's emitted signal IDs against the real source
+    // rows selected this run; drop fully-fabricated citations and record a
+    // signalGrounding score. Gated behind smart.chainOfEvidence; degrades
+    // gracefully (the verifier never throws). Empty when no candidates cited.
+    let groundingByTitle: ReadonlyMap<string, number> = new Map();
+    let evidenceNotes: readonly string[] = [];
+    if (smart.chainOfEvidence && kept.length > 0) {
+      const verification = verifyEvidence(kept, capabilities.capabilities);
+      kept = verification.kept;
+      groundingByTitle = verification.groundingByTitle;
+      evidenceNotes = verification.notes;
+      if (evidenceNotes.length > 0) {
+        log.info("Chain-of-evidence verification dropped/penalized citations", {
+          notes: evidenceNotes.length,
+        });
+      }
+    }
+
+    // ── #7: SIGE valuation gate (DEFAULT OFF) ─────────────────────────
+    // When smart.sigeValuation AND config.sige.enabled, route survivors through
+    // the SIGE expert game and override qualityScore with the expertScore (1-5
+    // scale). Wrapped in try/catch so a SIGE failure leaves the critique-based
+    // scores untouched (never breaks the run).
+    if (smart.sigeValuation && sigeConfig?.enabled && kept.length > 0) {
+      kept = await applySigeValuation(kept, sigeConfig, deepSearchContext);
+    }
+
     const qualityFiltered = kept.filter(
       (c) => c.qualityScore >= config.minQualityScore,
     );
@@ -452,16 +658,18 @@ export async function runIdeasPipeline(
         kept: qualityFiltered.length,
         semanticDupes: dedupRejected.length,
         belowThreshold: kept.length - qualityFiltered.length,
+        fabricatedDropped: evidenceNotes.length,
       }),
-      (r) => `${r.kept} kept, ${r.semanticDupes} semantic duplicates, ${r.belowThreshold} below threshold`,
+      (r) => `${r.kept} kept, ${r.semanticDupes} semantic duplicates, ${r.belowThreshold} below threshold, ${r.fabricatedDropped} evidence-flagged`,
     );
 
     // ── Step 7: Store ideas ───────────────────────────────────────────
-    // Build source_ids_json once (same for all ideas in this run)
-    const sourceIdsJson = JSON.stringify(
-      [...collectorCtx.selected.entries()].flatMap(([table, selectedIds]) =>
-        selectedIds.map((id) => ({ table, id })),
-      ),
+    // #4 part1 — run-level provenance entries; narrowed per-idea below using
+    // each candidate's cited signal tokens (chain-of-evidence binding).
+    const runLevelProvenance: readonly ProvenanceEntry[] = [
+      ...collectorCtx.selected.entries(),
+    ].flatMap(([table, selectedIds]) =>
+      selectedIds.map((id) => ({ table, id })),
     );
 
     const ideaIds = await runStep(
@@ -497,6 +705,13 @@ export async function runIdeasPipeline(
               ...(sourceLinksText ? ["", "## Sources", sourceLinksText] : []),
             ].join("\n");
 
+            // #4 part1 — narrow provenance to the source rows this idea cites.
+            const ideaProvenance = buildIdeaProvenance(
+              candidate,
+              capabilities.capabilities,
+              runLevelProvenance,
+            );
+
             const idea = await insertIdea({
               agent_id: AGENT_ID,
               title: candidate.title,
@@ -506,7 +721,16 @@ export async function runIdeasPipeline(
               category: candidate.category || config.category,
               quality_score: Math.min(Math.max(candidate.qualityScore, 1), 5),
               pipeline_run_id: runId,
-              source_ids_json: sourceIdsJson,
+              source_ids_json: JSON.stringify(ideaProvenance),
+            });
+
+            // #12 part1 — stamp prompt_version + model and persist the per-idea
+            // signalGrounding score as critique sub-scores (best-effort; the
+            // columns are added by migration 010). Never breaks the insert.
+            await stampIdeaQualityMeta(idea.id, {
+              promptVersion: PROMPT_VERSION,
+              model,
+              signalGrounding: groundingByTitle.get(candidate.title),
             });
 
             if (memoryManager) {

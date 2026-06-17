@@ -15,6 +15,28 @@ import { getDb } from "../../store/db";
 import { createLogger } from "../../logger";
 import { chat } from "../../agent/chat";
 import type { ConversationMessage } from "../../agent/types";
+import { loadConfig } from "../../config/loader";
+import { sourceCredibility } from "../../sources/shared/source-credibility";
+import {
+  resolveEntities,
+  type EntityRow,
+} from "../../sources/shared/entity-resolution";
+import {
+  buildFacetContext,
+  REVIEW_FACET_KINDS,
+  CAPABILITY_FACET_KINDS,
+  LANDSCAPE_FACET_KINDS,
+} from "./collector-facets";
+import {
+  toNumber,
+  normalizeVelocities,
+  recencyFactor,
+  computeRankScore,
+  selectRanked,
+  parseMakers,
+  parseTopics,
+  parseTopComments,
+} from "./collector-ranking";
 import type {
   TrendData,
   CategoryTrend,
@@ -26,6 +48,22 @@ import type {
   ReviewInsight,
   CapabilityInsight,
 } from "./types";
+
+// Re-export the pure ranking/promotion helpers so consumers (and the existing
+// unit tests) can keep importing them from "./collectors".
+export {
+  clamp01,
+  toNumber,
+  normalizeVelocities,
+  recencyFactor,
+  computeRankScore,
+  selectRanked,
+  parseJsonArray,
+  parseMakers,
+  parseTopics,
+  parseTopComments,
+  type RankInputs,
+} from "./collector-ranking";
 
 const log = createLogger("pipeline:collectors");
 
@@ -153,10 +191,16 @@ ${rawSummary.slice(0, 60000)}`;
  * - What existing apps offer (descriptions = feature landscape)
  * - Which categories are underserved (low satisfaction + many apps = opportunity)
  */
-export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContext): Promise<TrendData> {
+export async function analyzeAppLandscape(model?: string, ctx?: CollectorContext): Promise<TrendData> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
   const summaryLines: string[] = [];
+
+  const registerSelected = (table: string, ids: readonly string[]): void => {
+    if (!ctx || ids.length === 0) return;
+    const existing = ctx.selected.get(table) ?? [];
+    ctx.selected.set(table, [...existing, ...ids]);
+  };
 
   try {
     // Category health: satisfaction scores from reviews
@@ -209,10 +253,48 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
       }
     }
 
+    // ── Rank-velocity momentum: which apps are CLIMBING the charts fastest ──
+    // Compute per-app rank delta from appstore_ranking_history (earlier→latest
+    // snapshot within the window). A negative delta = rank number falling =
+    // the app is RISING. Surfaced as a momentum signal for the analyst.
+    try {
+      const rankMomentum = (await db`
+        WITH ranked AS (
+          SELECT app_id, list_type, rank, scraped_at,
+                 ROW_NUMBER() OVER (PARTITION BY app_id, list_type ORDER BY scraped_at DESC) AS rn_new,
+                 ROW_NUMBER() OVER (PARTITION BY app_id, list_type ORDER BY scraped_at ASC) AS rn_old
+          FROM appstore_ranking_history
+          WHERE scraped_at >= ${Math.floor(Date.now() / 1000) - 14 * 24 * 3600}
+        ),
+        latest AS (SELECT app_id, list_type, rank AS new_rank FROM ranked WHERE rn_new = 1),
+        earliest AS (SELECT app_id, list_type, rank AS old_rank FROM ranked WHERE rn_old = 1)
+        SELECT a.name, a.category, l.list_type, e.old_rank, l.new_rank,
+               (e.old_rank - l.new_rank) AS rank_gain
+        FROM latest l
+        JOIN earliest e ON e.app_id = l.app_id AND e.list_type = l.list_type
+        JOIN appstore_apps a ON a.id = l.app_id
+        WHERE e.old_rank IS NOT NULL AND l.new_rank IS NOT NULL
+          AND (e.old_rank - l.new_rank) > 0
+        ORDER BY (e.old_rank - l.new_rank) DESC
+        LIMIT 25
+      `) as Array<Record<string, unknown>>;
+
+      if (rankMomentum.length > 0) {
+        summaryLines.push("\n=== FASTEST-CLIMBING APPS (chart rank momentum, last 14d) ===");
+        for (const m of rankMomentum) {
+          summaryLines.push(
+            `  ${m.name} (${m.category}, ${m.list_type}): #${m.old_rank} → #${m.new_rank} (+${m.rank_gain} positions)`,
+          );
+        }
+      }
+    } catch (err) {
+      log.warn("App rank-velocity momentum query failed; continuing", { err });
+    }
+
     // What existing top apps offer — random sample of app descriptions
     // This tells the AI WHAT THE MARKET PROVIDES so it can find GAPS
     const allApps = (await db`
-      SELECT name, category, LEFT(description, 400) as description
+      SELECT id, name, category, LEFT(description, 400) as description
       FROM appstore_apps
       WHERE description IS NOT NULL AND description != '' AND LENGTH(description) > 100
       ORDER BY updated_at DESC
@@ -220,6 +302,13 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
     `) as Array<Record<string, unknown>>;
 
     const sampledApps = sampleRandom(allApps, 40);
+
+    // Track which app rows fed this landscape pass so pipeline.ts can bind
+    // provenance / chain-of-evidence to them (best-effort; ids may be absent).
+    registerSelected(
+      "appstore_apps",
+      sampledApps.map((a) => a.id as string).filter((id): id is string => Boolean(id)),
+    );
 
     // Group sampled apps by category
     const appsByCategory = new Map<string, Array<Record<string, unknown>>>();
@@ -240,7 +329,7 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
 
     // Play Store apps with install data
     const playApps = (await db`
-      SELECT name, category, installs, rating, LEFT(description, 300) as description
+      SELECT id, name, category, installs, rating, LEFT(description, 300) as description
       FROM playstore_apps
       WHERE description IS NOT NULL AND description != '' AND category != ''
       ORDER BY updated_at DESC
@@ -248,6 +337,10 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
     `) as Array<Record<string, unknown>>;
 
     const sampledPlayApps = sampleRandom(playApps, 20);
+    registerSelected(
+      "playstore_apps",
+      sampledPlayApps.map((a) => a.id as string).filter((id): id is string => Boolean(id)),
+    );
     if (sampledPlayApps.length > 0) {
       summaryLines.push("\n=== PLAY STORE APPS (with install counts) ===");
       for (const app of sampledPlayApps) {
@@ -265,6 +358,15 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
         avgRankChange: 5 - Number(c.avg_rating), // higher = more opportunity
         topApps: [],
       }));
+
+    // Structured-facet enrichment (gated; DEFAULT OFF, graceful no-op otherwise).
+    if (loadConfig().pipelines.ideas.smart.signalFacets) {
+      const facetBlock = await buildFacetContext(
+        "APP LANDSCAPE — INGESTED SIGNAL FACETS",
+        LANDSCAPE_FACET_KINDS,
+      );
+      if (facetBlock) summaryLines.push(facetBlock);
+    }
 
     log.info("App landscape analysis complete", {
       iosCategories: categoryHealth.length,
@@ -343,24 +445,30 @@ ${rawSummary.slice(0, 60000)}`;
 export async function clusterReviews(
   focusCategories?: readonly string[],
   model?: string,
-  _ctx?: CollectorContext,
+  ctx?: CollectorContext,
 ): Promise<ClusteredPains> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
   const clusters: PainCluster[] = [];
 
+  const registerSelected = (table: string, ids: readonly string[]): void => {
+    if (!ctx || ids.length === 0) return;
+    const existing = ctx.selected.get(table) ?? [];
+    ctx.selected.set(table, [...existing, ...ids]);
+  };
+
   try {
     // NEGATIVE reviews — what's broken
     const negativeReviews = focusCategories?.length
       ? (await db`
-          SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+          SELECT r.id, a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating <= 2 AND a.category = ANY(${focusCategories as string[]})
           ORDER BY r.first_seen_at DESC LIMIT 400
         `) as Array<Record<string, unknown>>
       : (await db`
-          SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+          SELECT r.id, a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating <= 2
@@ -370,14 +478,14 @@ export async function clusterReviews(
     // POSITIVE reviews — what people love
     const positiveReviews = focusCategories?.length
       ? (await db`
-          SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+          SELECT r.id, a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category = ANY(${focusCategories as string[]})
           ORDER BY r.first_seen_at DESC LIMIT 200
         `) as Array<Record<string, unknown>>
       : (await db`
-          SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+          SELECT r.id, a.category, a.name as app_name, r.title, r.content, r.rating
           FROM appstore_reviews r
           JOIN appstore_apps a ON a.id = r.app_id
           WHERE r.rating >= 4 AND LENGTH(r.content) > 30
@@ -386,7 +494,7 @@ export async function clusterReviews(
 
     // Play Store negative + positive
     const playNegative = (await db`
-      SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+      SELECT r.id, a.category, a.name as app_name, r.title, r.content, r.rating
       FROM playstore_reviews r
       JOIN playstore_apps a ON a.id = r.app_id
       WHERE r.rating <= 2 AND a.category != ''
@@ -394,7 +502,7 @@ export async function clusterReviews(
     `) as Array<Record<string, unknown>>;
 
     const playPositive = (await db`
-      SELECT a.category, a.name as app_name, r.title, r.content, r.rating
+      SELECT r.id, a.category, a.name as app_name, r.title, r.content, r.rating
       FROM playstore_reviews r
       JOIN playstore_apps a ON a.id = r.app_id
       WHERE r.rating >= 4 AND LENGTH(r.content) > 30 AND a.category != ''
@@ -404,14 +512,27 @@ export async function clusterReviews(
     // Group by category
     const byCat = new Map<string, { negative: Array<Record<string, unknown>>; positive: Array<Record<string, unknown>> }>();
 
-    for (const r of [...sampleRandom(negativeReviews, 150), ...sampleRandom(playNegative, 150)]) {
+    // Tag each row with its origin table so selected review ids can be
+    // registered for provenance / chain-of-evidence binding in pipeline.ts.
+    const tag = (
+      rows: readonly Record<string, unknown>[],
+      table: string,
+    ): Array<Record<string, unknown>> => rows.map((r) => ({ ...r, __table: table }));
+
+    for (const r of [
+      ...tag(sampleRandom(negativeReviews, 150), "appstore_reviews"),
+      ...tag(sampleRandom(playNegative, 150), "playstore_reviews"),
+    ]) {
       const cat = r.category as string;
       if (!cat) continue;
       const entry = byCat.get(cat) ?? { negative: [], positive: [] };
       entry.negative.push(r);
       byCat.set(cat, entry);
     }
-    for (const r of [...sampleRandom(positiveReviews, 80), ...sampleRandom(playPositive, 80)]) {
+    for (const r of [
+      ...tag(sampleRandom(positiveReviews, 80), "appstore_reviews"),
+      ...tag(sampleRandom(playPositive, 80), "playstore_reviews"),
+    ]) {
       const cat = r.category as string;
       if (!cat) continue;
       const entry = byCat.get(cat) ?? { negative: [], positive: [] };
@@ -419,8 +540,22 @@ export async function clusterReviews(
       byCat.set(cat, entry);
     }
 
+    // Collect review ids that survive into prompt-feeding clusters, per table.
+    const selectedReviewIds = new Map<string, string[]>();
+    const noteReview = (r: Record<string, unknown>): void => {
+      const table = r.__table as string | undefined;
+      const id = r.id as string | undefined;
+      if (!table || !id) return;
+      const list = selectedReviewIds.get(table) ?? [];
+      list.push(id);
+      selectedReviewIds.set(table, list);
+    };
+
     for (const [category, reviews] of byCat) {
       if (reviews.negative.length < 3 && reviews.positive.length < 3) continue;
+
+      for (const r of reviews.negative) noteReview(r);
+      for (const r of reviews.positive) noteReview(r);
 
       const negApps = [...new Set(reviews.negative.map((r) => r.app_name as string))];
       const negSamples = reviews.negative
@@ -441,6 +576,10 @@ export async function clusterReviews(
     }
 
     clusters.sort((a, b) => b.complaintCount - a.complaintCount);
+
+    for (const [table, ids] of selectedReviewIds) {
+      registerSelected(table, [...new Set(ids)]);
+    }
   } catch (err) {
     log.warn("Review clustering failed", { err });
   }
@@ -453,14 +592,27 @@ export async function clusterReviews(
     ].join("\n");
   });
 
+  // Structured-facet enrichment (gated; DEFAULT OFF, graceful no-op otherwise).
+  let facetBlock = "";
+  if (loadConfig().pipelines.ideas.smart.signalFacets) {
+    facetBlock = await buildFacetContext(
+      "USER REVIEWS — INGESTED SIGNAL FACETS",
+      REVIEW_FACET_KINDS,
+    );
+  }
+
   log.info("Review clustering complete", { clusters: clusters.length });
 
+  const summaryText = facetBlock
+    ? [...summaryLines, facetBlock].join("\n\n")
+    : summaryLines.join("\n\n");
+
   // LLM insight extraction (graceful degradation on failure)
-  const insights = await extractReviewInsights(summaryLines.join("\n\n"), resolvedModel);
+  const insights = await extractReviewInsights(summaryText, resolvedModel);
 
   return {
     clusters: clusters.slice(0, 15),
-    summary: summaryLines.join("\n\n"),
+    summary: summaryText,
     insights,
   };
 }
@@ -519,9 +671,38 @@ ${rawText.slice(0, 50000)}`;
   }
 }
 
+/**
+ * A fresh (unconsumed) source row enriched with the signals needed for ranking,
+ * plus a builder that produces the final {@link Capability}. Kept internal so
+ * each source's native field mapping lives next to its query.
+ */
+interface RawCandidate {
+  readonly table: string;
+  readonly id: string;
+  readonly entity: EntityRow;
+  /** Source-credibility weight in [0, 1]. */
+  readonly credibility: number;
+  /** Raw velocity (per-scrape momentum) before normalization. */
+  readonly velocity: number;
+  /** Raw engagement metric used for credibility. */
+  readonly engagement: number;
+  /** Recency factor in [0, 1]. */
+  readonly recency: number;
+  /** Builds the final Capability given the resolved corroboration + velocityNorm. */
+  build: (extra: {
+    readonly corroborationCount: number;
+    readonly velocityNorm: number;
+    readonly rankScore: number;
+  }) => Capability;
+}
+
 export async function scanCapabilities(model?: string, ctx?: CollectorContext): Promise<CapabilityScan> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
+  const smart = loadConfig().pipelines.ideas.smart;
+  const adaptive = smart.adaptiveCollection;
+  const nowSec = Math.floor(Date.now() / 1000);
+
   const capabilities: Capability[] = [];
 
   // Helper to retrieve the consumed set for a given table (empty set if not provided).
@@ -535,12 +716,17 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
     ctx.selected.set(table, [...existing, ...ids]);
   };
 
+  // Accumulate per-source fresh candidate pools (before top-K selection) so we
+  // can compute cross-source corroboration over the full union, then rank.
+  const pools: Array<{ readonly table: string; readonly target: number; readonly candidates: readonly RawCandidate[] }> = [];
+
   try {
     // ── Product Hunt ──────────────────────────────────────────────────────────
     // Fetch 50 rows so we have enough fresh ones after filtering consumed.
-    const cutoff30d = Math.floor(Date.now() / 1000) - 30 * 24 * 3600;
+    const cutoff30d = nowSec - 30 * 24 * 3600;
     let phRaw = (await db`
-      SELECT id, name, tagline, description, url, website_url, votes_count, comments_count
+      SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
+             makers_json, topics_json, first_seen_at
       FROM ph_products
       WHERE first_seen_at >= ${cutoff30d}
       ORDER BY (votes_count + comments_count * 3) DESC
@@ -550,7 +736,8 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
     // Fallback: all-time with random offset to ensure variation across runs
     if (phRaw.length < 5) {
       phRaw = (await db`
-        SELECT id, name, tagline, description, url, website_url, votes_count, comments_count
+        SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
+               makers_json, topics_json, first_seen_at
         FROM ph_products
         ORDER BY (votes_count + comments_count * 3) DESC
         LIMIT 50
@@ -558,64 +745,113 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
       `) as Array<Record<string, unknown>>;
     }
 
-    const { selected: ph, selectedIds: phIds } = excludeConsumed(
-      phRaw,
-      consumedFor("ph_products"),
-      (r) => r.id as string,
-      15,
-    );
-    registerSelected("ph_products", phIds);
-
-    for (const p of ph) {
-      capabilities.push({
-        title: `${p.name}: ${p.tagline}`,
-        source: "producthunt",
-        url: (p.url as string) || (p.website_url as string) || "",
-        description: (p.description as string)?.slice(0, 200) ?? "",
-        type: "new_tech",
-      });
-    }
+    pools.push({
+      table: "ph_products",
+      target: 15,
+      candidates: phRaw
+        .filter((p) => !consumedFor("ph_products").has(p.id as string))
+        .map((p) => {
+          const votes = toNumber(p.votes_count);
+          const cred = sourceCredibility("producthunt", "feed", { metric: votes });
+          const makers = parseMakers(p.makers_json);
+          const topics = parseTopics(p.topics_json);
+          return {
+            table: "ph_products",
+            id: p.id as string,
+            entity: {
+              id: p.id as string,
+              source: "producthunt",
+              url: (p.website_url as string) || (p.url as string) || null,
+              name: (p.name as string) || null,
+            },
+            credibility: cred.weight,
+            velocity: 0, // ph has no persisted velocity column
+            engagement: votes,
+            recency: recencyFactor(toNumber(p.first_seen_at), nowSec),
+            build: ({ corroborationCount, velocityNorm, rankScore }) => ({
+              title: `${p.name}: ${p.tagline}`,
+              source: "producthunt",
+              url: (p.url as string) || (p.website_url as string) || "",
+              description: (p.description as string)?.slice(0, 200) ?? "",
+              type: "new_tech" as const,
+              credibility: cred.weight,
+              engagement: votes,
+              corroborationCount,
+              velocityNorm,
+              rankScore,
+              ...(makers.length ? { makers } : {}),
+              ...(topics.length ? { topics } : {}),
+            }),
+          } satisfies RawCandidate;
+        }),
+    });
 
     // ── Hacker News ───────────────────────────────────────────────────────────
     const hnRaw = (await db`
-      SELECT id, title, url, hn_url, points, comment_count
+      SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
+             points_velocity, updated_at, feed_type
       FROM hn_stories
       WHERE updated_at >= NOW() - INTERVAL '7 days'
-      ORDER BY updated_at DESC, (points + comment_count * 2) DESC
+      ORDER BY COALESCE(points_velocity, 0) DESC, updated_at DESC, (points + comment_count * 2) DESC
       LIMIT 50
     `) as Array<Record<string, unknown>>;
 
-    const { selected: hn, selectedIds: hnIds } = excludeConsumed(
-      hnRaw,
-      consumedFor("hn_stories"),
-      (r) => r.id as string,
-      15,
-    );
-    registerSelected("hn_stories", hnIds);
-
-    for (const s of hn) {
-      capabilities.push({
-        title: s.title as string,
-        source: "hackernews",
-        url: (s.url as string) || (s.hn_url as string) || "",
-        description: `${s.points} points, ${s.comment_count} comments`,
-        type: "new_tech",
-      });
-    }
+    pools.push({
+      table: "hn_stories",
+      target: 15,
+      candidates: hnRaw
+        .filter((s) => !consumedFor("hn_stories").has(s.id as string))
+        .map((s) => {
+          const points = toNumber(s.points);
+          const subSource =
+            s.feed_type === "ask" ? "ask" : s.feed_type === "show" ? "show" : "front-page";
+          const cred = sourceCredibility("hackernews", subSource, { metric: points });
+          const topComments = parseTopComments(s.top_comments_json);
+          const vel = toNumber(s.points_velocity);
+          return {
+            table: "hn_stories",
+            id: s.id as string,
+            entity: {
+              id: s.id as string,
+              source: "hackernews",
+              url: (s.url as string) || null,
+              name: (s.title as string) || null,
+            },
+            credibility: cred.weight,
+            velocity: vel,
+            engagement: points,
+            recency: recencyFactor(toNumber(s.updated_at), nowSec),
+            build: ({ corroborationCount, velocityNorm, rankScore }) => ({
+              title: s.title as string,
+              source: "hackernews",
+              url: (s.url as string) || (s.hn_url as string) || "",
+              description: `${points} points, ${s.comment_count} comments${vel ? `, momentum ${vel.toFixed(1)}/scrape` : ""}`,
+              type: "new_tech" as const,
+              credibility: cred.weight,
+              velocity: vel,
+              engagement: points,
+              corroborationCount,
+              velocityNorm,
+              rankScore,
+              ...(topComments.length ? { topComments } : {}),
+            }),
+          } satisfies RawCandidate;
+        }),
+    });
 
     // ── GitHub ────────────────────────────────────────────────────────────────
     let reposRaw = (await db`
-      SELECT id, full_name, description, language, stars, stars_today, url
+      SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
       FROM github_repos
       WHERE stars_today > 0
-      ORDER BY stars_today DESC, stars DESC
+      ORDER BY COALESCE(stars_velocity, 0) DESC, stars_today DESC, stars DESC
       LIMIT 50
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset if no active trending data
     if (reposRaw.length < 5) {
       reposRaw = (await db`
-        SELECT id, full_name, description, language, stars, stars_today, url
+        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
         FROM github_repos
         ORDER BY stars DESC
         LIMIT 50
@@ -623,101 +859,246 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
       `) as Array<Record<string, unknown>>;
     }
 
-    const { selected: repos, selectedIds: repoIds } = excludeConsumed(
-      reposRaw,
-      consumedFor("github_repos"),
-      (r) => r.id as string,
-      15,
-    );
-    registerSelected("github_repos", repoIds);
-
-    for (const r of repos) {
-      capabilities.push({
-        title: `${r.full_name} (${r.language || "?"})`,
-        source: "github",
-        url: (r.url as string) || `https://github.com/${r.full_name}`,
-        description: `${(r.description as string)?.slice(0, 150) ?? ""} — ${r.stars} stars (+${r.stars_today} today)`,
-        type: "open_source",
-      });
-    }
+    pools.push({
+      table: "github_repos",
+      target: 15,
+      candidates: reposRaw
+        .filter((r) => !consumedFor("github_repos").has(r.id as string))
+        .map((r) => {
+          const stars = toNumber(r.stars);
+          const cred = sourceCredibility("github", "trending", { metric: stars });
+          const vel = toNumber(r.stars_velocity);
+          return {
+            table: "github_repos",
+            id: r.id as string,
+            entity: {
+              id: r.id as string,
+              source: "github",
+              fullName: (r.full_name as string) || null,
+              url: (r.url as string) || null,
+              name: (r.full_name as string) || null,
+            },
+            credibility: cred.weight,
+            velocity: vel,
+            engagement: stars,
+            recency: recencyFactor(toNumber(r.updated_at), nowSec),
+            build: ({ corroborationCount, velocityNorm, rankScore }) => ({
+              title: `${r.full_name} (${r.language || "?"})`,
+              source: "github",
+              url: (r.url as string) || `https://github.com/${r.full_name}`,
+              description: `${(r.description as string)?.slice(0, 150) ?? ""} — ${stars} stars (+${r.stars_today} today${vel ? `, velocity ${vel.toFixed(1)}` : ""})`,
+              type: "open_source" as const,
+              credibility: cred.weight,
+              velocity: vel,
+              engagement: stars,
+              corroborationCount,
+              velocityNorm,
+              rankScore,
+            }),
+          } satisfies RawCandidate;
+        }),
+    });
 
     // ── Reddit ────────────────────────────────────────────────────────────────
     const postsRaw = (await db`
-      SELECT id, title, selftext, subreddit, score, num_comments, permalink
+      SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
+             top_comments_json, flair, score_velocity, updated_at
       FROM reddit_posts
       WHERE updated_at >= NOW() - INTERVAL '7 days'
-      ORDER BY updated_at DESC, (score + num_comments * 3) DESC
+      ORDER BY COALESCE(score_velocity, 0) DESC, updated_at DESC, (score + num_comments * 3) DESC
       LIMIT 50
     `) as Array<Record<string, unknown>>;
 
-    const { selected: posts, selectedIds: postIds } = excludeConsumed(
-      postsRaw,
-      consumedFor("reddit_posts"),
-      (r) => r.id as string,
-      10,
-    );
-    registerSelected("reddit_posts", postIds);
-
-    for (const p of posts) {
-      capabilities.push({
-        title: `r/${p.subreddit}: ${p.title}`,
-        source: "reddit",
-        url: p.permalink ? `https://reddit.com${p.permalink}` : "",
-        description: `${p.score} pts, ${p.num_comments} comments`,
-        type: "behavior_shift",
-      });
-    }
+    pools.push({
+      table: "reddit_posts",
+      target: 10,
+      candidates: postsRaw
+        .filter((p) => !consumedFor("reddit_posts").has(p.id as string))
+        .map((p) => {
+          const score = toNumber(p.score);
+          const cred = sourceCredibility("reddit", "topical", { metric: score });
+          const topComments = parseTopComments(p.top_comments_json);
+          const flair = typeof p.flair === "string" && p.flair.trim() ? p.flair.trim() : undefined;
+          const vel = toNumber(p.score_velocity);
+          return {
+            table: "reddit_posts",
+            id: p.id as string,
+            entity: {
+              id: p.id as string,
+              source: "reddit",
+              url: (p.url as string) || null,
+              name: (p.title as string) || null,
+            },
+            credibility: cred.weight,
+            velocity: vel,
+            engagement: score,
+            recency: recencyFactor(toNumber(p.updated_at), nowSec),
+            build: ({ corroborationCount, velocityNorm, rankScore }) => ({
+              title: `r/${p.subreddit}: ${p.title}`,
+              source: "reddit",
+              url: p.permalink ? `https://reddit.com${p.permalink}` : "",
+              description: `${score} pts, ${p.num_comments} comments${flair ? ` [${flair}]` : ""}${vel ? `, momentum ${vel.toFixed(1)}/scrape` : ""}`,
+              type: "behavior_shift" as const,
+              credibility: cred.weight,
+              velocity: vel,
+              engagement: score,
+              corroborationCount,
+              velocityNorm,
+              rankScore,
+              ...(flair ? { flair } : {}),
+              ...(topComments.length ? { topComments } : {}),
+            }),
+          } satisfies RawCandidate;
+        }),
+    });
 
     // ── News ──────────────────────────────────────────────────────────────────
-    const cutoff72h = Math.floor(Date.now() / 1000) - 72 * 3600;
+    const cutoff72h = nowSec - 72 * 3600;
     const articlesRaw = (await db`
-      SELECT id, title, url, source_name, summary
+      SELECT id, title, url, source_name, summary, scraped_at
       FROM news_articles WHERE scraped_at >= ${cutoff72h}
       ORDER BY scraped_at DESC LIMIT 50
     `) as Array<Record<string, unknown>>;
 
-    const { selected: articles, selectedIds: articleIds } = excludeConsumed(
-      articlesRaw,
-      consumedFor("news_articles"),
-      (r) => r.id as string,
-      10,
-    );
-    registerSelected("news_articles", articleIds);
-
-    for (const a of articles) {
-      capabilities.push({
-        title: a.title as string,
-        source: "news",
-        url: (a.url as string) || "",
-        description: (a.summary as string)?.slice(0, 150) ?? "",
-        type: "behavior_shift",
-      });
-    }
+    pools.push({
+      table: "news_articles",
+      target: 10,
+      candidates: articlesRaw
+        .filter((a) => !consumedFor("news_articles").has(a.id as string))
+        .map((a) => {
+          const domain = typeof a.source_name === "string" ? a.source_name.toLowerCase() : "generic";
+          const subSource = ["reuters", "bloomberg", "cointelegraph", "cryptopanic"].includes(domain)
+            ? domain
+            : "generic";
+          const cred = sourceCredibility("news", subSource);
+          return {
+            table: "news_articles",
+            id: a.id as string,
+            entity: {
+              id: a.id as string,
+              source: "news",
+              url: (a.url as string) || null,
+              name: (a.title as string) || null,
+            },
+            credibility: cred.weight,
+            velocity: 0,
+            engagement: 0,
+            recency: recencyFactor(toNumber(a.scraped_at), nowSec, 3),
+            build: ({ corroborationCount, velocityNorm, rankScore }) => ({
+              title: a.title as string,
+              source: "news",
+              url: (a.url as string) || "",
+              description: (a.summary as string)?.slice(0, 150) ?? "",
+              type: "behavior_shift" as const,
+              credibility: cred.weight,
+              corroborationCount,
+              velocityNorm,
+              rankScore,
+            }),
+          } satisfies RawCandidate;
+        }),
+    });
 
     // ── X / Twitter ───────────────────────────────────────────────────────────
     const tweetsRaw = (await db`
-      SELECT id, author_username, text, likes, retweets, views
+      SELECT id, author_username, author_verified, text, likes, retweets, views,
+             likes_velocity, scraped_at
       FROM x_scraped_tweets
       WHERE scraped_at >= NOW() - INTERVAL '7 days'
-      ORDER BY scraped_at DESC LIMIT 50
+      ORDER BY COALESCE(likes_velocity, 0) DESC, scraped_at DESC LIMIT 50
     `) as Array<Record<string, unknown>>;
 
-    const { selected: tweets, selectedIds: tweetIds } = excludeConsumed(
-      tweetsRaw,
-      consumedFor("x_scraped_tweets"),
-      (r) => r.id as string,
-      10,
-    );
-    registerSelected("x_scraped_tweets", tweetIds);
+    pools.push({
+      table: "x_scraped_tweets",
+      target: 10,
+      candidates: tweetsRaw
+        .filter((t) => !consumedFor("x_scraped_tweets").has(t.id as string))
+        .map((t) => {
+          const likes = toNumber(t.likes);
+          const subSource = t.author_verified ? "verified" : "timeline";
+          const cred = sourceCredibility("x", subSource, { metric: likes });
+          const vel = toNumber(t.likes_velocity);
+          const handle = (t.author_username as string) || "";
+          return {
+            table: "x_scraped_tweets",
+            id: t.id as string,
+            entity: {
+              id: t.id as string,
+              source: "x",
+              handle: handle || null,
+              name: (t.text as string)?.slice(0, 80) || null,
+            },
+            credibility: cred.weight,
+            velocity: vel,
+            engagement: likes,
+            recency: recencyFactor(toNumber(t.scraped_at), nowSec),
+            build: ({ corroborationCount, velocityNorm, rankScore }) => ({
+              title: `@${handle}`,
+              source: "x",
+              url: "",
+              description: (t.text as string)?.slice(0, 200) ?? "",
+              type: "behavior_shift" as const,
+              credibility: cred.weight,
+              velocity: vel,
+              engagement: likes,
+              corroborationCount,
+              velocityNorm,
+              rankScore,
+            }),
+          } satisfies RawCandidate;
+        }),
+    });
 
-    for (const t of tweets) {
-      capabilities.push({
-        title: `@${t.author_username}`,
-        source: "x",
-        url: "",
-        description: (t.text as string)?.slice(0, 200) ?? "",
-        type: "behavior_shift",
-      });
+    // ── Cross-source corroboration over the full fresh union ────────────────
+    const allCandidates = pools.flatMap((pool) => pool.candidates);
+    let corroborationByRowId: ReadonlyMap<string, number> = new Map();
+    try {
+      const resolved = await resolveEntities(allCandidates.map((c) => c.entity));
+      corroborationByRowId = resolved.corroborationByRowId;
+    } catch (err) {
+      log.warn("Corroboration resolution failed; continuing without it", { err });
+    }
+
+    // ── Per-source: normalize velocity, rank, select top-K, build ───────────
+    for (const pool of pools) {
+      const velNormByRow = normalizeVelocities(
+        pool.candidates.map((c) => ({ id: c.id, velocity: c.velocity })),
+      );
+
+      // Score each candidate ONCE (jitter included) so the sort key and the
+      // persisted rankScore stay consistent.
+      const scoreByRow = new Map<string, number>();
+      for (const c of pool.candidates) {
+        scoreByRow.set(
+          c.id,
+          computeRankScore({
+            credibility: c.credibility,
+            velocityNorm: velNormByRow.get(c.id) ?? 0,
+            corroborationCount: corroborationByRowId.get(c.id) ?? 1,
+            recency: c.recency,
+          }),
+        );
+      }
+
+      const { selected, selectedIds } = selectRanked(
+        pool.candidates,
+        new Set<string>(), // already filtered to fresh above
+        (c) => c.id,
+        pool.target,
+        (c) => scoreByRow.get(c.id) ?? 0,
+        adaptive,
+      );
+      registerSelected(pool.table, selectedIds);
+
+      for (const c of selected) {
+        capabilities.push(
+          c.build({
+            corroborationCount: corroborationByRowId.get(c.id) ?? 1,
+            velocityNorm: velNormByRow.get(c.id) ?? 0,
+            rankScore: scoreByRow.get(c.id) ?? 0,
+          }),
+        );
+      }
     }
   } catch (err) {
     log.warn("Capability scan failed", { err });
@@ -732,13 +1113,45 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
   }
 
   for (const [source, items] of bySource) {
-    summaryLines.push(`=== ${source.toUpperCase()} (${items.length} items) ===`);
+    // Surface aggregate momentum + corroboration per source (annotated line).
+    const withVel = items.filter((i) => (i.velocityNorm ?? 0) > 0);
+    const avgVel = withVel.length
+      ? withVel.reduce((s, i) => s + (i.velocityNorm ?? 0), 0) / withVel.length
+      : 0;
+    const corroborated = items.filter((i) => (i.corroborationCount ?? 1) > 1).length;
+    const momentumNote = avgVel > 0 ? ` — avg momentum ${(avgVel * 100).toFixed(0)}%` : "";
+    const corroNote = corroborated > 0 ? `, ${corroborated} cross-source corroborated` : "";
+    summaryLines.push(`=== ${source.toUpperCase()} (${items.length} items${momentumNote}${corroNote}) ===`);
     for (const item of items) {
-      summaryLines.push(`  ${item.title}${item.url ? `\n    URL: ${item.url}` : ""}\n    ${item.description}`);
+      const tags: string[] = [];
+      if (item.topics?.length) tags.push(`topics: ${item.topics.join(", ")}`);
+      if (item.makers?.length) tags.push(`makers: ${item.makers.map((m) => m.name).join(", ")}`);
+      if (item.flair) tags.push(`flair: ${item.flair}`);
+      if ((item.corroborationCount ?? 1) > 1) tags.push(`corroborated by ${item.corroborationCount} sources`);
+      const tagLine = tags.length ? `\n    ${tags.join(" | ")}` : "";
+      const commentLine = item.topComments?.length
+        ? `\n    top: ${item.topComments.map((c) => `"${c.slice(0, 120)}"`).join(" ")}`
+        : "";
+      summaryLines.push(
+        `  ${item.title}${item.url ? `\n    URL: ${item.url}` : ""}\n    ${item.description}${tagLine}${commentLine}`,
+      );
     }
   }
 
-  log.info("Capability scan complete", { capabilities: capabilities.length });
+  // Structured-facet enrichment (gated; DEFAULT OFF, graceful no-op otherwise).
+  if (smart.signalFacets) {
+    const facetBlock = await buildFacetContext(
+      "TECH/BEHAVIOR SIGNALS — INGESTED SIGNAL FACETS",
+      CAPABILITY_FACET_KINDS,
+    );
+    if (facetBlock) summaryLines.push(facetBlock);
+  }
+
+  log.info("Capability scan complete", {
+    capabilities: capabilities.length,
+    adaptive,
+    corroborated: capabilities.filter((c) => (c.corroborationCount ?? 1) > 1).length,
+  });
 
   // LLM insight extraction (graceful degradation on failure)
   const insights = await extractCapabilityInsights(capabilities, resolvedModel);
