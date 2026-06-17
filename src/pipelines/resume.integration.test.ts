@@ -10,6 +10,7 @@ import {
 import {
   resumeRunById,
   resumeAllInterrupted,
+  resumeInterruptedRuns,
   type PipelineDispatcher,
 } from "./resume";
 import { beginRun, __resetActiveRuns } from "./active-runs";
@@ -182,6 +183,22 @@ describe("duplicate-dispatch guard", () => {
     expect(result.ok).toBe(true);
     expect(spy.calls).toHaveLength(1);
     expect(spy.calls[0]!.runId).toBe(runId!);
+  });
+
+  it("resumeInterruptedRuns (boot) resumes a recently-interrupted run despite a fresh heartbeat", async () => {
+    const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+    // Fast-restart shape: a 'running' step whose heartbeat is still fresh, left
+    // by the process that just died. The in-process registry is empty (fresh
+    // boot), so the run IS dead and MUST be resumed — trusting the dead
+    // process's heartbeat here is the bug that orphaned runs across a quick
+    // restart. Boot-resume relies on the registry, never the heartbeat.
+    await createPipelineStep({ runId: runId!, stepName: "synthesis" });
+    __resetActiveRuns();
+
+    const spy = spyDispatcher();
+    await resumeInterruptedRuns(null, spy.fn);
+
+    expect(spy.calls.map((c) => c.runId)).toContain(runId!);
   });
 
   it("resumeAllInterrupted skips a live run and does not dispatch it", async () => {
