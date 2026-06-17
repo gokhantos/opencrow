@@ -23,6 +23,27 @@ const log = createLogger("internal-llm");
 const DEFAULT_MODEL = process.env.OPENCROW_INTERNAL_LLM_MODEL ?? "claude-haiku-4-5-20251001";
 const DEFAULT_PROVIDER = (process.env.OPENCROW_INTERNAL_LLM_PROVIDER ?? "agent-sdk") as AiProvider;
 
+/**
+ * Hard server-side ceiling on output tokens. The internal proxy shares the
+ * dashboard port and any tailnet client holding OPENCROW_INTERNAL_TOKEN can call
+ * it, so caller-supplied max_tokens is clamped to this value regardless.
+ */
+const INTERNAL_MAX_TOKENS = 4096;
+
+/**
+ * Only cheap haiku variants are reachable through this proxy. Any other model id
+ * (including other claude-* models) is coerced to DEFAULT_MODEL to prevent a
+ * tailnet client from running uncapped expensive models on OpenCrow's credentials.
+ */
+const INTERNAL_MODEL_ALLOWLIST: ReadonlySet<string> = new Set([
+  "claude-haiku-4-5-20251001",
+  "claude-haiku-4-5",
+]);
+
+/** In-flight request cap to blunt burst abuse against the shared LLM credential. */
+const MAX_IN_FLIGHT = 4;
+let inFlight = 0;
+
 interface OpenAiMessage {
   readonly role: string;
   readonly content: string | null;
@@ -139,84 +160,101 @@ export function createInternalLlmRoutes(): Hono {
   const app = new Hono();
 
   app.post("/internal/v1/chat/completions", async (c) => {
-    let body: CompletionsBody;
+    // Concurrency cap: reject bursts before doing any work. Accounting is released
+    // in the finally block below.
+    if (inFlight >= MAX_IN_FLIGHT) {
+      return c.json({ error: { message: "too many concurrent requests" } }, 429);
+    }
+    inFlight++;
+
     try {
-      body = await c.req.json();
-    } catch {
-      return c.json({ error: { message: "invalid JSON body" } }, 400);
-    }
+      let body: CompletionsBody;
+      try {
+        body = await c.req.json();
+      } catch {
+        return c.json({ error: { message: "invalid JSON body" } }, 400);
+      }
 
-    const messages = body.messages ?? [];
-    if (messages.length === 0) {
-      return c.json({ error: { message: "messages is required" } }, 400);
-    }
+      const messages = body.messages ?? [];
+      if (messages.length === 0) {
+        return c.json({ error: { message: "messages is required" } }, 400);
+      }
 
-    const { systemPrompt, conversation } = splitMessages(messages);
-    const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
-    const jsonMode = body.response_format?.type === "json_object";
-    const finalSystem =
-      (systemPrompt || "You are a precise assistant.") +
-      (hasTools ? `\n\n${buildToolInstruction(body.tools!)}` : "") +
-      (jsonMode && !hasTools
-        ? "\n\nOutput raw JSON only — no markdown code fences, no prose."
-        : "");
+      const { systemPrompt, conversation } = splitMessages(messages);
+      const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+      const jsonMode = body.response_format?.type === "json_object";
+      const finalSystem =
+        (systemPrompt || "You are a precise assistant.") +
+        (hasTools ? `\n\n${buildToolInstruction(body.tools!)}` : "") +
+        (jsonMode && !hasTools
+          ? "\n\nOutput raw JSON only — no markdown code fences, no prose."
+          : "");
 
-    let text: string;
-    let usage: { inputTokens: number; outputTokens: number } | undefined;
-    try {
-      const res = await chat(conversation, {
-        systemPrompt: finalSystem,
-        model: body.model && body.model.startsWith("claude") ? body.model : DEFAULT_MODEL,
-        provider: DEFAULT_PROVIDER,
-        maxOutputTokens: body.max_tokens ?? 2000,
-        rawSystemPrompt: true,
-        usageContext: { channel: "internal", chatId: "mem0", source: "subagent" },
-      });
-      text = res.text;
-      usage = res.usage;
-    } catch (err) {
-      log.error("internal completion failed", { err });
-      const msg = err instanceof Error ? err.message : String(err);
-      return c.json({ error: { message: msg } }, 502);
-    }
+      // Hard-cap output tokens and restrict the model to the haiku allowlist.
+      const maxOutputTokens = Math.min(body.max_tokens ?? 2000, INTERNAL_MAX_TOKENS);
+      const model =
+        body.model && INTERNAL_MODEL_ALLOWLIST.has(body.model) ? body.model : DEFAULT_MODEL;
 
-    const created = Math.floor(Date.now() / 1000);
-    const base = {
-      id: `chatcmpl-${created}`,
-      object: "chat.completion",
-      created,
-      model: DEFAULT_MODEL,
-      usage: {
-        prompt_tokens: usage?.inputTokens ?? 0,
-        completion_tokens: usage?.outputTokens ?? 0,
-        total_tokens: (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0),
-      },
-    };
+      let text: string;
+      let usage: { inputTokens: number; outputTokens: number } | undefined;
+      try {
+        const res = await chat(conversation, {
+          systemPrompt: finalSystem,
+          model,
+          provider: DEFAULT_PROVIDER,
+          maxOutputTokens,
+          rawSystemPrompt: true,
+          usageContext: { channel: "internal", chatId: "mem0", source: "subagent" },
+        });
+        text = res.text;
+        usage = res.usage;
+      } catch (err) {
+        // Log the detail server-side only; never echo err.message/stack/token
+        // back to the (tailnet) caller.
+        log.error("internal completion failed", { err });
+        return c.json({ error: { message: "internal completion failed" } }, 502);
+      }
 
-    if (hasTools) {
-      const toolCalls = toToolCalls(parseLenientJson(text));
+      const created = Math.floor(Date.now() / 1000);
+      const base = {
+        id: `chatcmpl-${created}`,
+        object: "chat.completion",
+        created,
+        model: DEFAULT_MODEL,
+        usage: {
+          prompt_tokens: usage?.inputTokens ?? 0,
+          completion_tokens: usage?.outputTokens ?? 0,
+          total_tokens: (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0),
+        },
+      };
+
+      if (hasTools) {
+        const toolCalls = toToolCalls(parseLenientJson(text));
+        return c.json({
+          ...base,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: null, tool_calls: toolCalls },
+              finish_reason: "tool_calls",
+            },
+          ],
+        });
+      }
+
       return c.json({
         ...base,
         choices: [
           {
             index: 0,
-            message: { role: "assistant", content: null, tool_calls: toolCalls },
-            finish_reason: "tool_calls",
+            message: { role: "assistant", content: jsonMode ? stripToJson(text) : text },
+            finish_reason: "stop",
           },
         ],
       });
+    } finally {
+      inFlight--;
     }
-
-    return c.json({
-      ...base,
-      choices: [
-        {
-          index: 0,
-          message: { role: "assistant", content: jsonMode ? stripToJson(text) : text },
-          finish_reason: "stop",
-        },
-      ],
-    });
   });
 
   return app;

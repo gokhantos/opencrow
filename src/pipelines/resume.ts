@@ -24,6 +24,7 @@ import {
 } from "./store";
 import { isRunActive } from "./active-runs";
 import { runIdeasPipeline } from "./ideas/pipeline";
+import { AUTONOMOUS_SIGE_PIPELINE_ID, runAutonomousSige } from "./ideas/pipeline-autonomous";
 
 /**
  * The pipeline dispatcher signature. Defaulted to runIdeasPipeline; injectable
@@ -134,7 +135,9 @@ export async function resumeInterruptedRuns(
       // Fire-and-forget: the run continues in the background from its last
       // completed step. Errors are caught so an immediate re-failure does not
       // crash startup.
-      runIdeasPipeline(run.pipelineId, run.config, run.id, memoryManager).catch(
+      const resolvedDispatch: PipelineDispatcher =
+        run.pipelineId === AUTONOMOUS_SIGE_PIPELINE_ID ? runAutonomousSige : runIdeasPipeline;
+      resolvedDispatch(run.pipelineId, run.config, run.id, memoryManager).catch(
         (err) => {
           log.error("Resumed pipeline run failed", { runId: run.id, err });
         },
@@ -169,7 +172,7 @@ export type ResumeByIdResult =
 export async function resumeRunById(
   runId: string,
   memoryManager?: MemoryManager | null,
-  dispatch: PipelineDispatcher = runIdeasPipeline,
+  dispatch?: PipelineDispatcher,
 ): Promise<ResumeByIdResult> {
   const run = await getPipelineRun(runId);
   if (run === null) {
@@ -181,6 +184,12 @@ export async function resumeRunById(
     return { ok: false, reason: "already_running" };
   }
 
+  // Select the correct dispatcher for this run's pipeline type.
+  // An explicit `dispatch` override (used in tests) takes precedence.
+  const resolvedDispatch: PipelineDispatcher =
+    dispatch ??
+    (run.pipelineId === AUTONOMOUS_SIGE_PIPELINE_ID ? runAutonomousSige : runIdeasPipeline);
+
   await markRunRunning(runId);
   log.info("Manually re-triggering pipeline run", {
     runId,
@@ -188,7 +197,7 @@ export async function resumeRunById(
     priorStatus: run.status,
   });
 
-  dispatch(run.pipelineId, run.config, runId, memoryManager).catch((err) => {
+  resolvedDispatch(run.pipelineId, run.config, runId, memoryManager).catch((err) => {
     log.error("Manually resumed run failed", { runId, err });
   });
 
@@ -204,11 +213,13 @@ export async function resumeRunById(
  */
 export async function resumeAllInterrupted(
   memoryManager?: MemoryManager | null,
-  dispatch: PipelineDispatcher = runIdeasPipeline,
+  dispatch?: PipelineDispatcher,
 ): Promise<number> {
   const runs = await findResumableRuns();
   let count = 0;
   for (const run of runs) {
+    // Pass `dispatch` through; resumeRunById applies the pipelineId-aware
+    // switch when dispatch is undefined. An explicit override (tests) overrides.
     const result = await resumeRunById(run.id, memoryManager, dispatch);
     if (result.ok) count += 1;
   }

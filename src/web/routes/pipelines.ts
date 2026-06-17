@@ -19,6 +19,11 @@ import {
 } from "../../pipelines/store";
 import { updateIdeaStage } from "../../sources/ideas/store";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
+import { DEFAULT_PIPELINE_CONFIG } from "../../pipelines/types";
+import {
+  AUTONOMOUS_SIGE_PIPELINE_ID,
+  runAutonomousSige,
+} from "../../pipelines/ideas/pipeline-autonomous";
 import { resumeRunById, resumeAllInterrupted } from "../../pipelines/resume";
 import type { MemoryManager } from "../../memory/types";
 import { createLogger } from "../../logger";
@@ -261,6 +266,65 @@ export function createPipelineRoutes(deps?: {
       { success: true, message: "Run resuming", runId: result.runId },
       202,
     );
+  });
+
+  // ── Autonomous SIGE pipeline trigger ─────────────────────────────
+  //
+  // POST /pipelines/autonomous-sige/run
+  // Immediately enqueues and fire-and-forgets one autonomous SIGE run.
+  // Returns the runId so the caller can poll /pipelines-runs/:runId for status.
+  // Body: optional { model?: string } (other fields reserved for future use).
+  // Default-OFF: enabled only when smart.sigeAuto.enabled is true; the handler
+  // always succeeds regardless — it is the pipeline itself that reads the flag.
+
+  const autonomousSigeBodySchema = z
+    .object({
+      model: z.string().optional(),
+    })
+    .strict();
+
+  app.post("/pipelines/autonomous-sige/run", async (c) => {
+    // Parse optional body; silently default on missing/invalid JSON.
+    let model: string | undefined;
+    try {
+      const rawBody = await c.req.json().catch(() => ({}));
+      const parsed = autonomousSigeBodySchema.safeParse(rawBody);
+      if (parsed.success) {
+        model = parsed.data.model;
+      } else {
+        return c.json(
+          {
+            success: false,
+            error: `Invalid body: ${parsed.error.issues.map((i) => i.message).join(", ")}`,
+          },
+          400,
+        );
+      }
+    } catch {
+      // No body — use defaults
+    }
+
+    const lockResult = await acquirePipelineLock(AUTONOMOUS_SIGE_PIPELINE_ID);
+
+    const pipelineConfig: PipelineConfig = {
+      ...DEFAULT_PIPELINE_CONFIG,
+      ...(model !== undefined ? { model } : {}),
+    };
+
+    log.info("Starting autonomous SIGE pipeline run", {
+      runId: lockResult.runId,
+    });
+
+    runAutonomousSige(AUTONOMOUS_SIGE_PIPELINE_ID, pipelineConfig, lockResult.runId!, deps?.memoryManager).catch(
+      (err) => {
+        log.error("Autonomous SIGE pipeline run failed", {
+          runId: lockResult.runId,
+          err,
+        });
+      },
+    );
+
+    return c.json({ success: true, runId: lockResult.runId }, 202);
   });
 
   // ── Pipeline Ideas endpoints ──────────────────────────────────────

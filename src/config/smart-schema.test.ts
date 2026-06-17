@@ -74,6 +74,15 @@ describe("smartConfigSchema", () => {
         exemplarCount: 4,
         goldenMinHumanLabels: 10,
       },
+      sigeAuto: {
+        enabled: false,
+        maxDeepFrontiers: 1,
+        broadPoolSize: 50,
+        cadence: "daily",
+        maxConcurrent: 1,
+        memoryWriteback: false,
+        perRunCostCeilingUsd: 0,
+      },
     });
   });
 

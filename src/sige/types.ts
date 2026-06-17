@@ -333,9 +333,17 @@ export interface SigeSessionConfig {
   readonly agentModel: string;
 }
 
+/** Origin of a SIGE session: human-initiated or autonomously scheduled. */
+export type SigeSessionOrigin = "human" | "auto";
+
 export interface SigeSession {
   readonly id: string;
-  readonly seedInput: string;
+  /** Seed input text. Optional: absent for autonomous (seedless) sessions. */
+  readonly seedInput?: string;
+  /** Who created the session. Defaults to 'human' for pre-019 rows via rowToSession. */
+  readonly origin: SigeSessionOrigin;
+  /** Inferred run mode: 'seeded' when seedInput is present, 'autonomous' otherwise. */
+  readonly mode?: "seeded" | "autonomous";
   readonly status: SigeSessionStatus;
   readonly config: SigeSessionConfig;
   readonly gameFormulation?: GameFormulation;
