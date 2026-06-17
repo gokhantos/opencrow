@@ -596,6 +596,11 @@ export const sigeHardeningConfigSchema = z
     // Convergence-veto gate: when computeMetaGameHealth convergenceRate exceeds
     // this threshold the round is treated as collapsed (sycophancy) and vetoed.
     convergenceVetoThreshold: z.number().default(0.85),
+    // What a fired convergence-veto actually DOES. "log" (default) only records
+    // the collapse-prone audit signal; "widen" additionally discards the
+    // collapsed SIGE consensus so downstream selection falls back to the
+    // independent critique/originality ordering instead of over-trusting it.
+    convergenceVetoAction: z.enum(["log", "widen"]).default("log"),
     // Enable the expensive deep-reasoning tier of the judge.
     deepTier: z.boolean().default(true),
   })
@@ -604,6 +609,7 @@ export const sigeHardeningConfigSchema = z
     judgeModels: SIGE_DEFAULT_JUDGE_MODELS.map((m) => ({ ...m })),
     dissentWeight: 0.15,
     convergenceVetoThreshold: 0.85,
+    convergenceVetoAction: "log",
     deepTier: true,
   });
 
@@ -721,6 +727,7 @@ const SMART_IDEAS_DEFAULTS = {
     judgeModels: SIGE_DEFAULT_JUDGE_MODELS.map((m) => ({ ...m })),
     dissentWeight: 0.15,
     convergenceVetoThreshold: 0.85,
+    convergenceVetoAction: "log",
     deepTier: true,
   },
   taste: {

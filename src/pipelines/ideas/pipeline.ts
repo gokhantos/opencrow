@@ -429,12 +429,11 @@ async function stampIdeaGiant(
 
 /**
  * PHASE 3 (SIGE hardening) — Best-effort persistence of the independent-jury /
- * dissent / convergence signals so the eval A/B (SIGE-hardened vs self-critique)
- * can read them back per idea. No new migration: the payload is MERGED into the
- * existing giant_scores_json JSONB blob under a `sige` key via jsonb `||` (so it
- * coexists with the GIANT scorecard already stamped). COALESCE seeds an empty
- * object when no GIANT scorecard was stamped. Swallows errors (e.g. pre-migration
- * DBs / missing column) so it never blocks or breaks the core insert.
+ * dissent signals so the eval A/B (SIGE-hardened vs self-critique) can read them
+ * back per idea. Stored in the dedicated `sige_signals_json` column (migration
+ * 016) rather than overloading the GIANT scorecard blob. Swallows errors (e.g.
+ * pre-migration DBs / missing column) so it never blocks or breaks the core
+ * insert.
  */
 async function stampIdeaSigeSignals(
   ideaId: string,
@@ -443,20 +442,17 @@ async function stampIdeaSigeSignals(
   if (signals === undefined) return;
   try {
     const payload = JSON.stringify({
-      sige: {
-        expertScore: signals.expertScore,
-        ...(signals.juryScore !== undefined ? { juryScore: signals.juryScore } : {}),
-        ...(signals.juryAgreement !== undefined ? { juryAgreement: signals.juryAgreement } : {}),
-        ...(signals.dissent !== undefined ? { dissent: signals.dissent } : {}),
-        ...(signals.judgeCount !== undefined ? { judgeCount: signals.judgeCount } : {}),
-        ...(signals.evolved ? { evolved: true } : {}),
-      },
+      expertScore: signals.expertScore,
+      ...(signals.juryScore !== undefined ? { juryScore: signals.juryScore } : {}),
+      ...(signals.juryAgreement !== undefined ? { juryAgreement: signals.juryAgreement } : {}),
+      ...(signals.dissent !== undefined ? { dissent: signals.dissent } : {}),
+      ...(signals.judgeCount !== undefined ? { judgeCount: signals.judgeCount } : {}),
+      ...(signals.evolved ? { evolved: true } : {}),
     });
     const db = getDb();
     await db`
       UPDATE generated_ideas
-      SET giant_scores_json =
-        COALESCE(giant_scores_json, '{}'::jsonb) || ${payload}::jsonb
+      SET sige_signals_json = ${payload}::jsonb
       WHERE id = ${ideaId}
     `;
   } catch (err) {
@@ -2248,11 +2244,19 @@ export async function runIdeasPipeline(
       // tells the eval A/B the round was collapse-prone so it can widen).
       const veto = computeSigeConvergenceVeto(sigeSignals, smart.sige.convergenceVetoThreshold);
       if (veto.vetoed) {
+        const widen = smart.sige.convergenceVetoAction === "widen";
         log.warn("SIGE convergence veto fired — consensus is collapse-prone", {
           reasons: veto.reasons,
           convergenceRate: Number(veto.convergenceRate.toFixed(3)),
           diversityIndex: Number(veto.diversityIndex.toFixed(3)),
+          action: widen ? "widen (discarding collapsed consensus)" : "log",
         });
+        if (widen) {
+          // Don't over-trust a collapsed consensus: drop the SIGE side-band so
+          // the Pareto selection below falls back to the independent critique /
+          // originality ordering. The candidates themselves are untouched.
+          sigeSignals = new Map();
+        }
       } else {
         log.info("SIGE convergence health OK", {
           convergenceRate: Number(veto.convergenceRate.toFixed(3)),
