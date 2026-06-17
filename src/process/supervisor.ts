@@ -1,21 +1,26 @@
-import type { ProcessName } from "./types";
-import {
-  registerProcess,
-  heartbeat,
-  unregisterProcess,
-  getProcess,
-} from "./registry";
-import {
-  consumePendingCommands,
-  acknowledgeCommand,
-  cleanupOldCommands,
-} from "./commands";
 import { createLogger } from "../logger";
+import { acknowledgeCommand, cleanupOldCommands, consumePendingCommands } from "./commands";
+import { decideStaleAction, INSTANCE_ID_KEY, type StaleDecisionInput } from "./instance-guard";
+import { getProcess, heartbeat, registerProcess, unregisterProcess } from "./registry";
+import { detectInContainer, isAncestorOf, isPidAlive } from "./runtime-probes";
+import type { ProcessName } from "./types";
 
 const log = createLogger("process:supervisor");
 
-const HEARTBEAT_INTERVAL_MS = 5_000;
-const COMMAND_POLL_INTERVAL_MS = 3_000;
+/**
+ * How often each process writes its liveness heartbeat to process_registry.
+ * The orphan-cleanup threshold in the orchestrator is 60 s, so 15 s gives a
+ * comfortable 4:1 safety margin while cutting DB writes by 3× vs the old 5 s.
+ */
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * How often each process reads its pending commands (restart / stop).
+ * Commands are low-urgency (a restart can tolerate a few extra seconds).
+ * Raising from 3 s to 10 s cuts one of the highest-frequency DB selects.
+ */
+const COMMAND_POLL_INTERVAL_MS = 10_000;
+
 const CLEANUP_INTERVAL_MS = 300_000; // 5 min
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -30,6 +35,16 @@ export function createProcessSupervisor(
   name: ProcessName,
   metadata: Record<string, unknown> = {},
 ): ProcessSupervisor {
+  // Unique per-process-start identity. Persisted into the registry row so a
+  // later boot can positively tell whether a stale row belongs to a genuinely
+  // different live instance (kill-eligible on a host) vs. a recycled PID that
+  // merely collides (never kill — see instance-guard.ts).
+  const instanceId = crypto.randomUUID();
+  const registryMetadata: Record<string, unknown> = {
+    ...metadata,
+    [INSTANCE_ID_KEY]: instanceId,
+  };
+
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let commandTimer: ReturnType<typeof setInterval> | null = null;
   let cleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -121,49 +136,67 @@ export function createProcessSupervisor(
     }
 
     const existing = await getProcess(name);
-    if (!existing || existing.pid === process.pid) return;
 
-    const isAlive = (() => {
-      try {
-        process.kill(existing.pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    })();
+    // Gather the raw facts once; the decision itself is a pure, syscall-free
+    // function (instance-guard.ts) so the dangerous kill path stays gated.
+    const existingPid = existing?.pid ?? 0;
+    const existingPidAlive = existing ? isPidAlive(existing.pid) : false;
+    const existingInstanceId =
+      typeof existing?.metadata[INSTANCE_ID_KEY] === "string"
+        ? (existing.metadata[INSTANCE_ID_KEY] as string)
+        : undefined;
 
-    if (!isAlive) {
-      log.info("Stale process record (already dead)", {
+    const decisionInput: StaleDecisionInput = {
+      hasExisting: existing !== null,
+      existingPid,
+      existingInstanceId,
+      selfPid: process.pid,
+      selfInstanceId: instanceId,
+      existingPidAlive,
+      // Only walk ancestry when the PID is actually alive and not us — the walk
+      // is the costly probe and is only consulted for live, foreign PIDs.
+      existingPidIsAncestor:
+        existingPidAlive && existingPid !== process.pid
+          ? isAncestorOf(existingPid, process.pid)
+          : false,
+      inContainer: detectInContainer(),
+    };
+
+    const decision = decideStaleAction(decisionInput);
+
+    if (decision.action === "skip" || decision.action === "takeover") {
+      log.info("Single-instance reconcile: no kill", {
         process: name,
-        stalePid: existing.pid,
+        action: decision.action,
+        reason: decision.reason,
+        stalePid: existingPid,
+        currentPid: process.pid,
       });
       return;
     }
 
+    // decision.action === "kill" — positively a different, live instance on a host.
     log.info("Killing stale process", {
       process: name,
-      stalePid: existing.pid,
+      stalePid: existingPid,
       currentPid: process.pid,
+      reason: decision.reason,
     });
 
     try {
-      process.kill(existing.pid, "SIGTERM");
+      process.kill(existingPid, "SIGTERM");
       const deadline = Date.now() + 3_000;
       while (Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 200));
-        try {
-          process.kill(existing.pid, 0);
-        } catch {
-          log.info("Stale process exited after SIGTERM", {
-            pid: existing.pid,
-          });
+        if (!isPidAlive(existingPid)) {
+          log.info("Stale process exited after SIGTERM", { pid: existingPid });
           return;
         }
       }
       log.warn("Stale process did not exit, sending SIGKILL", {
-        pid: existing.pid,
+        pid: existingPid,
       });
-      process.kill(existing.pid, "SIGKILL");
+      process.kill(existingPid, "SIGKILL");
     } catch {
       // Process disappeared between checks
     }
@@ -187,8 +220,12 @@ export function createProcessSupervisor(
 
       setupPingResponder();
       await ensureSingleInstance();
-      await registerProcess(name, metadata);
-      log.info("Process registered", { process: name, pid: process.pid });
+      await registerProcess(name, registryMetadata);
+      log.info("Process registered", {
+        process: name,
+        pid: process.pid,
+        instanceId,
+      });
 
       heartbeatTimer = setInterval(doHeartbeat, HEARTBEAT_INTERVAL_MS);
       commandTimer = setInterval(pollCommands, COMMAND_POLL_INTERVAL_MS);

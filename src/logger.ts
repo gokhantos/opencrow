@@ -140,7 +140,13 @@ const pendingBatch: PendingLog[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
-const FLUSH_INTERVAL_MS = 2_000;
+/**
+ * How often accumulated log entries are batch-inserted into process_logs.
+ * The flush is a no-op when the batch is empty, so this only matters when
+ * logs are actually being generated. 10 s is still fast enough for the
+ * dashboard; raising from 2 s cuts the timer-wake frequency by 5×.
+ */
+const FLUSH_INTERVAL_MS = 10_000;
 const CLEANUP_INTERVAL_MS = 300_000; // 5 min
 const LOG_RETENTION_SECONDS = 86_400; // 24h
 const MAX_BATCH_SIZE = 200;

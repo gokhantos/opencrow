@@ -21,6 +21,7 @@ import {
   markRunRunning,
   getPipelineRun,
   hasFreshHeartbeat,
+  failIncompleteStepsForRun,
 } from "./store";
 import { isRunActive } from "./active-runs";
 import { runIdeasPipeline } from "./ideas/pipeline";
@@ -88,6 +89,7 @@ export function classifyResume(resumeAttempts: number): "resume" | "fail" {
  */
 export async function resumeInterruptedRuns(
   memoryManager?: MemoryManager | null,
+  dispatch?: PipelineDispatcher,
 ): Promise<ResumeResult> {
   let resumed = 0;
   let failed = 0;
@@ -103,12 +105,19 @@ export async function resumeInterruptedRuns(
 
   for (const run of runs) {
     try {
-      // Never re-dispatch a run that is already executing (e.g. a long run
-      // started by the /run route in this same process, or one another instance
-      // is keeping alive). Prevents duplicate concurrent executions.
-      if (await isRunLive(run.id)) {
+      // Registry-only on the boot path — NOT isRunLive. At boot every 'running'
+      // run was left by the now-dead prior process, so its step heartbeat is
+      // stale-by-definition; a FAST restart leaves it still within the freshness
+      // window, and trusting it here would skip a genuinely-dead run forever
+      // (boot-resume runs once). The in-process registry is the only valid
+      // signal here: empty at boot, so nothing is skipped; non-empty only if a
+      // run is already executing in THIS process (e.g. /run started a fresh one
+      // before this swept), which we correctly skip.
+      if (isRunActive(run.id)) {
         skipped += 1;
-        log.info("Skipping resume — run already executing", { runId: run.id });
+        log.info("Skipping resume — run already executing in this process", {
+          runId: run.id,
+        });
         continue;
       }
 
@@ -126,6 +135,13 @@ export async function resumeInterruptedRuns(
       }
 
       const attempt = await incrementResumeAttempts(run.id);
+      const failedSteps = await failIncompleteStepsForRun(
+        run.id,
+        "interrupted by restart — superseded by resume",
+      );
+      if (failedSteps > 0) {
+        log.info("Reconciled dangling steps before resume", { runId: run.id, failedSteps });
+      }
       log.info("Resuming interrupted pipeline run", {
         runId: run.id,
         pipelineId: run.pipelineId,
@@ -135,8 +151,11 @@ export async function resumeInterruptedRuns(
       // Fire-and-forget: the run continues in the background from its last
       // completed step. Errors are caught so an immediate re-failure does not
       // crash startup.
+      // Select the correct dispatcher for this run's pipeline type. An explicit
+      // `dispatch` override (used in tests) takes precedence.
       const resolvedDispatch: PipelineDispatcher =
-        run.pipelineId === AUTONOMOUS_SIGE_PIPELINE_ID ? runAutonomousSige : runIdeasPipeline;
+        dispatch ??
+        (run.pipelineId === AUTONOMOUS_SIGE_PIPELINE_ID ? runAutonomousSige : runIdeasPipeline);
       resolvedDispatch(run.pipelineId, run.config, run.id, memoryManager).catch(
         (err) => {
           log.error("Resumed pipeline run failed", { runId: run.id, err });
@@ -191,6 +210,13 @@ export async function resumeRunById(
     (run.pipelineId === AUTONOMOUS_SIGE_PIPELINE_ID ? runAutonomousSige : runIdeasPipeline);
 
   await markRunRunning(runId);
+  const failedSteps = await failIncompleteStepsForRun(
+    runId,
+    "interrupted by restart — superseded by resume",
+  );
+  if (failedSteps > 0) {
+    log.info("Reconciled dangling steps before resume", { runId, failedSteps });
+  }
   log.info("Manually re-triggering pipeline run", {
     runId,
     pipelineId: run.pipelineId,

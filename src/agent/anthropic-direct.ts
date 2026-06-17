@@ -24,9 +24,46 @@ import type { AgentOptions, AgentResponse, ConversationMessage } from "./types";
 
 const log = createLogger("anthropic-direct");
 
-// Sonnet 4.6 pricing: $3/1M input, $15/1M output
+// Sonnet 4.6 pricing per token. Cache reads bill at ~0.1x input; cache writes at
+// ~1.25x input — both must be counted, or a cached prompt looks nearly free.
 const INPUT_COST_PER_TOKEN = 3 / 1_000_000;
 const OUTPUT_COST_PER_TOKEN = 15 / 1_000_000;
+const CACHE_READ_COST_PER_TOKEN = 0.3 / 1_000_000;
+const CACHE_WRITE_COST_PER_TOKEN = 3.75 / 1_000_000;
+
+/** A flattened, fully-accounted view of a pi-ai usage record. */
+export interface UsageSummary {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+  readonly costUsd: number;
+}
+
+/**
+ * Flatten a pi-ai usage record into our accounting shape. With prompt caching on
+ * (cacheRetention: "short"), Anthropic bills a fresh large prompt as cacheWrite
+ * and a repeat as cacheRead — `input` is only the uncached remainder. The old
+ * code logged just `input` (so a 6k-token prompt read as "3") and costed only
+ * input+output (so cached prompts looked ~free). Prefer pi-ai's own cost (it
+ * applies the model's per-token rates to every bucket); fall back to a FULL
+ * estimate — including cache read + write — when cost is absent.
+ */
+export function summarizeUsage(
+  usage: AssistantMessage["usage"] | undefined,
+): UsageSummary {
+  const inputTokens = usage?.input ?? 0;
+  const outputTokens = usage?.output ?? 0;
+  const cacheReadTokens = usage?.cacheRead ?? 0;
+  const cacheWriteTokens = usage?.cacheWrite ?? 0;
+  const costUsd =
+    usage?.cost?.total ??
+    (inputTokens * INPUT_COST_PER_TOKEN +
+      outputTokens * OUTPUT_COST_PER_TOKEN +
+      cacheReadTokens * CACHE_READ_COST_PER_TOKEN +
+      cacheWriteTokens * CACHE_WRITE_COST_PER_TOKEN);
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd };
+}
 
 const CREDS_PATH = join(homedir(), ".claude", ".credentials.json");
 
@@ -221,18 +258,15 @@ export async function chat(
       );
     }
 
-    const inputTokens = response.usage?.input ?? 0;
-    const outputTokens = response.usage?.output ?? 0;
-    const cacheReadTokens = response.usage?.cacheRead ?? 0;
-    const costUsd =
-      inputTokens * INPUT_COST_PER_TOKEN +
-      outputTokens * OUTPUT_COST_PER_TOKEN;
+    const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd } =
+      summarizeUsage(response.usage);
 
     log.info("Anthropic pi-ai response received", {
       model: options.model,
       inputTokens,
       outputTokens,
       cacheReadTokens,
+      cacheWriteTokens,
       costUsd: costUsd.toFixed(4),
     });
 
@@ -242,6 +276,8 @@ export async function chat(
       usage: {
         inputTokens,
         outputTokens,
+        cacheReadTokens,
+        cacheCreationTokens: cacheWriteTokens,
         costUsd,
       },
     };

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { WebAppDeps } from "../app";
+import type { OpenCrowConfig } from "../../config/schema";
 import { getAllSessions } from "../../store/sessions";
 import { getProcessStatuses } from "../../process/health";
 import { createLogger } from "../../logger";
@@ -10,52 +11,80 @@ const startTime = Date.now();
 interface ExternalService {
   readonly name: string;
   readonly url: string;
+  /** Probed only when the primary `url` is unreachable. */
+  readonly fallbackUrl?: string;
 }
 
-const EXTERNAL_SERVICES: readonly ExternalService[] = [
-  { name: "embedding", url: "http://127.0.0.1:8901/health" },
-];
+/** Default Ollama base URL, mirroring createEmbeddingProviderFromConfig. */
+const OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1";
 
-async function probeExternalServices() {
+/**
+ * Derive a liveness URL for a locally-hosted embeddings provider from config.
+ *
+ * Ollama answers at its origin root, so we strip the OpenAI-compatible path
+ * (e.g. `/v1`) off the configured base URL. Remote providers (openrouter) have
+ * no meaningful local liveness probe, so none is returned.
+ */
+function embeddingFallbackUrl(config: OpenCrowConfig): string | undefined {
+  const embeddings = config.embeddings;
+  if (embeddings?.provider !== "ollama") return undefined;
+
+  const baseUrl = embeddings.baseUrl ?? OLLAMA_DEFAULT_BASE_URL;
+  try {
+    return new URL(baseUrl).origin + "/";
+  } catch {
+    return undefined;
+  }
+}
+
+function buildExternalServices(
+  config: OpenCrowConfig,
+): readonly ExternalService[] {
+  return [
+    {
+      name: "embedding",
+      // Dedicated local embedding server (convention); checked first.
+      url: "http://127.0.0.1:8901/health",
+      // Fall back to the configured embeddings provider's liveness endpoint
+      // (e.g. local Ollama) when the dedicated server is unreachable.
+      fallbackUrl: embeddingFallbackUrl(config),
+    },
+  ];
+}
+
+async function probeUrl(url: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function probeExternalServices(
+  services: readonly ExternalService[],
+) {
   const results = await Promise.all(
-    EXTERNAL_SERVICES.map(async (svc) => {
-      try {
-        const res = await fetch(svc.url, {
-          signal: AbortSignal.timeout(3000),
-        });
-        const ok = res.ok;
-        return {
-          name: svc.name,
-          pid: 0,
-          status: ok ? ("alive" as const) : ("dead" as const),
-          startedAt: 0,
-          lastHeartbeat: ok ? Date.now() : 0,
-          uptimeSeconds: 0,
-          metadata: {},
-          desired: true,
-          syncStatus: ok ? ("synced" as const) : ("stopped" as const),
-          restartCount: 0,
-          backoffMs: 0,
-          nextRetryAt: null,
-          orchestrated: false,
-        };
-      } catch {
-        return {
-          name: svc.name,
-          pid: 0,
-          status: "dead" as const,
-          startedAt: 0,
-          lastHeartbeat: 0,
-          uptimeSeconds: 0,
-          metadata: {},
-          desired: true,
-          syncStatus: "stopped" as const,
-          restartCount: 0,
-          backoffMs: 0,
-          nextRetryAt: null,
-          orchestrated: false,
-        };
-      }
+    services.map(async (svc) => {
+      const ok =
+        (await probeUrl(svc.url)) ||
+        (svc.fallbackUrl !== undefined && (await probeUrl(svc.fallbackUrl)));
+
+      return {
+        name: svc.name,
+        pid: 0,
+        status: ok ? ("alive" as const) : ("dead" as const),
+        startedAt: 0,
+        lastHeartbeat: ok ? Date.now() : 0,
+        uptimeSeconds: 0,
+        metadata: {},
+        desired: true,
+        syncStatus: ok ? ("synced" as const) : ("stopped" as const),
+        restartCount: 0,
+        backoffMs: 0,
+        nextRetryAt: null,
+        orchestrated: false,
+      };
     }),
   );
   return results;
@@ -63,6 +92,7 @@ async function probeExternalServices() {
 
 export function createStatusRoutes(deps: WebAppDeps): Hono {
   const app = new Hono();
+  const externalServices = buildExternalServices(deps.config);
 
   app.get("/status", async (c) => {
     const sessions = await getAllSessions();
@@ -181,17 +211,17 @@ export function createStatusRoutes(deps: WebAppDeps): Hono {
             }
           }
 
-          const external = await probeExternalServices();
+          const external = await probeExternalServices(externalServices);
           return c.json({ data: [...merged, ...external] });
         }
 
-        const external = await probeExternalServices();
+        const external = await probeExternalServices(externalServices);
         return c.json({
           data: [...heartbeatResult.data, ...external],
         });
       } catch (err) {
         log.warn("Failed to fetch processes from core", { error: err });
-        const external = await probeExternalServices();
+        const external = await probeExternalServices(externalServices);
         return c.json({ data: external });
       }
     }
@@ -199,7 +229,7 @@ export function createStatusRoutes(deps: WebAppDeps): Hono {
     // In distributed mode, read directly from DB
     try {
       const statuses = await getProcessStatuses();
-      const external = await probeExternalServices();
+      const external = await probeExternalServices(externalServices);
       return c.json({ data: [...statuses, ...external] });
     } catch (err) {
       log.warn("Failed to fetch process statuses", { error: err });

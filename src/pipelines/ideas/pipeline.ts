@@ -154,11 +154,19 @@ const EMPTY_RUN_SUMMARY: PipelineResultSummary = {
   durationMs: 0,
 };
 
+/**
+ * Default step deadline. Generous (12 min) so it only ever fires on a genuine
+ * hang. Synthesis (the longest step) typically runs 3-8 min in the worst case.
+ * Override via the optional deadlineMs parameter in tests.
+ */
+const DEFAULT_STEP_DEADLINE_MS = 12 * 60 * 1000; // 12 minutes
+
 async function runStep<T>(
   runId: string,
   stepName: string,
   work: () => Promise<T>,
   formatOutput: (result: T) => string,
+  deadlineMs: number = DEFAULT_STEP_DEADLINE_MS,
 ): Promise<T> {
   // Resume fast-path: if this step already completed (a prior process run that
   // was interrupted by a restart) and its structured output was persisted,
@@ -182,8 +190,32 @@ async function runStep<T>(
   (heartbeat as { unref?: () => void }).unref?.();
 
   const start = nowMs();
+  let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+
   try {
-    const result = await work();
+    // Race work() against a hard deadline. If the deadline fires first we reject
+    // with a descriptive error so the catch below marks the step 'failed' and
+    // re-throws — the run's outer catch then sets the run 'failed' (resumable /
+    // reaper-eligible). The underlying hung promise/socket may leak until process
+    // restart; that is acceptable (funnel is freed).
+    // TODO: thread an AbortSignal from here → work() → chat() when the scope is
+    // clean; currently the signal would need to plumb through collectors → agent
+    // SDK → chatAnthropicDirect, which is out of scope for this fix.
+    const workPromise = work();
+    // If the deadline wins the race, workPromise is no longer awaited; swallow any
+    // late settlement so it can't surface as a process-level unhandledRejection.
+    // The race still observes work()'s rejection (this detached catch only marks
+    // it handled), so normal failures propagate to the catch block unchanged.
+    workPromise.catch(() => {});
+    const result = await Promise.race([
+      workPromise,
+      new Promise<never>((_resolve, reject) => {
+        deadlineTimer = setTimeout(() => {
+          reject(new Error(`Step exceeded deadline (${deadlineMs}ms): ${stepName}`));
+        }, deadlineMs);
+        (deadlineTimer as { unref?: () => void }).unref?.();
+      }),
+    ]);
     await updatePipelineStep(step.id, {
       status: "completed",
       outputSummary: formatOutput(result),
@@ -200,6 +232,7 @@ async function runStep<T>(
     throw err;
   } finally {
     clearInterval(heartbeat);
+    if (deadlineTimer !== null) clearTimeout(deadlineTimer);
   }
 }
 

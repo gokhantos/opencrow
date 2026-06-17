@@ -9,7 +9,12 @@ FROM oven/bun:1.3.14
 ENV HOME=/home/bun \
     NODE_ENV=production \
     # The Agent SDK runs the bundled Claude Code CLI under bun — no browser needed.
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+    # Explicit container signal for the single-instance guard: inside a container
+    # the runtime + restart policy own singleton-ness and PIDs are recycled, so
+    # the supervisor must take over a stale registry row WITHOUT killing by PID
+    # (a recycled PID is typically the container's own bun/start-script parent).
+    OPENCROW_IN_CONTAINER=1
 
 WORKDIR /app
 RUN chown bun:bun /app

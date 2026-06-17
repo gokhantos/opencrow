@@ -388,6 +388,31 @@ export async function markRunFailed(id: string, error: string): Promise<void> {
 }
 
 /**
+ * Fail all non-terminal steps for a run so a resume never produces ghost 'running'
+ * rows. Only touches steps with status IN ('running', 'pending') — completed
+ * checkpoints are preserved so runStep's resume fast-path can replay them.
+ * Returns the number of rows updated.
+ */
+export async function failIncompleteStepsForRun(
+  runId: string,
+  reason: string,
+): Promise<number> {
+  const db = getDb();
+  const ts = now();
+  const rows = (await db`
+    UPDATE pipeline_steps
+    SET status = 'failed',
+        error = ${reason},
+        finished_at = ${ts},
+        last_heartbeat = NULL
+    WHERE run_id = ${runId}
+      AND status IN ('running', 'pending')
+    RETURNING id
+  `) as Array<Record<string, unknown>>;
+  return rows.length;
+}
+
+/**
  * Reset a run to 'running' for a deliberate manual re-trigger: clears the
  * prior error / finish time and resets the resume attempt counter (a manual
  * resume is intentional, so it should not count against the auto-resume cap).
