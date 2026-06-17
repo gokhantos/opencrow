@@ -103,6 +103,61 @@ export function parseJsonFromResponse<T>(text: string, fallback: T): T {
   }
 }
 
+/**
+ * Truncation-tolerant parser for a JSON array of objects. The wide
+ * over-generation can emit a response large enough to hit the model's
+ * output-token cap, leaving the array unterminated — standard JSON.parse then
+ * yields NOTHING and the pool silently collapses. This walks the array body and
+ * recovers every COMPLETE top-level element, discarding only an incomplete
+ * trailing one. Returns [] when no array is present.
+ */
+export function parseJsonArrayLenient(text: string): unknown[] {
+  const fenced = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  const body = fenced?.[1] ?? text;
+  const start = body.indexOf("[");
+  if (start === -1) return [];
+
+  const out: unknown[] = [];
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let elemStart = -1;
+
+  for (let i = start + 1; i < body.length; i++) {
+    const ch = body[i]!;
+    if (inString) {
+      if (escape) escape = false;
+      else if (ch === "\\") escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      if (depth === 0 && elemStart === -1) elemStart = i;
+      inString = true;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      if (depth === 0 && elemStart === -1) elemStart = i;
+      depth++;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      if (ch === "]" && depth === 0) break; // end of the outer array
+      depth--;
+      if (depth === 0 && elemStart !== -1) {
+        try {
+          out.push(JSON.parse(body.slice(elemStart, i + 1)));
+        } catch {
+          /* skip a malformed element, keep the rest */
+        }
+        elemStart = -1;
+      }
+      continue;
+    }
+  }
+  return out;
+}
+
 // ── Signal citation tokens (chain-of-evidence #8 part2) ─────────────────
 
 /**
@@ -1220,6 +1275,11 @@ Return ONLY a JSON array of {idea, probability} seeds (${seedsPer} per hypothesi
 
   const response = await chat(messages, {
     ...buildChatOptions(model),
+    // Over-generating N seeds per intersection is a large response; the default
+    // 16k output cap truncates the JSON array mid-stream. Raise the budget and
+    // pair it with the truncation-tolerant parser below so the pool never
+    // silently collapses to the single-idea fallback.
+    maxOutputTokens: 32000,
     systemPrompt:
       "You are a product strategist emitting a DIVERSE DISTRIBUTION of grounded product ideas via Verbalized Sampling. Each idea is a {idea, probability} pair. Output only a valid JSON array.",
   });
@@ -1229,7 +1289,9 @@ Return ONLY a JSON array of {idea, probability} seeds (${seedsPer} per hypothesi
     preview: response.text.slice(0, 200),
   });
 
-  const parsed = parseJsonFromResponse<unknown[]>(response.text, []);
+  // Truncation-tolerant: recover every complete element even if the array was
+  // cut off at the token cap (standard parse would yield 0 and force fallback).
+  const parsed = parseJsonArrayLenient(response.text);
   const seeds = parseVerbalizedSeeds(parsed, generateWide.maxCandidates);
 
   const candidates = seeds
