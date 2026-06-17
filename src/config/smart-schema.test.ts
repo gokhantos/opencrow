@@ -44,6 +44,13 @@ describe("smartConfigSchema", () => {
         multiSegment: true,
         sigeDivergent: false,
       },
+      demand: {
+        enabled: true,
+        redditIntent: true,
+        fundingSignal: true,
+        externalTrends: false,
+        minMatches: 2,
+      },
     });
   });
 

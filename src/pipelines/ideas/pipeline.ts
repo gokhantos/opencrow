@@ -29,10 +29,28 @@ import {
   deepSearch,
   buildValidatedExemplars,
   signalCitationToken,
+  compositeToQualityScore,
 } from "./synthesizer";
 import type { ValidatedExemplar, DeepSearchOptions } from "./synthesizer";
-import type { SmartIdeasConfig, SigeConfig, GiantConfig } from "../../config/schema";
+import type {
+  SmartIdeasConfig,
+  SigeConfig,
+  GiantConfig,
+  DemandConfig,
+} from "../../config/schema";
 import { aggregateGiant } from "./giant";
+import type { GiantAxisScores, GiantAxisKey } from "./giant";
+import {
+  enrichDemand,
+  DEFAULT_DEMAND_PROBES,
+} from "./demand-probes";
+import type { EnrichDemandConfig } from "./demand-probes";
+import {
+  hasCitedDemand,
+  demandArtifactSchema,
+  type DemandArtifact,
+  type DemandCandidateText,
+} from "./demand";
 import { checkForDuplicates, verifyEvidence, annotateOriginality } from "./validate";
 import { getConsumedIds, markConsumed } from "./consumption";
 import { getSourceCredibility, credibilityKey } from "./credibility";
@@ -465,6 +483,254 @@ export function evaluateCandidateGiantGate(
     gated: candidate.giantGated === true,
     gateReasons: candidate.giantGateReasons ?? [],
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 2 "demand-side grounding" — pipeline-level demand enrichment, GIANT
+// demand-axis rescore, provenance binding, and run-level coverage instrumentation.
+//
+// The demand subsystem (demand.ts + demand-probes.ts) is DETERMINISTIC and
+// graceful: enrichDemand extracts keywords from the candidate's own text by CODE,
+// queries EXISTING scraped tables (reddit_posts / news_articles) for real row
+// COUNTS, and returns a cited {@link DemandArtifact} (never an LLM opinion). The
+// artifact is what feeds the GIANT demand evidence-gate so deserving ideas escape
+// the <=2 cap. All persistence is best-effort so the optional path never breaks
+// the core insert.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * PHASE 2 (demand) — Map a candidate onto the {@link DemandCandidateText} the
+ * demand subsystem tokenizes. `reasoning` is this pipeline's problem statement.
+ * PURE — no IO; just a field projection so keyword extraction stays deterministic.
+ */
+export function toDemandCandidateText(
+  candidate: GeneratedIdeaCandidate,
+): DemandCandidateText {
+  return {
+    title: candidate.title,
+    summary: candidate.summary,
+    reasoning: candidate.reasoning,
+    trendIntersection: candidate.trendIntersection,
+    targetAudience: candidate.targetAudience,
+  };
+}
+
+/**
+ * PHASE 2 (demand) — Map {@link EnrichDemandConfig} from the validated
+ * smart.demand config block plus optional window/limit/supplyDensity knobs.
+ * PURE.
+ */
+export function buildEnrichDemandConfig(
+  demand: DemandConfig,
+  knobs: {
+    readonly windowSec?: number;
+    readonly limit?: number;
+    readonly supplyDensity?: number;
+  } = {},
+): EnrichDemandConfig {
+  return {
+    enabled: demand.enabled,
+    redditIntent: demand.redditIntent,
+    fundingSignal: demand.fundingSignal,
+    externalTrends: demand.externalTrends,
+    minMatches: demand.minMatches,
+    ...(knobs.windowSec !== undefined ? { windowSec: knobs.windowSec } : {}),
+    ...(knobs.limit !== undefined ? { limit: knobs.limit } : {}),
+    ...(knobs.supplyDensity !== undefined
+      ? { supplyDensity: knobs.supplyDensity }
+      : {}),
+  };
+}
+
+/** Provenance entries carried by a demand artifact's cited evidence rows. */
+function demandProvenanceEntries(
+  artifact: DemandArtifact,
+): readonly ProvenanceEntry[] {
+  const tableByKind: Readonly<Record<string, string>> = {
+    reddit_intent: "reddit_posts",
+    funding_news: "news_articles",
+  };
+  const seen = new Set<string>();
+  const entries: ProvenanceEntry[] = [];
+  for (const e of artifact.evidence) {
+    const table = tableByKind[e.kind];
+    if (table === undefined) continue; // search_trend/hiring carry no scraped row
+    const id = e.sourceId?.trim();
+    if (!id) continue;
+    const key = `${table}:${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    entries.push({ table, id });
+  }
+  return entries;
+}
+
+/**
+ * PHASE 2 (demand) — RE-SCORE the GIANT demand axis from the cited
+ * {@link DemandArtifact} and RE-AGGREGATE the composite so ideas with REAL cited
+ * demand evidence escape the demand evidence-gate cap (<=2). This is the Phase 2
+ * unlock.
+ *
+ * DETERMINISTIC + IMMUTABLE — returns a NEW candidate (never mutates):
+ *   - candidate.giant.demand  ← artifact.score (the deterministic, cited value)
+ *   - hasDemandEvidence       ← hasCitedDemand(artifact) (>=1 row AND score>cap)
+ *   - composite / qualityScore / giantComposite / giantGated / gateReasons are
+ *     recomputed via {@link aggregateGiant} under the (possibly opened) gate.
+ *   - painSeverity is left intact (it mirrors acuteProblem, not demand).
+ *
+ * When the candidate carries no raw GIANT scorecard (never matched a critique
+ * entry) there is nothing to rescore — the candidate is returned unchanged so the
+ * optional demand path never invents a score. PURE — no DB / clock / rng.
+ */
+export function applyDemandRescore(
+  candidate: GeneratedIdeaCandidate,
+  artifact: DemandArtifact,
+  giant: GiantConfig,
+): GeneratedIdeaCandidate {
+  if (candidate.giant === undefined) return candidate;
+
+  const rescoredGiant: GiantAxisScores = {
+    ...candidate.giant,
+    demand: artifact.score,
+  };
+
+  const hasDemandEvidence = hasCitedDemand(artifact);
+  const aggregate = aggregateGiant(rescoredGiant, {
+    weights: giant.weights,
+    enforceGates: giant.enforceGates,
+    hasDemandEvidence,
+  });
+
+  // When the cited artifact opens the evidence-gate, stamp a CITED demand
+  // evidence string (a verbatim quote when available, else the matched-row
+  // counts) onto giantEvidence.demand. This keeps the downstream pipeline-level
+  // gate check (candidateHasDemandEvidence, used by the shadow-gate + store)
+  // CONSISTENT with this rescore — the gate opens on the same cited buyer-intent.
+  // Never fabricated: every part is derived from real evidence rows.
+  const nextEvidence = hasDemandEvidence
+    ? {
+        ...(candidate.giantEvidence ?? ({} as Record<GiantAxisKey, string>)),
+        demand: buildDemandEvidenceString(artifact),
+      }
+    : candidate.giantEvidence;
+
+  return {
+    ...candidate,
+    giant: rescoredGiant,
+    ...(nextEvidence !== undefined ? { giantEvidence: nextEvidence } : {}),
+    qualityScore: compositeToQualityScore(aggregate.composite),
+    giantComposite: aggregate.composite,
+    giantGated: aggregate.gated,
+    giantGateReasons: aggregate.gateReasons,
+  };
+}
+
+/**
+ * PHASE 2 (demand) — Build a CITED, human-readable demand-evidence string from a
+ * demand artifact for giantEvidence.demand. Reuses a real evidence quote verbatim
+ * when present (never invented), otherwise summarizes the matched-row counts by
+ * kind. PURE.
+ */
+export function buildDemandEvidenceString(artifact: DemandArtifact): string {
+  const quoted = artifact.evidence.find(
+    (e) => typeof e.quote === "string" && e.quote.trim().length > 0,
+  );
+  if (quoted?.quote) {
+    const id = quoted.sourceId ? ` [${quoted.kind}:${quoted.sourceId}]` : "";
+    return `"${quoted.quote.trim().slice(0, 200)}"${id}`;
+  }
+  const byKind = new Map<string, number>();
+  for (const e of artifact.evidence) {
+    const count = Number.isFinite(e.count) && e.count > 0 ? e.count : 0;
+    byKind.set(e.kind, (byKind.get(e.kind) ?? 0) + count);
+  }
+  const parts = [...byKind.entries()].map(([kind, n]) => `${kind}:${n}`);
+  return `demand matches — ${parts.join(", ")}`;
+}
+
+/** Run-level demand-coverage instrumentation (PURE). */
+export interface DemandCoverageStats {
+  readonly total: number;
+  /** How many candidates carried a CITED demand artifact (gate-opening). */
+  readonly cited: number;
+  /** Share of candidates with a cited artifact (0..1). */
+  readonly citedShare: number;
+  readonly meanDemandScore: number;
+  readonly meanWhitespace: number;
+}
+
+/**
+ * PHASE 2 (demand) — Summarize demand coverage across the surviving candidates so
+ * a single log line proves how many ideas are now demand-grounded. PURE: reads
+ * the artifacts keyed by candidate; absent artifacts count toward `total` with a
+ * 0 contribution (absence is visible, not hidden). Means are over the full set.
+ */
+export function summarizeDemandCoverage(
+  candidates: readonly GeneratedIdeaCandidate[],
+  artifacts: ReadonlyMap<GeneratedIdeaCandidate, DemandArtifact>,
+): DemandCoverageStats {
+  const total = candidates.length;
+  let cited = 0;
+  let scoreSum = 0;
+  let whitespaceSum = 0;
+
+  for (const candidate of candidates) {
+    const artifact = artifacts.get(candidate);
+    if (artifact === undefined) continue;
+    if (hasCitedDemand(artifact)) cited += 1;
+    scoreSum += artifact.score;
+    whitespaceSum += artifact.whitespace;
+  }
+
+  return {
+    total,
+    cited,
+    citedShare: total > 0 ? cited / total : 0,
+    meanDemandScore: total > 0 ? scoreSum / total : 0,
+    meanWhitespace: total > 0 ? whitespaceSum / total : 0,
+  };
+}
+
+/**
+ * PHASE 2 (demand) — Best-effort stamp of the cited {@link DemandArtifact} +
+ * resolved segment onto a stored idea (migration 015 columns: demand_json,
+ * demand_score, whitespace, segment). Done as a SEPARATE UPDATE — like
+ * {@link stampIdeaGiant} — so it never blocks or breaks the core insert and
+ * swallows errors (e.g. pre-migration DBs) gracefully. The artifact is validated
+ * via {@link demandArtifactSchema} before persistence so only well-formed,
+ * count-backed evidence is written.
+ */
+async function stampIdeaDemand(
+  ideaId: string,
+  artifact: DemandArtifact | undefined,
+  segment: SegmentId,
+): Promise<void> {
+  try {
+    const parsed =
+      artifact !== undefined
+        ? demandArtifactSchema.safeParse(artifact)
+        : undefined;
+    const demandJson =
+      parsed !== undefined && parsed.success
+        ? JSON.stringify(parsed.data)
+        : null;
+    const demandScore =
+      parsed !== undefined && parsed.success ? parsed.data.score : null;
+    const whitespace =
+      parsed !== undefined && parsed.success ? parsed.data.whitespace : null;
+
+    const db = getDb();
+    await db`
+      UPDATE generated_ideas
+      SET demand_json = ${demandJson}::jsonb,
+          demand_score = ${demandScore},
+          whitespace = ${whitespace},
+          segment = ${segment}
+      WHERE id = ${ideaId}
+    `;
+  } catch (err) {
+    log.warn("Failed to stamp idea demand artifact", { ideaId, err });
+  }
 }
 
 /**
@@ -1076,6 +1342,54 @@ export async function runIdeasPipeline(
       kept = await applySigeValuation(kept, sigeConfig, deepSearchContext);
     }
 
+    // ── PHASE 2 (demand-side grounding): cited demand enrichment + rescore ──
+    // Give every surviving candidate an EXTERNAL truth source for the GIANT
+    // demand axis. enrichDemand extracts demand keywords from the candidate's own
+    // text by CODE (no per-candidate LLM call), queries EXISTING scraped tables
+    // (reddit_posts / news_articles) for real row COUNTS, and returns a cited,
+    // deterministic DemandArtifact. We then RE-SCORE the GIANT demand axis from
+    // artifact.score and RE-AGGREGATE the composite with hasDemandEvidence =
+    // hasCitedDemand(artifact) — the Phase 2 unlock that lets ideas with REAL
+    // cited buyer-intent escape the demand evidence-gate cap (<=2). The artifact
+    // is kept in a side-map keyed by the (possibly rescored) candidate so it can
+    // be persisted at store and bound into provenance. Gated behind
+    // smart.demand.enabled; enrichDemand never throws (returns an absence
+    // artifact on any failure) so the default path is always safe.
+    const demandByCandidate = new Map<GeneratedIdeaCandidate, DemandArtifact>();
+    if (smart.demand.enabled && kept.length > 0) {
+      try {
+        const demandCfg = buildEnrichDemandConfig(smart.demand);
+        const rescored: GeneratedIdeaCandidate[] = [];
+        for (const candidate of kept) {
+          const artifact = await enrichDemand(
+            toDemandCandidateText(candidate),
+            DEFAULT_DEMAND_PROBES,
+            demandCfg,
+          );
+          const next = applyDemandRescore(candidate, artifact, smart.giant);
+          demandByCandidate.set(next, artifact);
+          rescored.push(next);
+        }
+        kept = rescored;
+
+        const coverage = summarizeDemandCoverage(kept, demandByCandidate);
+        log.info("Phase 2 demand grounding: coverage", {
+          candidates: coverage.total,
+          cited: coverage.cited,
+          citedShare: Number(coverage.citedShare.toFixed(2)),
+          meanDemandScore: Number(coverage.meanDemandScore.toFixed(2)),
+          meanWhitespace: Number(coverage.meanWhitespace.toFixed(2)),
+        });
+      } catch (err) {
+        // The optional demand path must never break the default run: on any
+        // unexpected failure keep the un-enriched candidates and an empty map.
+        log.warn("Demand enrichment failed — keeping un-enriched candidates", {
+          err,
+        });
+        demandByCandidate.clear();
+      }
+    }
+
     // ── PHASE 0 (GIANT): shadow-mode hard-gate evaluation ──────────────
     // Re-evaluate the GIANT gate for each survivor using config weights + the
     // demand evidence-gate. The gate verdict is captured per-candidate so it can
@@ -1228,11 +1542,29 @@ export async function runIdeasPipeline(
             ].join("\n");
 
             // #4 part1 — narrow provenance to the source rows this idea cites.
-            const ideaProvenance = buildIdeaProvenance(
+            const baseProvenance = buildIdeaProvenance(
               candidate,
               capabilities.capabilities,
               runLevelProvenance,
             );
+
+            // PHASE 2 (demand) — bind the demand artifact's cited evidence rows
+            // (reddit_posts / news_articles, by sourceId) into provenance so the
+            // demand grounding is auditable alongside the capability citations.
+            // Deduped by {table,id}; absent demand artifact contributes nothing.
+            const demandArtifact = demandByCandidate.get(candidate);
+            const demandProvenance = demandArtifact
+              ? demandProvenanceEntries(demandArtifact)
+              : [];
+            const provenanceSeen = new Set(
+              baseProvenance.map((e) => `${e.table}:${e.id}`),
+            );
+            const ideaProvenance: readonly ProvenanceEntry[] = [
+              ...baseProvenance,
+              ...demandProvenance.filter(
+                (e) => !provenanceSeen.has(`${e.table}:${e.id}`),
+              ),
+            ];
 
             const idea = await insertIdea({
               agent_id: AGENT_ID,
@@ -1271,6 +1603,18 @@ export async function runIdeasPipeline(
                 evaluateCandidateGiantGate(candidate, smart.giant);
               await stampIdeaGiant(idea.id, candidate, gate);
             }
+
+            // PHASE 2 (demand) — stamp the cited DemandArtifact + resolved
+            // segment (migration 015 columns: demand_json / demand_score /
+            // whitespace / segment). The segment is persisted for EVERY idea
+            // (previously orphaned) so downstream selection / the eval harness
+            // can read it. Best-effort — validated via demandArtifactSchema and
+            // swallows errors on pre-migration DBs; never blocks the insert.
+            await stampIdeaDemand(
+              idea.id,
+              demandByCandidate.get(candidate),
+              resolveCandidateSegment(candidate),
+            );
 
             if (memoryManager) {
               try {
