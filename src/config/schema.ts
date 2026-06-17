@@ -505,6 +505,34 @@ export const giantConfigSchema = z
     weights: { ...GIANT_DEFAULT_WEIGHTS },
   });
 
+// Phase 1 "generate-wide": widen the candidate pool BEFORE selection so
+// downstream selectors have a diverse, evidence-tethered set to rank instead of
+// a single idea per intersection. All fields are defaulted -> backward-compatible.
+// The default path keeps producing ideas (overGenerate/multiSegment ON); the
+// optional SIGE divergent merge stays OFF. maxCandidates caps total cost.
+export const generateWideConfigSchema = z
+  .object({
+    // Verbalized-sampling over-generation: ask for several distinct seeds per
+    // intersection (instead of exactly one) then dedupe/select downstream.
+    overGenerate: z.boolean().default(true),
+    // How many distinct seeds to request per intersection when overGenerating.
+    seedsPerIntersection: z.number().int().min(1).max(12).default(5),
+    // Hard ceiling on the widened candidate pool so cost stays bounded.
+    maxCandidates: z.number().int().min(8).max(120).default(40),
+    // Force segment spread (consumer/b2b_saas/devtools/...) so the pool is not
+    // 100% consumer-mobile mode collapse.
+    multiSegment: z.boolean().default(true),
+    // Flag-gated merge of the SIGE divergent-generation pool. OFF by default.
+    sigeDivergent: z.boolean().default(false),
+  })
+  .default({
+    overGenerate: true,
+    seedsPerIntersection: 5,
+    maxCandidates: 40,
+    multiSegment: true,
+    sigeDivergent: false,
+  });
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -529,6 +557,9 @@ export const smartConfigSchema = z.object({
   // The GIANT shared optimization target. Compute + store in SHADOW mode by
   // default (enforceGates=false). Fully defaulted -> backward-compatible.
   giant: giantConfigSchema,
+  // Phase 1 "generate-wide": over-generation + multi-segment spread + optional
+  // SIGE divergent merge. Fully defaulted -> backward-compatible.
+  generateWide: generateWideConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -547,6 +578,13 @@ const SMART_IDEAS_DEFAULTS = {
     enabled: true,
     enforceGates: false,
     weights: { ...GIANT_DEFAULT_WEIGHTS },
+  },
+  generateWide: {
+    overGenerate: true,
+    seedsPerIntersection: 5,
+    maxCandidates: 40,
+    multiSegment: true,
+    sigeDivergent: false,
   },
 } as const;
 
@@ -662,5 +700,6 @@ export type MemoryEvictionConfig = z.infer<typeof memoryEvictionConfigSchema>;
 export type SigeConfig = z.infer<typeof sigeConfigSchema>;
 export type SmartIdeasConfig = z.infer<typeof smartConfigSchema>;
 export type GiantConfig = z.infer<typeof giantConfigSchema>;
+export type GenerateWideConfig = z.infer<typeof generateWideConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;

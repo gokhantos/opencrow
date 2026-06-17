@@ -33,12 +33,21 @@ import {
 import type { ValidatedExemplar, DeepSearchOptions } from "./synthesizer";
 import type { SmartIdeasConfig, SigeConfig, GiantConfig } from "../../config/schema";
 import { aggregateGiant } from "./giant";
-import { checkForDuplicates, verifyEvidence } from "./validate";
+import { checkForDuplicates, verifyEvidence, annotateOriginality } from "./validate";
 import { getConsumedIds, markConsumed } from "./consumption";
 import { getSourceCredibility, credibilityKey } from "./credibility";
 import { evaluateCandidates } from "../../sige/simulation/expert-game";
 import type { CandidateIdea } from "../../sige/simulation/expert-game";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
+import {
+  generateDivergentIdeas,
+  DEFAULT_SIGE_SESSION_CONFIG,
+} from "../../sige/run";
+import type { DivergentCandidate } from "../../sige/run";
+import { selectWithNoveltyReserve } from "./generate-wide";
+import { inferSegment, inferSegmentMatch, SEGMENT_IDS } from "./segments";
+import type { SegmentId } from "./segments";
+import type { GenerateWideConfig } from "../../config/schema";
 import type { Capability, GeneratedIdeaCandidate } from "./types";
 
 const log = createLogger("pipeline:ideas");
@@ -554,6 +563,229 @@ async function applySigeValuation(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PHASE 1 "generate-wide" — pipeline-level widening helpers (SIGE-divergent
+// merge, originality annotation, segment-spread enforcement, instrumentation).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * PHASE 1 (generate-wide) — Build the grounded chain-of-evidence signals context
+ * the SIGE divergent personas reason over. This is the SAME evidence the
+ * synthesizer already consumes (trend / pain / capability summaries + deep-search
+ * context) so divergent candidates stay evidence-tethered and the groundedness
+ * acceptance gate is protected. Bounded slices keep the prompt size sane. PURE.
+ */
+export function buildSignalsContext(parts: {
+  readonly trendsSummary: string;
+  readonly painsSummary: string;
+  readonly capabilitiesSummary: string;
+  readonly deepSearchContext: string;
+}): string {
+  const sections: string[] = [];
+  const push = (heading: string, body: string): void => {
+    const trimmed = (body ?? "").trim();
+    if (trimmed.length > 0) {
+      sections.push(`=== ${heading} ===\n${trimmed.slice(0, 8000)}`);
+    }
+  };
+  push("TRENDS", parts.trendsSummary);
+  push("PAIN POINTS", parts.painsSummary);
+  push("CAPABILITIES", parts.capabilitiesSummary);
+  push("DEEP-SEARCH EVIDENCE", parts.deepSearchContext);
+  return sections.join("\n\n");
+}
+
+/**
+ * PHASE 1 (generate-wide) — Map one UNSCORED SIGE {@link DivergentCandidate} into
+ * a {@link GeneratedIdeaCandidate} so it competes on the SAME GIANT scorecard /
+ * dedup as the over-generated pool. qualityScore=0 and category="" mark it as
+ * unscored (Pass-3 critique sets the real score). Provenance is tagged via
+ * sourcesUsed so divergent ideas are auditable. PURE.
+ */
+export function mapDivergentToCandidate(
+  divergent: DivergentCandidate,
+): GeneratedIdeaCandidate {
+  return {
+    title: divergent.title,
+    summary: divergent.summary,
+    reasoning: "",
+    designDescription: "",
+    monetizationDetail: "",
+    sourceLinks: [],
+    sourcesUsed: `sige-divergent (${divergent.proposedBy})`,
+    category: "",
+    qualityScore: 0,
+    targetAudience: "",
+    keyFeatures: [],
+    revenueModel: "",
+    trendIntersection: "",
+    ...(divergent.supportingSignalIds !== undefined
+      ? { supportingSignalIds: divergent.supportingSignalIds }
+      : {}),
+  };
+}
+
+/**
+ * PHASE 1 (generate-wide) — Flag-gated SIGE divergent generation. When
+ * sigeDivergent is OFF (default) returns [] (no-op, no SIGE call). When ON, runs
+ * the divergent personas over the run's grounded signals and maps the results to
+ * candidates for the synthesizer pool. generateDivergentIdeas NEVER throws (it
+ * returns [] on failure) but we still wrap defensively so enabling this optional
+ * widening path can never break the run. Capped at maxCandidates.
+ */
+async function fetchDivergentCandidates(
+  generateWide: GenerateWideConfig,
+  signalsContext: string,
+  model: string,
+): Promise<readonly GeneratedIdeaCandidate[]> {
+  if (!generateWide.sigeDivergent) return [];
+
+  try {
+    const divergent = await generateDivergentIdeas(signalsContext, {
+      maxCandidates: generateWide.maxCandidates,
+      config: { ...DEFAULT_SIGE_SESSION_CONFIG, model, agentModel: model },
+    });
+    const mapped = divergent
+      .filter((d) => d.title.trim().length > 0)
+      .map(mapDivergentToCandidate)
+      .slice(0, generateWide.maxCandidates);
+    log.info("SIGE divergent pool generated", {
+      raw: divergent.length,
+      merged: mapped.length,
+    });
+    return mapped;
+  } catch (err) {
+    log.warn("SIGE divergent generation failed — merging no divergent ideas", {
+      err,
+    });
+    return [];
+  }
+}
+
+/**
+ * PHASE 1 (generate-wide) — Resolve a candidate's segment for spread accounting.
+ * Prefers an explicit, persisted {@link SegmentId} tag (set by the synthesizer
+ * when multiSegment is on); otherwise infers it from the candidate's free text.
+ * `inferSegmentMatch` lets us distinguish a real keyword signal (score > 0) from
+ * the consumer fallback (score === 0). PURE.
+ */
+function resolveCandidateSegment(candidate: GeneratedIdeaCandidate): SegmentId {
+  if (candidate.segment !== undefined) return candidate.segment;
+  return inferSegment(
+    `${candidate.category} ${candidate.title} ${candidate.summary}`,
+  );
+}
+
+/**
+ * PHASE 1 (generate-wide) — Enforce ROUGH segment spread on the final selected
+ * set so a single run cannot collapse to ~100% one segment (the homogeneity bug).
+ *
+ * Greedy, quality-preserving, deterministic: walk the candidates in their
+ * incoming (quality-sorted) order and admit each unless its segment already holds
+ * the per-segment cap = ceil(limit * maxFraction). Over-capped candidates are
+ * deferred and back-filled only if the spread-respecting pass leaves empty slots,
+ * so we never return FEWER ideas than a plain slice would. Never reorders beyond
+ * what the cap forces. PURE + immutable.
+ *
+ * @param maxFraction max share of the final set any one segment may occupy
+ *   (default 0.5). Clamped to [1/|segments|, 1]; 1 disables the cap.
+ */
+export function enforceSegmentSpread(
+  candidates: readonly GeneratedIdeaCandidate[],
+  limit: number,
+  maxFraction = 0.5,
+): readonly GeneratedIdeaCandidate[] {
+  if (limit <= 0) return [];
+  if (candidates.length <= limit) return [...candidates];
+
+  const floor = 1 / SEGMENT_IDS.length;
+  const fraction = Math.min(1, Math.max(floor, maxFraction));
+  const perSegmentCap = Math.max(1, Math.ceil(limit * fraction));
+
+  const counts = new Map<SegmentId, number>();
+  const admitted: GeneratedIdeaCandidate[] = [];
+  const deferred: GeneratedIdeaCandidate[] = [];
+
+  for (const candidate of candidates) {
+    if (admitted.length >= limit) break;
+    const segment = resolveCandidateSegment(candidate);
+    const used = counts.get(segment) ?? 0;
+    if (used < perSegmentCap) {
+      counts.set(segment, used + 1);
+      admitted.push(candidate);
+    } else {
+      deferred.push(candidate);
+    }
+  }
+
+  // Back-fill remaining slots with the highest-quality deferred candidates so we
+  // never shrink the output just because the cap was tight.
+  if (admitted.length < limit) {
+    for (const candidate of deferred) {
+      if (admitted.length >= limit) break;
+      admitted.push(candidate);
+    }
+  }
+
+  return admitted;
+}
+
+/**
+ * PHASE 1 (generate-wide) — Summarize how the kept candidates distribute across
+ * the segment taxonomy. Pure instrumentation for the eval-gate spread metric:
+ * returns a stable id→count record (zero-filled) plus the dominant share so a
+ * single log line proves the pool is no longer ~100% one segment. PURE.
+ */
+export interface SegmentSpreadStats {
+  readonly total: number;
+  readonly counts: Readonly<Record<SegmentId, number>>;
+  readonly dominantSegment: SegmentId;
+  readonly dominantShare: number;
+  /** How many candidates carried a real (score > 0) inferred/explicit segment. */
+  readonly signalled: number;
+}
+
+export function summarizeSegmentSpread(
+  candidates: readonly GeneratedIdeaCandidate[],
+): SegmentSpreadStats {
+  const counts = Object.fromEntries(
+    SEGMENT_IDS.map((id) => [id, 0]),
+  ) as Record<SegmentId, number>;
+
+  let signalled = 0;
+  for (const candidate of candidates) {
+    const segment = resolveCandidateSegment(candidate);
+    counts[segment] += 1;
+    if (candidate.segment !== undefined) {
+      signalled += 1;
+    } else if (
+      inferSegmentMatch(
+        `${candidate.category} ${candidate.title} ${candidate.summary}`,
+      ).score > 0
+    ) {
+      signalled += 1;
+    }
+  }
+
+  const total = candidates.length;
+  let dominantSegment: SegmentId = SEGMENT_IDS[0];
+  let dominantCount = 0;
+  for (const id of SEGMENT_IDS) {
+    if (counts[id] > dominantCount) {
+      dominantCount = counts[id];
+      dominantSegment = id;
+    }
+  }
+
+  return {
+    total,
+    counts,
+    dominantSegment,
+    dominantShare: total > 0 ? dominantCount / total : 0,
+    signalled,
+  };
+}
+
 /**
  * #13 — Assemble the optional deepSearch dependencies. The reranker `model` is
  * always supplied (deepSearch falls back to LLM-listwise rerank when no embedder
@@ -726,6 +958,25 @@ export async function runIdeasPipeline(
       await fetchValidatedExemplars(),
     );
 
+    // ── PHASE 1 (generate-wide): SIGE divergent pool merge (flag-gated) ──────
+    // When smart.generateWide.sigeDivergent is ON, generate an extra UNSCORED
+    // divergent-persona pool over the SAME grounded chain-of-evidence signals the
+    // synthesizer consumes, and fold it into the synthesizer pool BEFORE Pass 3
+    // so it competes on the SAME GIANT scorecard + dedup. Default OFF → no SIGE
+    // call, no-op. Failure-tolerant (returns [] on any failure).
+    const generateWide = smart.generateWide;
+    const signalsContext = buildSignalsContext({
+      trendsSummary: trends.summary,
+      painsSummary: pains.summary,
+      capabilitiesSummary: capabilities.summary,
+      deepSearchContext,
+    });
+    const extraCandidates = await fetchDivergentCandidates(
+      generateWide,
+      signalsContext,
+      model,
+    );
+
     const synthesis = await runStep(
       runId,
       "synthesis",
@@ -740,18 +991,61 @@ export async function runIdeasPipeline(
           category: config.category,
           maxIdeas: config.maxIdeas,
           model,
+          extraCandidates,
         }),
-      (s) => `Generated ${s.totalGenerated} idea candidates from trend intersections`,
+      (s) =>
+        `Generated ${s.totalGenerated} idea candidates from trend intersections` +
+        (extraCandidates.length > 0
+          ? ` (incl. ${extraCandidates.length} SIGE-divergent)`
+          : ""),
     );
 
     // ── Step 6: Validate (3-layer dedup: exact + fuzzy + semantic) ────
+    // PHASE 1 (generate-wide) — log the widened pool size BEFORE dedup so the
+    // eval gate can watch the 3-layer dedup scale with over-generation.
     let kept = synthesis.candidates;
     let dedupRejected: readonly string[] = [];
 
+    const poolBeforeDedup = kept.length;
     if (kept.length > 0) {
       const dedupResult = await checkForDuplicates(kept, memoryManager);
       kept = dedupResult.kept;
       dedupRejected = dedupResult.rejected;
+    }
+    log.info("generate-wide: dedup pool sizes", {
+      generated: synthesis.totalGenerated,
+      beforeDedup: poolBeforeDedup,
+      afterDedup: kept.length,
+      semanticDupes: dedupRejected.length,
+      sigeDivergentMerged: extraCandidates.length,
+    });
+
+    // ── PHASE 1 (generate-wide): originality annotation (after dedup) ───────
+    // Annotate each surviving candidate with its originality vs the known-product
+    // corpus (Qdrant). Annotation-first: NEVER drops or reorders candidates — it
+    // only stamps originality/nearestProduct/nearestSimilarity so they persist,
+    // feed the eval harness, and drive the novelty-reserve final selection below.
+    // Memory/Qdrant graceful-degrade: when memory is absent every candidate gets
+    // a neutral originality of 1, so the default path is unaffected.
+    if (kept.length > 0) {
+      try {
+        const annotated = await annotateOriginality(kept, memoryManager, {
+          agentId: AGENT_ID,
+        });
+        kept = annotated;
+        const withPriorArt = annotated.filter(
+          (c) => c.nearestProduct !== undefined,
+        ).length;
+        log.info("generate-wide: originality annotated", {
+          candidates: annotated.length,
+          withPriorArt,
+        });
+      } catch (err) {
+        // Originality is additive; a failure must never break the pipeline.
+        log.warn("Originality annotation failed — proceeding unannotated", {
+          err,
+        });
+      }
     }
 
     // ── #8 part3: Chain-of-evidence verification ──────────────────────
@@ -849,11 +1143,40 @@ export async function runIdeasPipeline(
       (c) => c.qualityScore >= config.minQualityScore,
     );
 
+    // ── PHASE 1 (generate-wide): final selection (novelty-reserve + spread) ──
+    // The widened pool now carries originality (annotated above) the in-
+    // synthesizer novelty-reserve could not see. Re-run the novelty-reserve at
+    // the pipeline level so high-originality survivors win their reserved slots,
+    // then enforce a rough segment cap so the final set cannot collapse to one
+    // segment (the homogeneity bug). Both are PURE, deterministic, and never
+    // grow the set beyond config.maxIdeas. Default-path safe: with originality
+    // neutral (no memory) novelty-reserve falls back to inverted verbalizedProb,
+    // and the spread cap only binds when the pool exceeds maxIdeas.
+    let finalSelected: readonly GeneratedIdeaCandidate[] = qualityFiltered;
+    if (qualityFiltered.length > config.maxIdeas) {
+      const reserved = selectWithNoveltyReserve(
+        qualityFiltered,
+        config.maxIdeas,
+      );
+      finalSelected = enforceSegmentSpread(reserved, config.maxIdeas);
+    }
+
+    const spread = summarizeSegmentSpread(finalSelected);
+    log.info("generate-wide: final selection spread", {
+      poolAfterGiant: qualityFiltered.length,
+      selected: finalSelected.length,
+      maxIdeas: config.maxIdeas,
+      dominantSegment: spread.dominantSegment,
+      dominantShare: Number(spread.dominantShare.toFixed(2)),
+      segmentsSignalled: spread.signalled,
+      counts: spread.counts,
+    });
+
     await runStep(
       runId,
       "validate",
       async () => ({
-        kept: qualityFiltered.length,
+        kept: finalSelected.length,
         semanticDupes: dedupRejected.length,
         belowThreshold: giantSurvivors.length - qualityFiltered.length,
         giantGated: kept.length - giantSurvivors.length,
@@ -876,7 +1199,7 @@ export async function runIdeasPipeline(
       "store",
       async () => {
         const ids: string[] = [];
-        for (const candidate of qualityFiltered) {
+        for (const candidate of finalSelected) {
           try {
             const sourceLinksText =
               candidate.sourceLinks?.length > 0

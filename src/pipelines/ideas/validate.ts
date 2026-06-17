@@ -22,7 +22,11 @@ import {
   getAllExistingIdeas,
 } from "../../sources/ideas/store";
 import { signalCitationToken } from "./synthesizer";
-import type { MemoryManager } from "../../memory/types";
+import type {
+  MemoryManager,
+  MemorySourceKind,
+  SearchResult,
+} from "../../memory/types";
 import type { Capability, GeneratedIdeaCandidate } from "./types";
 
 const log = createLogger("pipeline:ideas:validate");
@@ -127,6 +131,156 @@ export async function checkForDuplicates(
   }
 
   return { kept, rejected };
+}
+
+// ── Originality vs. real-world prior art ────────────────────────────────────
+
+/**
+ * Known-product corpus kinds already indexed in Qdrant. These are real,
+ * shipped products / repos / apps — the prior art we measure novelty against.
+ * NOTE: deliberately distinct from the "idea" kind used by dedup Layer 3; this
+ * computes distance from the *real world*, not from our own prior ideas.
+ */
+export const KNOWN_PRODUCT_KINDS = [
+  "producthunt_product",
+  "github_repo",
+  "appstore_app",
+  "playstore_app",
+] as const satisfies readonly MemorySourceKind[];
+
+/**
+ * Per-candidate originality annotation. Additive — never used to drop a
+ * candidate. Flows downstream (Pipeline phase) as an evidence-tethered novelty
+ * signal alongside the GIANT vector.
+ */
+export interface OriginalityAnnotation {
+  /**
+   * Originality in [0, 1] = 1 − (similarity to nearest real-world product).
+   * 1 = no comparable prior art found (maximally novel); 0 = an indexed product
+   * is essentially identical. Neutral 1 when memory/search is unavailable or the
+   * corpus returned nothing (we cannot prove the idea is derivative).
+   */
+  readonly originality: number;
+  /** Short label of the closest indexed real-world product, when any matched. */
+  readonly nearestProduct?: string;
+  /** Cosine similarity to {@link nearestProduct} in [0, 1], when matched. */
+  readonly nearestSimilarity?: number;
+}
+
+/** Result of {@link annotateOriginality}: a candidate with originality stamped on. */
+export type CandidateWithOriginality = GeneratedIdeaCandidate &
+  OriginalityAnnotation;
+
+/**
+ * Derive a short, human-readable product label from a search hit. Product /
+ * app / repo kinds batch many items into one source, so metadata rarely carries
+ * a per-item title; the indexed chunk content leads with the product name, so we
+ * fall back to the first line / first segment of the chunk content. Pure.
+ */
+export function nearestProductLabel(result: SearchResult): string {
+  const metaTitle = result.source.metadata.title;
+  if (metaTitle && metaTitle.trim().length > 0) {
+    return metaTitle.trim();
+  }
+  const firstLine = (result.chunk.content ?? "").split("\n")[0] ?? "";
+  // Chunks often lead with "Name (rank, stats): tagline" or "[store] Name by …".
+  const beforeColon = firstLine.split(":")[0] ?? firstLine;
+  const label = beforeColon.trim();
+  return label.length > 0 ? label.slice(0, 120) : "unknown product";
+}
+
+/**
+ * Compute originality from raw cosine similarities to the known-product corpus.
+ * Pure and the unit-testable core of the originality math.
+ *
+ *   originality = 1 − maxSimilarity   (clamped to [0, 1])
+ *
+ * Empty results → neutral 1 (no prior art found ⇒ we cannot call it derivative).
+ * We use MAX similarity (nearest neighbor) rather than mean: a single
+ * near-identical product is the meaningful "this already exists" signal, and
+ * averaging would dilute it across unrelated hits.
+ */
+export function computeOriginality(
+  similarities: readonly number[],
+): number {
+  if (similarities.length === 0) {
+    return 1;
+  }
+  const maxSimilarity = similarities.reduce((m, s) => (s > m ? s : m), 0);
+  const originality = 1 - maxSimilarity;
+  if (originality < 0) return 0;
+  if (originality > 1) return 1;
+  return originality;
+}
+
+/**
+ * Annotate each candidate with an originality score vs. the real-world product
+ * corpus in Qdrant. Annotation-first: NEVER drops a candidate and NEVER alters
+ * the existing dedup behavior. memoryManager is optional; when absent, or when a
+ * per-candidate search fails, the candidate gets a neutral originality of 1
+ * (we cannot prove it derivative) so the default path is unaffected.
+ *
+ * Injected `memoryManager` makes the orchestration testable; the scoring math
+ * itself lives in the pure {@link computeOriginality}.
+ */
+export async function annotateOriginality(
+  candidates: readonly GeneratedIdeaCandidate[],
+  memoryManager: MemoryManager | null | undefined,
+  opts?: { readonly agentId?: string; readonly limit?: number },
+): Promise<readonly CandidateWithOriginality[]> {
+  const agentId = opts?.agentId ?? "shared";
+  const limit = opts?.limit ?? 5;
+
+  // No memory → every candidate is neutral-original. Still annotate so the
+  // downstream field is always present (backward-compatible, optional reads).
+  if (!memoryManager) {
+    return candidates.map((c) => ({ ...c, originality: 1 }));
+  }
+
+  const annotated: CandidateWithOriginality[] = [];
+  for (const candidate of candidates) {
+    try {
+      const results = await memoryManager.search(
+        agentId,
+        `${candidate.title}: ${candidate.summary}`,
+        { limit, kinds: KNOWN_PRODUCT_KINDS },
+      );
+
+      const similarities = results.map((r) => r.score);
+      const originality = computeOriginality(similarities);
+
+      if (results.length === 0) {
+        annotated.push({ ...candidate, originality });
+        continue;
+      }
+
+      const nearest = results.reduce((best, r) =>
+        r.score > best.score ? r : best,
+      );
+      annotated.push({
+        ...candidate,
+        originality,
+        nearestProduct: nearestProductLabel(nearest),
+        nearestSimilarity: nearest.score,
+      });
+
+      log.info("Annotated idea originality", {
+        title: candidate.title,
+        originality,
+        nearestProduct: nearestProductLabel(nearest),
+        nearestSimilarity: nearest.score,
+      });
+    } catch (error) {
+      // Graceful: a failed search must not break the pipeline. Neutral score.
+      log.info("Originality search failed — defaulting to neutral", {
+        title: candidate.title,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      annotated.push({ ...candidate, originality: 1 });
+    }
+  }
+
+  return annotated;
 }
 
 // ── Chain-of-evidence verification (#8 part3) ───────────────────────────────

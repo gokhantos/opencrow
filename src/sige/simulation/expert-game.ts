@@ -493,6 +493,235 @@ function buildPlaceholderGameFormulation(sessionId: string): GameFormulation {
   }
 }
 
+// ─── Generation-Only Divergent Entry (flag-gated, pool-merge) ─────────────────
+//
+// Unlike runExpertGame (full 4-round session) and evaluateCandidates
+// (rounds 2–4 scoring), generateDivergentCandidates runs ONLY Round-1
+// divergent *generation* across the strongly-divergent personas and returns
+// raw candidate ideas — NO scoring, NO social sim, NO equilibrium analysis.
+//
+// Intended consumer: the ideas synthesizer's "generate wide" path, which
+// merges these candidates into its pool (Phase 1) to be scored by the GIANT
+// scorecard / evaluated by SIGE later (Phase 3). Because the personas are fed
+// the pipeline's grounded chain-of-evidence signals (signalsContext), the
+// candidates stay tethered to real signals rather than free-associating.
+//
+// This path is fully DECOUPLED from config.sige.enabled — that gate only
+// governs the standalone polling process. The caller (ideas pipeline) gates
+// this behind smart.generateWide.sigeDivergent.
+
+/** Persona roles that lead Round-1 divergent generation. */
+const DIVERGENT_PERSONA_ROLES: readonly StrategicAgentRole[] = [
+  "contrarian_investor",
+  "explorer",
+  "founder",
+  "user_researcher",
+]
+
+/** A single generation-only candidate produced by a divergent persona. */
+export interface DivergentCandidate {
+  readonly title: string
+  readonly summary: string
+  /**
+   * Optional ids/labels of the grounded signals the persona cited. Round-1
+   * output carries a free-text `signalGrounding` field rather than structured
+   * ids, so this is populated only when the LLM emits an explicit
+   * `signalIds`/`supportingSignalIds` array; otherwise left undefined.
+   */
+  readonly supportingSignalIds?: readonly string[]
+  /** Agent id (role:sessionId) that proposed this candidate. */
+  readonly proposedBy: string
+}
+
+/** Options for the generation-only divergent path. */
+export interface GenerateDivergentCandidatesOptions {
+  /** Grounded chain-of-evidence signals prompt context (keeps candidates tethered). */
+  readonly signalsContext?: string
+  /** Mem0 client for per-role knowledge filtering; a localhost client is used if absent. */
+  readonly mem0?: Mem0Client
+  /** Mem0 user id (graph namespace); defaults to "sige-global". */
+  readonly userId?: string
+  /** Session id used purely for logging/keying; a UUID is minted if absent. */
+  readonly sessionId?: string
+  /** Game formulation to ground reasoning; a minimal placeholder is synthesized if absent. */
+  readonly gameFormulation?: GameFormulation
+  /** SIGE session config; defaults to DEFAULT_EVALUATE_CONFIG when absent. */
+  readonly config?: SigeSessionConfig
+  /**
+   * Which divergent persona roles to run. Defaults to
+   * [contrarian_investor, explorer, founder, user_researcher].
+   */
+  readonly roles?: readonly StrategicAgentRole[]
+  /** Optional cap on total returned candidates (after extraction). */
+  readonly maxCandidates?: number
+  readonly signal?: AbortSignal
+}
+
+/**
+ * Run ONLY Round-1 divergent generation across the divergent personas and
+ * return raw candidate ideas for pool merge. Never runs rounds 2–4, social
+ * sim, or scoring.
+ *
+ * Reuses the same Round-1 machinery the full game uses (runSingleAgent →
+ * parseAgentAction round 1 → JSON `ideas` array). Fully fault-tolerant: a
+ * per-agent failure is swallowed by runAgentTasks; an empty/zero-persona run
+ * returns []; the caller's pipeline must never break because this path failed.
+ *
+ * Pipeline-phase entry signature:
+ *   generateDivergentCandidates(opts) =>
+ *     Promise<{ title, summary, supportingSignalIds?, proposedBy }[]>
+ */
+export async function generateDivergentCandidates(
+  opts: GenerateDivergentCandidatesOptions = {},
+): Promise<readonly DivergentCandidate[]> {
+  const sessionId = opts.sessionId ?? crypto.randomUUID()
+  const userId = opts.userId ?? "sige-global"
+  const config = opts.config ?? DEFAULT_EVALUATE_CONFIG
+  const mem0 = opts.mem0 ?? new Mem0Client({ baseUrl: "http://localhost:8000" })
+  const gameFormulation =
+    opts.gameFormulation ?? buildPlaceholderGameFormulation(sessionId)
+  const { signalsContext, signal } = opts
+
+  const requestedRoles =
+    opts.roles && opts.roles.length > 0 ? opts.roles : DIVERGENT_PERSONA_ROLES
+
+  // Resolve to the subset of requested roles that have definitions, preserving
+  // order and dropping unknowns/dupes.
+  const allDefs = getAllDefinitions()
+  const byRole = new Map(allDefs.map((d) => [d.role, d]))
+  const seen = new Set<StrategicAgentRole>()
+  const definitions: StrategicAgentDefinition[] = []
+  for (const role of requestedRoles) {
+    if (seen.has(role)) continue
+    seen.add(role)
+    const def = byRole.get(role)
+    if (def) definitions.push(def)
+  }
+
+  if (definitions.length === 0) {
+    log.warn("generateDivergentCandidates: no valid divergent personas — returning empty", {
+      sessionId,
+      requestedRoles,
+    })
+    return []
+  }
+
+  log.info("generateDivergentCandidates: starting generation-only divergent path", {
+    sessionId,
+    personas: definitions.map((d) => d.role),
+  })
+
+  checkAborted(signal)
+
+  const tasks = definitions.map((def) => async () => {
+    checkAborted(signal)
+    return runSingleAgent({
+      def,
+      round: 1,
+      sessionId,
+      gameFormulation,
+      mem0,
+      userId,
+      config,
+      roundContext: undefined,
+      signalsContext,
+    })
+  })
+
+  const results = await runAgentTasks(tasks, config.maxConcurrentAgents)
+  const actions = filterActions(results, sessionId, 1)
+
+  const candidates = extractDivergentCandidates(actions)
+
+  const capped =
+    typeof opts.maxCandidates === "number" && opts.maxCandidates >= 0
+      ? candidates.slice(0, opts.maxCandidates)
+      : candidates
+
+  log.info("generateDivergentCandidates: complete", {
+    sessionId,
+    personasResponded: actions.length,
+    generated: candidates.length,
+    returned: capped.length,
+  })
+
+  return capped
+}
+
+/**
+ * Pure extractor: map Round-1 agent actions → the simple DivergentCandidate
+ * shape. Parses each action's JSON `ideas` array, drops blank-titled ideas,
+ * derives a summary from `description`/`oneLiner`, and lifts an optional
+ * `signalIds`/`supportingSignalIds` array when present. Exported for unit tests.
+ */
+export function extractDivergentCandidates(
+  actions: readonly AgentAction[],
+): readonly DivergentCandidate[] {
+  const candidates: DivergentCandidate[] = []
+
+  for (const action of actions) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(action.content)
+    } catch {
+      continue
+    }
+
+    if (typeof parsed !== "object" || parsed === null) continue
+    const raw = parsed as Record<string, unknown>
+    const rawIdeas = Array.isArray(raw.ideas) ? raw.ideas : []
+
+    for (const item of rawIdeas) {
+      if (typeof item !== "object" || item === null) continue
+      const idea = item as Record<string, unknown>
+
+      const title = typeof idea.title === "string" ? idea.title.trim() : ""
+      if (!title) continue
+
+      const summary =
+        (typeof idea.description === "string" && idea.description.trim()) ||
+        (typeof idea.oneLiner === "string" && idea.oneLiner.trim()) ||
+        ""
+
+      const supportingSignalIds = extractSignalIds(idea)
+
+      candidates.push({
+        title,
+        summary,
+        proposedBy: action.agentId,
+        ...(supportingSignalIds ? { supportingSignalIds } : {}),
+      })
+    }
+  }
+
+  return candidates
+}
+
+/**
+ * Pull an optional list of supporting signal ids from a Round-1 idea object.
+ * Accepts either `supportingSignalIds` or `signalIds`, requires a non-empty
+ * array of non-blank strings, and returns undefined otherwise. Pure; exported
+ * for unit tests.
+ */
+export function extractSignalIds(
+  idea: Record<string, unknown>,
+): readonly string[] | undefined {
+  const rawList = Array.isArray(idea.supportingSignalIds)
+    ? idea.supportingSignalIds
+    : Array.isArray(idea.signalIds)
+      ? idea.signalIds
+      : undefined
+
+  if (!rawList) return undefined
+
+  const ids = rawList
+    .filter((id): id is string => typeof id === "string")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0)
+
+  return ids.length > 0 ? ids : undefined
+}
+
 // ─── Round 1: Divergent Generation ───────────────────────────────────────────
 
 async function runDivergentGeneration(params: {

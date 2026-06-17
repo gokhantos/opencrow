@@ -14,7 +14,17 @@
 import { Mem0Client } from "./knowledge/mem0-client";
 import { getFullGraph } from "./knowledge/graph-query";
 import { formulateGame } from "./game-formulation";
-import { runExpertGame } from "./simulation/expert-game";
+import {
+  runExpertGame,
+  generateDivergentCandidates,
+  type DivergentCandidate,
+  type GenerateDivergentCandidatesOptions,
+} from "./simulation/expert-game";
+
+// Re-export the divergent-candidate shape so pipeline-phase callers (the ideas
+// pipeline's generate-wide pool merge) can import it from the same module that
+// exposes `generateDivergentIdeas`, rather than reaching into `expert-game`.
+export type { DivergentCandidate } from "./simulation/expert-game";
 import { runSocialSimulation } from "./simulation/social-sim";
 import { fuseScores, computeSocialViabilityScore } from "./simulation/score-fusion";
 import { computeIncentives, applyIncentives } from "./incentives";
@@ -463,4 +473,60 @@ export function reportToMarkdown(report: SigeReport): string {
     report.recommendedNextSession,
   ];
   return sections.join("\n");
+}
+
+// ─── Generation-Only Divergent Entry (pool-merge for the ideas pipeline) ──────
+//
+// Lightweight, generation-only doorway into SIGE's strongly-divergent personas
+// (contrarian_investor + explorer, plus founder + user_researcher by default).
+// Runs ONLY Round-1 divergent generation — no rounds 2–4, no social sim, no
+// scoring. The returned candidates are meant to be MERGED into the synthesizer
+// pool (Phase 1 "generate wide"); evaluation/scoring happens later (Phase 3).
+//
+// Candidates are fed the pipeline's grounded chain-of-evidence signals via
+// `signalsContext`, so they stay tethered to real evidence rather than
+// free-associating. Independent of config.sige.enabled — the ideas pipeline
+// gates this behind smart.generateWide.sigeDivergent.
+//
+// Pipeline-phase entry signature (for the synthesizer):
+//   generateDivergentIdeas(signalsContext, opts?) =>
+//     Promise<{ title, summary, supportingSignalIds?, proposedBy }[]>
+
+/**
+ * Options accepted by {@link generateDivergentIdeas}. Mirrors the underlying
+ * {@link GenerateDivergentCandidatesOptions} but omits `signalsContext`, which
+ * is passed as the dedicated first argument (the grounded signals are the
+ * load-bearing input that keeps candidates tethered).
+ */
+export type GenerateDivergentIdeasOptions = Omit<
+  GenerateDivergentCandidatesOptions,
+  "signalsContext"
+>;
+
+/**
+ * Run SIGE's Round-1 divergent personas in generation-only mode and return
+ * candidate ideas for the synthesizer pool.
+ *
+ * Fully fault-tolerant: any failure inside the divergent path (LLM error,
+ * Mem0 unreachable, parse failure) is logged and yields an empty array so the
+ * caller's pipeline is never broken by enabling this optional widening path.
+ *
+ * @param signalsContext Grounded chain-of-evidence signals prompt context from
+ *   the ideas pipeline. Optional, but strongly recommended — without it the
+ *   personas have no real evidence to ground against.
+ * @param opts Optional overrides (personas, caps, config, mem0 wiring).
+ */
+export async function generateDivergentIdeas(
+  signalsContext?: string,
+  opts: GenerateDivergentIdeasOptions = {},
+): Promise<readonly DivergentCandidate[]> {
+  try {
+    return await generateDivergentCandidates({ ...opts, signalsContext });
+  } catch (err) {
+    log.warn(
+      "generateDivergentIdeas failed — returning no divergent candidates (non-fatal)",
+      { err },
+    );
+    return [];
+  }
 }

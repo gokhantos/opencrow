@@ -8,6 +8,7 @@ import type {
   WhyNow,
   GiantAxisKey,
 } from "./giant";
+import type { SegmentId } from "./segments";
 
 // ── Trend Detection ─────────────────────────────────────────────────────
 
@@ -275,6 +276,34 @@ export interface GeneratedIdeaCandidate {
   readonly giantGated?: boolean;
   /** Human-readable reasons for each gate/cap that fired (prefixed hard-gate:/demand-evidence-gate:). */
   readonly giantGateReasons?: readonly string[];
+  /**
+   * Phase 1 "generate-wide": the opportunity SEGMENT this candidate was tagged
+   * into (consumer/b2b_saas/devtools/...). Optional — populated when
+   * smart.generateWide.multiSegment is on (the model emits it and/or it is
+   * inferred via inferSegment). Persisted so downstream selection / the eval
+   * harness can measure + enforce segment spread. Free-text `category` is kept
+   * for backward compatibility; `segment` is the canonical taxonomy tag.
+   */
+  readonly segment?: SegmentId;
+  /**
+   * Phase 1 "generate-wide" Verbalized Sampling: the model's SELF-REPORTED
+   * probability (0..1) for this seed within the distribution it was asked to
+   * emit per intersection. Used ONLY as a diversity/coverage prior (a tiebreaker
+   * / MMR weight), NEVER as the quality score (qualityScore is owned by the
+   * GIANT critique). Optional — present only on over-generated seeds.
+   */
+  readonly verbalizedProb?: number;
+  /**
+   * Originality vs the known-product corpus (validate-phase annotation, [0,1];
+   * 1 = maximally novel / neutral when memory is unavailable). Optional —
+   * attached by annotateOriginality AFTER dedup. Consumed by the novelty-reserve
+   * selector so high-surprise ideas survive the final slice even at lower signal.
+   */
+  readonly originality?: number;
+  /** Nearest known-product label backing the originality score (validate phase). */
+  readonly nearestProduct?: string;
+  /** Cosine similarity (0..1) to the nearest known product (validate phase). */
+  readonly nearestSimilarity?: number;
 }
 
 export interface SynthesisResult {
