@@ -14,8 +14,20 @@ import { createLogger } from "../logger";
 
 const log = createLogger("process:supervisor");
 
-const HEARTBEAT_INTERVAL_MS = 5_000;
-const COMMAND_POLL_INTERVAL_MS = 3_000;
+/**
+ * How often each process writes its liveness heartbeat to process_registry.
+ * The orphan-cleanup threshold in the orchestrator is 60 s, so 15 s gives a
+ * comfortable 4:1 safety margin while cutting DB writes by 3× vs the old 5 s.
+ */
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
+/**
+ * How often each process reads its pending commands (restart / stop).
+ * Commands are low-urgency (a restart can tolerate a few extra seconds).
+ * Raising from 3 s to 10 s cuts one of the highest-frequency DB selects.
+ */
+const COMMAND_POLL_INTERVAL_MS = 10_000;
+
 const CLEANUP_INTERVAL_MS = 300_000; // 5 min
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
