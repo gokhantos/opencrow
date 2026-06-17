@@ -16,11 +16,10 @@ import { loadConfig, loadConfigWithOverrides } from "../config/loader";
 import { bootstrap } from "../process/bootstrap";
 import { createProcessSupervisor } from "../process/supervisor";
 import { Mem0Client } from "../sige/knowledge/mem0-client";
-import { getPendingSessions, updateSessionStatus } from "../sige/store";
+import { claimNextPendingSession, updateSessionStatus } from "../sige/store";
 import type { SigeSession } from "../sige/types";
 import { runSession } from "../sige/run";
 import { createAutonomousSigeScheduler } from "../sige/auto/scheduler";
-import { acquireSigeRunSlot } from "../sige/auto/run-guard";
 import { createLogger } from "../logger";
 
 const log = createLogger("sige-entry");
@@ -29,56 +28,52 @@ const POLL_INTERVAL_MS = 5_000;
 
 // ─── Polling Loop ─────────────────────────────────────────────────────────────
 
+// In-process single-flight: the poll timer fires every 5s regardless of whether
+// a session is still running, and a SIGE game can run for many minutes. Without
+// this guard, overlapping poll cycles each launched a full concurrent run on the
+// same session (the advisory-lock guard was unreliable under the connection
+// pool). One run at a time per process; cross-process safety comes from the
+// atomic claim below.
+let isProcessing = false;
+
 async function pollAndProcess(
   mem0: Mem0Client,
   userId: string,
   signal: AbortSignal,
 ): Promise<void> {
-  if (signal.aborted) return;
-
-  let pendingSessions: readonly SigeSession[];
-
-  try {
-    pendingSessions = await getPendingSessions();
-  } catch (err) {
-    log.error("Failed to query pending sessions", { err });
-    return;
-  }
-
-  if (pendingSessions.length === 0) return;
-
-  // Cap to 1 session per poll cycle — each session is already highly parallel
-  // internally, and processing multiple sessions concurrently would bypass the
-  // advisory-lock cost guardrail for autonomous runs.
-  const session = pendingSessions[0];
-  if (session === undefined) return;
-
-  // Acquire the cross-process run slot before starting the session.
-  // If another process/cycle holds it, skip this cycle — the next poll will retry.
-  const slot = await acquireSigeRunSlot(1);
-  if (!slot.acquired) {
-    log.info("SIGE run slot not available — skipping this poll cycle", {
-      sessionId: session.id,
-    });
-    return;
-  }
+  if (signal.aborted || isProcessing) return;
+  isProcessing = true;
 
   try {
-    await runSession(session, mem0, userId, signal);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log.error("SIGE session pipeline failed", { sessionId: session.id, err });
+    // Atomically claim one pending session (flips it off 'pending' so no other
+    // cycle/process can re-select it during the long first stage).
+    let session: SigeSession | null;
+    try {
+      session = await claimNextPendingSession();
+    } catch (err) {
+      log.error("Failed to claim a pending session", { err });
+      return;
+    }
+    if (session === null) return;
+
+    log.info("Claimed SIGE session", { sessionId: session.id, origin: session.origin });
 
     try {
-      await updateSessionStatus(session.id, "failed", { error: msg });
-    } catch (updateErr) {
-      log.error("Failed to mark session as failed", {
-        sessionId: session.id,
-        err: updateErr,
-      });
+      await runSession(session, mem0, userId, signal);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error("SIGE session pipeline failed", { sessionId: session.id, err });
+      try {
+        await updateSessionStatus(session.id, "failed", { error: msg });
+      } catch (updateErr) {
+        log.error("Failed to mark session as failed", {
+          sessionId: session.id,
+          err: updateErr,
+        });
+      }
     }
   } finally {
-    await slot.release();
+    isProcessing = false;
   }
 }
 

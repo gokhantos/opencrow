@@ -231,6 +231,35 @@ export async function getPendingSessions(): Promise<readonly SigeSession[]> {
 }
 
 /**
+ * Atomically claim the oldest pending session: flip it off 'pending' (to the
+ * first pipeline stage) so no other poll cycle or process can pick it up, and
+ * return it. Race-safe via FOR UPDATE SKIP LOCKED — concurrent callers each get
+ * a different session or null. Returns null when nothing is pending.
+ *
+ * Replaces a "SELECT pending then advisory-lock" approach, which was not
+ * race-safe under Bun.sql's connection pool (advisory locks are connection-
+ * scoped) and left a long window where a slow first stage kept the row 'pending'
+ * and re-selectable, spawning duplicate concurrent runs.
+ */
+export async function claimNextPendingSession(): Promise<SigeSession | null> {
+  const db = getDb()
+  const rows = await db`
+    UPDATE sige_sessions
+    SET status = 'knowledge_construction'
+    WHERE id = (
+      SELECT id FROM sige_sessions
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING *
+  `
+  const row = (rows as Record<string, unknown>[])[0]
+  return row ? rowToSession(row) : null
+}
+
+/**
  * Count autonomous sessions that are currently active (not in a terminal state).
  * Used by the scheduler to enforce single-flight before enqueuing a new session.
  */
