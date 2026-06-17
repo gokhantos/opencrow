@@ -31,7 +31,8 @@ import {
   signalCitationToken,
 } from "./synthesizer";
 import type { ValidatedExemplar, DeepSearchOptions } from "./synthesizer";
-import type { SmartIdeasConfig, SigeConfig } from "../../config/schema";
+import type { SmartIdeasConfig, SigeConfig, GiantConfig } from "../../config/schema";
+import { aggregateGiant } from "./giant";
 import { checkForDuplicates, verifyEvidence } from "./validate";
 import { getConsumedIds, markConsumed } from "./consumption";
 import { getSourceCredibility, credibilityKey } from "./credibility";
@@ -290,6 +291,59 @@ async function stampIdeaQualityMeta(
 }
 
 /**
+ * PHASE 0 (GIANT) — Best-effort stamp of the GIANT scorecard onto a stored idea
+ * (columns added by migration 014). Done as a separate UPDATE — like
+ * {@link stampIdeaQualityMeta} — so it never blocks or breaks the core insert and
+ * swallows errors (e.g. pre-migration DBs) gracefully.
+ *
+ * Stores in SHADOW mode: giant_gated is recorded REGARDLESS of enforcement so
+ * kill-logs are reviewable; the Pipeline phase never re-drops a gated idea here.
+ *
+ *   giant_scores_json  ← the 7-axis scores combined with the per-axis evidence
+ *                        citations ({ scores, evidence })
+ *   why_now_json       ← the dated, source-bound enabling shifts
+ *   archetype          ← the Sequoia archetype tag
+ *   pain_severity      ← the acuteProblem axis (fast pain filter)
+ *   giant_composite    ← the non-compensatory weighted geometric mean (0..5)
+ *   giant_gated        ← whether the hard gates / demand evidence-gate fired
+ */
+async function stampIdeaGiant(
+  ideaId: string,
+  candidate: GeneratedIdeaCandidate,
+  gate: CandidateGiantGate,
+): Promise<void> {
+  // Skip entirely when the candidate carries no GIANT scorecard (e.g. GIANT
+  // disabled or critique unmatched) — nothing to persist.
+  if (candidate.giant === undefined) return;
+
+  try {
+    const giantScoresJson = JSON.stringify({
+      scores: candidate.giant,
+      evidence: candidate.giantEvidence ?? {},
+    });
+    const whyNowJson =
+      candidate.whyNow !== undefined ? JSON.stringify(candidate.whyNow) : null;
+    const archetype = candidate.archetype ?? null;
+    const painSeverity =
+      candidate.painSeverity ?? candidate.giant.acuteProblem ?? null;
+
+    const db = getDb();
+    await db`
+      UPDATE generated_ideas
+      SET giant_scores_json = ${giantScoresJson}::jsonb,
+          why_now_json = ${whyNowJson}::jsonb,
+          archetype = ${archetype},
+          pain_severity = ${painSeverity},
+          giant_composite = ${gate.composite},
+          giant_gated = ${gate.gated}
+      WHERE id = ${ideaId}
+    `;
+  } catch (err) {
+    log.warn("Failed to stamp idea GIANT scores", { ideaId, err });
+  }
+}
+
+/**
  * Maps a capability's scraper `source` id to its underlying DB table, so a
  * cited signal token can be narrowed to the source rows that produced it.
  */
@@ -339,6 +393,69 @@ function buildIdeaProvenance(
   // If scoping produced nothing (e.g. cited table had no selected ids this run),
   // fall back to run-level so provenance is never empty for a stored idea.
   return scoped.length > 0 ? scoped : runLevelEntries;
+}
+
+/**
+ * PHASE 0 (GIANT) — Best-effort demand-evidence check at the pipeline boundary.
+ * Mirrors synthesizer.hasDemandEvidence but reads the candidate's persisted
+ * GIANT fields instead of a freshly-parsed critique: a cited demand artifact is
+ * present when giantEvidence.demand is non-empty OR any whyNow shift is bound to
+ * a real signal id. Errs toward CAPPING (false) when there is no concrete
+ * evidence, matching the GIANT default. Pure.
+ */
+export function candidateHasDemandEvidence(
+  candidate: GeneratedIdeaCandidate,
+): boolean {
+  const demandEvidence = candidate.giantEvidence?.demand?.trim() ?? "";
+  if (demandEvidence.length > 0) return true;
+  return (candidate.whyNow ?? []).some(
+    (shift) =>
+      typeof shift.boundSignalId === "string" &&
+      shift.boundSignalId.trim().length > 0,
+  );
+}
+
+/** The pipeline-level GIANT verdict for one candidate (composite + gate state). */
+export interface CandidateGiantGate {
+  readonly composite: number;
+  readonly gated: boolean;
+  readonly gateReasons: readonly string[];
+}
+
+/**
+ * PHASE 0 (GIANT) — Re-evaluate the GIANT gate for a candidate at the pipeline
+ * boundary using the configured weights + demand evidence-gate. When the
+ * candidate carries the raw 7-axis `giant` scores (the common path, stamped by
+ * the synthesizer critique pass) we recompute via {@link aggregateGiant} so the
+ * pipeline applies config weights consistently. When the raw scores are absent
+ * (e.g. a candidate that never matched a critique entry) we fall back to the
+ * GIANT fields the synthesizer already stamped, defaulting to "not gated" so the
+ * optional GIANT path never invents a kill. PURE — no DB / clock / rng.
+ */
+export function evaluateCandidateGiantGate(
+  candidate: GeneratedIdeaCandidate,
+  giant: GiantConfig,
+): CandidateGiantGate {
+  if (candidate.giant !== undefined) {
+    const aggregate = aggregateGiant(candidate.giant, {
+      weights: giant.weights,
+      enforceGates: giant.enforceGates,
+      hasDemandEvidence: candidateHasDemandEvidence(candidate),
+    });
+    return {
+      composite: aggregate.composite,
+      gated: aggregate.gated,
+      gateReasons: aggregate.gateReasons,
+    };
+  }
+
+  // No raw axis scores — trust whatever the synthesizer already stamped, but
+  // never gate when the stored verdict is missing.
+  return {
+    composite: candidate.giantComposite ?? candidate.qualityScore,
+    gated: candidate.giantGated === true,
+    gateReasons: candidate.giantGateReasons ?? [],
+  };
 }
 
 /**
@@ -665,7 +782,70 @@ export async function runIdeasPipeline(
       kept = await applySigeValuation(kept, sigeConfig, deepSearchContext);
     }
 
-    const qualityFiltered = kept.filter(
+    // ── PHASE 0 (GIANT): shadow-mode hard-gate evaluation ──────────────
+    // Re-evaluate the GIANT gate for each survivor using config weights + the
+    // demand evidence-gate. The gate verdict is captured per-candidate so it can
+    // be persisted (giant_gated) regardless of enforcement. SHADOW MODE by
+    // default: gated ideas are NOT dropped — each would-kill is logged plus a
+    // run-level summary of how many WOULD be killed. Only when
+    // smart.giant.enforceGates is true do we actually filter gated candidates.
+    // The whole branch is gated behind smart.giant.enabled and degrades to a
+    // no-op (the existing minQualityScore filter still runs) otherwise.
+    const giantGateByCandidate = new Map<
+      GeneratedIdeaCandidate,
+      CandidateGiantGate
+    >();
+    let giantSurvivors = kept;
+
+    if (smart.giant.enabled && kept.length > 0) {
+      try {
+        const enforceGiantGates = smart.giant.enforceGates === true;
+        let wouldKillCount = 0;
+
+        for (const candidate of kept) {
+          const gate = evaluateCandidateGiantGate(candidate, smart.giant);
+          giantGateByCandidate.set(candidate, gate);
+
+          if (gate.gated) {
+            wouldKillCount += 1;
+            // Shadow-gate audit line: one per would-kill (title + reasons +
+            // composite). Logged whether or not we actually enforce.
+            log.info(
+              enforceGiantGates
+                ? "GIANT shadow gate: idea KILLED (enforced)"
+                : "GIANT shadow gate: idea WOULD-KILL (shadow mode, kept)",
+              {
+                title: candidate.title,
+                composite: gate.composite,
+                gateReasons: gate.gateReasons,
+              },
+            );
+          }
+        }
+
+        if (enforceGiantGates) {
+          giantSurvivors = kept.filter(
+            (c) => giantGateByCandidate.get(c)?.gated !== true,
+          );
+        }
+
+        log.info("GIANT shadow gate summary", {
+          evaluated: kept.length,
+          wouldKill: wouldKillCount,
+          enforceGates: enforceGiantGates,
+          dropped: kept.length - giantSurvivors.length,
+        });
+      } catch (err) {
+        // A failure in the optional GIANT gate must NOT break the default path:
+        // fall back to the un-gated survivor set.
+        log.warn("GIANT shadow gate evaluation failed — keeping all candidates", {
+          err,
+        });
+        giantSurvivors = kept;
+      }
+    }
+
+    const qualityFiltered = giantSurvivors.filter(
       (c) => c.qualityScore >= config.minQualityScore,
     );
 
@@ -675,10 +855,11 @@ export async function runIdeasPipeline(
       async () => ({
         kept: qualityFiltered.length,
         semanticDupes: dedupRejected.length,
-        belowThreshold: kept.length - qualityFiltered.length,
+        belowThreshold: giantSurvivors.length - qualityFiltered.length,
+        giantGated: kept.length - giantSurvivors.length,
         fabricatedDropped: evidenceNotes.length,
       }),
-      (r) => `${r.kept} kept, ${r.semanticDupes} semantic duplicates, ${r.belowThreshold} below threshold, ${r.fabricatedDropped} evidence-flagged`,
+      (r) => `${r.kept} kept, ${r.semanticDupes} semantic duplicates, ${r.belowThreshold} below threshold, ${r.giantGated} GIANT-gated, ${r.fabricatedDropped} evidence-flagged`,
     );
 
     // ── Step 7: Store ideas ───────────────────────────────────────────
@@ -754,6 +935,19 @@ export async function runIdeasPipeline(
               signalGrounding: groundingByTitle.get(candidate.title),
               critiqueSubscores: candidate.critiqueSubscores,
             });
+
+            // PHASE 0 (GIANT) — stamp the GIANT scorecard (migration 014
+            // columns) in SHADOW mode: giant_gated is persisted regardless of
+            // enforcement so kill-logs stay reviewable; we do NOT re-drop here.
+            // Reuses the gate verdict computed at the quality gate when present
+            // (config weights + demand evidence-gate); recomputes as a fallback.
+            // Best-effort — never blocks the insert.
+            if (smart.giant.enabled && candidate.giant !== undefined) {
+              const gate =
+                giantGateByCandidate.get(candidate) ??
+                evaluateCandidateGiantGate(candidate, smart.giant);
+              await stampIdeaGiant(idea.id, candidate, gate);
+            }
 
             if (memoryManager) {
               try {

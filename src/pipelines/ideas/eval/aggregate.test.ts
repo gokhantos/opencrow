@@ -4,11 +4,18 @@ import {
   aggregateOutcomeRates,
   aggregateDedupQuality,
   aggregateEval,
+  aggregateGiantRun,
+  computeEmbeddingNovelty,
+  cosineSimilarity,
+  cosineDistance,
+  meanPairwiseCosineDistance,
   roundOrNull,
   type EvalIdeaRow,
   type EvalOutcomeRow,
   type DedupLabel,
+  type GiantScoredIdea,
 } from "./aggregate";
+import { GIANT_AXIS_KEYS, type GiantAxisScores } from "../giant";
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -247,5 +254,229 @@ describe("aggregateEval", () => {
     });
     expect(r.dedupQuality).not.toBeNull();
     expect(r.dedupQuality!.precision).toBe(1);
+  });
+
+  test("giant + embeddingNovelty default to null when not supplied", () => {
+    const r = aggregateEval({ ideas: [], outcomes: [] });
+    expect(r.giant).toBeNull();
+    expect(r.embeddingNovelty).toBeNull();
+  });
+});
+
+// ── GIANT run aggregate ─────────────────────────────────────────────────────────
+
+function scores(overrides: Partial<GiantAxisScores> = {}): GiantAxisScores {
+  return {
+    acuteProblem: 4,
+    whyNow: 4,
+    demand: 4,
+    nonObviousness: 3,
+    defensibility: 3,
+    marketShape: 3,
+    founderFit: 3,
+    ...overrides,
+  };
+}
+
+function giantIdea(
+  id: string,
+  s: GiantAxisScores,
+  hasDemandEvidence = true,
+): GiantScoredIdea {
+  return { id, scores: s, hasDemandEvidence };
+}
+
+describe("aggregateGiantRun", () => {
+  test("empty batch → null means, zeroed rate", () => {
+    const r = aggregateGiantRun([]);
+    for (const key of GIANT_AXIS_KEYS) expect(r.axisMeans[key]).toBeNull();
+    expect(r.compositeMean).toBeNull();
+    expect(r.gateKillRate).toBe(0);
+    expect(r.gatedCount).toBe(0);
+    expect(r.totalIdeas).toBe(0);
+    expect(r.compositeDistribution.p50).toBeNull();
+  });
+
+  test("per-axis means average across the batch", () => {
+    const r = aggregateGiantRun([
+      giantIdea("a", scores({ acuteProblem: 2 })),
+      giantIdea("b", scores({ acuteProblem: 4 })),
+    ]);
+    expect(r.axisMeans.acuteProblem).toBe(3); // (2+4)/2
+    expect(r.axisMeans.demand).toBe(4); // both 4
+    expect(r.totalIdeas).toBe(2);
+  });
+
+  test("gate-kill rate counts hard-gated ideas", () => {
+    const r = aggregateGiantRun([
+      giantIdea("a", scores()), // not gated
+      giantIdea("b", scores({ acuteProblem: 1 })), // hard-gated
+      giantIdea("c", scores({ whyNow: 0 })), // hard-gated
+      giantIdea("d", scores()), // not gated
+    ]);
+    expect(r.gatedCount).toBe(2);
+    expect(r.gateKillRate).toBe(0.5);
+  });
+
+  test("non-compensatory: a near-zero axis tanks the composite", () => {
+    const strong = aggregateGiantRun([giantIdea("a", scores())]).compositeMean!;
+    // founderFit ~0 should drag the geomean composite well below the strong one,
+    // even though every other axis is unchanged.
+    const tanked = aggregateGiantRun([
+      giantIdea("b", scores({ founderFit: 0 })),
+    ]).compositeMean!;
+    expect(tanked).toBeLessThan(strong);
+  });
+
+  test("demand evidence cap counted when un-evidenced demand exceeds cap", () => {
+    const r = aggregateGiantRun([
+      giantIdea("a", scores({ demand: 5 }), false), // capped
+      giantIdea("b", scores({ demand: 5 }), true), // evidenced → not capped
+      giantIdea("c", scores({ demand: 1 }), false), // below cap → not flagged
+    ]);
+    expect(r.demandEvidenceCappedCount).toBe(1);
+  });
+
+  test("composite distribution percentiles are ordered", () => {
+    const ideas = [1, 2, 3, 4, 5].map((n) =>
+      giantIdea(`i${n}`, scores({ defensibility: n, marketShape: n })),
+    );
+    const r = aggregateGiantRun(ideas);
+    expect(r.compositeDistribution.p10).not.toBeNull();
+    expect(r.compositeDistribution.p90).not.toBeNull();
+    expect(r.compositeDistribution.p10!).toBeLessThanOrEqual(
+      r.compositeDistribution.p50!,
+    );
+    expect(r.compositeDistribution.p50!).toBeLessThanOrEqual(
+      r.compositeDistribution.p90!,
+    );
+  });
+});
+
+// ── Embedding-novelty math (pure) ───────────────────────────────────────────────
+
+describe("cosineSimilarity / cosineDistance", () => {
+  test("identical vectors → similarity 1, distance 0", () => {
+    expect(cosineSimilarity([1, 2, 3], [1, 2, 3])).toBeCloseTo(1, 6);
+    expect(cosineDistance([1, 2, 3], [1, 2, 3])).toBeCloseTo(0, 6);
+  });
+
+  test("orthogonal vectors → similarity 0, distance 1", () => {
+    expect(cosineSimilarity([1, 0], [0, 1])).toBeCloseTo(0, 6);
+    expect(cosineDistance([1, 0], [0, 1])).toBeCloseTo(1, 6);
+  });
+
+  test("opposite vectors → similarity -1, distance 2", () => {
+    expect(cosineSimilarity([1, 0], [-1, 0])).toBeCloseTo(-1, 6);
+    expect(cosineDistance([1, 0], [-1, 0])).toBeCloseTo(2, 6);
+  });
+
+  test("zero / empty vectors → similarity 0 (no NaN)", () => {
+    expect(cosineSimilarity([0, 0], [1, 1])).toBe(0);
+    expect(cosineSimilarity([], [])).toBe(0);
+  });
+});
+
+describe("meanPairwiseCosineDistance", () => {
+  test("fewer than two vectors → null", () => {
+    expect(meanPairwiseCosineDistance([])).toBeNull();
+    expect(meanPairwiseCosineDistance([[1, 0]])).toBeNull();
+  });
+
+  test("identical batch → 0 distance", () => {
+    expect(
+      meanPairwiseCosineDistance([
+        [1, 0],
+        [1, 0],
+        [1, 0],
+      ]),
+    ).toBeCloseTo(0, 6);
+  });
+
+  test("averages over all unordered pairs", () => {
+    // pairs: (e1,e2)=1, (e1,e1)=0, (e2,e1)=1 → mean over 3 pairs = 2/3
+    const r = meanPairwiseCosineDistance([
+      [1, 0],
+      [0, 1],
+      [1, 0],
+    ])!;
+    expect(r).toBeCloseTo(2 / 3, 6);
+  });
+});
+
+describe("computeEmbeddingNovelty", () => {
+  test("no embed dep → zeroed metric", async () => {
+    const r = await computeEmbeddingNovelty([{ id: "a", text: "x" }], {
+      embed: null,
+    });
+    expect(r.meanPairwiseDistance).toBeNull();
+    expect(r.meanCorpusDistance).toBeNull();
+    expect(r.corpusUnavailable).toBe(true);
+    expect(r.embeddedCount).toBe(0);
+  });
+
+  test("embed failure degrades gracefully (no throw)", async () => {
+    const r = await computeEmbeddingNovelty([{ id: "a", text: "x" }], {
+      embed: {
+        embed: async () => {
+          throw new Error("boom");
+        },
+      },
+    });
+    expect(r.embeddedCount).toBe(0);
+    expect(r.corpusUnavailable).toBe(true);
+  });
+
+  test("computes pairwise distance from injected embeddings", async () => {
+    const r = await computeEmbeddingNovelty(
+      [
+        { id: "a", text: "a" },
+        { id: "b", text: "b" },
+      ],
+      {
+        embed: {
+          embed: async () => [
+            [1, 0],
+            [0, 1],
+          ],
+        },
+      },
+    );
+    expect(r.embeddedCount).toBe(2);
+    expect(r.meanPairwiseDistance).toBeCloseTo(1, 6); // orthogonal
+    expect(r.corpusUnavailable).toBe(true); // no search dep
+  });
+
+  test("corpus distance = 1 - max similarity from injected search dep", async () => {
+    const r = await computeEmbeddingNovelty(
+      [
+        { id: "a", text: "a" },
+        { id: "b", text: "b" },
+      ],
+      {
+        embed: {
+          embed: async () => [
+            [1, 0],
+            [0, 1],
+          ],
+        },
+        search: {
+          // pretend every item has a near-identical corpus neighbour (sim 0.9)
+          nearestCorpusScores: async () => [0.9, 0.4],
+        },
+      },
+    );
+    expect(r.corpusUnavailable).toBe(false);
+    expect(r.corpusComparedCount).toBe(2);
+    expect(r.meanCorpusDistance).toBeCloseTo(0.1, 6); // 1 - 0.9
+  });
+
+  test("empty corpus results → corpus unavailable", async () => {
+    const r = await computeEmbeddingNovelty([{ id: "a", text: "a" }], {
+      embed: { embed: async () => [[1, 0]] },
+      search: { nearestCorpusScores: async () => [] },
+    });
+    expect(r.corpusUnavailable).toBe(true);
+    expect(r.meanCorpusDistance).toBeNull();
   });
 });

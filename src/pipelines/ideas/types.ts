@@ -2,6 +2,13 @@
  * Types for the trend-intersection idea pipeline.
  */
 
+import type {
+  GiantAxisScores,
+  Archetype,
+  WhyNow,
+  GiantAxisKey,
+} from "./giant";
+
 // ── Trend Detection ─────────────────────────────────────────────────────
 
 export interface TrendingApp {
@@ -238,6 +245,36 @@ export interface GeneratedIdeaCandidate {
     readonly differentiation: number;
     readonly buildability: number;
   };
+  /**
+   * GIANT 7-axis scorecard (the single shared optimization target) emitted by
+   * Pass 3 critique. Optional — populated only when smart.giant.enabled is on
+   * and a matched critique entry was parsed via parseGiant. The weighted
+   * geometric-mean composite (aggregateGiant) is what now derives qualityScore
+   * (composite 0..5 -> qualityScore), so existing downstream code that reads
+   * qualityScore keeps working even when these GIANT fields are absent.
+   */
+  readonly giant?: GiantAxisScores;
+  /** Per-axis evidence citation (free text / signal tokens) from the GIANT pass. */
+  readonly giantEvidence?: Readonly<Record<GiantAxisKey, string>>;
+  /** Sequoia-style archetype tag: "hair-on-fire" | "hard-fact" | "future-vision". */
+  readonly archetype?: Archetype;
+  /** Dated, source-bound enabling shifts backing the whyNow axis. */
+  readonly whyNow?: WhyNow;
+  /**
+   * The acuteProblem axis (0..5) promoted for fast pain filtering / persistence
+   * (maps to generated_ideas.pain_severity). Mirrors giant.acuteProblem.
+   */
+  readonly painSeverity?: number;
+  /** Weighted geometric-mean GIANT composite (0..5) from aggregateGiant. */
+  readonly giantComposite?: number;
+  /**
+   * Whether the GIANT hard gates / demand evidence-gate fired (shadow-mode:
+   * stored regardless; the idea is only dropped when smart.giant.enforceGates
+   * is true — that drop decision belongs to the caller/Pipeline phase).
+   */
+  readonly giantGated?: boolean;
+  /** Human-readable reasons for each gate/cap that fired (prefixed hard-gate:/demand-evidence-gate:). */
+  readonly giantGateReasons?: readonly string[];
 }
 
 export interface SynthesisResult {

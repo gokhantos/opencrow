@@ -49,6 +49,8 @@ function deriveEdgeStyles(
   nodes: readonly Node[],
   stepStatuses: ExecutionStepMap,
 ): Edge[] {
+  // nodes param used for future extensibility (e.g. node type filtering)
+  void nodes;
   if (stepStatuses.size === 0) return edges as Edge[];
   return edges.map((edge) => {
     const sourceStatus = stepStatuses.get(edge.source)?.status ?? null;
@@ -72,8 +74,6 @@ function deriveEdgeStyles(
     }
     return edge as Edge;
   });
-  // nodes param used for future extensibility (e.g. node type filtering)
-  void nodes;
 }
 
 function CanvasInner({ state, dispatch, validationErrors, stepStatuses = new Map(), onNodeExecutionClick, onViewportChange }: WorkflowCanvasProps) {

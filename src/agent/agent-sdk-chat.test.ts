@@ -152,7 +152,7 @@ describe("chat (Agent SDK request builder)", () => {
         queryCalls.push(request);
         return (async function* () {
           throw new Error("subprocess exploded");
-          // eslint-disable-next-line no-unreachable
+          // biome-ignore lint/correctness/noUnreachable: yield needed so this is an async generator matching the SDK query() return type
           yield {} as Record<string, unknown>;
         })();
       },
