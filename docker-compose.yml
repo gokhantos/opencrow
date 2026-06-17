@@ -29,12 +29,52 @@ services:
         hard: 65535
     restart: unless-stopped
 
+  # Mem0 sidecar — exposes the /v1/memories/ contract the SIGE client expects,
+  # backed by Qdrant (vectors) + embedded Kùzu (relations) + Ollama (embeddings)
+  # + the app's internal Agent-SDK LLM (extraction). See mem0-server/app.py.
+  mem0:
+    build: ./mem0-server
+    depends_on:
+      qdrant:
+        condition: service_started
+    environment:
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: "6333"
+      # Graph store: embedded Kùzu (in-process, no server/JVM), persisted to /data.
+      MEM0_GRAPH_PROVIDER: kuzu
+      MEM0_GRAPH_DB: /data/kuzu
+      # Extraction LLM: routed through the OpenCrow app's internal OpenAI-compatible
+      # endpoint, which uses the Claude Agent SDK (Claude Code OAuth token) — no
+      # separate hosted key, no local model. The OpenAI client reads OPENAI_* too.
+      MEM0_LLM_PROVIDER: openai
+      MEM0_LLM_MODEL: claude-haiku-4-5-20251001
+      MEM0_LLM_BASE_URL: http://app:48080/internal/v1
+      MEM0_LLM_API_KEY: ${OPENCROW_INTERNAL_TOKEN}
+      OPENAI_API_KEY: ${OPENCROW_INTERNAL_TOKEN}
+      OPENAI_BASE_URL: http://app:48080/internal/v1
+      OPENAI_API_BASE: http://app:48080/internal/v1
+      # Embeddings stay on host-native Ollama (nomic-embed-text, 768-dim).
+      MEM0_OLLAMA_URL: http://host.docker.internal:11434
+      MEM0_EMBED_MODEL: nomic-embed-text:latest
+      MEM0_EMBED_DIMS: "768"
+      MEM0_COLLECTION: sige_mem0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - mem0_data:/data
+    ports:
+      # Loopback-only; the app reaches it in-network at http://mem0:8000.
+      - "127.0.0.1:8050:8000"
+    restart: unless-stopped
+
   app:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
       qdrant:
+        condition: service_started
+      mem0:
         condition: service_started
     # Optional provider keys (OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN, …) and the
     # generated web/internal tokens are read from .env; the values below point the
@@ -43,6 +83,10 @@ services:
     environment:
       DATABASE_URL: postgres://opencrow:opencrow@postgres:5432/opencrow
       QDRANT_URL: http://qdrant:6333
+      # Enable SIGE and point it at the in-network mem0 sidecar (consumed via the
+      # OPENCROW_SIGE_* env overrides in src/config/loader.ts).
+      OPENCROW_SIGE_ENABLED: "true"
+      OPENCROW_SIGE_MEM0_URL: http://mem0:8000
       # Bind the dashboard to all interfaces *inside* the container so the
       # published port works; host exposure stays loopback-only (see ports).
       OPENCROW_WEB_HOST: 0.0.0.0
@@ -57,3 +101,4 @@ services:
 volumes:
   pg_data:
   qdrant_data:
+  mem0_data:

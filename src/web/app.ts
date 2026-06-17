@@ -31,6 +31,7 @@ import { createPlayStoreRoutes } from "./routes/playstore";
 import { createWorkflowRoutes } from "./routes/workflows";
 import { createSigeRoutes } from "./routes/sige";
 import { createPipelineRoutes } from "./routes/pipelines";
+import { createInternalLlmRoutes } from "./routes/internal-llm";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
 import type { AutofollowProcessor } from "../sources/x/follow/processor";
@@ -94,6 +95,18 @@ export function createWebApp(deps: WebAppDeps): Hono {
   const app = new Hono();
 
   app.get("/health", (c) => c.json({ status: "ok", timestamp: Date.now() }));
+
+  // Internal OpenAI-compatible LLM endpoint for in-network sidecars (mem0).
+  // Guarded by OPENCROW_INTERNAL_TOKEN, fail-closed. Mounted before the /api/*
+  // auth block so it uses its own token rather than the web UI token.
+  app.use("/internal/*", async (c, next) => {
+    const expected = process.env.OPENCROW_INTERNAL_TOKEN;
+    if (!expected) {
+      return c.json({ error: { message: "internal API not configured" } }, 503);
+    }
+    return bearerAuth({ token: expected })(c, next);
+  });
+  app.route("/", createInternalLlmRoutes());
 
   // Log auth status at startup (best-effort check against env only)
   if (process.env.OPENCROW_WEB_TOKEN) {
