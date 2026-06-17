@@ -19,6 +19,11 @@ import type {
   EvalOutcomeRow,
 } from "./aggregate";
 import type { RegressionAlert } from "./regression";
+import {
+  IMPORTANCE_BUCKETS,
+} from "../signal-calibration";
+import type { RankerEvalRow } from "./signal-ranker";
+import type { SignalImportance } from "../../../memory/signal-facets";
 
 const log = createLogger("ideas:eval:store");
 
@@ -134,6 +139,111 @@ export async function loadEvalOutcomes(
     return rows.map((r) => ({ idea_id: r.idea_id, kind: r.kind, actor: r.actor }));
   } catch (err) {
     log.warn("loadEvalOutcomes failed; returning empty set", { err });
+    return [];
+  }
+}
+
+// ── Signal-ranker labeled rows (importance ↔ outcome ↔ asserted relevance) ─────
+
+/** Terminal idea kinds/stages that count as a validated (success) outcome. */
+const SUCCESS_KINDS: ReadonlySet<string> = new Set(["validated", "built"]);
+/** Terminal idea kinds/stages that count as a killed (failure) outcome. */
+const FAILURE_KINDS: ReadonlySet<string> = new Set(["archived", "dismissed"]);
+
+interface RawSignalRankerRow {
+  readonly importance: string | null;
+  readonly category: string | null;
+  readonly relevance_to_ideas: string | number | null;
+  /** Latest terminal kind for the idea this signal contributed to. */
+  readonly kind: string | null;
+}
+
+function asBucket(value: unknown): SignalImportance | null {
+  return typeof value === "string" &&
+    (IMPORTANCE_BUCKETS as readonly string[]).includes(value)
+    ? (value as SignalImportance)
+    : null;
+}
+
+function asRelevance(value: unknown): number | undefined {
+  const n = typeof value === "string" ? Number(value) : value;
+  if (typeof n !== "number" || !Number.isFinite(n)) return undefined;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
+/**
+ * Pure projection of joined DB rows into ranker eval rows. Exported for unit
+ * testing without a DB. Skips rows with a non-terminal/unknown kind or an
+ * unparseable importance bucket; carries through the LLM's asserted
+ * relevance_to_ideas when present (used for the calibration gap).
+ */
+export function projectSignalRankerRows(
+  rows: readonly RawSignalRankerRow[],
+): readonly RankerEvalRow[] {
+  const out: RankerEvalRow[] = [];
+  for (const row of rows) {
+    const kind = row?.kind ?? null;
+    const success = kind !== null && SUCCESS_KINDS.has(kind);
+    const failure = kind !== null && FAILURE_KINDS.has(kind);
+    if (!success && !failure) continue; // non-terminal → not labeled
+    const importance = asBucket(row?.importance);
+    if (importance === null) continue;
+    const category =
+      typeof row.category === "string" && row.category.trim().length > 0
+        ? row.category.trim()
+        : undefined;
+    out.push({
+      importance,
+      category,
+      success,
+      relevanceToIdeas: asRelevance(row.relevance_to_ideas),
+    });
+  }
+  return out;
+}
+
+/**
+ * Load signal_facets joined to idea outcomes into ranker eval rows, carrying
+ * the LLM's asserted relevance_to_ideas so the eval can measure the calibration
+ * gap. Mirrors the provenance join in signal-calibration.ts (so the two stay
+ * consistent) but additionally selects relevance_to_ideas.
+ *
+ * Degrades gracefully: returns [] on any error (missing migration-013 columns,
+ * parse failure), so the ranker-precision section is simply omitted pre-feature.
+ */
+export async function loadSignalRankerRows(): Promise<readonly RankerEvalRow[]> {
+  const db = getDb();
+  try {
+    const rows = (await db`
+      SELECT
+        sf.importance AS importance,
+        sf.category AS category,
+        sf.relevance_to_ideas AS relevance_to_ideas,
+        COALESCE(fb.kind, gi.pipeline_stage) AS kind
+      FROM generated_ideas gi
+      CROSS JOIN LATERAL jsonb_array_elements(
+        COALESCE(NULLIF(gi.source_ids_json, ''), '[]')::jsonb
+      ) AS src
+      JOIN signal_facets sf
+        ON sf.source_table = src->>'table'
+       AND sf.source_id = src->>'id'
+      LEFT JOIN LATERAL (
+        SELECT kind
+        FROM idea_feedback
+        WHERE idea_feedback.idea_id = gi.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) fb ON true
+      WHERE COALESCE(fb.kind, gi.pipeline_stage) IN
+        ('validated', 'built', 'archived', 'dismissed')
+        AND sf.importance IS NOT NULL
+    `) as RawSignalRankerRow[];
+
+    return projectSignalRankerRows(rows);
+  } catch (err) {
+    log.warn("loadSignalRankerRows failed; returning empty ranker set", { err });
     return [];
   }
 }

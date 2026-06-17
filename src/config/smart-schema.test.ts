@@ -15,6 +15,8 @@ describe("smartConfigSchema", () => {
       knowledgeGraphRetrieval: false,
       deepSearchReranker: false,
       signalFacets: false,
+      signalRanking: false,
+      signalImportanceFloor: "low",
       adaptiveCollection: true,
       validatedExemplars: true,
       chainOfEvidence: true,
@@ -29,6 +31,33 @@ describe("smartConfigSchema", () => {
     expect(parsed.knowledgeGraphRetrieval).toBe(false);
     expect(parsed.deepSearchReranker).toBe(false);
     expect(parsed.signalFacets).toBe(false);
+    expect(parsed.signalRanking).toBe(false);
+  });
+
+  test("signalRanking defaults OFF and is gated on top of signalFacets", () => {
+    expect(smartConfigSchema.parse({}).signalRanking).toBe(false);
+    const parsed = smartConfigSchema.parse({
+      signalFacets: true,
+      signalRanking: true,
+    });
+    expect(parsed.signalFacets).toBe(true);
+    expect(parsed.signalRanking).toBe(true);
+  });
+
+  test("signalImportanceFloor defaults to low and accepts the bucket enum", () => {
+    expect(smartConfigSchema.parse({}).signalImportanceFloor).toBe("low");
+    for (const floor of ["noise", "low", "medium", "high"] as const) {
+      expect(
+        smartConfigSchema.parse({ signalImportanceFloor: floor })
+          .signalImportanceFloor,
+      ).toBe(floor);
+    }
+  });
+
+  test("signalImportanceFloor rejects values outside the bucket enum", () => {
+    expect(() =>
+      smartConfigSchema.parse({ signalImportanceFloor: "critical" }),
+    ).toThrow();
   });
 
   test("pure-logic flags default ON", () => {

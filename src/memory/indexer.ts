@@ -20,12 +20,8 @@ import { NEWS_SOURCE_KIND_MAP } from "./types";
 import type { QdrantClient } from "./qdrant";
 import { updateChunkFts } from "./fts";
 import { getChunkProfileWithOverrides } from "./chunk-profiles";
-import {
-  extractSignalFacets,
-  persistSignalFacets,
-  type SignalFacets,
-} from "./signal-facets";
-import { loadConfig } from "../config/loader";
+import { type SignalFacets } from "./signal-facets";
+import { enrichSignals, isSignalKind } from "./signal-enrichment";
 import type { TransactionSQL } from "bun";
 
 const log = createLogger("memory-indexer");
@@ -84,44 +80,50 @@ function facetsToPayload(
   return payload;
 }
 
+/** Facets + ranking payload produced by the enrichment step for one source. */
+interface SignalEnrichment {
+  readonly facets: SignalFacets | null;
+  readonly rankingPayload: Record<string, string | number>;
+}
+
+const EMPTY_ENRICHMENT: SignalEnrichment = {
+  facets: null,
+  rankingPayload: {},
+};
+
 /**
- * Best-effort facet extraction for a source, gated behind
- * `pipelines.ideas.smart.signalFacets` (default OFF). When the flag is off, or
- * extraction fails, returns `null` and the index path behaves exactly as before.
+ * Best-effort categorization + ranking for a source, gated behind
+ * `pipelines.ideas.smart.signalFacets` (extraction) and, for the importance/
+ * relevance/category retrieval fields, `signalRanking` — both default OFF.
+ *
+ * SCOPED to scraped-signal kinds only: conversations, observations, ideas,
+ * notes, and documents are skipped entirely (zero LLM calls). Routes through
+ * the BATCHED, graceful {@link enrichSignals} so a slow/failed LLM degrades to
+ * `null` facets / empty payload and never breaks indexing. When the flags are
+ * off (or the kind is not a signal), returns the empty enrichment and the
+ * index path behaves exactly as before.
  */
-async function maybeExtractFacets(
+async function maybeEnrichSignal(
   sourceId: string,
   sourceTable: MemorySourceKind,
   chunks: readonly string[],
-): Promise<SignalFacets | null> {
-  let signalFacetsEnabled = false;
-  try {
-    signalFacetsEnabled = loadConfig().pipelines.ideas.smart.signalFacets;
-  } catch {
-    // Config not loadable — treat as disabled (default behavior).
-    return null;
-  }
-
-  if (!signalFacetsEnabled || chunks.length === 0) {
-    return null;
+): Promise<SignalEnrichment> {
+  if (chunks.length === 0 || !isSignalKind(sourceTable)) {
+    return EMPTY_ENRICHMENT;
   }
 
   try {
     const text = chunks.join("\n\n");
-    const facets = await extractSignalFacets(text);
-    if (!facets) {
-      return null;
-    }
-    await persistSignalFacets({ sourceTable, sourceId, facets });
-    log.debug("Extracted signal facets", {
-      sourceId,
-      sourceTable,
-      sentiment: facets.sentiment,
-    });
-    return facets;
+    const { facets, payloads } = await enrichSignals([
+      { id: sourceId, kind: sourceTable, text },
+    ]);
+    return {
+      facets: facets.get(sourceId) ?? null,
+      rankingPayload: payloads.get(sourceId) ?? {},
+    };
   } catch (error) {
-    log.error("Signal facet step failed (non-fatal)", { sourceId, error });
-    return null;
+    log.error("Signal enrichment step failed (non-fatal)", { sourceId, error });
+    return EMPTY_ENRICHMENT;
   }
 }
 
@@ -261,7 +263,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     prepared: PreparedChunks,
     insertedChunks: readonly ChunkResult[],
     now: number,
-    facets: SignalFacets | null,
+    chunks: readonly string[],
   ): Promise<void> {
     if (insertedChunks.length === 0) {
       log.debug("All chunks deduplicated at insert time", { sourceId });
@@ -269,7 +271,10 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     }
 
     const { filteredIndices, newTexts, embeddings } = prepared;
-    const facetPayload = facetsToPayload(facets);
+
+    // Track the ids of points actually stored in Qdrant for this source so
+    // after-index enrichment can patch their payloads without re-upserting.
+    let storedPointIds: readonly string[] = [];
 
     // Upsert vectors to Qdrant — only for actually inserted chunks,
     // with semantic dedup to skip near-duplicates (same story, different source).
@@ -294,7 +299,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
                 chunkIndex: filteredIndices[textIndex]!,
                 kind,
                 createdAt: now,
-                ...facetPayload,
               },
             });
           }
@@ -334,6 +338,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
             config.qdrantCollection,
             points,
           );
+          storedPointIds = points.map((p) => p.id);
         }
       } catch (error) {
         log.error("Qdrant upsert failed, vectors not stored", { error });
@@ -351,6 +356,62 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
       sourceId,
       count: insertedChunks.length,
     });
+
+    // NON-BLOCKING categorization + ranking. Indexing has already completed and
+    // vectors are stored; enrichment runs after the fact and patches the facet/
+    // ranking payload onto the stored points. A slow or failing LLM can never
+    // stall indexing. Scoped + gated inside maybeEnrichSignal (zero calls when
+    // the kind is not a signal or the flags are off).
+    void enrichAndPatch(sourceId, kind, chunks, storedPointIds);
+  }
+
+  /**
+   * Fire-and-forget: run batched signal enrichment, then merge the resulting
+   * facet + ranking payload onto the source's Qdrant points via setPayload.
+   * Fully self-contained / graceful — never rejects into the caller.
+   */
+  async function enrichAndPatch(
+    sourceId: string,
+    kind: MemorySourceKind,
+    chunks: readonly string[],
+    storedPointIds: readonly string[],
+  ): Promise<void> {
+    try {
+      const { facets, rankingPayload } = await maybeEnrichSignal(
+        sourceId,
+        kind,
+        chunks,
+      );
+
+      const payloadPatch = {
+        ...facetsToPayload(facets),
+        ...rankingPayload,
+      };
+
+      if (
+        storedPointIds.length === 0 ||
+        Object.keys(payloadPatch).length === 0 ||
+        !config.qdrantClient?.available
+      ) {
+        return;
+      }
+
+      await config.qdrantClient.setPayload(
+        config.qdrantCollection,
+        { ids: storedPointIds },
+        payloadPatch,
+      );
+      log.debug("Patched signal enrichment payload", {
+        sourceId,
+        points: storedPointIds.length,
+        keys: Object.keys(payloadPatch).length,
+      });
+    } catch (error) {
+      log.error("Signal enrichment patch failed (non-fatal)", {
+        sourceId,
+        error,
+      });
+    }
   }
 
   /**
@@ -381,10 +442,6 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     // Prepare outside the transaction: dedup reads + embeddings (I/O-heavy)
     const prepared = await prepareChunks(sourceId, chunks);
 
-    // Optional, flag-gated facet extraction (default OFF). Runs alongside
-    // preparation; failures degrade to null and do not affect indexing.
-    const facets = await maybeExtractFacets(sourceId, kind, chunks);
-
     // Wrap source INSERT + chunk INSERTs in a single transaction so an
     // interrupted process cannot leave an orphaned source row without chunks.
     let insertedChunks: readonly ChunkResult[] = [];
@@ -408,7 +465,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         prepared,
         insertedChunks,
         now,
-        facets,
+        chunks,
       );
     }
 

@@ -20,10 +20,23 @@ export interface QdrantFilter {
   readonly must?: readonly QdrantFilterCondition[];
 }
 
-interface QdrantFilterCondition {
+/** A numeric range condition (Qdrant `range`), used for the importance floor. */
+export interface QdrantRangeCondition {
+  readonly key: string;
+  readonly range: {
+    readonly gte?: number;
+    readonly lte?: number;
+    readonly gt?: number;
+    readonly lt?: number;
+  };
+}
+
+interface QdrantMatchCondition {
   readonly key: string;
   readonly match: { readonly value: string | number };
 }
+
+export type QdrantFilterCondition = QdrantMatchCondition | QdrantRangeCondition;
 
 export interface QdrantSearchOptions {
   readonly filter?: QdrantFilter;
@@ -44,9 +57,26 @@ export interface QdrantClient {
     opts?: QdrantSearchOptions,
   ): Promise<readonly QdrantSearchResult[]>;
   deletePoints(collection: string, filter: QdrantFilter): Promise<void>;
+  /**
+   * Patch (merge) payload fields onto existing points without re-upserting
+   * their vectors. Used by non-blocking, after-index signal enrichment so the
+   * ranking payload can be attached once the LLM has scored a batch. Targets
+   * points either by explicit ids or by a filter; a no-op when neither selects
+   * anything.
+   */
+  setPayload(
+    collection: string,
+    target: SetPayloadTarget,
+    payload: Readonly<Record<string, string | number>>,
+  ): Promise<void>;
   healthCheck(): Promise<boolean>;
   dispose(): void;
 }
+
+/** Selector for {@link QdrantClient.setPayload}: explicit point ids or a filter. */
+export type SetPayloadTarget =
+  | { readonly ids: readonly string[] }
+  | { readonly filter: QdrantFilter };
 
 interface QdrantClientConfig {
   readonly url: string;
@@ -207,7 +237,7 @@ export async function createQdrantClient(
         // Ensure payload indices exist (idempotent — Qdrant ignores if already present)
         // Facet fields are populated only when signal-facet extraction is enabled
         // (pipelines.ideas.smart.signalFacets); indexing them is harmless otherwise.
-        const indices = [
+        const keywordIndices = [
           "sourceId",
           "agentId",
           "kind",
@@ -215,12 +245,33 @@ export async function createQdrantClient(
           "facetProblemType",
           "facetTargetAudience",
           "facetEntities",
+          // Ranking fields (populated only when signalRanking is enabled).
+          "signalImportance",
+          "signalCategory",
         ];
-        for (const field of indices) {
+        for (const field of keywordIndices) {
           try {
             await request("PUT", `/collections/${name}/index`, {
               field_name: field,
               field_schema: "keyword",
+            });
+          } catch {
+            // Index already exists — ignore
+          }
+        }
+
+        // Numeric/integer indices for range-filterable ranking payload.
+        // `signalImportanceRank` is the ordinal (noise=0 … high=3) used for the
+        // importance-floor range filter; `signalRelevance` is the [0,1] score.
+        const numericIndices: ReadonlyArray<[string, "integer" | "float"]> = [
+          ["signalImportanceRank", "integer"],
+          ["signalRelevance", "float"],
+        ];
+        for (const [field, schema] of numericIndices) {
+          try {
+            await request("PUT", `/collections/${name}/index`, {
+              field_name: field,
+              field_schema: schema,
             });
           } catch {
             // Index already exists — ignore
@@ -293,6 +344,37 @@ export async function createQdrantClient(
         log.error("Qdrant search failed", { collection, error });
         markUnavailable();
         return [];
+      }
+    },
+
+    async setPayload(collection, target, payload): Promise<void> {
+      if (!isAvailable) return;
+
+      const hasIds = "ids" in target && target.ids.length > 0;
+      const hasFilter = "filter" in target;
+      if (!hasIds && !hasFilter) return;
+      if (Object.keys(payload).length === 0) return;
+
+      try {
+        const body: Record<string, unknown> = { payload };
+        if (hasIds) {
+          body.points = [...(target as { ids: readonly string[] }).ids];
+        } else {
+          body.filter = (target as { filter: QdrantFilter }).filter;
+        }
+
+        await request(
+          "POST",
+          `/collections/${collection}/points/payload?wait=true`,
+          body,
+        );
+        log.debug("Qdrant set payload", {
+          collection,
+          by: hasIds ? "ids" : "filter",
+        });
+      } catch (error) {
+        log.error("Qdrant set payload failed", { collection, error });
+        markUnavailable();
       }
     },
 

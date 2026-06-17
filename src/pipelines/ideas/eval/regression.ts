@@ -37,6 +37,16 @@ export const TRACKED_METRICS: readonly {
   { key: "humanValidatedRate", direction: "higher_is_better", extract: (a) => a.outcomeRates.humanValidatedRate },
   { key: "killedRate", direction: "lower_is_better", extract: (a) => a.outcomeRates.killedRate },
   { key: "dedupF1", direction: "higher_is_better", extract: (a) => a.dedupQuality?.f1 ?? null },
+  {
+    key: "signalRankerLift",
+    direction: "higher_is_better",
+    extract: (a) => a.signalRanker?.lift ?? null,
+  },
+  {
+    key: "signalRankerHighTierRate",
+    direction: "higher_is_better",
+    extract: (a) => a.signalRanker?.highTierRate ?? null,
+  },
 ];
 
 /** Extract the tracked metric snapshots from an aggregate. */

@@ -97,6 +97,28 @@ function applyEnvOverrides(
     result.embeddings = embeddings;
   }
 
+  // --- pipelines.ideas.smart (env toggles for the smart-pipeline feature flags) ---
+  const smartEnv: Record<string, unknown> = {};
+  const boolEnv = (name: string): boolean | undefined => {
+    const v = process.env[name];
+    if (v === undefined) return undefined;
+    return v === "true" || v === "1";
+  };
+  const smartFacets = boolEnv("OPENCROW_SMART_SIGNAL_FACETS");
+  if (smartFacets !== undefined) smartEnv.signalFacets = smartFacets;
+  const smartRanking = boolEnv("OPENCROW_SMART_SIGNAL_RANKING");
+  if (smartRanking !== undefined) smartEnv.signalRanking = smartRanking;
+  if (process.env.OPENCROW_SMART_SIGNAL_IMPORTANCE_FLOOR) {
+    smartEnv.signalImportanceFloor =
+      process.env.OPENCROW_SMART_SIGNAL_IMPORTANCE_FLOOR;
+  }
+  if (Object.keys(smartEnv).length > 0) {
+    const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
+    const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
+    const smart = { ...((ideas.smart ?? {}) as Record<string, unknown>), ...smartEnv };
+    result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
+  }
+
   return result;
 }
 
