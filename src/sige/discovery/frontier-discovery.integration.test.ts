@@ -17,11 +17,11 @@ async function insertTestIdea(title: string, summary: string): Promise<void> {
   // Use db.unsafe to avoid template literal type issues with unknown columns
   await db.unsafe(
     `INSERT INTO generated_ideas
-       (id, pipeline_run_id, title, summary, category, quality_score,
+       (id, agent_id, pipeline_run_id, title, summary, category, quality_score,
         reasoning, sources_used, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, extract(epoch from now())::int)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, extract(epoch from now())::int)
      ON CONFLICT DO NOTHING`,
-    [id, TEST_PIPELINE_ID, title, summary, "productivity", 3.5, "test reasoning", "test"],
+    [id, "test-agent", TEST_PIPELINE_ID, title, summary, "productivity", 3.5, "test reasoning", "test"],
   );
 }
 
@@ -36,6 +36,11 @@ describe("extractSaturatedThemeKeys", () => {
   beforeEach(async () => {
     await initDb(process.env.DATABASE_URL);
     await cleanup();
+    // generated_ideas.pipeline_run_id FKs to pipeline_runs — create the parent row.
+    await getDb().unsafe(
+      `INSERT INTO pipeline_runs (id, pipeline_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [TEST_PIPELINE_ID, "autonomous-sige"],
+    );
   });
 
   afterEach(async () => {

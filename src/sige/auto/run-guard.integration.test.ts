@@ -217,7 +217,7 @@ describe("clampBroadPool", () => {
     expect(clampBroadPool(-5)).toBe(1);
   });
 
-  it("returns 1 for non-finite values", () => {
+  it("returns 1 for NaN and clamps Infinity to the max", () => {
     expect(clampBroadPool(Number.NaN)).toBe(1);
     expect(clampBroadPool(Infinity)).toBe(200);
   });

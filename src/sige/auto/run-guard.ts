@@ -143,6 +143,7 @@ export async function countRunnableSessions(): Promise<{
 
 /** Clamp a requested broad-pool size to the schema hard cap. PURE. */
 export function clampBroadPool(requested: number): number {
-  if (!Number.isFinite(requested) || requested < 1) return 1;
+  // NaN/sub-1 fall back to the floor of 1; Infinity clamps to the max below.
+  if (Number.isNaN(requested) || requested < 1) return 1;
   return Math.min(Math.floor(requested), BROAD_POOL_MAX);
 }
