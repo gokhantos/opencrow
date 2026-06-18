@@ -840,6 +840,7 @@ export async function generateDivergentCandidates(
       config,
       roundContext: undefined,
       signalsContext,
+      signal,
     })
   })
 
@@ -968,6 +969,7 @@ async function runDivergentGeneration(params: {
       config,
       roundContext: undefined,
       signalsContext,
+      signal,
     })
   })
 
@@ -1028,6 +1030,7 @@ async function runStrategicInteraction(params: {
       config,
       roundContext,
       signalsContext,
+      signal,
     })
   })
 
@@ -1187,6 +1190,7 @@ async function runEquilibriumAnalysis(params: {
       config,
       roundContext,
       signalsContext,
+      signal,
     })
   })
 
@@ -1223,8 +1227,9 @@ async function runSingleAgent(params: {
   readonly config: SigeSessionConfig
   readonly roundContext: string | undefined
   readonly signalsContext?: string
+  readonly signal?: AbortSignal
 }): Promise<AgentAction> {
-  const { def, round, sessionId, gameFormulation, mem0, userId, config, roundContext, signalsContext } = params
+  const { def, round, sessionId, gameFormulation, mem0, userId, config, roundContext, signalsContext, signal } = params
 
   const filter = def.defaultKnowledgeFilter
   const agentGraphView = await getFilteredGraphView(mem0, userId, def.role, filter)
@@ -1253,6 +1258,10 @@ async function runSingleAgent(params: {
     provider: config.provider ?? "anthropic",
     agentId: `sige:${def.role}`,
     rawSystemPrompt: true,
+    // Forward the session signal so the wall-clock AND the per-call LLM timeout
+    // can actually cancel an in-flight request — without this a hung call wedges
+    // the whole session past every checkAborted() guard.
+    ...(signal ? { abortSignal: signal } : {}),
   })
 
   const agentId = `${def.role}:${sessionId}`
@@ -1294,6 +1303,7 @@ async function runEvolutionaryGeneration(params: {
       config,
       roundContext,
       signalsContext,
+      signal,
     })
   })
 
@@ -1330,6 +1340,7 @@ async function runEvolutionaryGeneration(params: {
       config,
       roundContext: `## Generation ${gen} — Propose mutations of the surviving ideas:\n\n${mutatorContext}`,
       signalsContext,
+      signal,
     })
   })
 
@@ -1352,6 +1363,7 @@ async function runEvolutionaryGeneration(params: {
       config,
       roundContext: `## Generation ${gen} — Combine pairs of ideas into hybrids:\n\n${mutatorContext}`,
       signalsContext,
+      signal,
     })
   })
 

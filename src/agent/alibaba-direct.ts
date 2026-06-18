@@ -63,6 +63,7 @@ async function callAlibaba(
   baseUrl: string,
   apiKey: string,
   body: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<AlibabaResponse> {
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
@@ -71,6 +72,9 @@ async function callAlibaba(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    // Wire the per-call deadline / external abort into the HTTP request so a
+    // hung response is actually cancelled.
+    ...(signal ? { signal } : {}),
   });
 
   if (!res.ok) {
@@ -106,10 +110,14 @@ export async function chat(
   };
 
   try {
-    const response = await retryAsync(() => callAlibaba(baseUrl, apiKey, body), {
-      label: "alibaba.chat",
-      shouldRetry: isRetryable,
-    });
+    const response = await retryAsync(
+      () => callAlibaba(baseUrl, apiKey, body, options.abortSignal),
+      {
+        label: "alibaba.chat",
+        shouldRetry: isRetryable,
+        ...(options.abortSignal ? { signal: options.abortSignal } : {}),
+      },
+    );
 
     const text = response.choices[0]?.message.content ?? "";
 

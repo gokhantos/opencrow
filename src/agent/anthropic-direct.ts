@@ -308,6 +308,9 @@ export async function chat(
     apiKey,
     maxTokens: options.maxOutputTokens ?? 16384,
     cacheRetention: "short",
+    // Wire the per-call deadline / external abort into the actual HTTP request
+    // so a hung provider response is genuinely cancelled, not just flagged.
+    ...(options.abortSignal ? { signal: options.abortSignal } : {}),
   };
 
   try {

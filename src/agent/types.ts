@@ -150,6 +150,10 @@ export interface AgentOptions {
   readonly hooksConfig?: import("../agents/types").HooksConfig;
   readonly sdkHooks?: Record<string, unknown>;
   readonly abortSignal?: AbortSignal;
+  /** Override the per-call LLM timeout (ms). Falls back to LLM_CALL_TIMEOUT_MS
+   *  env var, then DEFAULT_LLM_CALL_TIMEOUT_MS. Guards against a hung provider
+   *  request wedging the caller (e.g. an autonomous SIGE session) forever. */
+  readonly callTimeoutMs?: number;
   readonly usageContext?: UsageContext;
   readonly maxPromptHistory?: number;
   /** When true, pass systemPrompt as a plain string to the Agent SDK instead
