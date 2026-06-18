@@ -81,6 +81,80 @@ export interface MetaGameHealth {
   readonly diversityIndex: number;
   readonly convergenceRate: number;
   readonly noveltyScore: number;
+  /** Per-agent-role balance scores; keyed by StrategicAgentRole string. */
+  readonly agentBalanceScores?: Readonly<Record<string, number>>;
+}
+
+export interface ScoredIdea {
+  readonly id: string;
+  readonly title: string;
+  readonly description: string;
+  readonly proposedBy: string;
+  readonly round: number;
+  readonly expertScore: number;
+  readonly socialScore?: number;
+  readonly fusedScore?: number;
+  readonly incentiveBreakdown: IncentiveBreakdown;
+}
+
+export interface Coalition {
+  readonly id: string;
+  readonly members: readonly string[];
+  readonly sharedIdeas: readonly string[];
+  readonly stability: number;
+}
+
+export interface RoundOutcome {
+  readonly selectedIdeas: readonly ScoredIdea[];
+  readonly eliminatedIdeas: readonly string[];
+  readonly coalitions?: readonly Coalition[];
+  readonly equilibria?: readonly Equilibrium[];
+}
+
+export interface AgentAction {
+  readonly agentId: string;
+  readonly role: string;
+  readonly round: number;
+  readonly actionType: string;
+  readonly content: string;
+  readonly confidence: number;
+}
+
+export interface SimulationRound {
+  readonly roundNumber: number;
+  readonly roundType: string;
+  readonly agentActions: readonly AgentAction[];
+  readonly outcomes: RoundOutcome;
+}
+
+export type CitizenActionType =
+  | "adopt"
+  | "resist"
+  | "remix"
+  | "combine"
+  | "oppose"
+  | "ignore";
+
+export interface SocialSimAction {
+  readonly citizenId: string;
+  readonly actionType: CitizenActionType;
+  readonly targetIdeaId: string;
+  readonly content?: string;
+  readonly sentiment: number;
+}
+
+export interface RemixVariant {
+  readonly originalIdeaId: string;
+  readonly citizenId: string;
+  readonly remixedContent: string;
+  readonly adoptionRate: number;
+}
+
+export interface SocialSimResult {
+  readonly citizenActions: readonly SocialSimAction[];
+  readonly adoptionRates: Readonly<Record<string, number>>;
+  readonly sentimentDistribution: Readonly<Record<string, number>>;
+  readonly remixVariants: readonly RemixVariant[];
 }
 
 export interface GameFormulation {
@@ -90,7 +164,9 @@ export interface GameFormulation {
 }
 
 export interface ExpertGameResult {
+  readonly rounds?: readonly SimulationRound[];
   readonly equilibria: readonly Equilibrium[];
+  readonly rankedIdeas?: readonly ScoredIdea[];
   readonly metaGameHealth: MetaGameHealth;
 }
 
@@ -103,6 +179,7 @@ export interface PopulationEntry {
 export interface SigeSessionDetail extends SigeSession {
   readonly gameFormulation?: GameFormulation;
   readonly expertResult?: ExpertGameResult;
+  readonly socialResult?: SocialSimResult;
   readonly fusedScores?: readonly FusedScore[];
 }
 
