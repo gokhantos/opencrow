@@ -14,6 +14,7 @@ import {
   markRunFailed,
   failIncompleteStepsForRun,
 } from "./store";
+import type { PipelineResultSummary } from "./types";
 
 const TEST_PIPELINE = "test-resume-pipeline";
 
@@ -251,7 +252,7 @@ describe("pipeline resume store layer", () => {
   });
 
   describe("failIncompleteStepsForRun", () => {
-    it("marks running and pending steps as failed, leaves completed untouched, returns count", async () => {
+    it("marks running and pending steps as interrupted, leaves completed untouched, returns count", async () => {
       const { runId } = await acquirePipelineLock(TEST_PIPELINE);
 
       // One completed step (checkpoint to preserve).
@@ -262,7 +263,7 @@ describe("pipeline resume store layer", () => {
         outputJson: { ok: true },
       });
 
-      // One running step (ghost — should be failed).
+      // One running step (ghost — should be interrupted).
       await createPipelineStep({ runId: runId!, stepName: "reviews" });
       // left 'running'
 
@@ -273,7 +274,7 @@ describe("pipeline resume store layer", () => {
       const byName = new Map(steps.map((s) => [s.stepName, s]));
 
       expect(byName.get("landscape")!.status).toBe("completed"); // preserved
-      expect(byName.get("reviews")!.status).toBe("failed");
+      expect(byName.get("reviews")!.status).toBe("interrupted");
       expect(byName.get("reviews")!.error).toBe("test reason");
       expect(byName.get("reviews")!.finishedAt).not.toBeNull();
       expect(byName.get("reviews")!.lastHeartbeat).toBeNull();
@@ -291,6 +292,85 @@ describe("pipeline resume store layer", () => {
     it("returns 0 for an unknown run id (no rows touched)", async () => {
       const count = await failIncompleteStepsForRun(crypto.randomUUID(), "ghost run");
       expect(count).toBe(0);
+    });
+  });
+
+  describe("JSONB encoding (write path)", () => {
+    it("stores output_json as a proper JSONB object (not double-encoded string)", async () => {
+      const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+      const step = await createPipelineStep({ runId: runId!, stepName: "landscape" });
+      const payload = {
+        trendingCategories: [{ category: "fitness", score: 0.8 }],
+        nested: { a: [1, 2, 3] },
+      };
+      await updatePipelineStep(step.id, {
+        status: "completed",
+        outputSummary: "done",
+        outputJson: payload,
+      });
+
+      const db = getDb();
+      const rows = (await db.unsafe(
+        `SELECT jsonb_typeof(output_json) as t, output_json as v FROM pipeline_steps WHERE id = $1`,
+        [step.id],
+      )) as Array<{ t: string; v: unknown }>;
+      expect(rows[0]!.t).toBe("object"); // was 'string' before fix
+      expect(rows[0]!.v).toEqual(payload);
+    });
+
+    it("stores result_summary as a proper JSONB object (not double-encoded string)", async () => {
+      const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+      const summary: PipelineResultSummary = {
+        totalSourcesQueried: 8,
+        totalSignalsFound: 42,
+        totalIdeasGenerated: 5,
+        totalIdeasKept: 3,
+        totalIdeasDuplicate: 1,
+        topThemes: ["fitness", "productivity"],
+        ideaIds: ["abc", "def"],
+        durationMs: 12345,
+      };
+      await updatePipelineRun(runId!, { status: "completed", resultSummary: summary });
+
+      const db = getDb();
+      const rows = (await db.unsafe(
+        `SELECT jsonb_typeof(result_summary) as t, result_summary as v FROM pipeline_runs WHERE id = $1`,
+        [runId!],
+      )) as Array<{ t: string; v: unknown }>;
+      expect(rows[0]!.t).toBe("object");
+      expect(rows[0]!.v).toEqual(summary);
+    });
+
+    it("backward-compat: findCompletedStep reads a legacy double-encoded row correctly", async () => {
+      const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+      const db = getDb();
+      const legacyPayload = { hello: "legacy", items: [1, 2, 3] };
+      const legacyJson = JSON.stringify(legacyPayload);
+      // Insert a step with a manually double-encoded output_json (simulates pre-fix rows).
+      const stepId = crypto.randomUUID();
+      await db.unsafe(
+        `INSERT INTO pipeline_steps (id, run_id, step_name, status, started_at, last_heartbeat)
+         VALUES ($1, $2, 'legacy_step', 'completed', extract(epoch from now())::int, NULL)`,
+        [stepId, runId!],
+      );
+      // Set output_json as a double-encoded value (string stored in jsonb).
+      await db.unsafe(
+        `UPDATE pipeline_steps SET output_json = to_json($1::text)::jsonb WHERE id = $2`,
+        [legacyJson, stepId],
+      );
+
+      // Verify it is actually double-encoded.
+      const check = (await db.unsafe(
+        `SELECT jsonb_typeof(output_json) as t FROM pipeline_steps WHERE id = $1`,
+        [stepId],
+      )) as Array<{ t: string }>;
+      expect(check[0]!.t).toBe("string"); // confirm legacy encoding
+
+      // findCompletedStep must still recover the payload via parseJson.
+      const result = await findCompletedStep(runId!, "legacy_step");
+      expect(result.found).toBe(true);
+      expect(result.hasOutput).toBe(true);
+      expect(result.outputJson).toEqual(legacyPayload);
     });
   });
 });

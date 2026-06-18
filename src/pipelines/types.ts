@@ -5,7 +5,7 @@
  */
 
 export type PipelineStatus = "pending" | "running" | "completed" | "failed";
-export type StepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+export type StepStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "interrupted";
 
 export type IdeaCategory =
   | "mobile_app"

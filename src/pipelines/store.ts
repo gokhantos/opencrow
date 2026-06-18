@@ -109,14 +109,8 @@ export async function updatePipelineRun(
   // Always update all provided fields in a single statement
   const status = update.status ?? undefined;
   const category = update.category ?? undefined;
-  const configJson =
-    update.config !== undefined
-      ? JSON.stringify(update.config)
-      : undefined;
-  const resultJson =
-    update.resultSummary !== undefined
-      ? JSON.stringify(update.resultSummary)
-      : undefined;
+  const configJson = update.config !== undefined ? update.config : undefined;
+  const resultJson = update.resultSummary !== undefined ? update.resultSummary : undefined;
   const error = update.error ?? undefined;
   const startedAt = update.startedAt ?? undefined;
   const finishedAt = update.finishedAt ?? undefined;
@@ -236,8 +230,7 @@ export async function updatePipelineStep(
     update.status === "completed" || update.status === "failed";
   const finished = update.finishedAt ?? (isTerminal ? now() : undefined);
 
-  const outputJson =
-    update.outputJson !== undefined ? JSON.stringify(update.outputJson) : undefined;
+  const outputJson = update.outputJson !== undefined ? update.outputJson : undefined;
 
   await db`
     UPDATE pipeline_steps
@@ -401,7 +394,7 @@ export async function failIncompleteStepsForRun(
   const ts = now();
   const rows = (await db`
     UPDATE pipeline_steps
-    SET status = 'failed',
+    SET status = 'interrupted',
         error = ${reason},
         finished_at = ${ts},
         last_heartbeat = NULL
