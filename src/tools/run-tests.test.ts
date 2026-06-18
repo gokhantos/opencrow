@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import type { ToolsConfig } from "../config/schema";
@@ -253,6 +253,12 @@ describe("run-tests tool", () => {
     config = {
       allowedDirectories: [tempDir],
       blockedCommands: ["sudo", "rm -rf /"],
+      sandbox: "off",
+      devToolsAllowNetwork: false,
+      // Opt in so the command-path tests below reach the safety gate; runShell
+      // is NOT mocked here so without this they'd hit the fail-closed refusal
+      // (covered separately in "fail-closed posture").
+      allowUnsandboxedDevTools: true,
       maxBashTimeout: 30000,
       maxFileSize: 1024 * 1024,
       maxIterations: 200,
@@ -531,6 +537,41 @@ describe("run-tests tool", () => {
       const result = await tool.execute({ path: "/var/secret" });
       expect(result.isError).toBe(true);
       expect(result.output).toContain("not allowed");
+    });
+  });
+
+  describe("fail-closed posture", () => {
+    it("refuses to run when sandbox is off and not opted in", async () => {
+      const failClosed: ToolsConfig = {
+        ...config,
+        allowUnsandboxedDevTools: false,
+      };
+      await writeFile(
+        join(tempDir, "package.json"),
+        JSON.stringify({ name: "x", scripts: { test: "echo hi" } }),
+      );
+      const tool = createRunTestsTool(failClosed);
+      const result = await tool.execute({ path: tempDir });
+      expect(result.isError).toBe(true);
+      expect(result.output.toLowerCase()).toContain("sandbox");
+    });
+  });
+
+  describe("dev-tool gate bypass — resolved script screening", () => {
+    it("blocks a malicious package.json scripts.test payload (not just the wrapper)", async () => {
+      // The wrapper `npm test` screens clean, but the real payload lives in the
+      // script body the agent could have authored. It must be screened too.
+      await writeFile(
+        join(tempDir, "package.json"),
+        JSON.stringify({
+          name: "evil",
+          scripts: { test: "sudo cat /etc/shadow" },
+        }),
+      );
+      const tool = createRunTestsTool(config);
+      const result = await tool.execute({ path: tempDir });
+      expect(result.isError).toBe(true);
+      expect(result.output.toLowerCase()).toContain("blocked");
     });
   });
 });

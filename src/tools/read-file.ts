@@ -2,6 +2,7 @@ import { resolve } from "path";
 import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
 import { resolveAllowedDirs, expandHome, isPathAllowed } from "./path-utils";
+import { isProtectedFile, protectedFileReason } from "./protected-paths";
 import { createLogger } from "../logger";
 
 const log = createLogger("tool:read-file");
@@ -35,6 +36,12 @@ export function createReadFileTool(config: ToolsConfig): ToolDefinition {
     async execute(input: Record<string, unknown>): Promise<ToolResult> {
       const rawPath = String(input.path ?? "");
       const filePath = resolve(expandHome(rawPath));
+
+      // Deny credential/secret material regardless of containing directory,
+      // before any fs op. This is IN ADDITION to allowedDirectories containment.
+      if (isProtectedFile(filePath)) {
+        return { output: protectedFileReason(filePath), isError: true };
+      }
 
       if (!(await isPathAllowed(filePath, allowedDirs))) {
         return {

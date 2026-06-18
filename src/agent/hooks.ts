@@ -69,7 +69,13 @@ function truncateText(value: string, max: number): string {
   return value.length > max ? value.slice(0, max) : value;
 }
 
-// Dangerous command patterns to block
+// ─── Dangerous-command patterns ─────────────────────────────────────────────
+//
+// BEST-EFFORT, NOT THE BOUNDARY. These regexes are defense-in-depth on top of
+// the OS sandbox (src/tools/sandbox.ts), which is the real filesystem/network
+// containment. String matching on shell is fundamentally bypassable (env,
+// base64, globbing, $IFS, nested interpreters). Treat additions here as making
+// the obvious attacks louder, never as a guarantee.
 const DANGEROUS_COMMANDS = [
   /\brm\s+(-[rf]+\s+)?\/(?:etc|usr|var|home|root|boot)/, // rm system dirs
   /\brm\s+-[rf]*r[rf]*\s+(\/|~|\$home)\s*$/i, // rm -rf / | ~ | $HOME
@@ -86,10 +92,65 @@ const DANGEROUS_COMMANDS = [
   />>?\s*(?:\/etc\/|~\/\.ssh\/|\$home\/\.ssh\/|[^\s]*authorized_keys)/i,
   // Privilege escalation invoked directly
   /\b(?:sudo|doas|pkexec)\b/, // run-as-root
+
+  // --- Secret-file reads (cat/xxd/base64/od/strings of credential material) ---
+  /\b(?:cat|less|more|head|tail|xxd|hexdump|od|strings|base64|gpg|openssl)\b[^|;&\n]*(?:\.env\b|id_rsa\b|id_ed25519\b|id_ecdsa\b|id_dsa\b|\.ssh\/|\.aws\/|\.pem\b|\.pgpass\b|\.netrc\b|\.npmrc\b|credentials\b|authorized_keys\b)/i,
+
+  // --- Network exfiltration of files/data ---
+  // curl/wget upload flags carrying file or data payloads.
+  /\b(?:curl|wget)\b[^|;&\n]*(?:--post-file|--data-binary|--upload-file|-T\b|--form\b|-F\b)/i,
+  /\bcurl\b[^|;&\n]*(?:--data\b|-d\b)\s*@/i, // curl -d @file / --data @file
+  // Bash /dev/tcp (and /dev/udp) pseudo-device exfil channels.
+  /\/dev\/(?:tcp|udp)\//i,
+
+  // --- Reading env tokens/secrets ---
+  // env/printenv filtered for *TOKEN*/*SECRET*/*KEY*/*PASSWORD* on one segment.
+  /\b(?:env|printenv)\b[^|;&\n]*\b\w*(?:TOKEN|SECRET|API_?KEY|PASSWORD|CREDENTIAL)\w*/i,
+  // env/printenv piped into a filter searching for a secret keyword
+  // (e.g. `printenv | grep TOKEN`, `env | grep -i secret`).
+  /\b(?:env|printenv)\b[^|;&\n]*\|\s*(?:grep|rg|ag|awk|sed|fgrep|egrep)\b[^|;&\n]*(?:TOKEN|SECRET|API_?KEY|PASSWORD|CREDENTIAL)/i,
+  // echo/printf of an env var that looks like a secret (e.g. echo $GITHUB_TOKEN).
+  /\b(?:echo|printf)\b[^|;&\n]*\$\{?\w*(?:TOKEN|SECRET|API_?KEY|PASSWORD|CREDENTIAL)\w*/i,
 ];
 
-function isDangerousCommand(command: string): boolean {
+// Wrapper/launcher commands that are TRANSPARENT: they execute another command,
+// so we must strip them and re-scan the remaining command. Otherwise
+// `env curl …` or `timeout 5 sh -c '…'` would slip past the leading-token-based
+// reasoning some attackers rely on.
+const WRAPPER_PREFIX =
+  /^\s*(?:env(?:\s+\w+=\S*)*|exec|command|builtin|nice(?:\s+-n\s*-?\d+)?|nohup|setsid|stdbuf(?:\s+\S+)*|timeout\s+\S+|xargs(?:\s+\S+)*)\s+/i;
+
+// Nested interpreter invocations: sh -c '…', bash -c "…", zsh -c …. We extract
+// the quoted (or bare) body and scan it recursively so payloads hidden one level
+// deep are still seen.
+const NESTED_SHELL =
+  /\b(?:ba|z|da|a|fi)?sh\b\s+(?:-[a-z]*c|--command)\b\s*(?:(['"])([\s\S]*?)\1|(\S[\s\S]*))$/i;
+
+function matchesDangerousPattern(command: string): boolean {
   return DANGEROUS_COMMANDS.some((pattern) => pattern.test(command));
+}
+
+function isDangerousCommand(command: string, depth = 0): boolean {
+  if (depth > 4) return false; // bound recursion on adversarial nesting
+  const cmd = command.trim();
+  if (!cmd) return false;
+
+  if (matchesDangerousPattern(cmd)) return true;
+
+  // Strip a transparent wrapper prefix and re-scan the inner command.
+  const unwrapped = cmd.replace(WRAPPER_PREFIX, "");
+  if (unwrapped !== cmd && isDangerousCommand(unwrapped, depth + 1)) {
+    return true;
+  }
+
+  // Scan the body of a nested shell invocation (sh -c '<body>').
+  const nested = NESTED_SHELL.exec(cmd);
+  if (nested) {
+    const body = nested[2] ?? nested[3];
+    if (body && isDangerousCommand(body, depth + 1)) return true;
+  }
+
+  return false;
 }
 
 export { isDangerousCommand };

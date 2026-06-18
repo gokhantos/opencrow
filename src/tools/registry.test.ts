@@ -25,6 +25,9 @@ describe("createToolRegistry", () => {
     config = {
       allowedDirectories: ["/tmp"],
       blockedCommands: ["sudo"],
+      sandbox: "off",
+      devToolsAllowNetwork: false,
+      allowUnsandboxedDevTools: false,
       maxBashTimeout: 30000,
       maxFileSize: 1024 * 1024,
       maxIterations: 200,

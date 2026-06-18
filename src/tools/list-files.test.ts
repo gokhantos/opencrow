@@ -14,6 +14,9 @@ describe("createListFilesTool", () => {
     config = {
       allowedDirectories: [tempDir],
       blockedCommands: [],
+      sandbox: "off",
+      devToolsAllowNetwork: false,
+      allowUnsandboxedDevTools: false,
       maxBashTimeout: 30000,
       maxFileSize: 1024 * 1024,
       maxIterations: 200,

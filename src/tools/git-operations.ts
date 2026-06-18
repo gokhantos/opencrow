@@ -1,5 +1,7 @@
 import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
+import type { SandboxMode } from "./sandbox";
+import { checkDevToolSandboxPosture } from "./sandbox";
 import { runShell, truncateOutput } from "./shell-runner";
 import { resolveAllowedDirs, isPathAllowedSync } from "./path-utils";
 import { createLogger } from "../logger";
@@ -39,6 +41,38 @@ const ANSI_REGEX = /\x1B\[[0-9;]*[A-Za-z]/g;
 
 function stripAnsi(text: string): string {
   return text.replace(ANSI_REGEX, "");
+}
+
+/**
+ * Per-invocation sandbox settings threaded to every git subcommand. A workspace
+ * `.git/config` is attacker-authorable and git can execute arbitrary code via
+ * its pager / hooks / aliases / core.fsmonitor even during read-only commands
+ * (status/diff/log). So EVERY git invocation runs filesystem-confined to the
+ * allowed directories via the OS sandbox. Only push/pull additionally need the
+ * network; read-only/local subcommands keep `allowNetwork: false`.
+ */
+interface GitShellConfig {
+  readonly mode: SandboxMode;
+  readonly allowedDirs: readonly string[];
+}
+
+/**
+ * Run a git command with the same OS sandbox + allowed-directory confinement as
+ * the other dev tools. `allowNetwork` defaults false; push/pull pass true.
+ */
+function gitShell(
+  cfg: GitShellConfig,
+  command: string,
+  opts: { cwd: string; timeoutMs: number; allowNetwork?: boolean },
+): ReturnType<typeof runShell> {
+  return runShell(command, {
+    cwd: opts.cwd,
+    timeoutMs: opts.timeoutMs,
+    env: GIT_ENV,
+    allowedDirs: cfg.allowedDirs,
+    sandbox: cfg.mode,
+    allowNetwork: opts.allowNetwork === true,
+  });
 }
 
 function isValidAction(action: string): action is GitAction {
@@ -96,10 +130,14 @@ function parseInput(
   };
 }
 
-async function verifyGitRepo(path: string): Promise<ToolResult | null> {
-  const result = await runShell(
+async function verifyGitRepo(
+  cfg: GitShellConfig,
+  path: string,
+): Promise<ToolResult | null> {
+  const result = await gitShell(
+    cfg,
     `git -C ${shellEscape(path)} rev-parse --git-dir`,
-    { cwd: path, timeoutMs: 10_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 10_000 },
   );
 
   if (result.exitCode !== 0) {
@@ -126,15 +164,23 @@ function handleShellResult(
 
 // --- Action handlers ---
 
-async function runStatus(path: string): Promise<ToolResult> {
-  const result = await runShell(
+async function runStatus(
+  cfg: GitShellConfig,
+  path: string,
+): Promise<ToolResult> {
+  const result = await gitShell(
+    cfg,
     gitCmd(path, "status --porcelain=v2 --branch"),
-    { cwd: path, timeoutMs: 30_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 30_000 },
   );
   return handleShellResult(result, "status");
 }
 
-async function runDiff(path: string, input: GitInput): Promise<ToolResult> {
+async function runDiff(
+  cfg: GitShellConfig,
+  path: string,
+  input: GitInput,
+): Promise<ToolResult> {
   const maxLines = input.max_lines ?? 200;
   const modifier = input.staged
     ? " --staged"
@@ -142,20 +188,18 @@ async function runDiff(path: string, input: GitInput): Promise<ToolResult> {
       ? ` ${shellEscape(input.branch)}`
       : "";
 
-  const statResult = await runShell(gitCmd(path, `diff${modifier} --stat`), {
+  const statResult = await gitShell(cfg, gitCmd(path, `diff${modifier} --stat`), {
     cwd: path,
     timeoutMs: 30_000,
-    env: GIT_ENV,
   });
 
   if (statResult.timedOut) {
     return err("Git diff timed out");
   }
 
-  const diffResult = await runShell(gitCmd(path, `diff${modifier}`), {
+  const diffResult = await gitShell(cfg, gitCmd(path, `diff${modifier}`), {
     cwd: path,
     timeoutMs: 30_000,
-    env: GIT_ENV,
   });
 
   if (diffResult.timedOut) {
@@ -174,16 +218,25 @@ async function runDiff(path: string, input: GitInput): Promise<ToolResult> {
   return ok(combined || "No changes");
 }
 
-async function runLog(path: string, input: GitInput): Promise<ToolResult> {
+async function runLog(
+  cfg: GitShellConfig,
+  path: string,
+  input: GitInput,
+): Promise<ToolResult> {
   const count = input.max_lines ?? 20;
-  const result = await runShell(
+  const result = await gitShell(
+    cfg,
     gitCmd(path, `log --oneline --no-decorate -n ${count}`),
-    { cwd: path, timeoutMs: 30_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 30_000 },
   );
   return handleShellResult(result, "log");
 }
 
-async function runCommit(path: string, input: GitInput): Promise<ToolResult> {
+async function runCommit(
+  cfg: GitShellConfig,
+  path: string,
+  input: GitInput,
+): Promise<ToolResult> {
   if (!input.message) {
     return err("Error: commit message is required");
   }
@@ -193,28 +246,33 @@ async function runCommit(path: string, input: GitInput): Promise<ToolResult> {
       ? `git -C ${shellEscape(path)} add -- ${input.files.map(shellEscape).join(" ")}`
       : `git -C ${shellEscape(path)} add -A`;
 
-  const addResult = await runShell(addCmd, {
+  const addResult = await gitShell(cfg, addCmd, {
     cwd: path,
     timeoutMs: 30_000,
-    env: GIT_ENV,
   });
 
   if (addResult.exitCode !== 0) {
     return handleShellResult(addResult, "add");
   }
 
-  const commitResult = await runShell(
+  const commitResult = await gitShell(
+    cfg,
     `git -C ${shellEscape(path)} commit -m ${shellEscape(input.message)} --no-color`,
-    { cwd: path, timeoutMs: 30_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 30_000 },
   );
 
   return handleShellResult(commitResult, "commit");
 }
 
-async function runPush(path: string, input: GitInput): Promise<ToolResult> {
-  const branchResult = await runShell(
+async function runPush(
+  cfg: GitShellConfig,
+  path: string,
+  input: GitInput,
+): Promise<ToolResult> {
+  const branchResult = await gitShell(
+    cfg,
     `git -C ${shellEscape(path)} branch --show-current`,
-    { cwd: path, timeoutMs: 10_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 10_000 },
   );
 
   if (branchResult.exitCode !== 0) {
@@ -229,18 +287,21 @@ async function runPush(path: string, input: GitInput): Promise<ToolResult> {
     );
   }
 
-  const result = await runShell(
+  // push needs the network; keep filesystem confinement, allow egress.
+  const result = await gitShell(
+    cfg,
     `git -C ${shellEscape(path)} push origin ${shellEscape(branch)} --no-color`,
-    { cwd: path, timeoutMs: 60_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 60_000, allowNetwork: true },
   );
 
   return handleShellResult(result, "push");
 }
 
-async function runPull(path: string): Promise<ToolResult> {
-  const branchResult = await runShell(
+async function runPull(cfg: GitShellConfig, path: string): Promise<ToolResult> {
+  const branchResult = await gitShell(
+    cfg,
     `git -C ${shellEscape(path)} branch --show-current`,
-    { cwd: path, timeoutMs: 10_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 10_000 },
   );
 
   if (branchResult.exitCode !== 0) {
@@ -248,23 +309,30 @@ async function runPull(path: string): Promise<ToolResult> {
   }
 
   const branch = branchResult.stdout.trim();
-  const result = await runShell(
+  // pull needs the network; keep filesystem confinement, allow egress.
+  const result = await gitShell(
+    cfg,
     `git -C ${shellEscape(path)} pull --rebase origin ${shellEscape(branch)} --no-color`,
-    { cwd: path, timeoutMs: 60_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 60_000, allowNetwork: true },
   );
 
   return handleShellResult(result, "pull");
 }
 
-async function runBranchList(path: string): Promise<ToolResult> {
-  const result = await runShell(
+async function runBranchList(
+  cfg: GitShellConfig,
+  path: string,
+): Promise<ToolResult> {
+  const result = await gitShell(
+    cfg,
     gitCmd(path, "branch -a --sort=-committerdate"),
-    { cwd: path, timeoutMs: 30_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 30_000 },
   );
   return handleShellResult(result, "branch list");
 }
 
 async function runBranchCreate(
+  cfg: GitShellConfig,
   path: string,
   input: GitInput,
 ): Promise<ToolResult> {
@@ -272,44 +340,50 @@ async function runBranchCreate(
     return err("Error: branch name is required for branch_create");
   }
 
-  const result = await runShell(
+  const result = await gitShell(
+    cfg,
     `git -C ${shellEscape(path)} checkout -b ${shellEscape(input.branch)} --no-color`,
-    { cwd: path, timeoutMs: 30_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 30_000 },
   );
 
   return handleShellResult(result, "branch create");
 }
 
-async function runStash(path: string): Promise<ToolResult> {
-  const result = await runShell(
+async function runStash(cfg: GitShellConfig, path: string): Promise<ToolResult> {
+  const result = await gitShell(
+    cfg,
     `git -C ${shellEscape(path)} stash push -m 'auto-stash' --no-color`,
-    { cwd: path, timeoutMs: 30_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 30_000 },
   );
   return handleShellResult(result, "stash");
 }
 
-async function runStashPop(path: string): Promise<ToolResult> {
-  const result = await runShell(
+async function runStashPop(
+  cfg: GitShellConfig,
+  path: string,
+): Promise<ToolResult> {
+  const result = await gitShell(
+    cfg,
     `git -C ${shellEscape(path)} stash pop --no-color`,
-    { cwd: path, timeoutMs: 30_000, env: GIT_ENV },
+    { cwd: path, timeoutMs: 30_000 },
   );
   return handleShellResult(result, "stash pop");
 }
 
 const ACTION_HANDLERS: Record<
   GitAction,
-  (path: string, input: GitInput) => Promise<ToolResult>
+  (cfg: GitShellConfig, path: string, input: GitInput) => Promise<ToolResult>
 > = {
-  status: (path) => runStatus(path),
-  diff: (path, input) => runDiff(path, input),
-  log: (path, input) => runLog(path, input),
-  commit: (path, input) => runCommit(path, input),
-  push: (path, input) => runPush(path, input),
-  pull: (path) => runPull(path),
-  branch_list: (path) => runBranchList(path),
-  branch_create: (path, input) => runBranchCreate(path, input),
-  stash: (path) => runStash(path),
-  stash_pop: (path) => runStashPop(path),
+  status: (cfg, path) => runStatus(cfg, path),
+  diff: (cfg, path, input) => runDiff(cfg, path, input),
+  log: (cfg, path, input) => runLog(cfg, path, input),
+  commit: (cfg, path, input) => runCommit(cfg, path, input),
+  push: (cfg, path, input) => runPush(cfg, path, input),
+  pull: (cfg, path) => runPull(cfg, path),
+  branch_list: (cfg, path) => runBranchList(cfg, path),
+  branch_create: (cfg, path, input) => runBranchCreate(cfg, path, input),
+  stash: (cfg, path) => runStash(cfg, path),
+  stash_pop: (cfg, path) => runStashPop(cfg, path),
 };
 
 export function createGitOperationsTool(config: ToolsConfig): ToolDefinition {
@@ -386,16 +460,37 @@ export function createGitOperationsTool(config: ToolsConfig): ToolDefinition {
         return inputError("Error: branch name is required for branch_create");
       }
 
+      // Fail closed: git can execute attacker-authored code from a workspace
+      // .git/config (pager / hooks / aliases / core.fsmonitor) even during
+      // read-only commands. The OS sandbox is the boundary that contains it; when
+      // it is not active and the operator has not opted in, refuse.
+      const posture = checkDevToolSandboxPosture(
+        config.sandbox,
+        config.allowUnsandboxedDevTools === true,
+      );
+      if (posture.refusalReason) {
+        log.warn("git_operations refused: sandbox not active", {
+          sandbox: config.sandbox,
+          action: input.action,
+        });
+        return permissionError(posture.refusalReason);
+      }
+
       log.debug("Git operation", { action: input.action, path: input.path });
 
+      const shellCfg: GitShellConfig = {
+        mode: config.sandbox,
+        allowedDirs,
+      };
+
       try {
-        const repoError = await verifyGitRepo(input.path);
+        const repoError = await verifyGitRepo(shellCfg, input.path);
         if (repoError) {
           return repoError;
         }
 
         const handler = ACTION_HANDLERS[input.action];
-        return await handler(input.path, input);
+        return await handler(shellCfg, input.path, input);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         log.error("Git operation failed", error);

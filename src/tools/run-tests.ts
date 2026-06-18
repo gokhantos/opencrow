@@ -3,6 +3,8 @@ import type { ToolsConfig } from "../config/schema";
 import { expandHome, isPathAllowedSync, resolveAllowedDirs } from "./path-utils";
 import { detectProjectContext } from "./project-context";
 import { runShell, truncateOutput, TEST_MAX_BYTES } from "./shell-runner";
+import { screenCommand } from "./command-gate";
+import { checkDevToolSandboxPosture } from "./sandbox";
 import { createLogger } from "../logger";
 
 import { getErrorMessage } from "../lib/error-serialization";
@@ -301,6 +303,20 @@ export function createRunTestsTool(config: ToolsConfig): ToolDefinition {
         return { output: `Error: path not allowed: ${path}`, isError: true };
       }
 
+      // Fail closed: run_tests executes workspace-authored, attacker-controllable
+      // code (package.json scripts.test). When the OS sandbox is not active and
+      // the operator has not opted in, refuse rather than run arbitrary code.
+      const posture = checkDevToolSandboxPosture(
+        config.sandbox,
+        config.allowUnsandboxedDevTools === true,
+      );
+      if (posture.refusalReason) {
+        log.warn("run_tests refused: sandbox not active", {
+          sandbox: config.sandbox,
+        });
+        return { output: posture.refusalReason, isError: true };
+      }
+
       let context;
       try {
         context = await detectProjectContext(path);
@@ -317,12 +333,52 @@ export function createRunTestsTool(config: ToolsConfig): ToolDefinition {
         };
       }
 
-      const { name: runnerName, command: runnerCommand } = context.testRunner;
+      const { name: runnerName, command: runnerCommand, resolvedScript } =
+        context.testRunner;
       const command = buildCommand(runnerName, runnerCommand, filter);
+
+      // Close the dev-tool gate bypass: `command` is a harmless wrapper
+      // (`npm test`), but the real payload lives in package.json scripts.test,
+      // which the agent could have authored. Screen the RESOLVED script body
+      // through the same gate so a blocked/dangerous payload is rejected before
+      // it runs — not just the wrapper.
+      if (resolvedScript) {
+        const gate = screenCommand(resolvedScript, {
+          blockedCommands: config.blockedCommands,
+          dangerousCommandBlocking: config.dangerousCommandBlocking,
+        });
+        if (gate.blocked) {
+          log.warn("run_tests blocked by resolved-script gate", {
+            runner: runnerName,
+          });
+          return {
+            output:
+              gate.reason ??
+              "Error: resolved test script blocked for safety",
+            isError: true,
+          };
+        }
+      }
 
       log.info("Running tests", { runner: runnerName, command });
 
-      const result = await runShell(command, { cwd: path, timeoutMs: timeout });
+      // Route through the SAME safety gate + OS sandbox as the bash tool so
+      // run_tests cannot be used to bypass the bash gate. The wrapper AND the
+      // resolved script body are scanned. Network is DENIED by default
+      // (devToolsAllowNetwork=false): the script body is attacker-controllable,
+      // so open egress would let an injected payload exfiltrate even with a
+      // perfect filesystem sandbox. Operators opt in per deployment.
+      const result = await runShell(command, {
+        cwd: path,
+        timeoutMs: timeout,
+        allowedDirs,
+        safetyGate: {
+          blockedCommands: config.blockedCommands,
+          dangerousCommandBlocking: config.dangerousCommandBlocking,
+        },
+        sandbox: config.sandbox,
+        allowNetwork: config.devToolsAllowNetwork === true,
+      });
       const { stdout, stderr, exitCode, timedOut, durationMs } = result;
 
       // Check for command not found

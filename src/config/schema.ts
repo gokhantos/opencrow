@@ -196,6 +196,56 @@ export const toolsConfigSchema = z.object({
    * to `false` only to opt out.
    */
   dangerousCommandBlocking: z.boolean().optional(),
+  /**
+   * OS-level sandbox for shell execution (bash tool + dev-tool exec path).
+   * The sandbox — not the string blocklists — is the real boundary that stops
+   * an LLM (fed untrusted scraped content) from reading/exfiltrating arbitrary
+   * on-disk files. Modes:
+   *   - "off":         never wrap (legacy behavior).
+   *   - "best-effort": wrap when a mechanism (sandbox-exec / bwrap) is
+   *                    available; otherwise log a loud warning and run unwrapped.
+   *   - "required":    fail closed — refuse to run any shell command if no
+   *                    sandbox mechanism is available.
+   * Default "best-effort" keeps dev environments (no sandbox binary) working
+   * while hardening Docker/macOS deployments automatically.
+   */
+  sandbox: z.enum(["off", "best-effort", "required"]).default("best-effort"),
+  /**
+   * Allow the dev-tool exec path (run_tests / validate_code) to reach the
+   * network from inside the sandbox. Default FALSE: the test/lint command bodies
+   * are fully agent-controllable (package.json scripts.test, .eslintrc) so even
+   * a perfect filesystem sandbox would let an injected payload exfiltrate over
+   * the network if egress were open. Operators who genuinely need test runners
+   * to fetch dependencies can opt in per deployment.
+   *
+   * REMOTE-FETCH RISK: turning this on does NOT just enable a vendored-dependency
+   * install. The dev tools shell out to `npx`/`bunx`, which will FETCH and EXECUTE
+   * arbitrary remote packages on demand (e.g. an attacker-authored
+   * package.json scripts.test of `npx some-evil-pkg` or a config that pulls a
+   * plugin). With this flag on, that code runs in an environment that has BOTH
+   * network egress AND read+write access to the workspace — i.e. a full
+   * fetch-then-exec-then-exfiltrate path even with a perfect filesystem sandbox.
+   * Strongly prefer vendoring dependencies (commit node_modules / use an offline
+   * cache) and leaving this FALSE; only enable it for trusted workspaces.
+   */
+  devToolsAllowNetwork: z.boolean().default(false),
+  /**
+   * Opt-in escape hatch that lets the dev-tool exec path (run_tests AND
+   * validate_code's lint/typecheck/test steps, plus git_operations) run even
+   * when the OS sandbox is NOT active — i.e. sandbox mode "off", or
+   * "best-effort" on a host with no sandbox mechanism.
+   *
+   * Default FALSE = FAIL CLOSED. These tools inherently execute
+   * workspace-authored, attacker-controllable code: test/lint/typecheck run
+   * package.json scripts, eslint.config.mjs, tsconfig `extends`, biome config,
+   * etc.; git status/diff can execute code via a workspace .git/config's
+   * pager/hooks/aliases/core.fsmonitor. The OS sandbox — not the bypassable
+   * string blocklists — is the boundary that contains that code. When it is not
+   * in effect we refuse rather than silently execute arbitrary code on the host.
+   * Operators who knowingly accept that risk (e.g. a trusted dev box with no
+   * sandbox binary) can set this true to restore the old behavior.
+   */
+  allowUnsandboxedDevTools: z.boolean().default(false),
   maxBashTimeout: z.number().int().default(600_000),
   maxFileSize: z.number().int().default(10_485_760),
   maxIterations: z.number().int().default(200),
@@ -902,6 +952,9 @@ export const opencrowConfigSchema = z.object({
     allowedDirectories: [DEFAULT_AGENT_WORKSPACE],
     blockedCommands: [...DEFAULT_BLOCKED_COMMANDS],
     dangerousCommandBlocking: true,
+    sandbox: "best-effort",
+    devToolsAllowNetwork: false,
+    allowUnsandboxedDevTools: false,
     maxBashTimeout: 600_000,
     maxFileSize: 10_485_760,
     maxIterations: 200,

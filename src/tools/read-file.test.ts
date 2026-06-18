@@ -14,6 +14,9 @@ describe("createReadFileTool", () => {
     config = {
       allowedDirectories: [tempDir],
       blockedCommands: [],
+      sandbox: "off",
+      devToolsAllowNetwork: false,
+      allowUnsandboxedDevTools: false,
       maxBashTimeout: 30000,
       maxFileSize: 1024, // 1KB for testing
       maxIterations: 200,

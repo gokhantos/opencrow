@@ -4,11 +4,14 @@ import { randomBytes } from "node:crypto";
 import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
 import { resolveAllowedDirs, expandHome, isPathAllowed } from "./path-utils";
+import { isProtectedFile, protectedFileReason } from "./protected-paths";
 import { createLogger } from "../logger";
 
 const log = createLogger("tool:edit-file");
 
-const PROTECTED_FILES = ["guardian.sh", ".env", ".env.local", ".env.production", "id_rsa", "id_ed25519", "authorized_keys"];
+// App-specific protected system files (NOT credential material — those are
+// handled by the shared isProtectedFile guard below).
+const PROTECTED_FILES = ["guardian.sh"];
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
 export function createEditFileTool(config: ToolsConfig): ToolDefinition {
@@ -54,6 +57,12 @@ export function createEditFileTool(config: ToolsConfig): ToolDefinition {
           output: "Error: old_string and new_string are identical",
           isError: true,
         };
+      }
+
+      // Deny credential/secret material regardless of directory, before any fs
+      // op — IN ADDITION to allowedDirectories containment below.
+      if (isProtectedFile(filePath)) {
+        return { output: protectedFileReason(filePath), isError: true };
       }
 
       if (PROTECTED_FILES.includes(basename(filePath))) {

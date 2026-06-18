@@ -7,6 +7,13 @@ import { loadConfig } from "../config/loader";
 import { resolveAllowedDirs, isPathAllowedSync } from "./path-utils";
 import { createLogger } from "../logger";
 import { killProcessGroup } from "./process-group";
+import { screenCommand } from "./command-gate";
+import {
+  planSandboxedExec,
+  createPrivateTmp,
+  type PrivateTmp,
+  type SandboxMode,
+} from "./sandbox";
 
 const log = createLogger("tool:shell-runner");
 
@@ -65,6 +72,12 @@ export interface ShellResult {
   readonly durationMs: number;
 }
 
+export interface SafetyGateOptions {
+  /** Blocklist + dangerous-command screening, mirroring the bash tool. */
+  readonly blockedCommands: readonly string[];
+  readonly dangerousCommandBlocking?: boolean;
+}
+
 export async function runShell(
   command: string,
   opts: {
@@ -77,6 +90,22 @@ export async function runShell(
      * otherwise the global config.tools.allowedDirectories is used.
      */
     allowedDirs?: readonly string[];
+    /**
+     * When set, screen `command` through the SAME safety gate as the bash tool
+     * (blocklist + dangerous-command check) before running. Dev tools that
+     * forward agent-influenced/resolved scripts MUST pass this so they can't be
+     * used to bypass the bash gate.
+     */
+    safetyGate?: SafetyGateOptions;
+    /**
+     * OS sandbox mode for this invocation. When provided, the command is wrapped
+     * via the sandbox (sandbox-exec/bwrap) per the mode. "required" fails closed
+     * if no mechanism is available. Omit to keep legacy unwrapped behavior for
+     * trusted internal callers (e.g. git_operations build their own commands).
+     */
+    sandbox?: SandboxMode;
+    /** Allow outbound network inside the sandbox. Default false. */
+    allowNetwork?: boolean;
   },
 ): Promise<ShellResult> {
   const timeout = opts.timeoutMs ?? 60_000;
@@ -98,47 +127,102 @@ export async function runShell(
     };
   }
 
-  const proc = Bun.spawn(["bash", "-c", command], {
-    cwd: opts.cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...getSafeDevEnv(), ...opts.env },
-    // setsid() the child so it leads its own process group; lets us kill the
-    // whole pipeline (forked children included) via `process.kill(-pid)` on
-    // timeout instead of orphaning them. Works natively on macOS and Linux.
-    detached: true,
-  });
+  // Same safety gate as the bash tool — dev tools route through here so they
+  // cannot be used to run blocked/dangerous commands the bash gate would deny.
+  if (opts.safetyGate) {
+    const gate = screenCommand(command, opts.safetyGate);
+    if (gate.blocked) {
+      log.warn("runShell blocked by safety gate", {
+        command: command.slice(0, 200),
+      });
+      return {
+        stdout: "",
+        stderr: gate.reason ?? "Error: command blocked for safety",
+        exitCode: 126,
+        timedOut: false,
+        durationMs: Date.now() - start,
+      };
+    }
+  }
 
-  const result = await Promise.race([
-    (async () => {
-      const [stdout, stderr] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-      ]);
-      const exitCode = await proc.exited;
-      return { stdout, stderr, exitCode, timedOut: false };
-    })(),
-    new Promise<{
-      stdout: string;
-      stderr: string;
-      exitCode: number;
-      timedOut: boolean;
-    }>((resolve) =>
-      setTimeout(() => {
-        // Kill the whole process group, not just bash, so forked children
-        // (e.g. the producer in `yes | head`) die too instead of re-parenting
-        // to PID 1 and spinning a CPU core.
-        killProcessGroup(proc.pid);
-        resolve({ stdout: "", stderr: "", exitCode: -1, timedOut: true });
-      }, timeout),
-    ),
-  ]);
+  // Wrap the command in an OS sandbox when a mode is requested. In "required"
+  // mode with no mechanism we fail closed here.
+  let argv: readonly string[] = ["bash", "-c", command];
+  let privateTmp: PrivateTmp | null = null;
+  if (opts.sandbox && opts.sandbox !== "off") {
+    privateTmp = createPrivateTmp(opts.cwd);
+    const plan = planSandboxedExec({
+      command,
+      cwd: opts.cwd,
+      allowedDirs,
+      mode: opts.sandbox,
+      allowNetwork: opts.allowNetwork === true,
+      privateTmpDir: privateTmp?.dir,
+    });
+    if (plan.kind === "refuse") {
+      privateTmp?.cleanup();
+      return {
+        stdout: "",
+        stderr: plan.reason,
+        exitCode: 126,
+        timedOut: false,
+        durationMs: Date.now() - start,
+      };
+    }
+    argv = plan.argv;
+  }
 
-  // Defensive sweep: even on a clean exit a forked child can outlive bash via
-  // a pipe-close race. Reap any strays in the group. Best-effort.
-  killProcessGroup(proc.pid);
+  try {
+    const childEnv: Record<string, string> = {
+      ...getSafeDevEnv(),
+      ...opts.env,
+    };
+    if (privateTmp) childEnv.TMPDIR = privateTmp.dir;
 
-  return { ...result, durationMs: Date.now() - start };
+    const proc = Bun.spawn([...argv], {
+      cwd: opts.cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: childEnv,
+      // setsid() the child so it leads its own process group; lets us kill the
+      // whole pipeline (forked children included) via `process.kill(-pid)` on
+      // timeout instead of orphaning them. Works natively on macOS and Linux.
+      detached: true,
+    });
+
+    const result = await Promise.race([
+      (async () => {
+        const [stdout, stderr] = await Promise.all([
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+        const exitCode = await proc.exited;
+        return { stdout, stderr, exitCode, timedOut: false };
+      })(),
+      new Promise<{
+        stdout: string;
+        stderr: string;
+        exitCode: number;
+        timedOut: boolean;
+      }>((resolve) =>
+        setTimeout(() => {
+          // Kill the whole process group, not just bash, so forked children
+          // (e.g. the producer in `yes | head`) die too instead of re-parenting
+          // to PID 1 and spinning a CPU core.
+          killProcessGroup(proc.pid);
+          resolve({ stdout: "", stderr: "", exitCode: -1, timedOut: true });
+        }, timeout),
+      ),
+    ]);
+
+    // Defensive sweep: even on a clean exit a forked child can outlive bash via
+    // a pipe-close race. Reap any strays in the group. Best-effort.
+    killProcessGroup(proc.pid);
+
+    return { ...result, durationMs: Date.now() - start };
+  } finally {
+    privateTmp?.cleanup();
+  }
 }
 
 // --- Named output limits (importable by specific tools) ---

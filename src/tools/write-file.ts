@@ -4,11 +4,14 @@ import { randomBytes } from "node:crypto";
 import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
 import { resolveAllowedDirs, expandHome, isPathAllowed } from "./path-utils";
+import { isProtectedFile, protectedFileReason } from "./protected-paths";
 import { createLogger } from "../logger";
 
 const log = createLogger("tool:write-file");
 
-const PROTECTED_FILES = ["guardian.sh", ".env", ".env.local", ".env.production", "id_rsa", "id_ed25519", "authorized_keys"];
+// App-specific protected system files (NOT credential material — those are
+// handled by the shared isProtectedFile guard below).
+const PROTECTED_FILES = ["guardian.sh"];
 
 export function createWriteFileTool(config: ToolsConfig): ToolDefinition {
   const allowedDirs = resolveAllowedDirs(config.allowedDirectories);
@@ -37,6 +40,12 @@ export function createWriteFileTool(config: ToolsConfig): ToolDefinition {
       const rawPath = String(input.path ?? "");
       const filePath = resolve(expandHome(rawPath));
       const content = String(input.content ?? "");
+
+      // Deny credential/secret material regardless of directory, before any fs
+      // op — IN ADDITION to allowedDirectories containment below.
+      if (isProtectedFile(filePath)) {
+        return { output: protectedFileReason(filePath), isError: true };
+      }
 
       if (PROTECTED_FILES.includes(basename(filePath))) {
         return {
