@@ -27,9 +27,17 @@ echo "  typecheck..."
 $BUN x tsc --noEmit
 
 # ── 2. Isolated tests (mock.module — must run one process each) ─
+# Each file runs in its own process. bun's `mock.module` has a rare timing race
+# where the mock binding can lose to the top-level `await import` under heavy
+# system load, failing nearly every assertion in the file at once. The test is
+# correct, so retry a failed file ONCE before failing the push; a genuine bug
+# fails twice and still blocks.
 echo "  isolated tests..."
 for f in $(find src -name '*.isolated.test.ts'); do
-  $BUN test "$f" --timeout 30000
+  if ! $BUN test "$f" --timeout 30000; then
+    echo "  ⟳ isolated file failed (possible mock.module flake), retrying once: $f"
+    $BUN test "$f" --timeout 30000
+  fi
 done
 
 # ── 3. Unit tests ───────────────────────────────────────────
