@@ -17,7 +17,7 @@ describe("smartConfigSchema", () => {
     const parsed = smartConfigSchema.parse({});
     expect(parsed).toEqual({
       sigeValuation: false,
-      knowledgeGraphRetrieval: false,
+      knowledgeGraphRetrieval: true,
       deepSearchReranker: false,
       signalFacets: false,
       signalRanking: false,
@@ -84,8 +84,8 @@ describe("smartConfigSchema", () => {
         perRunCostCeilingUsd: 0,
       },
       outcomeMemory: {
-        writeBack: false,
-        readAtSynthesis: false,
+        writeBack: true,
+        readAtSynthesis: true,
         reinforceCap: 5,
         avoidCap: 5,
         searchLimit: 12,
@@ -96,10 +96,24 @@ describe("smartConfigSchema", () => {
   test("external-service and expensive gates default OFF", () => {
     const parsed = smartConfigSchema.parse({});
     expect(parsed.sigeValuation).toBe(false);
-    expect(parsed.knowledgeGraphRetrieval).toBe(false);
     expect(parsed.deepSearchReranker).toBe(false);
     expect(parsed.signalFacets).toBe(false);
     expect(parsed.signalRanking).toBe(false);
+  });
+
+  test("read-only graph + outcome-memory learning loop default ON", () => {
+    const parsed = smartConfigSchema.parse({});
+    // knowledgeGraphRetrieval is read-only (injects sanitized + untrusted-fenced
+    // mem0 facts into synthesis): now ON to leverage the populated graph. No
+    // autonomous feedback loop.
+    expect(parsed.knowledgeGraphRetrieval).toBe(true);
+    // The REINFORCE/AVOID learning loop (write verdicts back + read them at
+    // synthesis) is now ON by default. Both halves degrade gracefully on mem0
+    // failure, so a default run stays safe.
+    expect(parsed.outcomeMemory.writeBack).toBe(true);
+    expect(parsed.outcomeMemory.readAtSynthesis).toBe(true);
+    // sigeAuto.memoryWriteback stays OFF — autonomous feedback-loop risk.
+    expect(parsed.sigeAuto.memoryWriteback).toBe(false);
   });
 
   test("signalRanking defaults OFF and is gated on top of signalFacets", () => {

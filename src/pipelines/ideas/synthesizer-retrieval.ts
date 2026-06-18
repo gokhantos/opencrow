@@ -16,6 +16,7 @@ import { loadConfig } from "../../config/loader";
 import type { SmartIdeasConfig } from "../../config/schema";
 import type { Mem0Client } from "../../sige/knowledge/mem0-client";
 import { insightForge, panoramaSearch } from "../../sige/memory/retrieval-modes";
+import { sanitizeScrapedField, wrapUntrusted } from "../../sige/untrusted";
 import {
   candidateText,
   embeddingRerank,
@@ -378,13 +379,19 @@ async function graphEvidence(
         .slice(0, 6);
       if (facts.length === 0) continue;
       const strength = evidenceStrengthLabel(result.score);
-      blocks.push(
-        `Theme: "${themes[i]}" (graph_strength: ${strength})\n${facts.map((f) => `  • ${f}`).join("\n")}`,
-      );
+      // mem0 graph facts are derived from scraped/LLM-authored idea text and are
+      // therefore UNTRUSTED on read. Sanitize the theme + each fact (strip control
+      // chars / role-markers, cap length) before they touch the prompt — mirrors
+      // the outcome-memory bullet() discipline. The whole block is untrusted-fenced
+      // below so a poisoned fact can't smuggle instructions into synthesis.
+      const safeTheme = sanitizeScrapedField(themes[i] ?? "", 160).replace(/"/g, "'");
+      const safeFacts = facts.map((f) => `  • ${sanitizeScrapedField(f, 240)}`).join("\n");
+      blocks.push(`Theme: "${safeTheme}" (graph_strength: ${strength})\n${safeFacts}`);
     }
 
     if (blocks.length === 0) return "";
-    return `\n\n=== KNOWLEDGE GRAPH (relation-path facts) ===\n${blocks.join("\n\n")}`;
+    const fenced = wrapUntrusted("knowledge-graph", blocks.join("\n\n"));
+    return `\n\n=== KNOWLEDGE GRAPH (relation-path facts) ===\n${fenced}`;
   } catch (err) {
     log.warn("deepSearch knowledge-graph branch failed, skipping", { err });
     return "";

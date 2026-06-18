@@ -57,6 +57,19 @@ export function resolveManifest(
       // Disable IPC hung-detection for sige; crash/exit-based restart still applies.
       heartbeat: { enabled: false },
     });
+
+    builtins.push({
+      name: "sige-ingestion",
+      entry: "src/entries/sige-ingestion.ts",
+      restartPolicy: "always",
+      maxRestarts: 10,
+      restartWindowSec: 300,
+      // Like sige, ingestion is an LLM-bound workload: it drives mem0 entity/relation
+      // extraction, which saturates its event loop and can delay the IPC pong past any
+      // reasonable window without being genuinely hung. Disable IPC hung-detection so the
+      // orchestrator never false-kills it; crash/exit-based restart still applies.
+      heartbeat: { enabled: false },
+    });
   }
 
   for (const b of builtins) {
