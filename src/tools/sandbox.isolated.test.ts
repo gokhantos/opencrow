@@ -20,9 +20,15 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 let existsSyncResult = false;
 
-mock.module("node:fs", () => ({
-  existsSync: (_path: string) => existsSyncResult,
-}));
+// Spread the REAL node:fs so the other functions sandbox.ts imports
+// (mkdirSync, mkdtempSync, rmSync) keep working; only existsSync is faked.
+mock.module("node:fs", () => {
+  const actual = require("node:fs") as typeof import("node:fs");
+  return {
+    ...actual,
+    existsSync: (_path: string) => existsSyncResult,
+  };
+});
 
 // Import AFTER mocking so the module picks up the fake existsSync.
 const {
