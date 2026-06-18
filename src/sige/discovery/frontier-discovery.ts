@@ -390,9 +390,14 @@ export async function discoverFrontiers(
     const signalsContext = buildBroadSignalsContext(corpus);
 
     // generateDivergentIdeas is itself fault-tolerant (returns [] on failure).
+    // Forward the configured mem0 client: without it the divergent path falls
+    // back to an unreachable localhost Mem0 and silently generates the entire
+    // broad pool against an EMPTY knowledge graph (degraded frontiers → the
+    // run short-circuits as a no-op "completed").
     const candidates = await generateDivergentIdeas(signalsContext, {
       maxCandidates: broadPoolSize,
       userId,
+      mem0,
       ...(opts.config !== undefined ? { config: opts.config } : {}),
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });

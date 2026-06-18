@@ -35,6 +35,21 @@ import type {
 
 const log = createLogger("sige:expert-game")
 
+/**
+ * Last-resort Mem0 client for callers that fail to thread one through. Reads the
+ * SAME env the config loader uses (OPENCROW_SIGE_MEM0_URL + OPENCROW_INTERNAL_TOKEN)
+ * so a missed wiring still targets the correct in-container host (mem0:8000) with
+ * the shared bearer token, instead of an unreachable bare localhost that silently
+ * yields an empty knowledge graph. The real fix is always to pass `mem0`
+ * explicitly — this only bounds the blast radius of the next missed wiring.
+ */
+function fallbackMem0Client(): Mem0Client {
+  return new Mem0Client({
+    baseUrl: process.env.OPENCROW_SIGE_MEM0_URL ?? "http://localhost:8000",
+    apiToken: process.env.OPENCROW_INTERNAL_TOKEN || undefined,
+  })
+}
+
 // ─── Fault-Tolerant Concurrency ───────────────────────────────────────────────
 
 /**
@@ -385,7 +400,7 @@ export async function evaluateCandidatesDetailed(
   const sessionId = context.sessionId ?? crypto.randomUUID()
   const userId = context.userId ?? "sige-global"
   const config = context.config ?? DEFAULT_EVALUATE_CONFIG
-  const mem0 = context.mem0 ?? new Mem0Client({ baseUrl: "http://localhost:8000" })
+  const mem0 = context.mem0 ?? fallbackMem0Client()
   const gameFormulation =
     context.gameFormulation ?? buildPlaceholderGameFormulation(sessionId)
   const { signal, signalsContext } = context
@@ -777,7 +792,7 @@ export async function generateDivergentCandidates(
   const sessionId = opts.sessionId ?? crypto.randomUUID()
   const userId = opts.userId ?? "sige-global"
   const config = opts.config ?? DEFAULT_EVALUATE_CONFIG
-  const mem0 = opts.mem0 ?? new Mem0Client({ baseUrl: "http://localhost:8000" })
+  const mem0 = opts.mem0 ?? fallbackMem0Client()
   const gameFormulation =
     opts.gameFormulation ?? buildPlaceholderGameFormulation(sessionId)
   const { signalsContext, signal } = opts
