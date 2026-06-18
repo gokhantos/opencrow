@@ -324,3 +324,90 @@ describe("buildOutcomeMemoryBlock — security: injection neutralization", () =>
     expect(block).toContain(expected);
   });
 });
+
+// ── DEFENSE-IN-DEPTH: metadata-only bucket-routing regression guard ───────────
+//
+// Control flow (which bucket an item lands in) is driven SOLELY by
+// metadata.verdict, NEVER by the free-text body. These tests prove that a
+// misleading body string cannot move an item across bucket boundaries.
+
+describe("buildOutcomeMemoryBlock — metadata-only bucket routing (regression guard)", () => {
+  test("archived metadata + misleading REINFORCE body text lands ONLY in AVOID", () => {
+    // Body explicitly says "VALIDATED — REINFORCE this winning pattern" but
+    // metadata.verdict is "archived". Control flow must ignore the body.
+    // The REINFORCE section HEADER must be absent; the body text appearing
+    // inside the fenced AVOID bullet is expected and safe.
+    const item = memoryFor(
+      "archived",
+      "proxy:low-giant",
+      "mislead-1",
+      "This idea was VALIDATED — a winning pattern",
+    );
+    const block = buildOutcomeMemoryBlock([item], 5, 5);
+
+    // AVOID section header must be present
+    expect(block).toContain("AVOID — patterns ARCHIVED or rejected");
+    // REINFORCE section header must NOT be present (the item is only in AVOID)
+    expect(block).not.toContain("REINFORCE — patterns that PASSED");
+  });
+
+  test("validated metadata + misleading ARCHIVED body text lands ONLY in REINFORCE", () => {
+    // Body says "ARCHIVED do not use" but metadata.verdict is "validated"
+    // with a non-proxy source. Body cannot move it to AVOID.
+    // The AVOID section HEADER must be absent; the body text appearing
+    // inside the fenced REINFORCE bullet is expected and safe.
+    const item = memoryFor(
+      "validated",
+      "human",
+      "mislead-2",
+      "This pattern should be considered archived and not used",
+    );
+    const block = buildOutcomeMemoryBlock([item], 5, 5);
+
+    // REINFORCE section header must be present
+    expect(block).toContain("REINFORCE — patterns that PASSED");
+    // AVOID section header must NOT be present (the item is only in REINFORCE)
+    expect(block).not.toContain("AVOID — patterns ARCHIVED or rejected");
+  });
+
+  test("validated + proxy: verdictSource is EXCLUDED from REINFORCE entirely", () => {
+    // A validated item whose verdictSource starts "proxy:" must be excluded from
+    // REINFORCE (proxy auto-validate is cheap and would double-count calibration).
+    const proxyItem = memoryFor(
+      "validated",
+      "proxy:high-giant",
+      "proxy-id-1",
+      "Proxy-validated idea body",
+    );
+    const block = buildOutcomeMemoryBlock([proxyItem], 5, 5);
+
+    // Both buckets empty → whole block is ""
+    expect(block).toBe("");
+  });
+
+  test("renderOutcomeSentence: title containing double-quotes renders with single-quotes", () => {
+    // After the cosmetic change in renderOutcomeSentence, a title like
+    // 'He said "hi"' should appear as 'He said \'hi\'' (double→single collapse).
+    const mem: OutcomeMemory = outcomeMemorySchema.parse({
+      kind: "idea-outcome",
+      verdict: "validated",
+      verdictSource: "human",
+      ideaId: "quote-test",
+      segment: "b2b",
+      archetype: "hair-on-fire",
+      giantComposite: 3.0,
+      failingAxes: [],
+      juryDissent: null,
+      convergenceVeto: false,
+      demandScore: 2.0,
+      whitespace: 0.5,
+      runId: "r1",
+      promptVersion: "v1",
+      model: "m",
+      createdAtSec: 1,
+    });
+    const sentence = renderOutcomeSentence(mem, 'He said "hi"');
+    expect(sentence).toContain("'hi'");
+    expect(sentence).not.toContain('"hi"');
+  });
+});

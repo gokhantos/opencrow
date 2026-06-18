@@ -176,7 +176,11 @@ function num(value: number | null, digits = 1): string {
  * sentence. Null scores render "n/a". PURE.
  */
 export function renderOutcomeSentence(memory: OutcomeMemory, title: string): string {
-  const t = sanitizeScrapedField(title, 160);
+  // Collapse double-quotes so the title sits cleanly inside the double-quoted
+  // sentence below and the natural-language output is always well-formed. Purely
+  // cosmetic — the round-trip is still defended by re-sanitize + wrapUntrusted on
+  // read.
+  const t = sanitizeScrapedField(title, 160).replace(/"/g, "'");
   const s = memory.segment ?? "n/a";
   const a = memory.archetype ?? "n/a";
   const g = num(memory.giantComposite);
