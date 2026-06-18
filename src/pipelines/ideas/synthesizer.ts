@@ -998,7 +998,7 @@ function antiExemplarSection(antiExemplars: string): string {
  * ALREADY sanitized (sanitizeScrapedField) and fenced (wrapUntrusted) per memory
  * — do NOT double-sanitize here, just thread it through.
  */
-function outcomeMemorySection(outcomeMemory: string): string {
+export function outcomeMemorySection(outcomeMemory: string): string {
   return outcomeMemory ? `\n${outcomeMemory}` : "";
 }
 
