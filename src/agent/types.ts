@@ -148,6 +148,13 @@ export interface AgentOptions {
   readonly webSearchEnabled?: boolean;
   readonly serenaEnabled?: boolean;
   readonly hooksConfig?: import("../agents/types").HooksConfig;
+  /**
+   * The resolved agent's tool filter. Used to fail-closed the SDK-native
+   * high-impact tools (bash/write_file/edit_file): they are added to
+   * `disallowedTools` unless the filter explicitly grants them. See
+   * src/tools/privilege.ts and buildDisallowedTools.
+   */
+  readonly toolFilter?: import("../agents/types").ToolFilter;
   readonly sdkHooks?: Record<string, unknown>;
   readonly abortSignal?: AbortSignal;
   /** Override the per-call LLM timeout (ms). Falls back to LLM_CALL_TIMEOUT_MS

@@ -86,7 +86,11 @@ describe("createAgentTemplatesTool", () => {
       expect(parsed.config.provider).toBe("agent-sdk");
       expect(parsed.config.model).toBe("claude-sonnet-4-6");
       expect(parsed.config.maxIterations).toBe(150);
-      expect(parsed.config.toolFilter.mode).toBe("all");
+      // Fail-closed: the orchestrator seed now uses an explicit allowlist (high-
+      // impact tools listed explicitly), never mode:"all".
+      expect(parsed.config.toolFilter.mode).toBe("allowlist");
+      expect(parsed.config.toolFilter.tools).toContain("read_file");
+      expect(parsed.config.toolFilter.tools).toContain("bash");
     });
 
     it("should include a hint about manage_agent", async () => {

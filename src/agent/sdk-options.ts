@@ -5,6 +5,8 @@
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentOptions } from "./types";
 import type { createOpenCrowMcpServer } from "./mcp-bridge";
+import type { ToolFilter } from "../agents/types";
+import { isToolGranted } from "../tools/privilege";
 import { createLogger } from "../logger";
 import { join } from "path";
 import { homedir } from "os";
@@ -247,6 +249,31 @@ export function buildMcpServers(
 }
 
 /**
+ * Map of OpenCrow lowercase tool names to the Agent SDK's PascalCase native
+ * tool names. The SDK provides bash/file-edit natively (not via the OpenCrow MCP
+ * bridge), so restricting them requires disallowing the SDK name.
+ */
+const NATIVE_HIGH_IMPACT_SDK_NAMES: ReadonlyArray<readonly [string, string]> = [
+  ["bash", "Bash"],
+  ["write_file", "Write"],
+  ["edit_file", "Edit"],
+];
+
+/**
+ * Fail-closed the SDK-native high-impact tools (Bash/Write/Edit). They are added
+ * to disallowedTools unless the agent's toolFilter explicitly grants them. When
+ * no filter is present we default to disallowing all of them (fail closed).
+ */
+function buildDisallowedNativeHighImpactTools(
+  filter: ToolFilter | undefined,
+): string[] {
+  if (!filter) return NATIVE_HIGH_IMPACT_SDK_NAMES.map(([, sdk]) => sdk);
+  return NATIVE_HIGH_IMPACT_SDK_NAMES.filter(
+    ([ocName]) => !isToolGranted(filter, ocName),
+  ).map(([, sdk]) => sdk);
+}
+
+/**
  * Build the disallowedTools array based on disabled flags in AgentOptions.
  *
  * The SDK's `allowedTools` only controls auto-permission (irrelevant with
@@ -255,6 +282,7 @@ export function buildMcpServers(
  */
 export function buildDisallowedTools(options: AgentOptions): string[] {
   return [
+    ...buildDisallowedNativeHighImpactTools(options.toolFilter),
     ...(!options.webSearchEnabled ? ["WebSearch", "WebFetch"] : []),
     ...(!options.browserEnabled ? ["mcp__playwright__*"] : []),
     ...(!options.githubEnabled ? ["mcp__github__*"] : []),

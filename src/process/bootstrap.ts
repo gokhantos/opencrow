@@ -114,6 +114,7 @@ function buildAgentOptions(
     firecrawlEnabled: agent.mcpServers?.firecrawl ?? false,
     serenaEnabled: agent.mcpServers?.serena ?? false,
     hooksConfig: agent.hooks,
+    toolFilter: agent.toolFilter,
     cwd: cwd ?? process.cwd(),
   };
 }

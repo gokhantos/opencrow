@@ -69,6 +69,13 @@ class MockAgentConflictError extends Error {
   }
 }
 
+class MockPrivilegeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PrivilegeError";
+  }
+}
+
 mock.module("../config/loader", () => ({
   getMergedAgentsWithSource: mockGetMergedAgentsWithSource,
   computeMergedAgentHash: mockComputeMergedAgentHash,
@@ -80,6 +87,7 @@ mock.module("../config/agent-mutations", () => ({
   updateAgentInDb: mockUpdateAgentInDb,
   removeAgentFromDb: mockRemoveAgentFromDb,
   AgentConflictError: MockAgentConflictError,
+  PrivilegeError: MockPrivilegeError,
 }));
 
 mock.module("../logger", () => ({
@@ -245,7 +253,7 @@ describe("manage_agent tool", () => {
         name: "Mapped",
         system_prompt: "prompt",
         max_iterations: 10,
-        tool_filter: { mode: "allowlist", tools: ["memory"] },
+        tool_filter: { mode: "allowlist", tools: ["search_memory"] },
       });
 
       const call = mockAddAgentToDb.mock.calls[0]!;
@@ -254,7 +262,7 @@ describe("manage_agent tool", () => {
       expect(defObj.maxIterations).toBe(10);
       expect(defObj.toolFilter).toEqual({
         mode: "allowlist",
-        tools: ["memory"],
+        tools: ["search_memory"],
       });
       // Should not have snake_case keys
       expect(defObj.system_prompt).toBeUndefined();

@@ -7,10 +7,17 @@ import type {
 } from "./types";
 import type { AgentConfig } from "../config/schema";
 import { createLogger } from "../logger";
+import { FAIL_CLOSED_DEFAULT_TOOL_FILTER } from "../tools/privilege";
 
 const log = createLogger("agents:registry");
 
-const DEFAULT_TOOL_FILTER: ToolFilter = { mode: "all", tools: [] };
+/**
+ * Fail-closed default: a conservative allowlist (read/research/memory + read-only
+ * scraper/search tools), NEVER `mode:"all"`. High-impact tools (bash, write_file,
+ * db_query, process_manage, manage_agent, …) are never granted implicitly — an
+ * agent must list them explicitly in its own toolFilter. See src/tools/privilege.ts.
+ */
+const DEFAULT_TOOL_FILTER: ToolFilter = FAIL_CLOSED_DEFAULT_TOOL_FILTER;
 const DEFAULT_SUBAGENT_CONFIG: SubagentConfig = {
   allowAgents: [],
   maxChildren: 5,

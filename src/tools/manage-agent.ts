@@ -1,5 +1,8 @@
+import { z } from "zod";
 import type { ToolDefinition, ToolCategory } from "./types";
 import type { AgentRegistry } from "../agents/registry";
+import type { CallerContext } from "../config/agent-mutations";
+import type { ToolFilter } from "../agents/types";
 import {
   getMergedAgentsWithSource,
   computeMergedAgentHash,
@@ -9,12 +12,74 @@ import {
   updateAgentInDb,
   removeAgentFromDb,
   AgentConflictError,
+  PrivilegeError,
 } from "../config/agent-mutations";
+import { buildToolCatalog } from "./catalog";
 import { createLogger } from "../logger";
 
 const log = createLogger("tool:manage-agent");
 
 const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Strict tool-filter schema validated against the live tool catalog. Unknown or
+ * garbage tool names are rejected so an injected manage_agent call cannot smuggle
+ * in fabricated tool identifiers (or typo'd high-impact names) past the filter.
+ */
+function buildToolFilterSchema(): z.ZodType<ToolFilter> {
+  const catalogNames = buildToolCatalog().map((e) => e.name);
+  // Include builder-time tools not present in the static catalog so legitimate
+  // grants (sub-agent, cron, search) are not falsely rejected.
+  const extraNames = [
+    "cron",
+    "trigger_cron",
+    "list_agents",
+    "spawn_agent",
+    "search_memory",
+    "manage_agent",
+    "git_operations",
+    "web_fetch",
+    "agent_templates",
+    "sige_start_session",
+    "sige_get_report",
+    "sige_get_session",
+    "sige_list_sessions",
+    "sige_query_game_history",
+    "sige_search_strategic_ideas",
+    "sige_get_population_dynamics",
+  ];
+  const allNames = Array.from(new Set([...catalogNames, ...extraNames]));
+  const toolName = z.enum(allNames as [string, ...string[]]);
+  return z.object({
+    mode: z.enum(["all", "allowlist", "blocklist"]),
+    tools: z.array(toolName),
+  });
+}
+
+/**
+ * Resolve the caller context for a manage_agent invocation.
+ *
+ * The tool only ever runs inside an agent process (OPENCROW_AGENT_ID is set), so
+ * the caller is the owning agent and mutations must be privilege-monotonic. If
+ * the env var is absent we still treat the caller as an (unknown) agent and fail
+ * closed with an empty tool filter rather than granting operator power.
+ */
+function resolveCaller(registry: AgentRegistry): CallerContext {
+  const agentId = process.env.OPENCROW_AGENT_ID;
+  if (!agentId) {
+    return {
+      kind: "agent",
+      agentId: "unknown",
+      toolFilter: { mode: "allowlist", tools: [] },
+    };
+  }
+  const self = registry.getById(agentId);
+  const toolFilter: ToolFilter = self?.toolFilter ?? {
+    mode: "allowlist",
+    tools: [],
+  };
+  return { kind: "agent", agentId, toolFilter };
+}
 
 const SNAKE_TO_CAMEL: Record<string, string> = {
   system_prompt: "systemPrompt",
@@ -107,6 +172,7 @@ export function createManageAgentTool(
       input: Record<string, unknown>,
     ): Promise<{ output: string; isError: boolean }> {
       const action = String(input.action);
+      const caller = resolveCaller(config.agentRegistry);
 
       try {
         switch (action) {
@@ -115,11 +181,11 @@ export function createManageAgentTool(
           case "get":
             return await handleGet(input);
           case "create":
-            return await handleCreate(input, config);
+            return await handleCreate(input, config, caller);
           case "update":
-            return await handleUpdate(input, config);
+            return await handleUpdate(input, config, caller);
           case "delete":
-            return await handleDelete(input, config);
+            return await handleDelete(input, config, caller);
           default:
             return { output: `Unknown action: ${action}`, isError: true };
         }
@@ -130,6 +196,13 @@ export function createManageAgentTool(
               "Agent list has changed since last read. Please retry the operation.",
             isError: true,
           };
+        }
+        if (error instanceof PrivilegeError) {
+          log.warn("manage_agent privilege denied", {
+            action,
+            error: error.message,
+          });
+          return { output: `Permission denied: ${error.message}`, isError: true };
         }
         const msg = error instanceof Error ? error.message : String(error);
         log.error("manage_agent failed", { action, error: msg });
@@ -184,6 +257,7 @@ async function handleGet(
 async function handleCreate(
   input: Record<string, unknown>,
   config: ManageAgentToolConfig,
+  caller: CallerContext,
 ): Promise<{ output: string; isError: boolean }> {
   const agentId = input.agent_id as string | undefined;
   const name = input.name as string | undefined;
@@ -205,19 +279,23 @@ async function handleCreate(
     };
   }
 
+  const fields = buildAgentFields(input);
+  const filterError = validateToolFilterField(fields);
+  if (filterError) return { output: filterError, isError: true };
+
   const agents = await getMergedAgentsWithSource();
   const hash = computeMergedAgentHash(agents);
 
   const def = {
     id: agentId,
     name,
-    ...buildAgentFields(input),
+    ...fields,
   };
 
-  await addAgentToDb(def, hash);
+  await addAgentToDb(def, hash, caller);
   await config.reloadRegistry();
 
-  log.info("Agent created", { agentId });
+  log.info("Agent created", { agentId, caller: caller.kind });
   return {
     output: `Agent "${agentId}" created successfully.`,
     isError: false,
@@ -227,6 +305,7 @@ async function handleCreate(
 async function handleUpdate(
   input: Record<string, unknown>,
   config: ManageAgentToolConfig,
+  caller: CallerContext,
 ): Promise<{ output: string; isError: boolean }> {
   const agentId = input.agent_id as string | undefined;
   if (!agentId) {
@@ -236,18 +315,22 @@ async function handleUpdate(
     };
   }
 
+  const fields = buildAgentFields(input);
+  const filterError = validateToolFilterField(fields);
+  if (filterError) return { output: filterError, isError: true };
+
   const agents = await getMergedAgentsWithSource();
   const hash = computeMergedAgentHash(agents);
 
   const partial = {
     ...(input.name !== undefined ? { name: input.name as string } : {}),
-    ...buildAgentFields(input),
+    ...fields,
   };
 
-  await updateAgentInDb(agentId, partial, hash);
+  await updateAgentInDb(agentId, partial, hash, caller);
   await config.reloadRegistry();
 
-  log.info("Agent updated", { agentId });
+  log.info("Agent updated", { agentId, caller: caller.kind });
   return {
     output: `Agent "${agentId}" updated successfully.`,
     isError: false,
@@ -257,6 +340,7 @@ async function handleUpdate(
 async function handleDelete(
   input: Record<string, unknown>,
   config: ManageAgentToolConfig,
+  caller: CallerContext,
 ): Promise<{ output: string; isError: boolean }> {
   const agentId = input.agent_id as string | undefined;
   if (!agentId) {
@@ -277,10 +361,10 @@ async function handleDelete(
   const agents = await getMergedAgentsWithSource();
   const hash = computeMergedAgentHash(agents);
 
-  await removeAgentFromDb(agentId, hash);
+  await removeAgentFromDb(agentId, hash, caller);
   await config.reloadRegistry();
 
-  log.info("Agent deleted", { agentId });
+  log.info("Agent deleted", { agentId, caller: caller.kind });
   return {
     output: `Agent "${agentId}" deleted successfully.`,
     isError: false,
@@ -318,6 +402,30 @@ function buildAgentFields(
   }
 
   return fields;
+}
+
+let cachedToolFilterSchema: z.ZodType<ToolFilter> | null = null;
+
+/**
+ * Validate a built fields object's `toolFilter` against the live tool catalog.
+ * Returns an error string if invalid, or null if valid / absent. This rejects
+ * unknown / garbage / typo'd tool names before they reach the mutation layer.
+ */
+function validateToolFilterField(
+  fields: Record<string, unknown>,
+): string | null {
+  if (fields.toolFilter === undefined) return null;
+  if (!cachedToolFilterSchema) {
+    cachedToolFilterSchema = buildToolFilterSchema();
+  }
+  const result = cachedToolFilterSchema.safeParse(fields.toolFilter);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    return `Error: invalid tool_filter — ${issue?.message ?? "unknown tool name(s)"}. Tools must be valid catalog names.`;
+  }
+  // Normalize to the validated value.
+  fields.toolFilter = result.data;
+  return null;
 }
 
 /** Redact sensitive fields (e.g. telegramBotToken) from agent data. */

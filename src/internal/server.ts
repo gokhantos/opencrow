@@ -13,9 +13,70 @@ import type { WhatsAppChannel } from "../channels/whatsapp/client";
 import { getProcessStatuses } from "../process/health";
 import { sendCommand } from "../process/commands";
 import type { ProcessName } from "../process/types";
+import type { Context } from "hono";
 import { createLogger } from "../logger";
 
 const log = createLogger("internal-api");
+
+/**
+ * Header an agent-caller (the process_manage tool) sets to advertise its own
+ * process identity. Operator/web callers (core-client) do NOT set it, which is
+ * how we distinguish operator capability from agent capability — the shared
+ * bearer token authorizes ANY caller, so auth alone cannot tell them apart.
+ */
+export const CALLER_PROCESS_HEADER = "x-opencrow-caller-process";
+
+/**
+ * Outcome of the self-only authorization decision. When `allowed` is false,
+ * `status` and `error` carry the HTTP response the route should return.
+ */
+export type SelfOnlyDecision =
+  | { readonly allowed: true }
+  | { readonly allowed: false; readonly status: 403; readonly error: string };
+
+/**
+ * Pure self-only authorization decision for process control. When the
+ * caller-process header is present (an agent), the agent may only act on the
+ * process it owns; any other target is denied with 403. Operator/web callers
+ * (no header) keep full power. This is the authoritative check — the tool-side
+ * check in self-restart.ts is defense-in-depth only.
+ *
+ * Kept pure (no Hono `Context`, no logging) so it is directly unit-testable.
+ */
+export function decideSelfOnlyProcessControl(
+  caller: string | undefined,
+  target: string,
+  action: string,
+): SelfOnlyDecision {
+  if (!caller) return { allowed: true }; // operator capability — full power
+  if (caller === target) return { allowed: true }; // self — allowed
+  return {
+    allowed: false,
+    status: 403,
+    error: `Self-only: '${caller}' may not ${action} '${target}'. Cross-process control requires an operator.`,
+  };
+}
+
+/**
+ * Route-level wrapper around {@link decideSelfOnlyProcessControl}: reads the
+ * caller header from the request, logs denials, and returns a 403 `Response`
+ * when the action is not permitted (or `null` to continue).
+ */
+function enforceSelfOnlyProcessControl(
+  c: Context,
+  target: string,
+  action: string,
+): Response | null {
+  const caller = c.req.header(CALLER_PROCESS_HEADER);
+  const decision = decideSelfOnlyProcessControl(caller, target, action);
+  if (decision.allowed) return null;
+  log.warn("Self-only process control: rejected cross-process action", {
+    caller,
+    target,
+    action,
+  });
+  return c.json({ error: decision.error }, decision.status);
+}
 
 export function createInternalApi(deps: InternalApiDeps): Hono {
   const app = new Hono();
@@ -647,6 +708,8 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
 
   app.post("/internal/processes/:name/restart", async (c) => {
     const name = c.req.param("name");
+    const denial = enforceSelfOnlyProcessControl(c, name, "restart");
+    if (denial) return denial;
     try {
       if (deps.orchestrator) {
         await deps.orchestrator.restartProcess(name);
@@ -666,6 +729,8 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
 
   app.post("/internal/processes/:name/stop", async (c) => {
     const name = c.req.param("name");
+    const denial = enforceSelfOnlyProcessControl(c, name, "stop");
+    if (denial) return denial;
     try {
       if (deps.orchestrator) {
         await deps.orchestrator.stopProcess(name);
@@ -683,6 +748,8 @@ export function createInternalApi(deps: InternalApiDeps): Hono {
 
   app.post("/internal/processes/:name/start", async (c) => {
     const name = c.req.param("name");
+    const denial = enforceSelfOnlyProcessControl(c, name, "start");
+    if (denial) return denial;
     try {
       if (deps.orchestrator) {
         deps.orchestrator.startProcess(name);
