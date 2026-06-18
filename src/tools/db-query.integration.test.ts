@@ -7,11 +7,26 @@ import {
 } from "./db-query";
 
 describe("db-query tools", () => {
+  let savedReadonlyUrl: string | undefined;
+
   beforeEach(async () => {
     await initDb(process.env.DATABASE_URL);
+    // In the integration test environment the dedicated readonly role may not
+    // exist yet. Point OPENCROW_READONLY_DATABASE_URL at the privileged connection
+    // so getReadonlyDb() does not throw the fail-closed error and execution
+    // tests can proceed. The Layer 2 guards under test are connection-agnostic.
+    savedReadonlyUrl = process.env.OPENCROW_READONLY_DATABASE_URL;
+    process.env.OPENCROW_READONLY_DATABASE_URL =
+      process.env.OPENCROW_READONLY_DATABASE_URL ?? process.env.DATABASE_URL;
   });
 
   afterEach(async () => {
+    // Restore original value (undefined = delete).
+    if (savedReadonlyUrl === undefined) {
+      delete process.env.OPENCROW_READONLY_DATABASE_URL;
+    } else {
+      process.env.OPENCROW_READONLY_DATABASE_URL = savedReadonlyUrl;
+    }
     await closeDb();
   });
 
@@ -290,6 +305,196 @@ describe("db-query tools", () => {
         expect(result.isError).toBe(false);
       } finally {
         await db.unsafe("DROP TABLE IF EXISTS _test_params");
+      }
+    });
+  });
+
+  describe("createDbQueryTool - output redaction (Layer 3)", () => {
+    // These tests verify that redactRow() masks credential-column names and
+    // token-shaped values before the result reaches the caller.
+
+    it("blocks credential column auth_token before execution", async () => {
+      const db = getDb();
+      await db.unsafe("DROP TABLE IF EXISTS _test_redact_col");
+      await db.unsafe(
+        "CREATE TABLE _test_redact_col (id serial PRIMARY KEY, auth_token TEXT)",
+      );
+      await db.unsafe(
+        "INSERT INTO _test_redact_col (auth_token) VALUES ('supersecrettoken123')",
+      );
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({
+          query: "SELECT id, auth_token FROM _test_redact_col",
+        });
+        // The column denylist fires before execution — blocked at Layer 2.
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain("restricted for security");
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_redact_col");
+      }
+    });
+
+    it("redacts JWT-shaped string values in non-denylist columns", async () => {
+      const db = getDb();
+      await db.unsafe("DROP TABLE IF EXISTS _test_redact_jwt");
+      await db.unsafe(
+        "CREATE TABLE _test_redact_jwt (id serial PRIMARY KEY, data TEXT)",
+      );
+      // A JWT-shaped string (ey... header.payload form)
+      const tokenLike =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0";
+      await db.unsafe(
+        `INSERT INTO _test_redact_jwt (data) VALUES ('${tokenLike}')`,
+      );
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({
+          query: "SELECT id, data FROM _test_redact_jwt",
+        });
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain("[REDACTED]");
+        expect(result.output).not.toContain(tokenLike);
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_redact_jwt");
+      }
+    });
+
+    it("does not redact short normal string values", async () => {
+      const db = getDb();
+      await db.unsafe("DROP TABLE IF EXISTS _test_noredact");
+      await db.unsafe(
+        "CREATE TABLE _test_noredact (id serial PRIMARY KEY, label TEXT)",
+      );
+      await db.unsafe(
+        "INSERT INTO _test_noredact (label) VALUES ('hello'), ('world')",
+      );
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({
+          query: "SELECT id, label FROM _test_noredact",
+        });
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain("hello");
+        expect(result.output).toContain("world");
+        expect(result.output).not.toContain("[REDACTED]");
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_noredact");
+      }
+    });
+
+    it("redacts hex-shaped values (>= 32 hex chars) in result rows", async () => {
+      const db = getDb();
+      await db.unsafe("DROP TABLE IF EXISTS _test_redact_hex");
+      await db.unsafe(
+        "CREATE TABLE _test_redact_hex (id serial PRIMARY KEY, checksum TEXT)",
+      );
+      const hexToken = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"; // exactly 32 hex chars
+      await db.unsafe(
+        `INSERT INTO _test_redact_hex (checksum) VALUES ('${hexToken}')`,
+      );
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({
+          query: "SELECT id, checksum FROM _test_redact_hex",
+        });
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain("[REDACTED]");
+        expect(result.output).not.toContain(hexToken);
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_redact_hex");
+      }
+    });
+
+    it("does not redact short hex strings (< 32 chars)", async () => {
+      const db = getDb();
+      await db.unsafe("DROP TABLE IF EXISTS _test_short_hex");
+      await db.unsafe(
+        "CREATE TABLE _test_short_hex (id serial PRIMARY KEY, code TEXT)",
+      );
+      const shortHex = "a1b2c3d4"; // only 8 hex chars — too short to trigger
+      await db.unsafe(
+        `INSERT INTO _test_short_hex (code) VALUES ('${shortHex}')`,
+      );
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({
+          query: "SELECT id, code FROM _test_short_hex",
+        });
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain(shortHex);
+        expect(result.output).not.toContain("[REDACTED]");
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_short_hex");
+      }
+    });
+
+    it("blocks column named password before execution", async () => {
+      const db = getDb();
+      await db.unsafe("DROP TABLE IF EXISTS _test_pw_col");
+      await db.unsafe(
+        "CREATE TABLE _test_pw_col (id serial PRIMARY KEY, password TEXT)",
+      );
+      await db.unsafe("INSERT INTO _test_pw_col (password) VALUES ('123')");
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({
+          query: "SELECT id, password FROM _test_pw_col",
+        });
+        // Column denylist fires — blocked before execution.
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain("restricted for security");
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_pw_col");
+      }
+    });
+
+    it("multiple non-credential rows survive unredacted", async () => {
+      const db = getDb();
+      await db.unsafe("DROP TABLE IF EXISTS _test_clean_rows");
+      await db.unsafe(
+        "CREATE TABLE _test_clean_rows (id serial PRIMARY KEY, name TEXT, score INT)",
+      );
+      await db.unsafe(
+        "INSERT INTO _test_clean_rows (name, score) VALUES ('alice', 42), ('bob', 99)",
+      );
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({
+          query: "SELECT id, name, score FROM _test_clean_rows ORDER BY id",
+        });
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain("alice");
+        expect(result.output).toContain("bob");
+        expect(result.output).toContain("42");
+        expect(result.output).toContain("99");
+        expect(result.output).not.toContain("[REDACTED]");
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_clean_rows");
+      }
+    });
+
+    it("redacts base64url value >= 40 chars in result", async () => {
+      const db = getDb();
+      await db.unsafe("DROP TABLE IF EXISTS _test_b64_redact");
+      await db.unsafe(
+        "CREATE TABLE _test_b64_redact (id serial PRIMARY KEY, token_handle TEXT)",
+      );
+      // base64url, >= 40 chars, no prefix hint — matched by the long-secret pattern
+      const b64Like = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN"; // 40 chars, base64url-safe
+      await db.unsafe(
+        `INSERT INTO _test_b64_redact (token_handle) VALUES ('${b64Like}')`,
+      );
+      try {
+        const tool = createDbQueryTool();
+        const result = await tool.execute({
+          query: "SELECT id, token_handle FROM _test_b64_redact",
+        });
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain("[REDACTED]");
+        expect(result.output).not.toContain(b64Like);
+      } finally {
+        await db.unsafe("DROP TABLE IF EXISTS _test_b64_redact");
       }
     });
   });
