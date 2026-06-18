@@ -93,12 +93,14 @@ export function DetailPanel({
   onEdit,
   onDelete,
   onSetDefault,
+  isPending,
 }: {
   agent: AgentInfo;
   onClose: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onSetDefault?: () => void;
+  isPending?: boolean;
 }) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -624,7 +626,7 @@ export function DetailPanel({
         {/* Panel footer with actions */}
         <div className="flex gap-3 px-6 py-5 border-t border-border shrink-0 bg-bg-2">
           {!agent.isDefault && onSetDefault && (
-            <Button variant="secondary" size="sm" onClick={onSetDefault}>
+            <Button variant="secondary" size="sm" onClick={onSetDefault} loading={isPending}>
               <svg
                 width="16"
                 height="16"

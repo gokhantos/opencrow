@@ -17,6 +17,8 @@ if (typeof globalThis.document === "undefined") {
     "Node",
     "Event",
     "MouseEvent",
+    "KeyboardEvent",
+    "StorageEvent",
     "CustomEvent",
     "MutationObserver",
     "navigator",

@@ -300,8 +300,10 @@ export default function Chat() {
         <div className="flex items-center gap-3">
           {/* Connection indicator */}
           <span
-            className={`w-2 h-2 rounded-full ${wsConnected ? "bg-green-500" : "bg-yellow-500 animate-pulse"}`}
-            title={wsConnected ? "Connected" : "Reconnecting..."}
+            role="status"
+            aria-live="polite"
+            aria-label={wsConnected ? "Connected" : "Reconnecting"}
+            className={`w-2 h-2 rounded-full ${wsConnected ? "bg-success" : "bg-warning animate-pulse"}`}
           />
 
           {/* Agent selector */}

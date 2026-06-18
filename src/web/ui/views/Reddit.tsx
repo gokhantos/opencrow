@@ -1,10 +1,18 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useCallback } from "react";
 import { apiFetch } from "../api";
 import { formatTime, formatAge } from "../lib/format";
 import { cn } from "../lib/cn";
-import { PageHeader, LoadingState, EmptyState, Button } from "../components";
-import { useToast } from "../components/Toast";
-import { Settings2, ChevronDown } from "lucide-react";
+import {
+  PageHeader,
+  LoadingState,
+  EmptyState,
+  Button,
+  ConfirmDelete,
+  StatusBadge,
+  IntervalConfigPanel,
+} from "../components";
+import type { IntervalConfigField } from "../components";
+import { usePolledFetch } from "../hooks/usePolledFetch";
 
 interface RedditPost {
   id: string;
@@ -49,6 +57,39 @@ interface StatsData {
   last_updated_at: number | null;
   subreddit_count: number;
 }
+
+interface PostsResponse {
+  success: boolean;
+  data: RedditPost[];
+}
+
+interface StatsResponse {
+  success: boolean;
+  data: StatsData;
+}
+
+interface AccountsResponse {
+  success: boolean;
+  data: RedditAccount[];
+}
+
+const ACCOUNT_STATUS_COLORS: Readonly<Record<string, string>> = {
+  active: "green",
+  unverified: "yellow",
+  expired: "red",
+  error: "red",
+};
+
+const REDDIT_INTERVAL_FIELDS: readonly IntervalConfigField[] = [
+  {
+    key: "intervalMinutes",
+    label: "Scrape interval (min)",
+    desc: "How often to scrape",
+    min: 1,
+    max: 1440,
+    defaultValue: 30,
+  },
+];
 
 function AccountCreateForm({
   onCreated,
@@ -165,15 +206,6 @@ function AccountCard({
   onDelete: () => void;
   verifying: boolean;
 }) {
-  const [confirmDelete, setConfirmDelete] = useState(false);
-
-  const statusColors: Record<string, string> = {
-    active: "#27ae60",
-    unverified: "#f39c12",
-    expired: "#e74c3c",
-    error: "#e74c3c",
-  };
-
   return (
     <div className="bg-bg-1 border border-border rounded-lg px-5 py-3.5 flex items-center gap-5 text-sm">
       <div className="flex-1 min-w-0">
@@ -181,14 +213,10 @@ function AccountCard({
           <span className="font-semibold text-strong">
             {account.username ? `u/${account.username}` : account.label}
           </span>
-          <span
-            className="text-xs px-2 py-0.5 rounded-full font-semibold text-black"
-            style={{
-              background: statusColors[account.status] ?? "var(--text-3)",
-            }}
-          >
-            {account.status}
-          </span>
+          <StatusBadge
+            status={account.status}
+            colorMap={ACCOUNT_STATUS_COLORS}
+          />
         </div>
         <div className="text-sm text-faint mt-0.5">
           {account.cookie_count} cookies
@@ -206,179 +234,44 @@ function AccountCard({
         </div>
       </div>
 
-      <div className="flex gap-2 shrink-0">
+      <div className="flex gap-2 shrink-0 items-center">
         <Button size="sm" onClick={onVerify} loading={verifying}>
           Verify
         </Button>
-        {confirmDelete ? (
-          <>
-            <Button
-              size="sm"
-              variant="danger"
-              onClick={() => {
-                onDelete();
-                setConfirmDelete(false);
-              }}
-            >
-              Confirm
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => setConfirmDelete(false)}
-            >
-              Cancel
-            </Button>
-          </>
-        ) : (
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => setConfirmDelete(true)}
-          >
-            Delete
-          </Button>
-        )}
+        <ConfirmDelete onConfirm={onDelete} />
       </div>
     </div>
   );
 }
 
-function IntervalConfigPanel({ scraperId, defaultMinutes }: { readonly scraperId: string; readonly defaultMinutes: number }) {
-  const { success, error: toastError } = useToast();
-  const [open, setOpen] = useState(false);
-  const [interval, setInterval_] = useState(defaultMinutes);
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!open || loaded) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await apiFetch<{ data: { intervalMinutes: number } }>(
-          `/api/features/scraper-config/${scraperId}`,
-        );
-        if (!cancelled) { setInterval_(res.data.intervalMinutes); setLoaded(true); }
-      } catch {
-        if (!cancelled) { setLoaded(true); toastError("Failed to load config."); }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function handleSave() {
-    setSaving(true);
-    try {
-      await apiFetch(`/api/features/scraper-config/${scraperId}`, {
-        method: "PUT",
-        body: JSON.stringify({ intervalMinutes: interval }),
-      });
-      success("Config saved.");
-    } catch {
-      toastError("Failed to save config.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="bg-bg-1 border border-border rounded-lg mb-5">
-      <button
-        type="button"
-        onClick={() => setOpen((p) => !p)}
-        className="w-full flex items-center justify-between px-4 py-2.5 bg-transparent border-none cursor-pointer text-left"
-      >
-        <div className="flex items-center gap-2 text-xs text-muted">
-          <Settings2 className="w-3.5 h-3.5" />
-          <span className="font-medium">Scraper Config</span>
-        </div>
-        <ChevronDown className={`w-3.5 h-3.5 text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        <div className="border-t border-border px-4 py-3 flex flex-col gap-3">
-          {!loaded ? (
-            <p className="text-xs text-muted">Loading...</p>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="text-xs font-medium text-foreground">Scrape interval (min)</div>
-                  <div className="text-xs text-muted mt-0.5">How often to scrape</div>
-                </div>
-                <input
-                  type="number"
-                  min={1}
-                  max={1440}
-                  value={interval}
-                  onChange={(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n)) setInterval_(n); }}
-                  className="w-20 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
-                />
-              </div>
-              <div className="flex justify-end">
-                <Button variant="primary" size="sm" onClick={handleSave} disabled={saving} loading={saving}>Save</Button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function Reddit() {
-  const [posts, setPosts] = useState<RedditPost[]>([]);
-  const [stats, setStats] = useState<StatsData | null>(null);
-  const [accounts, setAccounts] = useState<RedditAccount[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [scraping, setScraping] = useState(false);
   const [filterSub, setFilterSub] = useState<string>("");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [scraping, setScraping] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [backfillResult, setBackfillResult] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchAll();
-    const interval = setInterval(fetchAll, 30_000);
-    return () => clearInterval(interval);
-  }, []);
+  // Derive the posts URL from filterSub — usePolledFetch restarts the poll
+  // whenever the path changes, so the stale-closure bug is structurally impossible.
+  const postsPath = `/api/reddit/posts?limit=100${filterSub ? `&subreddit=${encodeURIComponent(filterSub)}` : ""}`;
 
-  useEffect(() => {
-    fetchPosts();
-  }, [filterSub]);
+  const postsResult = usePolledFetch<PostsResponse>(postsPath, { intervalMs: 30_000 });
+  const statsResult = usePolledFetch<StatsResponse>("/api/reddit/stats", { intervalMs: 30_000 });
+  const accountsResult = usePolledFetch<AccountsResponse>("/api/reddit/accounts", { intervalMs: 30_000 });
 
-  async function fetchAll() {
-    try {
-      const [postsRes, statsRes, acctRes] = await Promise.all([
-        apiFetch<{ success: boolean; data: RedditPost[] }>(
-          `/api/reddit/posts?limit=100${filterSub ? `&subreddit=${filterSub}` : ""}`,
-        ),
-        apiFetch<{ success: boolean; data: StatsData }>("/api/reddit/stats"),
-        apiFetch<{ success: boolean; data: RedditAccount[] }>(
-          "/api/reddit/accounts",
-        ),
-      ]);
-      if (postsRes.success) setPosts(postsRes.data);
-      if (statsRes.success) setStats(statsRes.data);
-      if (acctRes.success) setAccounts(acctRes.data);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }
+  const posts = postsResult.data?.success ? postsResult.data.data : [];
+  const stats = statsResult.data?.success ? statsResult.data.data : null;
+  const accounts = accountsResult.data?.success ? accountsResult.data.data : [];
 
-  async function fetchPosts() {
-    try {
-      const res = await apiFetch<{ success: boolean; data: RedditPost[] }>(
-        `/api/reddit/posts?limit=100${filterSub ? `&subreddit=${filterSub}` : ""}`,
-      );
-      if (res.success) setPosts(res.data);
-    } catch {
-      // ignore
-    }
-  }
+  const loading = postsResult.loading || statsResult.loading || accountsResult.loading;
+  const fetchError = postsResult.error ?? statsResult.error ?? accountsResult.error ?? null;
+
+  const refetchAll = useCallback(() => {
+    postsResult.refetch();
+    statsResult.refetch();
+    accountsResult.refetch();
+  }, [postsResult, statsResult, accountsResult]);
 
   async function handleScrapeNow() {
     const activeAccount = accounts.find((a) => a.status === "active");
@@ -390,9 +283,9 @@ export default function Reddit() {
         method: "POST",
         body: JSON.stringify({ account_id: activeAccount.id }),
       });
-      await fetchAll();
+      refetchAll();
     } catch {
-      // ignore
+      // ignore — data will poll in
     } finally {
       setScraping(false);
     }
@@ -430,21 +323,17 @@ export default function Reddit() {
     setVerifyingId(id);
     try {
       await apiFetch(`/api/reddit/accounts/${id}/verify`, { method: "POST" });
-      await fetchAll();
     } catch {
-      await fetchAll();
+      // Refresh regardless — verification may have partially succeeded
     } finally {
       setVerifyingId(null);
+      accountsResult.refetch();
     }
   }
 
   async function handleDelete(id: string) {
-    try {
-      await apiFetch(`/api/reddit/accounts/${id}`, { method: "DELETE" });
-      await fetchAll();
-    } catch {
-      await fetchAll();
-    }
+    await apiFetch(`/api/reddit/accounts/${id}`, { method: "DELETE" });
+    accountsResult.refetch();
   }
 
   const subreddits = Array.from(new Set(posts.map((p) => p.subreddit))).sort();
@@ -498,7 +387,7 @@ export default function Reddit() {
         <AccountCreateForm
           onCreated={() => {
             setShowCreateForm(false);
-            fetchAll();
+            refetchAll();
           }}
           onCancel={() => setShowCreateForm(false)}
         />
@@ -519,12 +408,13 @@ export default function Reddit() {
         </div>
       )}
 
-      <IntervalConfigPanel scraperId="reddit" defaultMinutes={30} />
+      <IntervalConfigPanel scraperId="reddit" fields={REDDIT_INTERVAL_FIELDS} />
 
       {/* Subreddit filter chips */}
       {subreddits.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-5">
           <button
+            type="button"
             className={cn(
               "inline-flex items-center justify-center px-3 py-1 border rounded-full font-sans text-sm font-medium cursor-pointer transition-colors",
               !filterSub
@@ -538,6 +428,7 @@ export default function Reddit() {
           {subreddits.map((sub) => (
             <button
               key={sub}
+              type="button"
               className={cn(
                 "inline-flex items-center justify-center px-3 py-1 border rounded-full font-sans text-sm font-medium cursor-pointer transition-colors",
                 filterSub === sub
@@ -553,7 +444,12 @@ export default function Reddit() {
       )}
 
       {/* Posts list */}
-      {posts.length === 0 ? (
+      {fetchError && posts.length === 0 ? (
+        <EmptyState
+          title="Failed to load posts"
+          description="Failed to load data — the API may be unreachable."
+        />
+      ) : posts.length === 0 ? (
         <EmptyState description='No posts yet. Add a Reddit account, verify it, then click "Scrape Now" to fetch.' />
       ) : (
         <div className="flex flex-col gap-0.5">

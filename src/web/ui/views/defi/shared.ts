@@ -1,4 +1,5 @@
 import React from "react";
+import { Button } from "../../components";
 import { cn } from "../../lib/cn";
 
 export const TH =
@@ -47,16 +48,38 @@ const CHAIN_COLORS: Readonly<Record<string, string>> = {
   multi: "bg-bg-3 text-muted",
 };
 
+const BADGE_BASE =
+  "px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider leading-none";
+
 export function ChainBadge({ chain }: { readonly chain: string }) {
   const colors = CHAIN_COLORS[chain] ?? "bg-bg-3 text-muted";
+  return React.createElement("span", { className: cn(BADGE_BASE, colors) }, chain);
+}
+
+export function DefiBadge({ children }: { readonly children: React.ReactNode }) {
   return React.createElement(
     "span",
+    { className: cn(BADGE_BASE, "bg-accent/10 text-accent") },
+    children,
+  );
+}
+
+export function ErrorState({
+  message,
+  onRetry,
+}: {
+  readonly message: string;
+  readonly onRetry?: () => void;
+}) {
+  return React.createElement(
+    "div",
     {
-      className: cn(
-        "px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider leading-none",
-        colors,
-      ),
+      className:
+        "text-danger text-sm px-4 py-3 rounded-lg bg-danger/5 border border-danger/20 flex items-center justify-between gap-3",
     },
-    chain,
+    React.createElement("span", null, message),
+    onRetry != null
+      ? React.createElement(Button, { variant: "ghost", size: "sm", onClick: onRetry }, "Retry")
+      : null,
   );
 }

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../../api";
 import { cn } from "../../lib/cn";
+import { LoadingState, EmptyState } from "../../components";
 import { JobStatusHero } from "./JobStatusHero";
 import { JobControls } from "./JobControls";
 import { TweetRow } from "./TweetRow";
@@ -110,19 +111,24 @@ export function AutoLikesTab({ accountId }: AutoLikesTabProps) {
 
   // ─── Data fetching ───────────────────────────────────────────────────────
 
-  const loadStatus = useCallback(async () => {
+  const loadStatus = useCallback(async (signal?: AbortSignal) => {
     try {
       const [statusRes, scrapedRes, likedRes] = await Promise.all([
         apiFetch<{ success: boolean; data: AutolikeJob | null }>(
           `/api/x/interactions/status?account_id=${accountId}`,
+          { signal },
         ),
         apiFetch<{ success: boolean; data: ScrapedTweet[] }>(
           `/api/x/interactions/scraped?account_id=${accountId}&limit=100`,
+          { signal },
         ),
         apiFetch<{ success: boolean; data: LikedTweet[] }>(
           `/api/x/interactions/liked?account_id=${accountId}&limit=100`,
+          { signal },
         ),
       ]);
+
+      if (signal?.aborted) return;
 
       if (statusRes.success && statusRes.data) {
         const j = statusRes.data;
@@ -133,13 +139,18 @@ export function AutoLikesTab({ accountId }: AutoLikesTabProps) {
       }
       if (scrapedRes.success) setScraped(scrapedRes.data);
       if (likedRes.success) setLiked(likedRes.data);
+    } catch (err) {
+      if (signal?.aborted) return;
+      throw err;
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [accountId]);
 
   useEffect(() => {
-    loadStatus();
+    const controller = new AbortController();
+    loadStatus(controller.signal);
+    return () => controller.abort();
   }, [loadStatus]);
 
   // ─── Hooks ───────────────────────────────────────────────────────────────
@@ -154,7 +165,7 @@ export function AutoLikesTab({ accountId }: AutoLikesTabProps) {
       stopUrl: "/api/x/interactions/stop",
       runNowUrl: "/api/x/interactions/run-now",
       accountId,
-      onSuccess: loadStatus,
+      onSuccess: () => loadStatus(),
     });
 
   // ─── Start with runtime config ────────────────────────────────────────────
@@ -171,11 +182,7 @@ export function AutoLikesTab({ accountId }: AutoLikesTabProps) {
   // ─── Render ───────────────────────────────────────────────────────────────
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <span className="w-4 h-4 border-2 border-border-2 border-t-accent rounded-full animate-spin inline-block" />
-      </div>
-    );
+    return <LoadingState />;
   }
 
   return (
@@ -221,18 +228,22 @@ export function AutoLikesTab({ accountId }: AutoLikesTabProps) {
       />
 
       {/* Sub-tab bar */}
-      <div className="flex gap-1 border-b border-border mb-5">
+      <div role="tablist" aria-label="Tweet lists" className="flex gap-1 border-b border-border mb-5">
         {(["scraped", "liked"] as const).map((tab) => {
           const count = tab === "scraped" ? scraped.length : liked.length;
           const label = tab === "scraped" ? "Scraped" : "Liked";
+          const isActive = activeSubTab === tab;
           return (
             <button
               key={tab}
               type="button"
+              role="tab"
+              aria-selected={isActive}
+              tabIndex={isActive ? 0 : -1}
               className={cn(
                 "px-5 py-3 bg-transparent border-none border-b-2 border-b-transparent text-faint font-sans text-xs font-semibold uppercase tracking-wide cursor-pointer transition-colors flex items-center gap-2.5",
                 "hover:text-muted",
-                activeSubTab === tab && "text-accent border-b-accent",
+                isActive && "text-accent border-b-accent",
               )}
               onClick={() => setActiveSubTab(tab)}
             >
@@ -251,9 +262,7 @@ export function AutoLikesTab({ accountId }: AutoLikesTabProps) {
       {activeSubTab === "scraped" && (
         <div className="flex flex-col gap-1">
           {scraped.length === 0 ? (
-            <div className="text-center text-faint py-8 text-sm font-sans">
-              No tweets scraped yet
-            </div>
+            <EmptyState title="No tweets scraped yet" />
           ) : (
             scraped.map((t) => (
               <TweetRow
@@ -279,9 +288,7 @@ export function AutoLikesTab({ accountId }: AutoLikesTabProps) {
       {activeSubTab === "liked" && (
         <div className="flex flex-col gap-1">
           {liked.length === 0 ? (
-            <div className="text-center text-faint py-8 text-sm font-sans">
-              No tweets liked yet
-            </div>
+            <EmptyState title="No tweets liked yet" />
           ) : (
             liked.map((t) => (
               <TweetRow

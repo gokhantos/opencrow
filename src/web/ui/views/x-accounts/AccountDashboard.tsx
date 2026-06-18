@@ -51,22 +51,28 @@ export function AccountDashboard({
       />
 
       {/* Feature tab bar */}
-      <div className="flex gap-0 border-b border-border bg-bg-1 overflow-x-auto">
-        {FEATURE_TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setActiveTab(tab.id)}
-            className={cn(
-              "px-4 py-3 text-sm font-medium border-b-2 transition-colors shrink-0 whitespace-nowrap",
-              activeTab === tab.id
-                ? "border-accent text-strong"
-                : "border-transparent text-muted hover:text-strong",
-            )}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div role="tablist" aria-label="Account features" className="flex gap-0 border-b border-border bg-bg-1 overflow-x-auto">
+        {FEATURE_TABS.map((tab) => {
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              tabIndex={isActive ? 0 : -1}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                "px-4 py-3 text-sm font-medium border-b-2 transition-colors shrink-0 whitespace-nowrap",
+                isActive
+                  ? "border-accent text-strong"
+                  : "border-transparent text-muted hover:text-strong",
+              )}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Tab content */}

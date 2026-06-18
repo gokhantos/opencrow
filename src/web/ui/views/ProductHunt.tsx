@@ -172,10 +172,10 @@ export default function ProductHunt() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchAll();
-    const interval = setInterval(fetchAll, 5 * 60_000);
+    void fetchAll();
+    const interval = setInterval(() => void fetchAll(), 5 * 60_000);
     return () => clearInterval(interval);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function fetchAll() {
     try {
@@ -187,8 +187,9 @@ export default function ProductHunt() {
       ]);
       if (productsRes.success) setProducts(productsRes.data);
       if (statsRes.success) setStats(statsRes.data);
+      setError(null);
     } catch {
-      // ignore fetch errors
+      setError("Failed to load data — the API may be unreachable.");
     } finally {
       setLoading(false);
     }
@@ -261,13 +262,18 @@ export default function ProductHunt() {
 
       <PHCredentials />
 
-      {error && (
+      {error && products.length > 0 && (
         <div className="mb-4 px-4 py-2 bg-danger-subtle text-danger rounded-lg text-sm">
           {error}
         </div>
       )}
 
-      {products.length === 0 ? (
+      {error && products.length === 0 ? (
+        <EmptyState
+          title="Failed to load products"
+          description="Failed to load data — the API may be unreachable."
+        />
+      ) : products.length === 0 ? (
         <EmptyState description='No products yet. Click "Scrape Now" to fetch.' />
       ) : (
         <div className="flex flex-col gap-1">

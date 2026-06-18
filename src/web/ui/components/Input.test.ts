@@ -50,3 +50,13 @@ test("Input label has uppercase styling", () => {
   const html = renderHTML(React.createElement(Input, { label: "Test" }));
   expect(html).toContain("uppercase");
 });
+
+test("Input label htmlFor matches input id when no explicit id is provided", () => {
+  const html = renderHTML(React.createElement(Input, { label: "Name" }));
+  // Extract the for attribute value
+  const forMatch = html.match(/for="([^"]+)"/);
+  const idMatch = html.match(/<input[^>]+id="([^"]+)"/);
+  expect(forMatch).not.toBeNull();
+  expect(idMatch).not.toBeNull();
+  expect(forMatch![1]).toBe(idMatch![1]);
+});

@@ -168,8 +168,22 @@ function ScraperConfigForm({
 }
 
 /* ── Shared repo list component ── */
-function RepoList({ repos }: { readonly repos: readonly GithubRepo[] }) {
+function RepoList({
+  repos,
+  error,
+}: {
+  readonly repos: readonly GithubRepo[];
+  readonly error?: string | null;
+}) {
   if (repos.length === 0) {
+    if (error) {
+      return (
+        <EmptyState
+          title="Failed to load repos"
+          description="Failed to load data — the API may be unreachable."
+        />
+      );
+    }
     return <EmptyState description='No repos yet. Click "Scrape Now" to fetch.' />;
   }
 
@@ -308,6 +322,7 @@ export default function GitHub() {
   const [scrapingTrending, setScrapingTrending] = useState(false);
   const [scrapingSearch, setScrapingSearch] = useState(false);
   const [tab, setTab] = useState<Tab>("trending");
+  const [error, setError] = useState<string | null>(null);
 
   // Trending filters
   const [trendingSort, setTrendingSort] = useState<SortKey>("stars_today");
@@ -319,10 +334,10 @@ export default function GitHub() {
   const [searchLang, setSearchLang] = useState("");
 
   useEffect(() => {
-    fetchAll();
-    const interval = setInterval(fetchAll, 60_000);
+    void fetchAll();
+    const interval = setInterval(() => void fetchAll(), 60_000);
     return () => clearInterval(interval);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function fetchAll() {
     try {
@@ -334,8 +349,9 @@ export default function GitHub() {
       ]);
       if (reposRes.success) setRepos(reposRes.data);
       if (statsRes.success) setStats(statsRes.data);
+      setError(null);
     } catch {
-      // ignore
+      setError("Failed to load data — the API may be unreachable.");
     } finally {
       setLoading(false);
     }
@@ -414,10 +430,13 @@ export default function GitHub() {
       />
 
       {/* Tab switcher */}
-      <div className="flex gap-1 mb-5 border-b border-border">
+      <div className="flex gap-1 mb-5 border-b border-border" role="tablist">
         {(["trending", "search"] as const).map((t) => (
           <button
             key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
             onClick={() => { setTab(t); }}
             className={cn(
               "px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors bg-transparent cursor-pointer",
@@ -470,7 +489,7 @@ export default function GitHub() {
             </select>
           </TabHeader>
 
-          <RepoList repos={trendingFiltered} />
+          <RepoList repos={trendingFiltered} error={error} />
         </>
       )}
 
@@ -500,7 +519,7 @@ export default function GitHub() {
             </select>
           </TabHeader>
 
-          <RepoList repos={searchFiltered} />
+          <RepoList repos={searchFiltered} error={error} />
         </>
       )}
     </div>

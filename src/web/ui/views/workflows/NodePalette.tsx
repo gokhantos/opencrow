@@ -1,6 +1,8 @@
 import React from "react";
 import { Play, Bot, Wrench, Zap, GitBranch, ArrowLeftRight, Square } from "lucide-react";
-import type { WorkflowNodeType, WorkflowNodeData } from "./types";
+import type { WorkflowNodeData, WorkflowNodeType } from "./types";
+import type { WorkflowAction } from "./useWorkflowReducer";
+import type { Node } from "@xyflow/react";
 
 interface PaletteItem {
   readonly type: WorkflowNodeType;
@@ -100,7 +102,29 @@ const PALETTE_ITEMS: readonly PaletteItem[] = [
   },
 ];
 
-export function NodePalette() {
+// Cascading offset so repeated keyboard-adds don't stack on top of each other
+let addCounter = 0;
+
+function generateId(): string {
+  return `node-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createWorkflowNode(item: PaletteItem): Node<WorkflowNodeData> {
+  const offset = (addCounter % 6) * 30;
+  addCounter += 1;
+  return {
+    id: generateId(),
+    type: item.type,
+    position: { x: 200 + offset, y: 150 + offset },
+    data: item.defaultData,
+  };
+}
+
+interface NodePaletteProps {
+  readonly dispatch: React.Dispatch<WorkflowAction>;
+}
+
+export function NodePalette({ dispatch }: NodePaletteProps) {
   function handleDragStart(
     e: React.DragEvent,
     item: PaletteItem,
@@ -112,6 +136,12 @@ export function NodePalette() {
     );
   }
 
+  function handleAddNode(item: PaletteItem) {
+    const node = createWorkflowNode(item);
+    dispatch({ type: "ADD_NODE", node });
+    dispatch({ type: "SELECT_NODE", id: node.id });
+  }
+
   return (
     <aside className="w-56 shrink-0 bg-bg-1 border-r border-border flex flex-col overflow-y-auto">
       <div className="px-4 py-3 border-b border-border">
@@ -121,11 +151,14 @@ export function NodePalette() {
       </div>
       <div className="p-3 flex flex-col gap-2">
         {PALETTE_ITEMS.map((item) => (
-          <div
+          <button
             key={item.type}
+            type="button"
+            aria-label={`Add ${item.label} node`}
             draggable
             onDragStart={(e) => handleDragStart(e, item)}
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-border cursor-grab active:cursor-grabbing bg-bg hover:bg-bg-2 hover:border-border-hover transition-colors select-none"
+            onClick={() => handleAddNode(item)}
+            className="w-full text-left bg-transparent appearance-none flex items-center gap-3 px-3 py-2.5 rounded-lg border border-border cursor-grab active:cursor-grabbing bg-bg hover:bg-bg-2 hover:border-border-hover transition-colors select-none"
           >
             <span
               className={`w-7 h-7 rounded-md border flex items-center justify-center shrink-0 ${item.color}`}
@@ -140,7 +173,7 @@ export function NodePalette() {
                 {item.description}
               </div>
             </div>
-          </div>
+          </button>
         ))}
       </div>
     </aside>

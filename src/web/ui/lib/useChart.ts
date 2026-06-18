@@ -9,6 +9,20 @@ import * as echarts from "echarts";
  *
  * Extracted from the byte-for-byte duplicate previously living in both
  * AgentMetrics.tsx and SystemMetrics.tsx.
+ *
+ * CALLER CONTRACT — memoize the option object.
+ *
+ * `setOption` is called on every render where `option` has a new reference
+ * (React.Object.is comparison). To avoid continuous full chart redraws,
+ * callers MUST wrap the option in useMemo keyed on the primitive values that
+ * feed it:
+ *
+ *   const option = useMemo(() => buildMyOption(data), [data]);
+ *   useChart(ref, option);
+ *
+ * Passing `buildMyOption(data)` directly (a new object literal each render)
+ * will cause setOption to fire on every render — even when the underlying data
+ * is unchanged — producing flicker and unnecessary ECharts DOM work.
  */
 export function useChart(
   ref: React.RefObject<HTMLDivElement | null>,

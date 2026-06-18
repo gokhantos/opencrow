@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useLocalStorage } from "../lib/useLocalStorage";
 import { apiFetch } from "../api";
 import { LoadingState, EmptyState, PageHeader } from "../components";
@@ -175,18 +175,25 @@ export default function Memory() {
   const [kvAgent, setKvAgent] = useState("");
   const [deletingChunks, setDeletingChunks] = useState<ReadonlySet<string>>(new Set());
 
-  const fetchStats = useCallback(async () => {
+  const fetchStats = useCallback(async (signal?: AbortSignal) => {
     try {
       const res = await apiFetch<{ success: boolean; data: DebugStats }>(
         "/api/memory/debug/stats",
+        signal ? { signal } : undefined,
       );
+      if (signal?.aborted) return;
       if (res.success) setStats(res.data);
     } catch {
       // ignore
     }
   }, []);
 
+  const chunkAbortRef = useRef<AbortController | null>(null);
+
   const fetchChunks = useCallback(async () => {
+    chunkAbortRef.current?.abort();
+    const controller = new AbortController();
+    chunkAbortRef.current = controller;
     try {
       const qs = chunkAgent
         ? `?agentId=${encodeURIComponent(chunkAgent)}&limit=50`
@@ -194,40 +201,55 @@ export default function Memory() {
       const res = await apiFetch<{
         success: boolean;
         data: readonly ChunkEntry[];
-      }>(`/api/memory/debug/chunks${qs}`);
+      }>(`/api/memory/debug/chunks${qs}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
       if (res.success) setChunks(res.data);
     } catch {
-      // ignore
+      // ignore (includes abort)
     }
   }, [chunkAgent]);
 
+  const kvAbortRef = useRef<AbortController | null>(null);
+
   const fetchAgentMemory = useCallback(async () => {
+    kvAbortRef.current?.abort();
+    const controller = new AbortController();
+    kvAbortRef.current = controller;
     try {
       const qs = kvAgent ? `?agentId=${encodeURIComponent(kvAgent)}` : "";
       const res = await apiFetch<{
         success: boolean;
         data: readonly AgentMemoryEntry[];
-      }>(`/api/memory/debug/agent-memory${qs}`);
+      }>(`/api/memory/debug/agent-memory${qs}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
       if (res.success) setAgentMemory(res.data);
     } catch {
-      // ignore
+      // ignore (includes abort)
     }
   }, [kvAgent]);
 
   useEffect(() => {
-    Promise.all([fetchStats(), fetchChunks(), fetchAgentMemory()]).finally(() =>
-      setLoading(false),
-    );
-    const interval = setInterval(fetchStats, 30_000);
-    return () => clearInterval(interval);
+    const statsController = new AbortController();
+    Promise.all([
+      fetchStats(statsController.signal),
+      fetchChunks(),
+      fetchAgentMemory(),
+    ]).finally(() => setLoading(false));
+    const interval = setInterval(() => void fetchStats(), 30_000);
+    return () => {
+      clearInterval(interval);
+      statsController.abort();
+      chunkAbortRef.current?.abort();
+      kvAbortRef.current?.abort();
+    };
   }, [fetchStats, fetchChunks, fetchAgentMemory]);
 
   useEffect(() => {
-    if (!loading) fetchChunks();
+    if (!loading) void fetchChunks();
   }, [chunkAgent, fetchChunks, loading]);
 
   useEffect(() => {
-    if (!loading) fetchAgentMemory();
+    if (!loading) void fetchAgentMemory();
   }, [kvAgent, fetchAgentMemory, loading]);
 
   const handleSearch = useCallback(async () => {

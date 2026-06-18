@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { apiFetch } from "../api";
 import {
   PageHeader,
@@ -6,10 +6,10 @@ import {
   EmptyState,
   FilterTabs,
   Button,
+  IntervalConfigPanel,
 } from "../components";
-import { useToast } from "../components/Toast";
+import type { IntervalConfigField } from "../components";
 import { cn } from "../lib/cn";
-import { Settings2, ChevronDown } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -245,10 +245,15 @@ function ReviewCard({ review }: ReviewCardProps) {
         <span className="font-semibold text-sm text-foreground leading-snug">
           {review.title || "(No title)"}
         </span>
-        <span className="flex shrink-0 gap-0.5 mt-0.5">
+        <span
+          role="img"
+          aria-label={`${review.rating} out of 5 stars`}
+          className="flex shrink-0 gap-0.5 mt-0.5"
+        >
           {stars.map((filled, i) => (
             <span
               key={i}
+              aria-hidden="true"
               className={cn(
                 "text-sm leading-none",
                 filled ? "text-yellow-400" : "text-faint",
@@ -293,87 +298,16 @@ const MAIN_TABS = [
   { id: "reviews", label: "Reviews" },
 ] as const;
 
-function IntervalConfigPanel({ scraperId, defaultMinutes }: { readonly scraperId: string; readonly defaultMinutes: number }) {
-  const { success, error: toastError } = useToast();
-  const [open, setOpen] = useState(false);
-  const [interval, setInterval_] = useState(defaultMinutes);
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!open || loaded) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await apiFetch<{ data: { intervalMinutes: number } }>(
-          `/api/features/scraper-config/${scraperId}`,
-        );
-        if (!cancelled) { setInterval_(res.data.intervalMinutes); setLoaded(true); }
-      } catch {
-        if (!cancelled) { setLoaded(true); toastError("Failed to load config."); }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function handleSave() {
-    setSaving(true);
-    try {
-      await apiFetch(`/api/features/scraper-config/${scraperId}`, {
-        method: "PUT",
-        body: JSON.stringify({ intervalMinutes: interval }),
-      });
-      success("Config saved.");
-    } catch {
-      toastError("Failed to save config.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="bg-bg-1 border border-border rounded-lg mb-5">
-      <button
-        type="button"
-        onClick={() => setOpen((p) => !p)}
-        className="w-full flex items-center justify-between px-4 py-2.5 bg-transparent border-none cursor-pointer text-left"
-      >
-        <div className="flex items-center gap-2 text-xs text-muted">
-          <Settings2 className="w-3.5 h-3.5" />
-          <span className="font-medium">Scraper Config</span>
-        </div>
-        <ChevronDown className={`w-3.5 h-3.5 text-muted transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
-        <div className="border-t border-border px-4 py-3 flex flex-col gap-3">
-          {!loaded ? (
-            <p className="text-xs text-muted">Loading...</p>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="text-xs font-medium text-foreground">Scrape interval (min)</div>
-                  <div className="text-xs text-muted mt-0.5">How often to scrape</div>
-                </div>
-                <input
-                  type="number"
-                  min={10}
-                  max={1440}
-                  value={interval}
-                  onChange={(e) => { const n = parseInt(e.target.value, 10); if (!isNaN(n)) setInterval_(n); }}
-                  className="w-20 shrink-0 bg-bg-2 border border-border rounded-md px-2 py-1 text-xs text-foreground text-right focus:outline-none focus:border-accent"
-                />
-              </div>
-              <div className="flex justify-end">
-                <Button variant="primary" size="sm" onClick={handleSave} disabled={saving} loading={saving}>Save</Button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+const PLAYSTORE_INTERVAL_FIELDS: readonly IntervalConfigField[] = [
+  {
+    key: "intervalMinutes",
+    label: "Scrape interval (min)",
+    desc: "How often to scrape",
+    min: 10,
+    max: 1440,
+    defaultValue: 60,
+  },
+];
 
 export default function PlayStore() {
   const [mainTab, setMainTab] = useState<MainTab>("rankings");
@@ -419,8 +353,8 @@ export default function PlayStore() {
 
   useEffect(() => {
     setLoading(true);
-    fetchAll();
-    const interval = setInterval(fetchAll, 30_000);
+    void fetchAll();
+    const interval = setInterval(() => void fetchAll(), 30_000);
     return () => clearInterval(interval);
   }, [fetchAll]);
 
@@ -472,7 +406,7 @@ export default function PlayStore() {
         }
       />
 
-      <IntervalConfigPanel scraperId="playstore" defaultMinutes={60} />
+      <IntervalConfigPanel scraperId="playstore" fields={PLAYSTORE_INTERVAL_FIELDS} />
 
       <FilterTabs
         tabs={tabsWithCounts}

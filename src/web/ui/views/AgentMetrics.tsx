@@ -680,7 +680,7 @@ export default function AgentMetrics() {
 
   const [error, setError] = useState<string | null>(null);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (signal: AbortSignal) => {
     const since = sinceEpoch(range);
     const qs = since ? `?since=${since}` : "";
     const granularity = range === "24h" ? "hour" : "day";
@@ -693,19 +693,24 @@ export default function AgentMetrics() {
         await Promise.all([
           apiFetch<{ success: boolean; data: AgentUsage[] }>(
             `/api/usage/by-agent${qs}`,
+            { signal },
           ),
           apiFetch<{ success: boolean; data: ModelUsage[] }>(
             `/api/usage/by-model${qs}`,
+            { signal },
           ),
           apiFetch<{ success: boolean; data: TimePoint[] }>(
             `/api/usage/timeseries${tsQs}`,
+            { signal },
           ),
           apiFetch<{ success: boolean; data: RecentRecord[] }>(
             `/api/usage/recent?limit=200${since ? `&since=${since}` : ""}`,
+            { signal },
           ),
-          apiFetch<{ success: boolean; data: CronJob[] }>("/api/cron/jobs"),
+          apiFetch<{ success: boolean; data: CronJob[] }>("/api/cron/jobs", { signal }),
         ]);
 
+      if (signal.aborted) return;
       if (agentRes.success) setByAgent(agentRes.data);
       if (modelRes.success) setByModel(modelRes.data);
       if (tsRes.success) setTimeseries(tsRes.data);
@@ -713,17 +718,22 @@ export default function AgentMetrics() {
       if (cronRes.success) setCronJobs(cronRes.data);
       setError(null);
     } catch (err) {
+      if (signal.aborted) return;
       setError("Failed to load metrics. Will retry.");
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }, [range]);
 
   useEffect(() => {
     setLoading(true);
-    fetchData();
-    const interval = setInterval(fetchData, 30_000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    void fetchData(controller.signal);
+    const interval = setInterval(() => void fetchData(controller.signal), 30_000);
+    return () => {
+      clearInterval(interval);
+      controller.abort();
+    };
   }, [fetchData]);
 
   if (loading && byAgent.length === 0)
@@ -1040,10 +1050,10 @@ export default function AgentMetrics() {
                         {r.source}
                       </span>
                     </td>
-                    <td className="px-4 py-2 text-right font-mono text-blue-400">
+                    <td className="px-4 py-2 text-right font-mono text-accent">
                       {formatNumber(r.inputTokens)}
                     </td>
-                    <td className="px-4 py-2 text-right font-mono text-emerald-400">
+                    <td className="px-4 py-2 text-right font-mono text-success">
                       {formatNumber(r.outputTokens)}
                     </td>
                     <td className="px-4 py-2">
@@ -1052,7 +1062,7 @@ export default function AgentMetrics() {
                         cached={r.cacheReadTokens}
                       />
                     </td>
-                    <td className="px-4 py-2 text-right font-mono text-amber-400">
+                    <td className="px-4 py-2 text-right font-mono text-warning">
                       {formatCost(r.costUsd)}
                     </td>
                     <td className="px-4 py-2 text-right font-mono text-muted text-xs">

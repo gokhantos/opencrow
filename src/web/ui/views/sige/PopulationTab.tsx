@@ -14,11 +14,21 @@ export function PopulationTab({ sessionId }: PopulationTabProps) {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     fetchPopulationDynamics(sessionId)
-      .then(setPopulation)
-      .catch(() => setError("Failed to load population data."))
-      .finally(() => setLoading(false));
+      .then((data) => {
+        if (!cancelled) setPopulation(data);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Failed to load population data.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId]);
 
   if (loading) return <LoadingState message="Loading population data..." />;

@@ -36,16 +36,22 @@ export function useJobPoller(job: JobLike | null): { readonly countdown: string 
 
 /**
  * Calls loadFn on a fixed interval while isRunning is true.
- * Clears the interval whenever isRunning becomes false.
+ * Creates a fresh AbortController for each poll tick so that in-flight requests
+ * are cancelled when the interval is torn down (isRunning toggles or unmount).
+ * loadFn must accept and respect the passed AbortSignal to avoid stale setState.
  */
 export function useAutoRefresh(
   isRunning: boolean,
-  loadFn: () => void,
+  loadFn: (signal: AbortSignal) => void,
   intervalMs = 30_000,
 ): void {
   useEffect(() => {
     if (!isRunning) return;
-    const timer = setInterval(loadFn, intervalMs);
-    return () => clearInterval(timer);
+    const controller = new AbortController();
+    const timer = setInterval(() => loadFn(controller.signal), intervalMs);
+    return () => {
+      clearInterval(timer);
+      controller.abort();
+    };
   }, [isRunning, loadFn, intervalMs]);
 }

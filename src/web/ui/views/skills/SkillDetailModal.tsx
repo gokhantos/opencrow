@@ -27,12 +27,14 @@ export function SkillDetailModal({
       setConfirmDelete(false);
       return;
     }
+    let active = true;
     setLoading(true);
     setConfirmDelete(false);
     fetchSkillDetail(skill.id)
-      .then((res) => setDetail(res.data))
-      .catch(() => setDetail(null))
-      .finally(() => setLoading(false));
+      .then((res) => { if (active) setDetail(res.data); })
+      .catch(() => { if (active) setDetail(null); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
   }, [skill]);
 
   if (!skill) return null;

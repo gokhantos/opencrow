@@ -3,6 +3,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ToastProvider } from "./components/Toast";
 import { createRoot } from "react-dom/client";
 import { Menu } from "lucide-react";
+import { Input, Button } from "./components";
 
 export type Theme = "dark" | "light";
 import {
@@ -96,15 +97,9 @@ function TokenModal({ onSuccess }: { onSuccess: () => void }) {
         )}
         <form onSubmit={handleSubmit}>
           <div className="mb-5">
-            <label
-              className="block text-sm font-semibold text-muted uppercase tracking-wide mb-2"
-              htmlFor="token-input"
-            >
-              Access Token
-            </label>
-            <input
+            <Input
               id="token-input"
-              className="w-full bg-bg border-2 border-border-2 rounded-lg px-4 py-3 text-foreground text-base outline-none transition-colors duration-150 focus:border-accent placeholder:text-faint"
+              label="Access Token"
               type="password"
               value={value}
               onChange={(e) => setValue(e.target.value)}
@@ -112,17 +107,9 @@ function TokenModal({ onSuccess }: { onSuccess: () => void }) {
               autoFocus
             />
           </div>
-          <button
-            type="submit"
-            className="w-full bg-accent text-white rounded-lg px-4 py-3 text-base font-semibold hover:bg-accent-hover transition-colors cursor-pointer disabled:opacity-50 border-none"
-            disabled={loading}
-          >
-            {loading ? (
-              <span className="inline-block w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-            ) : (
-              "Continue"
-            )}
-          </button>
+          <Button type="submit" loading={loading} className="w-full">
+            Continue
+          </Button>
         </form>
       </div>
     </div>
@@ -246,15 +233,15 @@ function App() {
   async function checkAuth() {
     try {
       await apiFetch<StatusResponse>("/api/status");
+      await fetchFeatures();
       setAuthState("ok");
-      fetchFeatures();
     } catch (err: unknown) {
       const apiErr = err as { status?: number };
       if (apiErr?.status === 401) {
         setAuthState("needed");
       } else {
+        await fetchFeatures();
         setAuthState("ok");
-        fetchFeatures();
       }
     }
   }

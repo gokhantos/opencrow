@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../../api";
+import { LoadingState, EmptyState } from "../../components";
 import { useJobPoller, useAutoRefresh } from "./hooks/useJobPoller";
 import { useJobActions } from "./hooks/useJobActions";
 import { JobStatusHero } from "./JobStatusHero";
@@ -48,16 +49,19 @@ export function BookmarksTab({ accountId }: BookmarksTabProps) {
 
   const isRunning = job?.status === "running";
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     try {
       const [statusRes, historyRes] = await Promise.all([
         apiFetch<{ success: boolean; data: BookmarkJob | null }>(
           `/api/x/bookmarks/status?account_id=${accountId}`,
+          { signal },
         ),
         apiFetch<{ success: boolean; data: SharedVideo[] }>(
           `/api/x/bookmarks/history?account_id=${accountId}`,
+          { signal },
         ),
       ]);
+      if (signal?.aborted) return;
       if (statusRes.success && statusRes.data) {
         setJob(statusRes.data);
         setIntervalMinutes(statusRes.data.interval_minutes);
@@ -65,14 +69,19 @@ export function BookmarksTab({ accountId }: BookmarksTabProps) {
       if (historyRes.success) {
         setSharedVideos(historyRes.data);
       }
+    } catch (err) {
+      if (signal?.aborted) return;
+      throw err;
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [accountId]);
 
   useEffect(() => {
     setLoading(true);
-    loadData();
+    const controller = new AbortController();
+    loadData(controller.signal);
+    return () => controller.abort();
   }, [loadData]);
 
   const { countdown } = useJobPoller(job);
@@ -85,15 +94,11 @@ export function BookmarksTab({ accountId }: BookmarksTabProps) {
       runNowUrl: "/api/x/bookmarks/share-now",
       accountId,
       startBody: { interval_minutes: intervalMinutes },
-      onSuccess: loadData,
+      onSuccess: () => loadData(),
     });
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <span className="w-5 h-5 border-2 border-border-2 border-t-accent rounded-full animate-spin inline-block" />
-      </div>
-    );
+    return <LoadingState />;
   }
 
   const displayError = error ?? job?.last_error ?? null;
@@ -153,9 +158,7 @@ export function BookmarksTab({ accountId }: BookmarksTabProps) {
           )}
         </div>
         {sharedVideos.length === 0 ? (
-          <div className="text-center text-faint py-8 text-sm font-sans">
-            No videos shared yet
-          </div>
+          <EmptyState title="No videos shared yet" />
         ) : (
           <div className="flex flex-col gap-0.5">
             {sharedVideos.map((v) => (

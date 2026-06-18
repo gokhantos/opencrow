@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { z } from "zod";
 import { QRCodeSVG } from "qrcode.react";
-import { setupChannel, requestWhatsAppPairingCode, apiFetch } from "../api";
+import { setupChannel, requestWhatsAppPairingCode } from "../api";
 import { cn } from "../lib/cn";
 import { Button, Input, FormField } from "../components";
 import { useZodForm } from "../hooks/useZodForm";
+import { usePolledFetch } from "../hooks/usePolledFetch";
 
 interface ChannelSetupFormProps {
   channelId: string;
@@ -103,8 +104,20 @@ function WhatsAppSetupForm({
 }: Omit<ChannelSetupFormProps, "channelId">) {
   const currentNumbers = (initialSnapshot.allowedNumbers as string[]) ?? [];
   const currentGroups = (initialSnapshot.allowedGroups as string[]) ?? [];
-  const [liveSnapshot, setLiveSnapshot] = useState(initialSnapshot);
 
+  // Derive live state from initial snapshot first, then from poll results
+  const initialPairingState = (initialSnapshot.pairingState as string) ?? "disconnected";
+  const isInitiallyConnected = initialPairingState === "connected";
+
+  const { data: pollData } = usePolledFetch<{
+    success: boolean;
+    data: { snapshot: Record<string, unknown> };
+  }>("/api/channels/whatsapp", {
+    intervalMs: 3000,
+    enabled: !isInitiallyConnected,
+  });
+
+  const liveSnapshot = pollData?.data?.snapshot ?? initialSnapshot;
   const pairingState = (liveSnapshot.pairingState as string) ?? "disconnected";
   const qrCode = (liveSnapshot.qrCode as string) ?? null;
   const isConnected = pairingState === "connected";
@@ -126,24 +139,6 @@ function WhatsAppSetupForm({
       allowedGroups: currentGroups.join(", "),
     },
   });
-
-  useEffect(() => {
-    if (isConnected) return;
-    const interval = setInterval(async () => {
-      try {
-        const res = await apiFetch<{
-          success: boolean;
-          data: { snapshot: Record<string, unknown> };
-        }>("/api/channels/whatsapp");
-        if (res.success && res.data?.snapshot) {
-          setLiveSnapshot(res.data.snapshot);
-        }
-      } catch {
-        // ignore polling errors
-      }
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [isConnected]);
 
   async function handlePair() {
     if (!phoneNumber.trim()) {

@@ -50,3 +50,8 @@ test("EmptyState renders all props together", () => {
   expect(html).toContain("Empty");
   expect(html).toContain("Nothing here");
 });
+
+test("EmptyState icon container is aria-hidden", () => {
+  const html = renderHTML(React.createElement(EmptyState, { icon: "🔍" }));
+  expect(html).toContain('aria-hidden="true"');
+});

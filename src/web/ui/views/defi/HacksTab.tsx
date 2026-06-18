@@ -1,8 +1,7 @@
-import { useState, useEffect } from "react";
+import { EmptyState, LoadingState } from "../../components";
+import { usePolledFetch } from "../../hooks/usePolledFetch";
 import { cn } from "../../lib/cn";
-import { apiFetch } from "../../api";
-import { LoadingState, EmptyState } from "../../components";
-import { TH, TD, formatTvl, formatDate, ChainBadge } from "./shared";
+import { ChainBadge, ErrorState, formatDate, formatTvl, TD, TH } from "./shared";
 
 interface HackRow {
   readonly id: string;
@@ -22,35 +21,15 @@ function hackRowBg(amount: number | null): string {
 }
 
 export default function HacksTab() {
-  const [hacks, setHacks] = useState<HackRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { data, loading, error, refetch } = usePolledFetch<{
+    success: boolean;
+    data: HackRow[];
+  }>("/api/defi/hacks?limit=50", { intervalMs: 60_000 });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  async function fetchData() {
-    try {
-      const res = await apiFetch<{ success: boolean; data: HackRow[] }>(
-        "/api/defi/hacks?limit=50",
-      );
-      if (res.success) setHacks(res.data);
-      setError("");
-    } catch {
-      setError("Failed to load hack data");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const hacks = data?.success ? data.data : [];
 
   if (loading) return <LoadingState message="Loading hacks..." />;
-  if (error)
-    return (
-      <div className="text-danger text-sm px-4 py-3 rounded-lg bg-danger/5 border border-danger/20">
-        {error}
-      </div>
-    );
+  if (error) return <ErrorState message="Failed to load hack data" onRetry={refetch} />;
   if (hacks.length === 0) return <EmptyState description="No hack data found." />;
 
   return (
@@ -63,9 +42,7 @@ export default function HacksTab() {
             <th className={cn(TH, "text-right")}>Amount Lost</th>
             <th className={cn(TH, "text-left max-md:hidden")}>Chain</th>
             <th className={cn(TH, "text-left max-md:hidden")}>Technique</th>
-            <th className={cn(TH, "text-left max-md:hidden")}>
-              Classification
-            </th>
+            <th className={cn(TH, "text-left max-md:hidden")}>Classification</th>
           </tr>
         </thead>
         <tbody>
@@ -78,18 +55,11 @@ export default function HacksTab() {
               )}
               style={{ animationDelay: `${Math.min(idx * 20, 400)}ms` }}
             >
-              <td
-                className={cn(
-                  TD,
-                  "text-left font-mono text-[12px] text-muted tabular-nums",
-                )}
-              >
+              <td className={cn(TD, "text-left font-mono text-[12px] text-muted tabular-nums")}>
                 {formatDate(hack.date)}
               </td>
               <td className={cn(TD, "text-left")}>
-                <span className="font-semibold text-strong text-[13px]">
-                  {hack.name}
-                </span>
+                <span className="font-semibold text-strong text-[13px]">{hack.name}</span>
               </td>
               <td className={cn(TD, "text-right")}>
                 <span className="font-mono text-[13px] font-semibold text-danger tabular-nums">
@@ -97,22 +67,16 @@ export default function HacksTab() {
                 </span>
               </td>
               <td className={cn(TD, "text-left max-md:hidden")}>
-                {hack.chain ? <ChainBadge chain={hack.chain} /> : <span className="text-faint">—</span>}
-              </td>
-              <td
-                className={cn(
-                  TD,
-                  "text-left text-[12px] text-muted max-md:hidden",
+                {hack.chain ? (
+                  <ChainBadge chain={hack.chain} />
+                ) : (
+                  <span className="text-faint">—</span>
                 )}
-              >
+              </td>
+              <td className={cn(TD, "text-left text-[12px] text-muted max-md:hidden")}>
                 {hack.technique ?? "—"}
               </td>
-              <td
-                className={cn(
-                  TD,
-                  "text-left text-[12px] text-muted max-md:hidden",
-                )}
-              >
+              <td className={cn(TD, "text-left text-[12px] text-muted max-md:hidden")}>
                 {hack.classification ?? "—"}
               </td>
             </tr>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
   Play,
   CheckCircle2,
@@ -17,6 +17,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { apiFetch, resumeRun, resumeInterruptedRuns } from "../api";
+import { usePolledFetch } from "../hooks/usePolledFetch";
 import { relativeTime, formatDuration } from "../lib/format";
 import { cn } from "../lib/cn";
 import { PageHeader, LoadingState, EmptyState } from "../components";
@@ -230,9 +231,7 @@ function RunRow({
   readonly onResumed?: () => void;
 }) {
   const [expanded, setExpanded] = useState(run.status === "running");
-  const [detail, setDetail] = useState<RunDetail | null>(null);
   const [ideas, setIdeas] = useState<readonly RunIdea[]>([]);
-  const [loadError, setLoadError] = useState(false);
   const [expandedIdeaId, setExpandedIdeaId] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
   const toast = useToast();
@@ -255,30 +254,37 @@ function RunRow({
     }
   }, [run.id, toast, onResumed]);
 
-  // Single fetch for both progress bar and detail panel
+  // Poll for run detail — always fetch once; continue polling while running
+  const detailPath = useMemo(() => `/api/pipelines-runs/${run.id}`, [run.id]);
+  const { data: detailData, error: detailError } = usePolledFetch<{
+    success: boolean;
+    data: RunDetail;
+  }>(detailPath, {
+    intervalMs: 3000,
+    enabled: run.status === "running",
+  });
+
+  // For non-running runs we still need an initial fetch — use a one-shot effect
+  const [staticDetail, setStaticDetail] = useState<RunDetail | null>(null);
+  const [staticError, setStaticError] = useState(false);
+  const fetchedStaticRef = useRef(false);
   useEffect(() => {
+    if (run.status === "running") return;
+    if (fetchedStaticRef.current) return;
+    fetchedStaticRef.current = true;
     let active = true;
-    async function load() {
-      try {
-        const res = await apiFetch<{ success: boolean; data: RunDetail }>(
-          `/api/pipelines-runs/${run.id}`,
-        );
-        if (active && res.success) {
-          setDetail(res.data);
-          setLoadError(false);
-        }
-      } catch {
-        if (active) setLoadError(true);
-      }
-    }
-    load();
-    const interval =
-      run.status === "running" ? setInterval(load, 3000) : undefined;
-    return () => {
-      active = false;
-      if (interval) clearInterval(interval);
-    };
+    apiFetch<{ success: boolean; data: RunDetail }>(`/api/pipelines-runs/${run.id}`)
+      .then((res) => {
+        if (active && res.success) setStaticDetail(res.data);
+      })
+      .catch(() => {
+        if (active) setStaticError(true);
+      });
+    return () => { active = false; };
   }, [run.id, run.status]);
+
+  const detail = run.status === "running" ? (detailData?.data ?? null) : staticDetail;
+  const loadError = run.status === "running" ? !!detailError : staticError;
 
   // Fetch ideas when expanded and run is completed
   useEffect(() => {

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useId, useRef } from "react";
 import { X } from "lucide-react";
 
 interface ModalProps {
@@ -14,9 +14,13 @@ const FOCUSABLE =
 
 export function Modal({ open, onClose, title, children, width }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     if (!open) return;
+
+    // Capture the element that triggered the modal so we can restore focus on close
+    const previouslyFocused = document.activeElement as HTMLElement | null;
 
     // Focus first focusable element when modal opens
     const el = dialogRef.current;
@@ -51,7 +55,11 @@ export function Modal({ open, onClose, title, children, width }: ModalProps) {
     }
 
     document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      // Restore focus to the trigger element (WCAG 2.4.3)
+      previouslyFocused?.focus();
+    };
   }, [open, onClose]);
 
   if (!open) return null;
@@ -66,7 +74,7 @@ export function Modal({ open, onClose, title, children, width }: ModalProps) {
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={title ? "modal-title" : undefined}
+        aria-labelledby={title ? titleId : undefined}
         className="bg-bg-1 border border-border-2 rounded-xl w-full max-w-xl max-h-[90vh] overflow-y-auto shadow-2xl shadow-black/40"
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -76,7 +84,7 @@ export function Modal({ open, onClose, title, children, width }: ModalProps) {
       >
         {title && (
           <div className="flex justify-between items-center px-6 py-5 border-b border-border">
-            <h3 id="modal-title" className="text-lg font-bold text-strong m-0 tracking-tight">{title}</h3>
+            <h3 id={titleId} className="text-lg font-bold text-strong m-0 tracking-tight">{title}</h3>
             <button
               className="w-8 h-8 rounded-md bg-transparent border-none text-muted cursor-pointer flex items-center justify-center hover:bg-bg-3 hover:text-foreground transition-colors"
               onClick={onClose}

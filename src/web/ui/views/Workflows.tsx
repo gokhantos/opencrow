@@ -2,8 +2,8 @@ import React, { useState, useCallback, useEffect, useRef } from "react";
 import "@xyflow/react/dist/style.css";
 import { z } from "zod";
 import { apiFetch } from "../api";
-import { Button } from "../components";
-import { Save, FolderOpen, Plus, Undo2, Redo2, Download, Upload, AlertCircle, ClipboardPaste, X } from "lucide-react";
+import { Button, Modal } from "../components";
+import { Save, FolderOpen, Plus, Undo2, Redo2, Download, Upload, AlertCircle, ClipboardPaste } from "lucide-react";
 import { useWorkflowReducer } from "./workflows/useWorkflowReducer";
 import { useKeyboardShortcuts } from "./workflows/useKeyboardShortcuts";
 import { validateWorkflowGraph } from "./workflows/validation-ui";
@@ -200,15 +200,17 @@ export default function Workflows() {
     <div className="flex flex-col h-screen max-md:h-[calc(100vh-52px)] -mx-8 -my-7 max-lg:-mx-6 max-lg:-my-6 max-md:-mx-4 max-md:-my-5">
       {/* Top bar */}
       <div className="flex items-center gap-3 px-4 py-3 bg-bg-1 border-b border-border shrink-0">
-        <div className="flex items-center gap-1.5 mr-2">
+        <span role="status" aria-live="polite" className="flex items-center gap-1.5 mr-2 text-xs text-muted">
           <span
+            aria-hidden="true"
             className={`w-2 h-2 rounded-full ${state.isDirty ? "bg-yellow-400" : "bg-green-400"}`}
-            title={state.isDirty ? "Unsaved changes" : "Saved"}
           />
-        </div>
+          <span className="sr-only">{state.isDirty ? "Unsaved changes" : "All changes saved"}</span>
+        </span>
 
         <input
           type="text"
+          aria-label="Workflow name"
           value={state.name}
           onChange={(e) =>
             dispatch({ type: "SET_NAME", name: e.target.value })
@@ -219,6 +221,7 @@ export default function Workflows() {
 
         <input
           type="text"
+          aria-label="Workflow description"
           value={state.description}
           onChange={(e) =>
             dispatch({ type: "SET_DESCRIPTION", description: e.target.value })
@@ -311,7 +314,7 @@ export default function Workflows() {
 
       {/* Main area */}
       <div className="flex flex-1 min-h-0">
-        <NodePalette />
+        <NodePalette dispatch={dispatch} />
 
         <div className="flex flex-col flex-1 min-w-0 relative">
           <WorkflowCanvas
@@ -367,61 +370,47 @@ export default function Workflows() {
       />
 
       {/* Import modal — file upload or paste JSON */}
-      {showImportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-bg-1 border border-border rounded-xl shadow-2xl w-full max-w-lg mx-4">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-              <h3 className="text-sm font-semibold text-strong">Import Workflow</h3>
-              <button
-                type="button"
-                onClick={() => setShowImportModal(false)}
-                className="w-7 h-7 flex items-center justify-center rounded text-muted hover:text-foreground hover:bg-bg-2 transition-colors bg-transparent border-none cursor-pointer"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <div className="p-5 space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-muted mb-2">Upload JSON file</label>
-                <button
-                  type="button"
-                  onClick={() => importRef.current?.click()}
-                  className="w-full py-3 px-4 border-2 border-dashed border-border-2 rounded-lg text-sm text-muted hover:border-accent hover:text-foreground transition-colors cursor-pointer bg-transparent flex items-center justify-center gap-2"
-                >
-                  <Upload size={16} />
-                  Choose .json file
-                </button>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex-1 h-px bg-border" />
-                <span className="text-xs text-muted">or</span>
-                <div className="flex-1 h-px bg-border" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-muted mb-2">Paste JSON</label>
-                <textarea
-                  value={importJson}
-                  onChange={(e) => { setImportJson(e.target.value); setImportError(""); }}
-                  placeholder='{"name": "My Workflow", "nodes": [...], "edges": [...]}'
-                  className="w-full h-40 px-3 py-2 bg-bg border border-border-2 rounded-lg text-sm text-foreground font-mono resize-none outline-none focus:border-accent transition-colors placeholder:text-muted/50"
-                />
-              </div>
-              {importError && (
-                <p className="text-xs text-danger">{importError}</p>
-              )}
-            </div>
-            <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-border">
-              <Button variant="ghost" size="sm" onClick={() => setShowImportModal(false)}>
-                Cancel
-              </Button>
-              <Button variant="primary" size="sm" onClick={handleImportPaste} disabled={!importJson.trim()}>
-                <ClipboardPaste size={14} />
-                Import
-              </Button>
-            </div>
+      <Modal open={showImportModal} onClose={() => setShowImportModal(false)} title="Import Workflow">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-muted mb-2">Upload JSON file</label>
+            <button
+              type="button"
+              onClick={() => importRef.current?.click()}
+              className="w-full py-3 px-4 border-2 border-dashed border-border-2 rounded-lg text-sm text-muted hover:border-accent hover:text-foreground transition-colors cursor-pointer bg-transparent flex items-center justify-center gap-2"
+            >
+              <Upload size={16} />
+              Choose .json file
+            </button>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-border" />
+            <span className="text-xs text-muted">or</span>
+            <div className="flex-1 h-px bg-border" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-muted mb-2">Paste JSON</label>
+            <textarea
+              value={importJson}
+              onChange={(e) => { setImportJson(e.target.value); setImportError(""); }}
+              placeholder='{"name": "My Workflow", "nodes": [...], "edges": [...]}'
+              className="w-full h-40 px-3 py-2 bg-bg border border-border-2 rounded-lg text-sm text-foreground font-mono resize-none outline-none focus:border-accent transition-colors placeholder:text-muted/50"
+            />
+          </div>
+          {importError && (
+            <p className="text-xs text-danger">{importError}</p>
+          )}
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <Button variant="ghost" size="sm" onClick={() => setShowImportModal(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" onClick={handleImportPaste} disabled={!importJson.trim()}>
+              <ClipboardPaste size={14} />
+              Import
+            </Button>
           </div>
         </div>
-      )}
+      </Modal>
     </div>
   );
 }

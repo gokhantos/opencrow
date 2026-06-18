@@ -49,6 +49,9 @@ export default function Agents() {
   const [editingAgent, setEditingAgent] = useState<AgentDetail | null>(null);
   const [deletingAgent, setDeletingAgent] = useState<AgentInfo | null>(null);
 
+  /* In-flight guard — prevents double-submit on delete / set-default */
+  const [pendingId, setPendingId] = useState<string | null>(null);
+
   const loadAgents = useCallback(async () => {
     try {
       const parsed = await apiFetch("/api/agents", {}, {
@@ -73,6 +76,8 @@ export default function Agents() {
   }, [loadAgents]);
 
   async function handleDelete(agentId: string) {
+    if (pendingId !== null) return;
+    setPendingId(agentId);
     try {
       const res = (await deleteAgent(agentId)) as MutationResponse;
       if (res.configHash) setConfigHash(res.configHash);
@@ -87,10 +92,14 @@ export default function Agents() {
         toast.error("Failed to delete agent");
       }
       setDeletingAgent(null);
+    } finally {
+      setPendingId(null);
     }
   }
 
   async function handleSetDefault(agentId: string) {
+    if (pendingId !== null) return;
+    setPendingId(agentId);
     try {
       const res = (await updateAgent(agentId, { default: true })) as MutationResponse;
       if (res.configHash) setConfigHash(res.configHash);
@@ -103,6 +112,8 @@ export default function Agents() {
       } else {
         toast.error("Failed to set default agent");
       }
+    } finally {
+      setPendingId(null);
     }
   }
 
@@ -235,6 +246,7 @@ export default function Agents() {
                 onEdit={() => handleEditClick(agent)}
                 onDelete={() => setDeletingAgent(agent)}
                 onSetDefault={() => handleSetDefault(agent.id)}
+                isPending={pendingId === agent.id}
               />
             ))}
           </div>
@@ -248,6 +260,7 @@ export default function Agents() {
             onEdit={() => handleEditClick(selectedAgent)}
             onDelete={() => setDeletingAgent(selectedAgent)}
             onSetDefault={() => handleSetDefault(selectedAgent.id)}
+            isPending={pendingId === selectedAgent.id}
           />
         )}
       </div>
@@ -281,6 +294,7 @@ export default function Agents() {
           agentName={deletingAgent.name}
           onConfirm={() => handleDelete(deletingAgent.id)}
           onCancel={() => setDeletingAgent(null)}
+          loading={pendingId === deletingAgent.id}
         />
       )}
     </div>

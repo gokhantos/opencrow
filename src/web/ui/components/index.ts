@@ -12,3 +12,8 @@ export { FeedRow } from "./FeedRow";
 export { Button } from "./Button";
 export { Input } from "./Input";
 export { FormField } from "./FormField";
+export { IconButton } from "./IconButton";
+export { Tabs } from "./Tabs";
+export type { TabItem } from "./Tabs";
+export { IntervalConfigPanel } from "./IntervalConfigPanel";
+export type { IntervalConfigField } from "./IntervalConfigPanel";

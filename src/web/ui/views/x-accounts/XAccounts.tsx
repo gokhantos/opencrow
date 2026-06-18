@@ -7,7 +7,7 @@ import { AddAccountModal } from "./AddAccountModal";
 import type { XAccount, AccountsResponse, AccountResponse, MutationResponse } from "./types";
 
 export default function XAccounts() {
-  const [accounts, setAccounts] = useState<XAccount[]>([]);
+  const [accounts, setAccounts] = useState<readonly XAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);

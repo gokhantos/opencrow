@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, X } from "lucide-react";
 import { Button, LoadingState } from "../../components";
 import { cn } from "../../lib/cn";
+import { usePolledFetch } from "../../hooks/usePolledFetch";
 import { ProgressBar } from "./ProgressBar";
 import { AUTONOMOUS_SEED_LABEL } from "./SessionsTable";
 import { SigeStatusBadge } from "./SigeStatusBadge";
@@ -10,7 +11,7 @@ import { IdeasTab } from "./IdeasTab";
 import { GameTab } from "./GameTab";
 import { PopulationTab } from "./PopulationTab";
 import { TERMINAL_STATUSES } from "./statusConfig";
-import { fetchSession, cancelSession } from "./api";
+import { cancelSession } from "./api";
 import { ProcessTheater } from "./theater/ProcessTheater";
 import type { SigeSessionDetail } from "./types";
 
@@ -23,6 +24,11 @@ const DETAIL_TABS: readonly { id: DetailTab; label: string }[] = [
   { id: "population", label: "Population Dynamics" },
 ];
 
+interface SessionResponse {
+  readonly success: boolean;
+  readonly data: SigeSessionDetail;
+}
+
 interface SessionDetailProps {
   readonly sessionId: string;
   readonly onBack: () => void;
@@ -30,44 +36,29 @@ interface SessionDetailProps {
 
 export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
   const [session, setSession] = useState<SigeSessionDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<DetailTab>("report");
   const [cancelling, setCancelling] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
 
-  const loadSession = useCallback(async () => {
-    try {
-      const data = await fetchSession(sessionId);
-      setSession(data);
-      return data;
-    } catch {
-      setError("Failed to load session.");
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [sessionId]);
+  // Stop polling once we reach a terminal status
+  const isTerminal = session ? TERMINAL_STATUSES.has(session.status) : false;
 
-  // Poll for status updates every 3 seconds while session is in progress
+  const {
+    data,
+    error: fetchError,
+    loading,
+  } = usePolledFetch<SessionResponse>(`/api/sige/sessions/${sessionId}`, {
+    intervalMs: 3000,
+    enabled: !isTerminal,
+  });
+
+  // Keep local session state in sync — allows handleCancel to patch
+  // status optimistically without losing polled data.
   useEffect(() => {
-    loadSession();
-
-    const interval = setInterval(async () => {
-      try {
-        const data = await fetchSession(sessionId);
-        if (!data) return;
-        setSession(data);
-        if (TERMINAL_STATUSES.has(data.status)) {
-          clearInterval(interval);
-        }
-      } catch {
-        // silently retry on next interval
-      }
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [sessionId, loadSession]);
+    if (data?.data) {
+      setSession(data.data);
+    }
+  }, [data]);
 
   async function handleCancel() {
     if (!session || cancelling) return;
@@ -82,7 +73,9 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
     }
   }
 
-  if (loading) return <LoadingState message="Loading session..." />;
+  if (loading && !session) return <LoadingState message="Loading session..." />;
+
+  const error = fetchError && !session ? fetchError : null;
 
   if (error || !session) {
     return (
@@ -95,13 +88,14 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
           <ArrowLeft size={14} />
           Back
         </button>
-        <div className="text-sm text-danger">{error || "Session not found."}</div>
+        <div className="text-sm text-danger">
+          {error ?? "Session not found."}
+        </div>
       </div>
     );
   }
 
-  const isTerminal = TERMINAL_STATUSES.has(session.status);
-  const canCancel = !isTerminal && !cancelling;
+  const canCancel = !TERMINAL_STATUSES.has(session.status) && !cancelling;
 
   return (
     <div>

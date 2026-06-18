@@ -109,11 +109,11 @@ export function JobControls({
       {/* Action bar — always visible */}
       <div className="flex items-center gap-3 mb-3">
         {isRunning ? (
-          <Button variant="danger" size="sm" onClick={onStop}>
+          <Button variant="danger" size="sm" onClick={onStop} disabled={actionLoading}>
             Stop
           </Button>
         ) : (
-          <Button size="sm" onClick={onStart}>
+          <Button size="sm" onClick={onStart} disabled={actionLoading}>
             {startLabel}
           </Button>
         )}

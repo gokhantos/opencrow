@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Modal } from "../../components";
+import { Modal, Button, LoadingState } from "../../components";
 import { apiFetch } from "../../api";
 import type { SavedWorkflow } from "./types";
 import type { WorkflowAction } from "./useWorkflowReducer";
@@ -32,6 +32,7 @@ export function WorkflowList({ open, onClose, dispatch }: WorkflowListProps) {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [duplicating, setDuplicating] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<SavedWorkflow | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -64,6 +65,7 @@ export function WorkflowList({ open, onClose, dispatch }: WorkflowListProps) {
     try {
       await apiFetch(`/api/workflows/${wf.id}`, { method: "DELETE" });
       setWorkflows((prev) => prev.filter((w) => w.id !== wf.id));
+      setPendingDelete(null);
     } catch {
       setError("Failed to delete workflow");
     } finally {
@@ -103,6 +105,7 @@ export function WorkflowList({ open, onClose, dispatch }: WorkflowListProps) {
   }
 
   return (
+    <>
     <Modal open={open} onClose={onClose} title="Saved Workflows">
       {error && (
         <div className="bg-danger-subtle border border-danger/20 rounded-lg px-4 py-3 text-danger text-sm mb-4">
@@ -111,9 +114,7 @@ export function WorkflowList({ open, onClose, dispatch }: WorkflowListProps) {
       )}
 
       {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <span className="w-6 h-6 border-2 border-border-2 border-t-accent rounded-full animate-spin" />
-        </div>
+        <LoadingState />
       ) : workflows.length === 0 ? (
         <div className="text-center py-12 text-muted">
           <FolderOpen size={32} className="mx-auto mb-3 opacity-40" />
@@ -173,7 +174,7 @@ export function WorkflowList({ open, onClose, dispatch }: WorkflowListProps) {
               <button
                 type="button"
                 disabled={deleting === wf.id}
-                onClick={() => handleDelete(wf)}
+                onClick={() => setPendingDelete(wf)}
                 className="w-8 h-8 flex items-center justify-center rounded-md border border-transparent text-faint hover:text-danger hover:border-danger/30 hover:bg-danger-subtle transition-colors cursor-pointer bg-transparent shrink-0 disabled:opacity-50"
                 aria-label="Delete workflow"
               >
@@ -188,5 +189,29 @@ export function WorkflowList({ open, onClose, dispatch }: WorkflowListProps) {
         </div>
       )}
     </Modal>
+
+    <Modal
+      open={pendingDelete !== null}
+      onClose={() => setPendingDelete(null)}
+      title="Delete Workflow"
+    >
+      <p className="text-sm text-muted mb-6">
+        Delete <span className="font-semibold text-strong">{pendingDelete?.name}</span>? This cannot be undone.
+      </p>
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={() => setPendingDelete(null)}>
+          Cancel
+        </Button>
+        <Button
+          variant="danger"
+          size="sm"
+          loading={deleting === pendingDelete?.id}
+          onClick={() => { if (pendingDelete) void handleDelete(pendingDelete); }}
+        >
+          Delete
+        </Button>
+      </div>
+    </Modal>
+    </>
   );
 }

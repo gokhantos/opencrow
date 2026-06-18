@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import type { Node } from "@xyflow/react";
 import { apiFetch } from "../../api";
 import type { WorkflowAction } from "./useWorkflowReducer";
@@ -167,9 +167,11 @@ function AgentProperties({
   const [agents, setAgents] = useState<AgentOption[]>([]);
 
   useEffect(() => {
-    apiFetch<{ data: AgentOption[] }>("/api/agents")
-      .then((res) => setAgents(res.data))
-      .catch(() => setAgents([]));
+    const c = new AbortController();
+    apiFetch<{ data: AgentOption[] }>("/api/agents", { signal: c.signal })
+      .then((res) => { if (!c.signal.aborted) setAgents(res.data); })
+      .catch(() => { if (!c.signal.aborted) setAgents([]); });
+    return () => c.abort();
   }, []);
 
   const agentOptions = agents.map((a) => ({ value: a.id, label: a.name }));
@@ -298,12 +300,17 @@ function ToolProperties({
   const [showRawJson, setShowRawJson] = useState(false);
 
   useEffect(() => {
-    apiFetch<{ data: ToolOption[]; success: boolean }>("/api/tools")
-      .then((res) => setTools(res.data))
-      .catch(() => setTools([]));
+    const c = new AbortController();
+    apiFetch<{ data: ToolOption[]; success: boolean }>("/api/tools", { signal: c.signal })
+      .then((res) => { if (!c.signal.aborted) setTools(res.data); })
+      .catch(() => { if (!c.signal.aborted) setTools([]); });
+    return () => c.abort();
   }, []);
 
-  // Migrate legacy string inputMapping to Record
+  // Migrate legacy string inputMapping to Record.
+  // We intentionally include data.inputMapping and onChange in deps so this
+  // re-runs when the parent swaps to a different node; the typeof guard makes
+  // re-runs a no-op once already migrated.
   useEffect(() => {
     if (typeof data.inputMapping === "string") {
       try {
@@ -313,7 +320,7 @@ function ToolProperties({
         onChange({ inputMapping: {} });
       }
     }
-  }, []);
+  }, [data.inputMapping, onChange]);
 
   const toolOptions = tools.map((t) => ({ value: t.name, label: t.name }));
   const selectedTool = tools.find((t) => t.name === data.toolName);
@@ -435,9 +442,11 @@ function SkillProperties({
   const [skills, setSkills] = useState<SkillOption[]>([]);
 
   useEffect(() => {
-    apiFetch<{ data: SkillOption[] }>("/api/skills")
-      .then((res) => setSkills(res.data))
-      .catch(() => setSkills([]));
+    const c = new AbortController();
+    apiFetch<{ data: SkillOption[] }>("/api/skills", { signal: c.signal })
+      .then((res) => { if (!c.signal.aborted) setSkills(res.data); })
+      .catch(() => { if (!c.signal.aborted) setSkills([]); });
+    return () => c.abort();
   }, []);
 
   const skillOptions = skills.map((s) => ({ value: s.id, label: s.name }));
@@ -542,21 +551,21 @@ function OutputProperties({
 export function PropertiesPanel({ node, dispatch }: PropsPanelProps) {
   const data = node.data;
 
-  function handleLabelChange(label: string) {
+  const handleLabelChange = useCallback((label: string) => {
     dispatch({
       type: "UPDATE_NODE_DATA",
       id: node.id,
-      data: { ...data, label } as WorkflowNodeData,
+      data: { ...node.data, label } as WorkflowNodeData,
     });
-  }
+  }, [node.id, node.data, dispatch]);
 
-  function handleChange(partial: Partial<WorkflowNodeData>) {
+  const handleChange = useCallback((partial: Partial<WorkflowNodeData>) => {
     dispatch({
       type: "UPDATE_NODE_DATA",
       id: node.id,
-      data: { ...data, ...partial } as WorkflowNodeData,
+      data: { ...node.data, ...partial } as WorkflowNodeData,
     });
-  }
+  }, [node.id, node.data, dispatch]);
 
   return (
     <aside className="w-64 shrink-0 bg-bg-1 border-l border-border flex flex-col overflow-y-auto">

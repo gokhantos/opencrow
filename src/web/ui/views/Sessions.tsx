@@ -1,51 +1,35 @@
-import { useState, useEffect } from "react";
-import { apiFetch } from "../api";
 import { formatTime } from "../lib/format";
 import { LoadingState, EmptyState, PageHeader } from "../components";
 import { cn } from "../lib/cn";
+import { usePolledFetch } from "../hooks/usePolledFetch";
 
 interface Session {
-  id: string;
-  channel: string;
-  chatId: string;
-  createdAt: number;
-  updatedAt: number;
+  readonly id: string;
+  readonly channel: string;
+  readonly chatId: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
 }
 
 interface SessionsResponse {
-  success: boolean;
-  data: Session[];
+  readonly success: boolean;
+  readonly data: Session[];
 }
 
 export default function Sessions() {
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const { data, loading, error } = usePolledFetch<SessionsResponse>(
+    "/api/sessions",
+    { intervalMs: 10000 },
+  );
 
-  useEffect(() => {
-    fetchSessions();
-    const interval = setInterval(fetchSessions, 10000);
-    return () => clearInterval(interval);
-  }, []);
+  const sessions = data?.data ?? [];
 
-  async function fetchSessions() {
-    try {
-      const data = await apiFetch<SessionsResponse>("/api/sessions");
-      setSessions(data.data ?? []);
-      setError("");
-    } catch {
-      setError("Failed to load sessions");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  if (loading) {
+  if (loading && !data) {
     return <LoadingState />;
   }
 
   if (error) {
-    return <p className="text-danger">{error}</p>;
+    return <EmptyState title="Failed to load sessions" />;
   }
 
   if (sessions.length === 0) {
