@@ -1,5 +1,5 @@
-import { test, expect, describe } from "bun:test";
-import { deepMergeSigeOverride } from "./loader";
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { deepMergeSigeOverride, loadConfig } from "./loader";
 
 /**
  * Unit tests for deepMergeSigeOverride — the pure merge helper that replaces
@@ -251,5 +251,110 @@ describe("deepMergeSigeOverride", () => {
       expect(Object.hasOwn(result, "prototype")).toBe(false);
       expect(({} as Record<string, unknown>).x).toBeUndefined();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// outcomeMemory env-toggle tests (loadConfig — no DB required)
+// ---------------------------------------------------------------------------
+
+/**
+ * Save and restore a set of env vars around each test so leaks cannot affect
+ * other unit tests in the same process.
+ */
+const OUTCOME_MEMORY_VARS = [
+  "OPENCROW_SMART_OUTCOME_MEMORY_WRITEBACK",
+  "OPENCROW_SMART_OUTCOME_MEMORY_READ_AT_SYNTHESIS",
+  "OPENCROW_SMART_OUTCOME_MEMORY_REINFORCE_CAP",
+  "OPENCROW_SMART_OUTCOME_MEMORY_AVOID_CAP",
+  "OPENCROW_SMART_OUTCOME_MEMORY_SEARCH_LIMIT",
+] as const;
+
+describe("loadConfig — outcomeMemory env toggles", () => {
+  let saved: Partial<Record<string, string>> = {};
+
+  beforeEach(() => {
+    saved = {};
+    for (const name of OUTCOME_MEMORY_VARS) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
+  });
+
+  afterEach(() => {
+    for (const name of OUTCOME_MEMORY_VARS) {
+      const prev = saved[name];
+      if (prev === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = prev;
+      }
+    }
+  });
+
+  test("no env vars set → all outcomeMemory fields carry schema defaults", () => {
+    const cfg = loadConfig();
+    const om = cfg.pipelines.ideas.smart.outcomeMemory;
+    expect(om.writeBack).toBe(false);
+    expect(om.readAtSynthesis).toBe(false);
+    expect(om.reinforceCap).toBe(5);
+    expect(om.avoidCap).toBe(5);
+    expect(om.searchLimit).toBe(12);
+  });
+
+  test("WRITEBACK=true → writeBack becomes true; sibling fields keep defaults", () => {
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_WRITEBACK = "true";
+    const cfg = loadConfig();
+    const om = cfg.pipelines.ideas.smart.outcomeMemory;
+    expect(om.writeBack).toBe(true);
+    // sibling defaults must survive the shallow-merge
+    expect(om.readAtSynthesis).toBe(false);
+    expect(om.reinforceCap).toBe(5);
+    expect(om.avoidCap).toBe(5);
+    expect(om.searchLimit).toBe(12);
+  });
+
+  test("READ_AT_SYNTHESIS=true → readAtSynthesis becomes true", () => {
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_READ_AT_SYNTHESIS = "true";
+    const cfg = loadConfig();
+    expect(cfg.pipelines.ideas.smart.outcomeMemory.readAtSynthesis).toBe(true);
+  });
+
+  test("REINFORCE_CAP=8 → reinforceCap becomes 8 (number, not string)", () => {
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_REINFORCE_CAP = "8";
+    const cfg = loadConfig();
+    const om = cfg.pipelines.ideas.smart.outcomeMemory;
+    expect(om.reinforceCap).toBe(8);
+    expect(typeof om.reinforceCap).toBe("number");
+    // siblings still default
+    expect(om.avoidCap).toBe(5);
+    expect(om.searchLimit).toBe(12);
+  });
+
+  test("AVOID_CAP=3 → avoidCap becomes 3", () => {
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_AVOID_CAP = "3";
+    const cfg = loadConfig();
+    expect(cfg.pipelines.ideas.smart.outcomeMemory.avoidCap).toBe(3);
+  });
+
+  test("SEARCH_LIMIT=20 → searchLimit becomes 20", () => {
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_SEARCH_LIMIT = "20";
+    const cfg = loadConfig();
+    expect(cfg.pipelines.ideas.smart.outcomeMemory.searchLimit).toBe(20);
+  });
+
+  test("multiple vars set simultaneously all take effect", () => {
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_WRITEBACK = "true";
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_READ_AT_SYNTHESIS = "1";
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_REINFORCE_CAP = "10";
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_AVOID_CAP = "7";
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_SEARCH_LIMIT = "30";
+    const cfg = loadConfig();
+    const om = cfg.pipelines.ideas.smart.outcomeMemory;
+    expect(om.writeBack).toBe(true);
+    expect(om.readAtSynthesis).toBe(true);
+    expect(om.reinforceCap).toBe(10);
+    expect(om.avoidCap).toBe(7);
+    expect(om.searchLimit).toBe(30);
   });
 });
