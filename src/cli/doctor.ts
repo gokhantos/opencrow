@@ -208,6 +208,90 @@ async function checkDiskSpace(): Promise<CheckResult> {
   };
 }
 
+/**
+ * Validate the secrets the control plane and channels need at runtime.
+ *
+ * OPENCROW_INTERNAL_TOKEN gates the internal API (process control, SIGE/mem0,
+ * the chat bridge) — without it those routes fail closed with 503. The web
+ * dashboard token gates the UI. Surfacing absence here turns a confusing
+ * runtime 503/lockout into a clear pre-flight signal.
+ */
+async function checkRuntimeTokens(): Promise<CheckResult> {
+  const env = readEnvVars();
+  const merged: Record<string, string | undefined> = {
+    ...env,
+    OPENCROW_INTERNAL_TOKEN:
+      process.env.OPENCROW_INTERNAL_TOKEN ?? env.OPENCROW_INTERNAL_TOKEN,
+    OPENCROW_WEB_TOKEN: process.env.OPENCROW_WEB_TOKEN ?? env.OPENCROW_WEB_TOKEN,
+  };
+
+  const missing = (["OPENCROW_INTERNAL_TOKEN", "OPENCROW_WEB_TOKEN"] as const).filter(
+    (k) => !merged[k],
+  );
+
+  if (missing.includes("OPENCROW_INTERNAL_TOKEN")) {
+    return {
+      name: "Runtime tokens",
+      status: "fail",
+      message: `Missing: ${missing.join(", ")} — internal API fails closed (503) without OPENCROW_INTERNAL_TOKEN`,
+      repair: "opencrow setup (regenerates tokens into .env)",
+    };
+  }
+
+  if (missing.length > 0) {
+    return {
+      name: "Runtime tokens",
+      status: "warn",
+      message: `Missing: ${missing.join(", ")} — dashboard auth disabled`,
+      repair: "opencrow setup",
+    };
+  }
+
+  return { name: "Runtime tokens", status: "pass", message: "Configured" };
+}
+
+/**
+ * Validate the OS-level probes the monitor's resource checks depend on.
+ *
+ * The monitor shells out for disk (`df -P`) and memory (Linux `free`, macOS
+ * `vm_stat`/`sysctl`). If a probe binary is absent the check silently no-ops, so
+ * verify availability here and warn rather than letting monitoring quietly do
+ * nothing.
+ */
+async function checkMonitorProbes(): Promise<CheckResult> {
+  const platform = process.platform;
+  const missing: string[] = [];
+
+  if (!runCmd("df", ["-P", "/"]).ok) missing.push("df");
+
+  if (platform === "darwin") {
+    if (!runCmd("vm_stat", []).ok) missing.push("vm_stat");
+    if (!runCmd("sysctl", ["-n", "hw.memsize"]).ok) missing.push("sysctl");
+  } else if (platform === "linux") {
+    if (!runCmd("free", ["-m"]).ok) missing.push("free");
+  } else {
+    return {
+      name: "Monitor probes",
+      status: "warn",
+      message: `Resource probes (disk/memory) are unsupported on ${platform}; those checks will no-op`,
+    };
+  }
+
+  if (missing.length > 0) {
+    return {
+      name: "Monitor probes",
+      status: "warn",
+      message: `Missing: ${missing.join(", ")} — corresponding monitor checks will silently no-op`,
+      repair:
+        platform === "linux"
+          ? "Install coreutils/procps (df, free)"
+          : "Ensure df/vm_stat/sysctl are on PATH",
+    };
+  }
+
+  return { name: "Monitor probes", status: "pass", message: "df + memory probes available" };
+}
+
 function printResult(result: CheckResult): void {
   const icon =
     result.status === "pass"
@@ -276,10 +360,12 @@ export async function runDoctor(): Promise<void> {
   const checks = await Promise.all([
     checkBun(),
     checkEnvFile(),
+    checkRuntimeTokens(),
     checkPostgres(),
     ...(hasQdrant ? [checkQdrant()] : []),
     checkService(),
     checkDiskSpace(),
+    checkMonitorProbes(),
   ]);
 
   const allChecks = [...checks, ...sigeAutoChecks];

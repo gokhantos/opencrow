@@ -57,7 +57,7 @@ export function resolveService(name: ServiceName = "core"): OpenCrowService {
   const def = SERVICE_DEFS[name];
 
   if (process.platform === "darwin") {
-    return createLaunchdService(def.launchdLabel, def.logPrefix);
+    return createLaunchdService(def.launchdLabel, def.logPrefix, def.restartSec);
   }
 
   if (process.platform === "linux") {

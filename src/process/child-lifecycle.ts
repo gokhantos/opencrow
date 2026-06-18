@@ -1,6 +1,8 @@
 import type { Subprocess } from "bun";
 import type { ResolvedProcessSpec } from "./manifest";
 import { createLogger } from "../logger";
+import { clearProcessCrashLoop, markProcessCrashLoop } from "./registry";
+import type { ProcessName } from "./types";
 
 const log = createLogger("orchestrator");
 
@@ -83,8 +85,32 @@ export function spawnChild(
   state.lastPong = Date.now();
   state.hungStrikes = 0;
 
+  // A fresh spawn means we are no longer crash-looping; clear any persisted
+  // marker so the monitor's crash-loop alert resolves. Fire-and-forget.
+  clearProcessCrashLoop(spec.name as ProcessName).catch((err) => {
+    log.error("Failed to clear crash-loop marker", {
+      name: spec.name,
+      error: err,
+    });
+  });
+
   proc.exited.then((exitCode) => {
     if (!running()) return;
+
+    // Identity guard: only this spawn's own exit may mutate shared state. If a
+    // newer spawn has already replaced state.proc (e.g. restartProcess killed
+    // this proc and spawned a fresh one before this handler ran), this is a
+    // stale exit event — ignore it so we don't null out the live child or
+    // double-schedule a restart. This replaces the previous reliance on flag
+    // timing (stoppedByUser being reset between kill and respawn).
+    if (state.proc !== proc) {
+      log.debug("Ignoring exit of superseded child process", {
+        name: spec.name,
+        pid: proc.pid,
+        exitCode,
+      });
+      return;
+    }
 
     log.warn("Child process exited", {
       name: spec.name,
@@ -137,6 +163,15 @@ export function scheduleRestart(
       window: spec.restartWindowSec,
     });
     state.status = "crash-loop";
+    // Persist the terminal transition so the monitor (a separate process) can
+    // raise a critical alert. Fire-and-forget: a DB hiccup must not block the
+    // lifecycle state machine, and the in-memory status is already authoritative.
+    markProcessCrashLoop(spec.name as ProcessName).catch((err) => {
+      log.error("Failed to persist crash-loop marker", {
+        name: spec.name,
+        error: err,
+      });
+    });
     return;
   }
 
@@ -217,54 +252,70 @@ export async function pingChildren(
   children: Map<string, ChildState>,
   onScheduleRestart: (state: ChildState) => void,
 ): Promise<void> {
+  // Phase 1: fire all pings at once and snapshot each child's lastPong. We key
+  // by the live Subprocess identity so a child that gets killed/respawned during
+  // the wait window is not mis-evaluated against a different process.
+  const pinged: Array<{
+    name: string;
+    state: ChildState;
+    proc: Subprocess;
+    pongBefore: number;
+  }> = [];
+
   for (const [name, state] of children) {
     if (state.status !== "running" || !state.proc) continue;
 
+    const proc = state.proc;
     try {
-      state.proc.send("ping");
+      proc.send("ping");
     } catch {
       // IPC channel closed — process is dying, reconcile will handle it
       continue;
     }
 
-    const pongBefore = state.lastPong;
-    await new Promise((r) => setTimeout(r, PING_TIMEOUT_MS));
+    pinged.push({ name, state, proc, pongBefore: state.lastPong });
+  }
 
-    if (
-      state.lastPong === pongBefore &&
-      state.status === "running" &&
-      state.proc
-    ) {
-      state.hungStrikes += 1;
-      log.warn("Process missed ping/pong", {
-        name,
-        pid: state.pid,
-        strikes: state.hungStrikes,
-        maxStrikes: HUNG_STRIKES_MAX,
-      });
+  if (pinged.length === 0) return;
 
-      if (state.hungStrikes >= HUNG_STRIKES_MAX) {
-        log.error("Killing hung process (no pong response)", {
-          name,
-          pid: state.pid,
-          lastPongAgo: Date.now() - state.lastPong,
-        });
+  // Phase 2: wait a SINGLE timeout window for all pongs (O(1) wall-clock instead
+  // of O(children) × PING_TIMEOUT_MS), then evaluate everyone.
+  await new Promise((r) => setTimeout(r, PING_TIMEOUT_MS));
 
-        try {
-          state.proc.kill("SIGKILL");
-        } catch {
-          // Already dead
-        }
-        state.proc = null;
-        state.pid = null;
-        state.hungStrikes = 0;
+  for (const { name, state, proc, pongBefore } of pinged) {
+    // Skip if this child was replaced or torn down during the wait.
+    if (state.proc !== proc || state.status !== "running") continue;
+    if (state.lastPong !== pongBefore) continue;
 
-        if (!state.stoppedByUser && state.spec.restartPolicy !== "never") {
-          onScheduleRestart(state);
-        } else {
-          state.status = "stopped";
-        }
-      }
+    state.hungStrikes += 1;
+    log.warn("Process missed ping/pong", {
+      name,
+      pid: state.pid,
+      strikes: state.hungStrikes,
+      maxStrikes: HUNG_STRIKES_MAX,
+    });
+
+    if (state.hungStrikes < HUNG_STRIKES_MAX) continue;
+
+    log.error("Killing hung process (no pong response)", {
+      name,
+      pid: state.pid,
+      lastPongAgo: Date.now() - state.lastPong,
+    });
+
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // Already dead
+    }
+    state.proc = null;
+    state.pid = null;
+    state.hungStrikes = 0;
+
+    if (!state.stoppedByUser && state.spec.restartPolicy !== "never") {
+      onScheduleRestart(state);
+    } else {
+      state.status = "stopped";
     }
   }
 }

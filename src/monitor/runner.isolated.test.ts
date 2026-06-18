@@ -1,14 +1,85 @@
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+/**
+ * Isolated tests for createMonitorRunner.
+ *
+ * All timing is deterministic: we replace the global setInterval/clearInterval
+ * with a capturing fake (same pattern as src/process/child-lifecycle.test.ts)
+ * so no real wall-clock delay is needed anywhere. The "immediate runChecks()"
+ * that fires in start() is settled by awaiting a microtask flush helper.
+ *
+ * Lane: isolated (own process) because mock.module is used.
+ */
+import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 import { createMonitorRunner } from "./runner";
 import type { DeliveryStore } from "../cron/delivery-store";
 import type { AlertStore } from "./alert-store";
 import type { MonitorConfig } from "./types";
 
-// Mock the checks module
+// ── Mock the checks module ─────────────────────────────────────────────────────
+
 const mockCheckResults = { value: [] as any[] };
 mock.module("./checks", () => ({
   runAllChecks: async () => mockCheckResults.value,
 }));
+
+// ── Fake timer harness ────────────────────────────────────────────────────────
+// Captures the setInterval callback so tests can fire it manually.
+// clearInterval marks the captured slot as cleared (mirrors runner.stop()).
+
+interface CapturedInterval {
+  fn: () => void;
+  delay: number;
+  cleared: boolean;
+}
+
+let capturedIntervals: CapturedInterval[];
+let realSetInterval: typeof globalThis.setInterval;
+let realClearInterval: typeof globalThis.clearInterval;
+
+beforeEach(() => {
+  capturedIntervals = [];
+  realSetInterval = globalThis.setInterval;
+  realClearInterval = globalThis.clearInterval;
+
+  globalThis.setInterval = ((fn: () => void, delay: number) => {
+    const slot: CapturedInterval = { fn, delay, cleared: false };
+    capturedIntervals.push(slot);
+    // Return the slot object itself as the handle so that:
+    // (a) clearInterval can find the exact slot by reference, and
+    // (b) the handle is always truthy (avoids the `if (timer)` check in
+    //     runner.stop() treating a numeric 0 as falsy and skipping the call).
+    return slot as unknown as ReturnType<typeof setInterval>;
+  }) as typeof globalThis.setInterval;
+
+  globalThis.clearInterval = ((handle: unknown) => {
+    const slot = handle as CapturedInterval | undefined;
+    if (slot && "cleared" in slot) slot.cleared = true;
+  }) as typeof globalThis.clearInterval;
+});
+
+afterEach(() => {
+  globalThis.setInterval = realSetInterval;
+  globalThis.clearInterval = realClearInterval;
+  mockCheckResults.value = [];
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Flush all pending microtasks so the immediate runChecks() in start() settles. */
+async function flushMicrotasks(): Promise<void> {
+  // Six awaits covers the typical async-chain depth in runChecks():
+  // runAllChecks → handleResolved → handleNewAlerts → enqueueMessage → alertStore
+  for (let i = 0; i < 6; i++) {
+    await Promise.resolve();
+  }
+}
+
+/** Manually fire the captured interval callback and wait for it to settle. */
+async function tickInterval(idx = 0): Promise<void> {
+  const slot = capturedIntervals[idx];
+  if (!slot) throw new Error(`No captured interval at index ${idx}`);
+  slot.fn();
+  await flushMicrotasks();
+}
 
 function createMockDeliveryStore(): DeliveryStore & { enqueued: any[] } {
   const enqueued: any[] = [];
@@ -64,11 +135,9 @@ const defaultConfig: MonitorConfig = {
   },
 };
 
-describe("createMonitorRunner", () => {
-  beforeEach(() => {
-    mockCheckResults.value = [];
-  });
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
+describe("createMonitorRunner", () => {
   test("start and stop work without errors", () => {
     const deliveryStore = createMockDeliveryStore();
     const alertStore = createMockAlertStore();
@@ -81,6 +150,9 @@ describe("createMonitorRunner", () => {
 
     runner.start();
     runner.stop();
+    // setInterval was called once, clearInterval marks it cleared
+    expect(capturedIntervals).toHaveLength(1);
+    expect(capturedIntervals[0]!.cleared).toBe(true);
   });
 
   test("does not enqueue when no alerts", async () => {
@@ -88,15 +160,14 @@ describe("createMonitorRunner", () => {
     const deliveryStore = createMockDeliveryStore();
     const alertStore = createMockAlertStore();
     const runner = createMonitorRunner({
-      config: { ...defaultConfig, checkIntervalMs: 100_000 },
+      config: defaultConfig,
       deliveryStore,
       alertStore,
       telegramChatId: "12345",
     });
 
     runner.start();
-    // Wait for initial check to complete
-    await new Promise((r) => setTimeout(r, 100));
+    await flushMicrotasks();
     runner.stop();
 
     expect(deliveryStore.enqueued).toHaveLength(0);
@@ -118,14 +189,14 @@ describe("createMonitorRunner", () => {
     const deliveryStore = createMockDeliveryStore();
     const alertStore = createMockAlertStore();
     const runner = createMonitorRunner({
-      config: { ...defaultConfig, checkIntervalMs: 100_000 },
+      config: defaultConfig,
       deliveryStore,
       alertStore,
       telegramChatId: "12345",
     });
 
     runner.start();
-    await new Promise((r) => setTimeout(r, 100));
+    await flushMicrotasks();
     runner.stop();
 
     expect(deliveryStore.enqueued).toHaveLength(1);
@@ -136,7 +207,7 @@ describe("createMonitorRunner", () => {
     expect(alertStore.recorded[0].level).toBe("critical");
   });
 
-  test("deduplicates repeated alerts", async () => {
+  test("deduplicates repeated alerts — fires only once across two cycles", async () => {
     mockCheckResults.value = [
       {
         category: "disk",
@@ -148,21 +219,20 @@ describe("createMonitorRunner", () => {
 
     const deliveryStore = createMockDeliveryStore();
     const alertStore = createMockAlertStore();
-    // Use short interval for test
     const runner = createMonitorRunner({
-      config: {
-        ...defaultConfig,
-        checkIntervalMs: 50,
-        alertCooldownMs: 60_000,
-      },
+      config: { ...defaultConfig, alertCooldownMs: 60_000 },
       deliveryStore,
       alertStore,
       telegramChatId: "12345",
     });
 
+    // Cycle 1 (immediate on start)
     runner.start();
-    // Wait for 2 check cycles
-    await new Promise((r) => setTimeout(r, 200));
+    await flushMicrotasks();
+
+    // Cycle 2 (manual tick) — same alert, still within cooldown
+    await tickInterval();
+
     runner.stop();
 
     // Should only fire once due to cooldown
@@ -170,8 +240,8 @@ describe("createMonitorRunner", () => {
     expect(alertStore.recorded).toHaveLength(1);
   });
 
-  test("sends resolved message when condition clears", async () => {
-    // First cycle: alert fires
+  test("sends resolved message when condition clears after second cycle", async () => {
+    // Cycle 1: alert fires
     mockCheckResults.value = [
       {
         category: "process",
@@ -184,18 +254,19 @@ describe("createMonitorRunner", () => {
     const deliveryStore = createMockDeliveryStore();
     const alertStore = createMockAlertStore();
     const runner = createMonitorRunner({
-      config: { ...defaultConfig, checkIntervalMs: 50 },
+      config: defaultConfig,
       deliveryStore,
       alertStore,
       telegramChatId: "12345",
     });
 
     runner.start();
-    await new Promise((r) => setTimeout(r, 80));
+    await flushMicrotasks();
 
-    // Second cycle: condition cleared
+    // Cycle 2: condition cleared
     mockCheckResults.value = [];
-    await new Promise((r) => setTimeout(r, 100));
+    await tickInterval();
+
     runner.stop();
 
     // Should have: 1 alert + 1 resolved
@@ -228,14 +299,14 @@ describe("createMonitorRunner", () => {
     const deliveryStore = createMockDeliveryStore();
     const alertStore = createMockAlertStore();
     const runner = createMonitorRunner({
-      config: { ...defaultConfig, checkIntervalMs: 100_000 },
+      config: defaultConfig,
       deliveryStore,
       alertStore,
       telegramChatId: "12345",
     });
 
     runner.start();
-    await new Promise((r) => setTimeout(r, 100));
+    await flushMicrotasks();
     runner.stop();
 
     // One message containing both alerts

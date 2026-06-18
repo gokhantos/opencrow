@@ -53,6 +53,7 @@ function isNotLoaded(res: { stderr: string; stdout: string }): boolean {
 export function createLaunchdService(
   label: string,
   logPrefix: string,
+  restartSec?: number,
 ): OpenCrowService {
   const plistPath = path.join(
     os.homedir(),
@@ -81,6 +82,7 @@ export function createLaunchdService(
         environmentFile,
         stdoutPath: path.join(LOG_DIR, `${logPrefix}.log`),
         stderrPath: path.join(LOG_DIR, `${logPrefix}.err.log`),
+        ...(restartSec !== undefined ? { throttleInterval: restartSec } : {}),
       });
       await fs.writeFile(plistPath, plist, "utf8");
 

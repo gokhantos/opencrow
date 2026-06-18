@@ -17,6 +17,10 @@ const log = createLogger("orchestrator");
 
 const RECONCILE_INTERVAL_MS = 5_000;
 const PING_INTERVAL_MS = 15_000;
+// Orphan sweep cadence. cleanupOrphans() reaps registry rows whose heartbeat is
+// older than its 60s staleness threshold; running it every 30s keeps stale
+// rows/processes reaped continuously rather than only once at startup.
+const ORPHAN_CLEANUP_INTERVAL_MS = 30_000;
 
 export interface OrchestratorProcessView {
   readonly name: string;
@@ -51,13 +55,29 @@ export interface Orchestrator {
   updateConfig(config: OpenCrowConfig): void;
 }
 
+export interface OrchestratorOptions {
+  /**
+   * When true (the default), the orchestrator does NOT install its own
+   * SIGTERM/SIGINT handlers. Shutdown is owned solely by the process supervisor,
+   * which drains `orchestrator.stop()` as a registered shutdown hook (see
+   * entries/core.ts). This avoids a race where the orchestrator's own
+   * `process.exit(0)` truncates the supervisor's hook drain.
+   *
+   * Set to false only for a standalone orchestrator with no supervisor.
+   */
+  readonly supervised?: boolean;
+}
+
 export function createOrchestrator(
   initialConfig: OpenCrowConfig,
   agentRegistry: AgentRegistry,
+  options: OrchestratorOptions = {},
 ): Orchestrator {
+  const supervised = options.supervised ?? true;
   const children = new Map<string, ChildState>();
   let reconcileTimer: ReturnType<typeof setInterval> | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let orphanTimer: ReturnType<typeof setInterval> | null = null;
   let running = false;
   let config = initialConfig;
 
@@ -135,6 +155,10 @@ export function createOrchestrator(
     if (pingTimer) {
       clearInterval(pingTimer);
       pingTimer = null;
+    }
+    if (orphanTimer) {
+      clearInterval(orphanTimer);
+      orphanTimer = null;
     }
 
     const killPromises: Promise<void>[] = [];
@@ -214,14 +238,30 @@ export function createOrchestrator(
         });
       }, PING_INTERVAL_MS);
 
-      // Graceful shutdown handlers — once() prevents accumulation across start/stop cycles
-      const shutdown = () => {
-        gracefulShutdown().then(() => process.exit(0));
-      };
-      process.once("SIGTERM", shutdown);
-      process.once("SIGINT", shutdown);
+      orphanTimer = setInterval(() => {
+        cleanupOrphans().catch((err) => {
+          log.error("Orphan cleanup failed", { error: err });
+        });
+      }, ORPHAN_CLEANUP_INTERVAL_MS);
 
-      log.info("Orchestrator started", { childCount: children.size });
+      // Shutdown ownership is SINGLE. Under a supervisor (the normal case) the
+      // supervisor drains `orchestrator.stop()` as a registered hook and owns
+      // the signal handlers + process.exit; installing our own here would race
+      // its drain and truncate child cleanup. Only self-register when running
+      // standalone with no supervisor.
+      if (!supervised) {
+        // once() prevents accumulation across start/stop cycles.
+        const shutdown = () => {
+          gracefulShutdown().then(() => process.exit(0));
+        };
+        process.once("SIGTERM", shutdown);
+        process.once("SIGINT", shutdown);
+      }
+
+      log.info("Orchestrator started", {
+        childCount: children.size,
+        supervised,
+      });
     },
 
     async stop(): Promise<void> {

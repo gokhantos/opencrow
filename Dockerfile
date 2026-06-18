@@ -38,4 +38,12 @@ RUN bun run tw:build
 # Web dashboard (core API :48081 stays container-internal).
 EXPOSE 48080
 
+# Liveness: hit the core orchestrator's unauthenticated internal health endpoint
+# (:48081 /internal/health, served by the orchestrator process itself). If the
+# orchestrator wedges or crash-loops, this probe fails and the runtime marks the
+# container unhealthy instead of it silently appearing "up". Uses bun's fetch so
+# we don't depend on curl/wget being present in the slim image.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD bun -e "fetch('http://127.0.0.1:48081/internal/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
 CMD ["bun", "run", "start"]
