@@ -10,6 +10,7 @@ import {
 
 import { getErrorMessage } from "../../lib/error-serialization";
 import { loadScraperIntervalMs } from "../scraper-config";
+import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 
 const log = createLogger("github-scraper");
 
@@ -193,14 +194,17 @@ async function fetchTrending(
   const url = `${TRENDING_URL}?since=${period}`;
 
   try {
-    const resp = await fetch(url, {
-      headers: {
-        Accept: "text/html",
-        "User-Agent":
-          "Mozilla/5.0 (compatible; OpenCrowBot/1.0; +https://github.com)",
+    const resp = await fetchWithTimeout(
+      url,
+      {
+        headers: {
+          Accept: "text/html",
+          "User-Agent":
+            "Mozilla/5.0 (compatible; OpenCrowBot/1.0; +https://github.com)",
+        },
       },
-      signal: AbortSignal.timeout(30_000),
-    });
+      30_000,
+    );
 
     if (!resp.ok) {
       return {

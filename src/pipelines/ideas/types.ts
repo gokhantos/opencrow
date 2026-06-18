@@ -60,6 +60,13 @@ export interface TrendData {
   readonly trendingCategories: readonly CategoryTrend[];
   readonly summary: string;
   readonly insights?: LandscapeInsight;
+  /**
+   * B7 — IDs selected by the landscape collector, keyed by source table.
+   * Embedded in the result so they survive runStep cache replay (the work()
+   * function is not re-run on replay, but the cached result is returned and
+   * pipeline.ts merges these IDs into the run-level selected map).
+   */
+  readonly selectedIds?: ReadonlyMap<string, readonly string[]>;
 }
 
 // ── Pain Point Clustering ───────────────────────────────────────────────
@@ -104,6 +111,11 @@ export interface ClusteredPains {
   readonly clusters: readonly PainCluster[];
   readonly summary: string;
   readonly insights?: ReviewInsight;
+  /**
+   * B7 — IDs selected by the reviews collector, keyed by source table.
+   * See TrendData.selectedIds for the full rationale.
+   */
+  readonly selectedIds?: ReadonlyMap<string, readonly string[]>;
 }
 
 // ── Capability Scan ─────────────────────────────────────────────────────
@@ -191,6 +203,11 @@ export interface CapabilityScan {
   readonly capabilities: readonly Capability[];
   readonly summary: string;
   readonly insights?: CapabilityInsight;
+  /**
+   * B7 — IDs selected by the capabilities collector, keyed by source table.
+   * See TrendData.selectedIds for the full rationale.
+   */
+  readonly selectedIds?: ReadonlyMap<string, readonly string[]>;
 }
 
 // ── Intersection Hypothesis ─────────────────────────────────────────────

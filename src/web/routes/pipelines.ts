@@ -344,7 +344,13 @@ export function createPipelineRoutes(deps?: {
     const minScoreParam = c.req.query("min_score");
     const minScore = minScoreParam ? Number(minScoreParam) : undefined;
     const search = c.req.query("search") || undefined;
-    const sort = (c.req.query("sort") as "newest" | "oldest" | "score") || "newest";
+    const VALID_SORTS = ["newest", "oldest", "score"] as const;
+    const rawSort = c.req.query("sort") ?? "newest";
+    const sort: "newest" | "oldest" | "score" = (
+      VALID_SORTS as readonly string[]
+    ).includes(rawSort)
+      ? (rawSort as "newest" | "oldest" | "score")
+      : "newest";
     const limitParam = c.req.query("limit");
     const limit = limitParam ? Math.min(Math.max(1, Number(limitParam)), 200) : 50;
     const offsetParam = c.req.query("offset");

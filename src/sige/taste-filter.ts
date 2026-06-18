@@ -93,7 +93,7 @@ Return ONLY valid JSON:
 
 // ─── JSON Extraction ──────────────────────────────────────────────────────────
 
-function extractJson(text: string): RawFilterResponse {
+export function extractJson(text: string): RawFilterResponse {
   const trimmed = text.trim();
 
   try {
@@ -120,9 +120,46 @@ function extractJson(text: string): RawFilterResponse {
     }
   }
 
+  // Final fallback: the response is almost certainly truncated mid-stream — the
+  // verdicts JSON exceeded the model's output budget, so there is no closing
+  // brace for the whole object. Salvage every COMPLETE verdict object we can and
+  // proceed with a partial set. Ideas whose verdict was lost to truncation are
+  // handled downstream (marked eliminated), so a length/formatting hiccup
+  // degrades gracefully instead of killing the entire SIGE session.
+  const salvaged = salvageVerdicts(trimmed);
+  if (salvaged.length > 0) {
+    log.warn("Taste filter response was not parseable JSON — salvaged partial verdicts", {
+      salvagedCount: salvaged.length,
+      preview: trimmed.slice(0, 120),
+    });
+    return { verdicts: salvaged };
+  }
+
   throw new Error(
     `Unable to extract JSON from taste filter response. Preview: ${trimmed.slice(0, 300)}`,
   );
+}
+
+/**
+ * Salvage complete verdict objects from a truncated/malformed taste-filter
+ * response. Verdict objects are flat (no nested braces — `failed_criteria` is a
+ * bracketed array), so a non-greedy `{...}` match that carries an `"id"` field
+ * captures each fully-streamed verdict and naturally ignores a trailing,
+ * partially-streamed one. Best-effort: blocks that still fail to parse are
+ * skipped rather than aborting the whole filter.
+ */
+function salvageVerdicts(text: string): unknown[] {
+  const salvaged: unknown[] = [];
+  const blocks = text.match(/\{[^{}]*\}/g) ?? [];
+  for (const block of blocks) {
+    if (!/"id"\s*:/.test(block)) continue;
+    try {
+      salvaged.push(JSON.parse(block));
+    } catch {
+      // skip incomplete / non-JSON block
+    }
+  }
+  return salvaged;
 }
 
 // ─── Validation Helpers ───────────────────────────────────────────────────────

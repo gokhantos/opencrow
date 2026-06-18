@@ -11,6 +11,22 @@ import { randomDelay } from "./delays";
 
 const log = createLogger("news-browser");
 
+/**
+ * Returns true when a Chromium executable is available for Playwright to use.
+ *
+ * On Docker builds with PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 the browser is not
+ * installed and `chromium.executablePath()` will throw. Callers should check
+ * this before attempting to launch and skip the scrape cycle gracefully.
+ */
+export function isBrowserAvailable(): boolean {
+  try {
+    chromium.executablePath();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const CHROMIUM_USER_AGENTS = [
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -50,6 +66,18 @@ const STEALTH_SCRIPT = `
 `;
 
 export async function launchChromium(): Promise<BrowserSession> {
+  if (!isBrowserAvailable()) {
+    log.warn(
+      "Chromium is not installed — skipping browser scrape. " +
+        "Run 'bun run setup:browser' to enable browser-based scrapers, " +
+        "or set PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 to suppress this message on non-browser deploys.",
+    );
+    throw new Error(
+      "Chromium not available: browser scraping is disabled on this deploy. " +
+        "Run 'bun run setup:browser' to install Chromium.",
+    );
+  }
+
   const browser = await chromium.launch({ headless: true });
   const userAgent =
     CHROMIUM_USER_AGENTS[

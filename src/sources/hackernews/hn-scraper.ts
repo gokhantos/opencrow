@@ -2,6 +2,7 @@
 
 import { createLogger } from "../../logger";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
+import { inBatches } from "../shared/in-batches";
 import { getErrorMessage } from "../../lib/error-serialization";
 
 const log = createLogger("hn-front-page");
@@ -80,20 +81,6 @@ async function fetchItem(id: number): Promise<HNItem | null> {
   }
 }
 
-async function inBatches<T, R>(
-  items: readonly T[],
-  batchSize: number,
-  fn: (item: T) => Promise<R>,
-): Promise<readonly R[]> {
-  let results: readonly R[] = [];
-  for (let i = 0; i < items.length; i += batchSize) {
-    const batch = items.slice(i, i + batchSize);
-    const batchResults = await Promise.all(batch.map(fn));
-    results = [...results, ...batchResults];
-  }
-  return results;
-}
-
 async function fetchStoriesInBatches(
   ids: readonly number[],
 ): Promise<readonly HNItem[]> {
@@ -160,34 +147,28 @@ async function fetchMetaDescription(url: string): Promise<string> {
   }
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), META_TIMEOUT_MS);
-    try {
-      const res = await fetch(url, { signal: controller.signal });
-      if (!res.ok) return "";
-      const contentType = res.headers.get("content-type") ?? "";
-      if (!contentType.includes("text/html")) return "";
-      const chunk = await readFirstChunk(res);
+    const res = await fetchWithTimeout(url, {}, META_TIMEOUT_MS);
+    if (!res.ok) return "";
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.includes("text/html")) return "";
+    const chunk = await readFirstChunk(res);
 
-      const nameMatch = chunk.match(
-        /<meta\s+name=["']description["']\s+content=["']([^"']*)/i,
-      );
-      if (nameMatch?.[1]) return nameMatch[1].trim();
+    const nameMatch = chunk.match(
+      /<meta\s+name=["']description["']\s+content=["']([^"']*)/i,
+    );
+    if (nameMatch?.[1]) return nameMatch[1].trim();
 
-      const ogMatch = chunk.match(
-        /<meta\s+property=["']og:description["']\s+content=["']([^"']*)/i,
-      );
-      if (ogMatch?.[1]) return ogMatch[1].trim();
+    const ogMatch = chunk.match(
+      /<meta\s+property=["']og:description["']\s+content=["']([^"']*)/i,
+    );
+    if (ogMatch?.[1]) return ogMatch[1].trim();
 
-      const nameMatchAlt = chunk.match(
-        /<meta\s+content=["']([^"']*)['"]\s+name=["']description["']/i,
-      );
-      if (nameMatchAlt?.[1]) return nameMatchAlt[1].trim();
+    const nameMatchAlt = chunk.match(
+      /<meta\s+content=["']([^"']*)['"]\s+name=["']description["']/i,
+    );
+    if (nameMatchAlt?.[1]) return nameMatchAlt[1].trim();
 
-      return "";
-    } finally {
-      clearTimeout(timer);
-    }
+    return "";
   } catch {
     return "";
   }

@@ -275,10 +275,16 @@ export const embeddingsConfigSchema = z
     provider: z.enum(["openrouter", "ollama"]).default("openrouter"),
     /** Base URL of an OpenAI-compatible embeddings API. Defaults per provider. */
     baseUrl: z.string().optional(),
-    /** Embedding vector dimensions */
-    dimensions: z.number().int().min(32).max(4096).default(4096),
+    /**
+     * Embedding vector dimensions. SINGLE SOURCE OF TRUTH for the vector size —
+     * embeddings.ts reads it (never hardcodes) and the Qdrant collection is
+     * created/asserted against it (see indexer/qdrant ensureCollection). Changing
+     * this requires a full re-index, not just a config flip: the stored vectors
+     * and the collection dimension must match.
+     */
+    dimensions: z.number().int().min(32).max(4096).default(512),
     /** OpenRouter model to use */
-    openrouterModel: z.string().default("qwen/qwen3-embedding-8b"),
+    openrouterModel: z.string().default("text-embedding-3-small"),
     /** Generic model name (any provider). Falls back to openrouterModel. */
     model: z.string().optional(),
     /** Max texts per API batch */
@@ -286,8 +292,8 @@ export const embeddingsConfigSchema = z
   })
   .default({
     provider: "openrouter",
-    dimensions: 4096,
-    openrouterModel: "qwen/qwen3-embedding-8b",
+    dimensions: 512,
+    openrouterModel: "text-embedding-3-small",
     batchSize: 64,
   });
 

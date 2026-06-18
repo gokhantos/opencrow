@@ -2,6 +2,7 @@
 
 import { createLogger } from "../../logger";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
+import { inBatches } from "../shared/in-batches";
 
 const log = createLogger("reddit-feed");
 
@@ -199,12 +200,12 @@ export async function enrichPostsWithComments(
   const enriched = await inBatches(
     [...posts],
     3,
-    4000,
     async (post): Promise<RawRedditPost> => {
       if (post.num_comments === 0) return post;
       const top_comments = await fetchTopComments(post.permalink, headers);
       return { ...post, top_comments };
     },
+    4000,
   );
 
   log.info("Comment enrichment complete", { count: enriched.length });
@@ -407,24 +408,6 @@ async function fetchTopComments(
   } catch {
     return [];
   }
-}
-
-async function inBatches<T, R>(
-  items: readonly T[],
-  batchSize: number,
-  delayBetweenMs: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = [];
-  for (let i = 0; i < items.length; i += batchSize) {
-    const batch = items.slice(i, i + batchSize);
-    const batchResults = await Promise.all(batch.map(fn));
-    results.push(...batchResults);
-    if (i + batchSize < items.length) {
-      await delay(delayBetweenMs, delayBetweenMs + 500);
-    }
-  }
-  return results;
 }
 
 function delay(minMs: number, maxMs: number): Promise<void> {

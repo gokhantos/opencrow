@@ -24,12 +24,65 @@ import type { AgentOptions, AgentResponse, ConversationMessage } from "./types";
 
 const log = createLogger("anthropic-direct");
 
-// Sonnet 4.6 pricing per token. Cache reads bill at ~0.1x input; cache writes at
-// ~1.25x input — both must be counted, or a cached prompt looks nearly free.
-const INPUT_COST_PER_TOKEN = 3 / 1_000_000;
-const OUTPUT_COST_PER_TOKEN = 15 / 1_000_000;
-const CACHE_READ_COST_PER_TOKEN = 0.3 / 1_000_000;
-const CACHE_WRITE_COST_PER_TOKEN = 3.75 / 1_000_000;
+/**
+ * Per-model metadata: context window, max output tokens, and per-token cost.
+ * No project-wide model registry exists, so this is the small keyed source of
+ * truth used here. Cache reads bill at ~0.1x input and cache writes at ~1.25x
+ * input — both must be counted, or a cached prompt looks nearly free.
+ *
+ * Prices are USD per 1M tokens (input / output). Matched by longest-prefix so
+ * dated aliases (e.g. claude-haiku-4-5-20251001) resolve to the family entry.
+ * Verified against the claude-api skill model catalog (cached 2026-06). Update
+ * here when model pricing/limits change rather than hardcoding at call sites.
+ */
+interface ModelMetadata {
+  readonly contextWindow: number;
+  readonly maxTokens: number;
+  /** USD per 1M input tokens. */
+  readonly inputPerMillion: number;
+  /** USD per 1M output tokens. */
+  readonly outputPerMillion: number;
+}
+
+const MODEL_METADATA: ReadonlyArray<readonly [string, ModelMetadata]> = [
+  // Fable 5 / Mythos 5 — 1M context, 128K output, $10 / $50.
+  ["claude-fable-5", { contextWindow: 1_000_000, maxTokens: 128_000, inputPerMillion: 10, outputPerMillion: 50 }],
+  ["claude-mythos-5", { contextWindow: 1_000_000, maxTokens: 128_000, inputPerMillion: 10, outputPerMillion: 50 }],
+  // Opus 4.6 / 4.7 / 4.8 — 1M context, 128K output, $5 / $25.
+  ["claude-opus-4-8", { contextWindow: 1_000_000, maxTokens: 128_000, inputPerMillion: 5, outputPerMillion: 25 }],
+  ["claude-opus-4-7", { contextWindow: 1_000_000, maxTokens: 128_000, inputPerMillion: 5, outputPerMillion: 25 }],
+  ["claude-opus-4-6", { contextWindow: 1_000_000, maxTokens: 128_000, inputPerMillion: 5, outputPerMillion: 25 }],
+  // Sonnet 4.6 — 1M context, 64K output, $3 / $15.
+  ["claude-sonnet-4-6", { contextWindow: 1_000_000, maxTokens: 64_000, inputPerMillion: 3, outputPerMillion: 15 }],
+  // Haiku 4.5 — 200K context, 64K output, $1 / $5.
+  ["claude-haiku-4-5", { contextWindow: 200_000, maxTokens: 64_000, inputPerMillion: 1, outputPerMillion: 5 }],
+];
+
+/**
+ * Conservative default for an unknown model id: a 200K window and 16K output
+ * cap (safe for every current Claude model) priced at the Sonnet-tier rate.
+ * Documented so non-Sonnet usage isn't silently mis-accounted, but an
+ * unrecognized id still gets a sane, non-zero estimate.
+ */
+const DEFAULT_MODEL_METADATA: ModelMetadata = {
+  contextWindow: 200_000,
+  maxTokens: 16_384,
+  inputPerMillion: 3,
+  outputPerMillion: 15,
+};
+
+function resolveModelMetadata(modelId: string): ModelMetadata {
+  const id = modelId.toLowerCase();
+  for (const [prefix, meta] of MODEL_METADATA) {
+    if (id.startsWith(prefix)) return meta;
+  }
+  log.warn("Unknown model id — using conservative default metadata", { modelId });
+  return DEFAULT_MODEL_METADATA;
+}
+
+/** Cache reads bill at ~0.1x input; cache writes at ~1.25x input. */
+const CACHE_READ_MULTIPLIER = 0.1;
+const CACHE_WRITE_MULTIPLIER = 1.25;
 
 /** A flattened, fully-accounted view of a pi-ai usage record. */
 export interface UsageSummary {
@@ -48,26 +101,42 @@ export interface UsageSummary {
  * input+output (so cached prompts looked ~free). Prefer pi-ai's own cost (it
  * applies the model's per-token rates to every bucket); fall back to a FULL
  * estimate — including cache read + write — when cost is absent.
+ *
+ * `model` selects the per-token rates for the fallback estimate; omit it (or
+ * pass an unknown id) to use the conservative Sonnet-tier default. Always
+ * prefer passing the actual model so non-Sonnet usage is accounted correctly.
  */
 export function summarizeUsage(
   usage: AssistantMessage["usage"] | undefined,
+  model?: string,
 ): UsageSummary {
   const inputTokens = usage?.input ?? 0;
   const outputTokens = usage?.output ?? 0;
   const cacheReadTokens = usage?.cacheRead ?? 0;
   const cacheWriteTokens = usage?.cacheWrite ?? 0;
+  const meta = model ? resolveModelMetadata(model) : DEFAULT_MODEL_METADATA;
+  const inputPerToken = meta.inputPerMillion / 1_000_000;
+  const outputPerToken = meta.outputPerMillion / 1_000_000;
   const costUsd =
     usage?.cost?.total ??
-    (inputTokens * INPUT_COST_PER_TOKEN +
-      outputTokens * OUTPUT_COST_PER_TOKEN +
-      cacheReadTokens * CACHE_READ_COST_PER_TOKEN +
-      cacheWriteTokens * CACHE_WRITE_COST_PER_TOKEN);
+    (inputTokens * inputPerToken +
+      outputTokens * outputPerToken +
+      cacheReadTokens * inputPerToken * CACHE_READ_MULTIPLIER +
+      cacheWriteTokens * inputPerToken * CACHE_WRITE_MULTIPLIER);
   return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd };
 }
 
 const CREDS_PATH = join(homedir(), ".claude", ".credentials.json");
 
-// OAuth beta headers — same as OpenClaw's PI_AI_OAUTH_ANTHROPIC_BETAS
+// OAuth beta headers — same as OpenClaw's PI_AI_OAUTH_ANTHROPIC_BETAS.
+//
+// `fine-grained-tool-streaming-2025-05-14` and `interleaved-thinking-2025-05-14`
+// are GA on the 4.6+ family, but this set deliberately mirrors the Claude Code
+// CLI's OAuth handshake (these are still accepted, harmless flags). The OAuth
+// bearer path is sensitive to looking like the CLI, so we keep the exact set
+// rather than trimming GA flags. `oauth-2025-04-20` is required on the OAuth
+// path. Revisit only alongside the OAuth-emulation contract, not as a pure
+// cleanup.
 const OAUTH_BETA_HEADERS = [
   "claude-code-20250219",
   "oauth-2025-04-20",
@@ -148,6 +217,11 @@ async function getApiKey(): Promise<string> {
 // ─── Model Builder ───────────────────────────────────────────────────────────
 
 function buildModel(modelId: string): Model<"anthropic-messages"> {
+  // Source window / output cap / cost from per-model metadata so non-Sonnet
+  // usage is accounted correctly instead of pinned to Sonnet 200K/16K/$3/$15.
+  const meta = resolveModelMetadata(modelId);
+  const inputPerToken = meta.inputPerMillion;
+  const outputPerToken = meta.outputPerMillion;
   return {
     id: modelId,
     name: modelId,
@@ -156,9 +230,14 @@ function buildModel(modelId: string): Model<"anthropic-messages"> {
     baseUrl: "https://api.anthropic.com",
     reasoning: false,
     input: ["text", "image"],
-    cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-    contextWindow: 200_000,
-    maxTokens: 16384,
+    cost: {
+      input: inputPerToken,
+      output: outputPerToken,
+      cacheRead: inputPerToken * CACHE_READ_MULTIPLIER,
+      cacheWrite: inputPerToken * CACHE_WRITE_MULTIPLIER,
+    },
+    contextWindow: meta.contextWindow,
+    maxTokens: meta.maxTokens,
     headers: {
       "anthropic-beta": OAUTH_BETA_HEADERS,
       "anthropic-dangerous-direct-browser-access": "true",
@@ -259,7 +338,7 @@ export async function chat(
     }
 
     const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd } =
-      summarizeUsage(response.usage);
+      summarizeUsage(response.usage, options.model);
 
     log.info("Anthropic pi-ai response received", {
       model: options.model,

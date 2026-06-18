@@ -1,4 +1,72 @@
 import { getDb } from "./db";
+import { createLogger } from "../logger";
+
+const log = createLogger("store:routing-rules");
+
+/**
+ * Maximum length permitted for a pattern matchValue. Patterns longer than this
+ * are almost never legitimate routing values and can trigger catastrophic
+ * backtracking in naive RegExp engines.
+ */
+const MAX_PATTERN_LENGTH = 200;
+
+/**
+ * Simple nested-quantifier heuristic: reject patterns whose raw text contains
+ * sub-patterns like (a+)+ or (a*)* that are the classic ReDoS shape. This is a
+ * conservative heuristic — it may reject some valid patterns — but it never
+ * throws and never mis-matches on the hot path.
+ */
+function isLikelyCatastrophic(pattern: string): boolean {
+  return /(\(.*[+*]\))[+*]/.test(pattern);
+}
+
+/**
+ * Per-process compiled-regex cache keyed by matchValue. A validated pattern is
+ * compiled once at rule-load time and reused on every match call. Invalid or
+ * rejected patterns are stored as null so we never attempt to recompile them.
+ *
+ * Exported for testing only — do not use outside of tests.
+ */
+export const regexCache = new Map<string, RegExp | null>();
+
+/**
+ * Compile and cache a routing regex. Returns null when the pattern is over
+ * length, looks catastrophic, or fails to compile. Never throws.
+ */
+function compilePattern(matchValue: string): RegExp | null {
+  const cached = regexCache.get(matchValue);
+  if (cached !== undefined) return cached;
+
+  if (matchValue.length > MAX_PATTERN_LENGTH) {
+    log.warn("Routing rule pattern too long — will not match", {
+      length: matchValue.length,
+      preview: matchValue.slice(0, 40),
+    });
+    regexCache.set(matchValue, null);
+    return null;
+  }
+
+  if (isLikelyCatastrophic(matchValue)) {
+    log.warn("Routing rule pattern looks catastrophic — will not match", {
+      preview: matchValue.slice(0, 80),
+    });
+    regexCache.set(matchValue, null);
+    return null;
+  }
+
+  try {
+    const re = new RegExp(matchValue);
+    regexCache.set(matchValue, re);
+    return re;
+  } catch (err) {
+    log.warn("Routing rule pattern failed to compile — will not match", {
+      preview: matchValue.slice(0, 80),
+      err,
+    });
+    regexCache.set(matchValue, null);
+    return null;
+  }
+}
 
 export interface RoutingRule {
   readonly id: string;
@@ -147,13 +215,10 @@ export function matchRule(
       return rule.matchValue === senderId;
     case "group":
       return rule.matchValue === chatId;
-    case "pattern":
-      try {
-        const re = new RegExp(rule.matchValue);
-        return re.test(chatId);
-      } catch {
-        return false;
-      }
+    case "pattern": {
+      const re = compilePattern(rule.matchValue);
+      return re !== null && re.test(chatId);
+    }
     default:
       return false;
   }

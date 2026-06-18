@@ -11,6 +11,37 @@ import { homedir } from "os";
 import { mkdirSync, symlinkSync, existsSync } from "fs";
 
 /**
+ * Whether a model accepts the `effort` output-config parameter.
+ *
+ * `effort` is GA (no beta header) on Fable 5, every Opus 4.5+ model, and
+ * Sonnet 4.6. It is rejected (400) on Sonnet 4.5 and earlier and on every
+ * Haiku model. Be conservative: only return true for ids we positively know
+ * support it, so an unknown/older model never gets a 400-inducing param.
+ */
+function modelSupportsEffort(model: string | undefined): boolean {
+  if (!model) return false;
+  const id = model.toLowerCase();
+
+  // Haiku never supports effort.
+  if (id.includes("haiku")) return false;
+
+  // Fable family (claude-fable-5, claude-mythos-5) supports effort.
+  if (id.includes("fable") || id.includes("mythos")) return true;
+
+  // Opus 4.5 and later support effort (4.0/4.1 and Opus 3 do not).
+  if (id.includes("opus")) {
+    return /opus-4-(?:[5-9]|\d{2,})/.test(id);
+  }
+
+  // Sonnet 4.6 and later support effort; Sonnet 4.5 and earlier do not.
+  if (id.includes("sonnet")) {
+    return /sonnet-4-(?:[6-9]|\d{2,})/.test(id);
+  }
+
+  return false;
+}
+
+/**
  * Build thinking/effort/beta options from AgentOptions.
  * Uses per-agent modelParams when available, falls back to sane defaults.
  */
@@ -35,8 +66,12 @@ export function buildThinkingOptions(
     result.thinking = { type: "disabled" };
   }
 
-  // Effort level — only supported on claude-opus-4-6
-  if (params?.effort && options.model?.toLowerCase().includes("opus")) {
+  // Effort level — GA on current Sonnet/Opus/Fable models (no beta header).
+  // Older Sonnet (4.5 and earlier) and Haiku do NOT accept `effort` and will
+  // 400, so we apply it only where the model actually supports it. The default
+  // agent model is Sonnet 4.6, so the previous opus-only guard silently dropped
+  // seeded effort on the primary path.
+  if (params?.effort && modelSupportsEffort(options.model)) {
     result.effort = params.effort;
   }
 

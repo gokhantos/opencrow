@@ -13,6 +13,7 @@ import {
   incrementResumeAttempts,
   markRunFailed,
   failIncompleteStepsForRun,
+  getPipelineIdeas,
 } from "./store";
 import type { PipelineResultSummary } from "./types";
 
@@ -372,5 +373,144 @@ describe("pipeline resume store layer", () => {
       expect(result.hasOutput).toBe(true);
       expect(result.outputJson).toEqual(legacyPayload);
     });
+  });
+});
+
+// ── getPipelineIdeas — sort ordering and injection guard ───────────────────────
+
+const IDEAS_PIPELINE = "test-ideas-sort-pipeline";
+
+async function cleanupIdeasPipeline(): Promise<void> {
+  const db = getDb();
+  await db.unsafe(
+    `DELETE FROM generated_ideas WHERE pipeline_run_id IN
+       (SELECT id FROM pipeline_runs WHERE pipeline_id = $1)`,
+    [IDEAS_PIPELINE],
+  );
+  await db.unsafe(
+    `DELETE FROM pipeline_steps WHERE run_id IN
+       (SELECT id FROM pipeline_runs WHERE pipeline_id = $1)`,
+    [IDEAS_PIPELINE],
+  );
+  await db.unsafe(`DELETE FROM pipeline_runs WHERE pipeline_id = $1`, [
+    IDEAS_PIPELINE,
+  ]);
+}
+
+/**
+ * Insert a generated_idea directly (bypass store helpers) so we can control
+ * created_at and quality_score precisely for ordering assertions.
+ */
+async function insertIdea(
+  db: ReturnType<typeof getDb>,
+  opts: {
+    readonly runId: string;
+    readonly title: string;
+    readonly createdAt: number;
+    readonly qualityScore: number;
+  },
+): Promise<void> {
+  await db.unsafe(
+    `INSERT INTO generated_ideas
+       (id, agent_id, title, summary, reasoning, sources_used, category,
+        quality_score, pipeline_run_id, created_at)
+     VALUES ($1, 'agent-sort-test', $2, 'summary', 'reasoning', '', 'mobile_app',
+             $3, $4, $5)`,
+    [crypto.randomUUID(), opts.title, opts.qualityScore, opts.runId, opts.createdAt],
+  );
+}
+
+describe("getPipelineIdeas — sort ordering and injection guard", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    await cleanupIdeasPipeline();
+  });
+
+  afterEach(async () => {
+    await cleanupIdeasPipeline();
+    await closeDb();
+  });
+
+  it("sort='newest' returns ideas ordered by created_at DESC (most recent first)", async () => {
+    const db = getDb();
+    const { runId } = await acquirePipelineLock(IDEAS_PIPELINE);
+
+    const now = Math.floor(Date.now() / 1000);
+    await insertIdea(db, { runId: runId!, title: "Oldest", createdAt: now - 200, qualityScore: 3 });
+    await insertIdea(db, { runId: runId!, title: "Middle", createdAt: now - 100, qualityScore: 3 });
+    await insertIdea(db, { runId: runId!, title: "Newest", createdAt: now, qualityScore: 3 });
+
+    const ideas = await getPipelineIdeas({ runId: runId!, sort: "newest" });
+    const titles = ideas.map((r) => r["title"] as string);
+
+    expect(titles[0]).toBe("Newest");
+    expect(titles[titles.length - 1]).toBe("Oldest");
+  });
+
+  it("sort='oldest' returns ideas ordered by created_at ASC (oldest first)", async () => {
+    const db = getDb();
+    const { runId } = await acquirePipelineLock(IDEAS_PIPELINE);
+
+    const now = Math.floor(Date.now() / 1000);
+    await insertIdea(db, { runId: runId!, title: "Oldest", createdAt: now - 200, qualityScore: 3 });
+    await insertIdea(db, { runId: runId!, title: "Middle", createdAt: now - 100, qualityScore: 3 });
+    await insertIdea(db, { runId: runId!, title: "Newest", createdAt: now, qualityScore: 3 });
+
+    const ideas = await getPipelineIdeas({ runId: runId!, sort: "oldest" });
+    const titles = ideas.map((r) => r["title"] as string);
+
+    expect(titles[0]).toBe("Oldest");
+    expect(titles[titles.length - 1]).toBe("Newest");
+  });
+
+  it("sort='score' returns ideas ordered by quality_score DESC (highest first)", async () => {
+    const db = getDb();
+    const { runId } = await acquirePipelineLock(IDEAS_PIPELINE);
+
+    const now = Math.floor(Date.now() / 1000);
+    await insertIdea(db, { runId: runId!, title: "LowScore", createdAt: now - 200, qualityScore: 1 });
+    await insertIdea(db, { runId: runId!, title: "MidScore", createdAt: now - 100, qualityScore: 3 });
+    await insertIdea(db, { runId: runId!, title: "HighScore", createdAt: now, qualityScore: 5 });
+
+    const ideas = await getPipelineIdeas({ runId: runId!, sort: "score" });
+    const titles = ideas.map((r) => r["title"] as string);
+
+    expect(titles[0]).toBe("HighScore");
+    expect(titles[titles.length - 1]).toBe("LowScore");
+  });
+
+  it("unknown sort value falls back to created_at DESC safely (does not throw or inject)", async () => {
+    const db = getDb();
+    const { runId } = await acquirePipelineLock(IDEAS_PIPELINE);
+
+    const now = Math.floor(Date.now() / 1000);
+    await insertIdea(db, { runId: runId!, title: "Alpha", createdAt: now - 50, qualityScore: 3 });
+    await insertIdea(db, { runId: runId!, title: "Beta", createdAt: now, qualityScore: 3 });
+
+    // Injection-style value must not error and must fall back to the default ordering
+    const ideas = await getPipelineIdeas({
+      runId: runId!,
+      // Type-cast simulates what would happen if validation were bypassed at the boundary.
+      sort: "x; DROP TABLE generated_ideas;--" as "newest",
+    });
+
+    // The table must still exist and the two ideas must be returned
+    expect(ideas.length).toBe(2);
+    // Fallback ordering is newest (created_at DESC) — Beta was inserted later
+    const titles = ideas.map((r) => r["title"] as string);
+    expect(titles[0]).toBe("Beta");
+  });
+
+  it("absent sort defaults to newest (created_at DESC)", async () => {
+    const db = getDb();
+    const { runId } = await acquirePipelineLock(IDEAS_PIPELINE);
+
+    const now = Math.floor(Date.now() / 1000);
+    await insertIdea(db, { runId: runId!, title: "Earlier", createdAt: now - 50, qualityScore: 3 });
+    await insertIdea(db, { runId: runId!, title: "Later", createdAt: now, qualityScore: 3 });
+
+    const ideas = await getPipelineIdeas({ runId: runId! });
+    const titles = ideas.map((r) => r["title"] as string);
+    expect(titles[0]).toBe("Later");
   });
 });

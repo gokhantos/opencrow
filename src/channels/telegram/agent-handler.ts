@@ -51,10 +51,18 @@ export function createAgentBotHandler(deps: AgentBotHandlerDeps): void {
   const activeSessions = new Map<string, AbortController>();
 
   channel.onMessage(async (msg) => {
-    if (
-      allowedUserIds.length > 0 &&
-      !allowedUserIds.includes(Number(msg.senderId))
-    ) {
+    // Fail closed: an empty/unconfigured allowlist denies everyone.
+    // Operators must explicitly list user IDs to grant access.
+    if (allowedUserIds.length === 0) {
+      log.warn(
+        "Agent Telegram bot has no allowedUserIds configured — all messages denied. " +
+          "Set allowedUserIds in the agent config to grant access.",
+        { agentId, senderId: msg.senderId },
+      );
+      return;
+    }
+
+    if (!allowedUserIds.includes(Number(msg.senderId))) {
       log.warn("Unauthorized message on agent Telegram bot", {
         agentId,
         senderId: msg.senderId,

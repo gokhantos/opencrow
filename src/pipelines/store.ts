@@ -471,12 +471,15 @@ export async function getPipelineIdeas(
   const minScore = filter.minScore ?? null;
   const search = filter.search ? `%${filter.search}%` : null;
 
-  const orderBy =
-    filter.sort === "oldest"
-      ? "created_at ASC"
-      : filter.sort === "score"
-        ? "quality_score DESC NULLS LAST, created_at DESC"
-        : "created_at DESC";
+  // Runtime allowlist guard — must stay in sync with PipelineIdeasFilter.sort.
+  // The literal string is interpolated into db.unsafe() so widening the union
+  // type must NEVER skip this check.
+  const ORDER_BY_ALLOWLIST: Readonly<Record<string, string>> = {
+    oldest: "created_at ASC",
+    score: "quality_score DESC NULLS LAST, created_at DESC",
+    newest: "created_at DESC",
+  };
+  const orderBy = ORDER_BY_ALLOWLIST[filter.sort ?? "newest"] ?? "created_at DESC";
 
   // Use conditional WHERE clauses with COALESCE pattern
   return db.unsafe(

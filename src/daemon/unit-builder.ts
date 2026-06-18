@@ -69,6 +69,7 @@ export function buildLaunchdPlist({
   environmentFile,
   stdoutPath,
   stderrPath,
+  throttleInterval = 5,
 }: {
   label: string;
   programArguments: string[];
@@ -76,6 +77,8 @@ export function buildLaunchdPlist({
   environmentFile?: string;
   stdoutPath: string;
   stderrPath: string;
+  /** Minimum seconds between respawns (launchd ThrottleInterval; systemd RestartSec parity) */
+  throttleInterval?: number;
 }): string {
   const args = programArguments
     .map((a) => `    <string>${a}</string>`)
@@ -106,6 +109,8 @@ ${args}
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ThrottleInterval</key>
+  <integer>${throttleInterval}</integer>
   <key>StandardOutPath</key>
   <string>${stdoutPath}</string>
   <key>StandardErrorPath</key>

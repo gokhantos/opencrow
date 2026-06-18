@@ -176,6 +176,27 @@ services:
         limits:
           cpus: "4"
           memory: 4G
+    # Liveness for the whole app: the core orchestrator serves :48081
+    # /internal/health (unauthenticated). A wedged orchestrator/crash-loop fails
+    # this and surfaces as `unhealthy` rather than a silently-up container.
+    healthcheck:
+      test:
+        - "CMD"
+        - "bun"
+        - "-e"
+        - "fetch('http://127.0.0.1:48081/internal/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    # In-container graceful shutdown budget is 10s (supervisor SHUTDOWN_TIMEOUT_MS
+    # + child-lifecycle GRACEFUL_SHUTDOWN_MS). The Compose default stop grace is
+    # also 10s, leaving zero slack for the supervisor to drain hooks AND kill
+    # children before SIGKILL. Give honest headroom (>10s) so graceful shutdown
+    # actually completes. `init: true` reaps the child processes the orchestrator
+    # spawns (PID 1 in a container does not reap by default → zombies).
+    stop_grace_period: 30s
+    init: true
     restart: unless-stopped
 
 volumes:

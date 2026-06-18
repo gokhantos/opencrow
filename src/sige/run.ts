@@ -41,6 +41,7 @@ import { enrichSeedWithProjectData } from "./seed-enricher";
 import { signalsToPromptContext, synthesizeSignals } from "./signal-synthesis";
 import { computeSocialViabilityScore, fuseScores } from "./simulation/score-fusion";
 import { runSocialSimulation } from "./simulation/social-sim";
+import { startCancelWatcher } from "./cancel-watcher";
 import { loadResumeContext, saveIdeaScore, saveResumeContext, updateSessionStatus } from "./store";
 import type { ResumeContext } from "./store";
 import type { FusedScore, ScoredIdea, SigeReport, SigeSession, SigeSessionConfig } from "./types";
@@ -178,63 +179,81 @@ export async function runSession(
 
   log.info("Starting SIGE session pipeline", { sessionId, userId, mode: mode ?? "seeded" });
 
-  // ── RESUME PATH ──────────────────────────────────────────────────────────────
+  // ── Cross-process cancellation watcher ──────────────────────────────────────
   //
-  // If a resume context was persisted before the process died, skip all
-  // discovery/enrichment and jump straight into runSeededSteps. The function is
-  // idempotent: already-persisted stages are detected via the session's artifact
-  // fields and skipped.
-  const resumeCtx = await loadResumeContext(sessionId);
-  if (resumeCtx !== null) {
-    log.info("Resuming interrupted SIGE session", {
-      sessionId,
-      fromStatus: session.status,
-      isScrapedSeed: resumeCtx.isScrapedSeed,
-    });
-    await runSeededSteps(
-      session,
-      mem0,
-      userId,
-      signal,
-      resumeCtx.enrichedSeed,
-      resumeCtx.isScrapedSeed,
-      resumeCtx,
-    );
-    return;
-  }
+  // A cancel request lands in the WEB process and only flips this session's DB
+  // status to `cancelled` — it cannot reach this signal directly. The watcher
+  // polls that status and, on a terminal value, aborts `cancelController`. Its
+  // signal is combined with the process-level signal into one run-wide signal
+  // (already threaded into chat() and every round), so cancelling stops in-flight
+  // LLM calls and the round loop promptly instead of leaving a zombie run.
+  const cancelController = new AbortController();
+  const runSignal = AbortSignal.any([signal, cancelController.signal]);
+  const stopCancelWatcher = startCancelWatcher({ sessionId, controller: cancelController });
 
-  // ── AUTONOMOUS PATH (new, default-OFF) ──────────────────────────────────────
-  //
-  // When the session has no seedInput (origin='auto', mode='autonomous'), run
-  // the seedless frontier-discovery → depth-game path. Each top frontier
-  // provides a synthetic enrichedSeed that drives the EXISTING steps 1-6
-  // byte-for-byte unchanged; the broad pool feeds pipeline-autonomous.ts.
-  //
-  // A per-run wall-clock timeout (90 min) is combined with the process-level
-  // signal via AbortSignal.any so a stuck game never outlasts its budget.
-  if (mode === "autonomous" || seedInput === undefined) {
-    const timeoutController = new AbortController();
-    const timeoutId = setTimeout(() => {
-      timeoutController.abort();
-      log.warn("Autonomous SIGE session timed out (90 min wall-clock)", { sessionId });
-    }, 90 * 60 * 1_000);
-
-    const combinedSignal = AbortSignal.any([signal, timeoutController.signal]);
-
-    try {
-      await runAutonomousSession(session, mem0, userId, combinedSignal);
-    } finally {
-      clearTimeout(timeoutId);
+  try {
+    // ── RESUME PATH ────────────────────────────────────────────────────────────
+    //
+    // If a resume context was persisted before the process died, skip all
+    // discovery/enrichment and jump straight into runSeededSteps. The function is
+    // idempotent: already-persisted stages are detected via the session's artifact
+    // fields and skipped.
+    const resumeCtx = await loadResumeContext(sessionId);
+    if (resumeCtx !== null) {
+      log.info("Resuming interrupted SIGE session", {
+        sessionId,
+        fromStatus: session.status,
+        isScrapedSeed: resumeCtx.isScrapedSeed,
+      });
+      await runSeededSteps(
+        session,
+        mem0,
+        userId,
+        runSignal,
+        resumeCtx.enrichedSeed,
+        resumeCtx.isScrapedSeed,
+        resumeCtx,
+      );
+      return;
     }
-    return;
+
+    // ── AUTONOMOUS PATH (new, default-OFF) ─────────────────────────────────────
+    //
+    // When the session has no seedInput (origin='auto', mode='autonomous'), run
+    // the seedless frontier-discovery → depth-game path. Each top frontier
+    // provides a synthetic enrichedSeed that drives the EXISTING steps 1-6
+    // byte-for-byte unchanged; the broad pool feeds pipeline-autonomous.ts.
+    //
+    // A per-run wall-clock timeout (90 min) is combined with the run signal
+    // (process + cancel) via AbortSignal.any so a stuck game never outlasts its
+    // budget.
+    if (mode === "autonomous" || seedInput === undefined) {
+      const timeoutController = new AbortController();
+      const timeoutId = setTimeout(() => {
+        timeoutController.abort();
+        log.warn("Autonomous SIGE session timed out (90 min wall-clock)", { sessionId });
+      }, 90 * 60 * 1_000);
+
+      const combinedSignal = AbortSignal.any([runSignal, timeoutController.signal]);
+
+      try {
+        await runAutonomousSession(session, mem0, userId, combinedSignal);
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      return;
+    }
+
+    // ── SEEDED PATH (byte-for-byte unchanged) ──────────────────────────────────
+
+    // Enrich seed with existing project data before knowledge construction
+    const enrichedSeed = await enrichSeedWithProjectData(seedInput);
+
+    await runSeededSteps(session, mem0, userId, runSignal, enrichedSeed);
+  } finally {
+    // Clear the watcher interval — no leaked timer regardless of how the run ends.
+    stopCancelWatcher();
   }
-
-  // ── SEEDED PATH (byte-for-byte unchanged) ────────────────────────────────────
-
-  // Enrich seed with existing project data before knowledge construction
-  const enrichedSeed = await enrichSeedWithProjectData(seedInput);
-
-  await runSeededSteps(session, mem0, userId, signal, enrichedSeed);
 }
 
 /**

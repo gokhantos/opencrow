@@ -74,6 +74,10 @@ export function sanitizeForPrompt(text: string): string {
     .replace(/`{3,}/g, "'''")
     .replace(/\b(ignore|disregard|forget)\s+(all\s+)?(previous|above|prior)\s+(instructions?|context|prompts?)\b/gi, "[filtered]")
     .replace(/<\/?(?:system|assistant|user|human)>/gi, "[filtered]")
+    // Neutralize the review-fence delimiter so content inside a <<<review ... >>>
+    // block cannot break out of the fence and inject instructions at the boundary.
+    .replace(/<<</g, "‹‹‹")
+    .replace(/>>>/g, "›››")
     .slice(0, 80000);
 }
 
@@ -668,7 +672,7 @@ function buildCapabilityEvidence(
       byTitle.set(key, { token, corroboration: cap.corroborationCount });
     }
     if (chainOfEvidence) {
-      legend.push(`  [id:${token}] ${cap.title} (${cap.source})`);
+      legend.push(`  [id:${token}] ${sanitizeForPrompt(cap.title)} (${sanitizeForPrompt(cap.source)})`);
     }
   });
 
@@ -701,15 +705,17 @@ function buildInsightsSection(
 
   if (trends.insights) {
     const { underservedSegments, workingPatterns, whiteSpaces } = trends.insights;
+    // B6 — sanitize LLM-produced insight fields before embedding them into the
+    // second-hop synthesizer prompt so injected instructions cannot propagate.
     const segmentLines = underservedSegments
       .slice(0, 8)
-      .map((s) => `  • [${s.category}] ${s.gap} — ${s.evidence}`);
+      .map((s) => `  • [${sanitizeForPrompt(s.category)}] ${sanitizeForPrompt(s.gap)} — ${sanitizeForPrompt(s.evidence)}`);
     const patternLines = workingPatterns
       .slice(0, 5)
-      .map((p) => `  • ${p.pattern} — ${p.evidence}`);
+      .map((p) => `  • ${sanitizeForPrompt(p.pattern)} — ${sanitizeForPrompt(p.evidence)}`);
     const spaceLines = whiteSpaces
       .slice(0, 5)
-      .map((w) => `  • ${w.description} (adjacent: ${w.adjacentCategories.join(", ")}) — ${w.reason}`);
+      .map((w) => `  • ${sanitizeForPrompt(w.description)} (adjacent: ${w.adjacentCategories.map(sanitizeForPrompt).join(", ")}) — ${sanitizeForPrompt(w.reason)}`);
 
     parts.push(
       "=== LANDSCAPE INSIGHTS ===",
@@ -729,15 +735,17 @@ function buildInsightsSection(
 
   if (pains.insights) {
     const { painThemes, workaroundSignals, loveSignals } = pains.insights;
+    // B6 — sanitize LLM-produced insight fields before embedding them into the
+    // second-hop synthesizer prompt so injected instructions cannot propagate.
     const themeLines = painThemes
       .slice(0, 8)
-      .map((t) => `  • [${t.frequency}] ${t.name}: ${t.description} (apps: ${t.affectedApps.slice(0, 3).join(", ")})`);
+      .map((t) => `  • [${t.frequency}] ${sanitizeForPrompt(t.name)}: ${sanitizeForPrompt(t.description)} (apps: ${t.affectedApps.slice(0, 3).map(sanitizeForPrompt).join(", ")})`);
     const workaroundLines = workaroundSignals
       .slice(0, 5)
-      .map((w) => `  • ${w.description} — current fix: ${w.currentSolution}`);
+      .map((w) => `  • ${sanitizeForPrompt(w.description)} — current fix: ${sanitizeForPrompt(w.currentSolution)}`);
     const loveLines = loveSignals
       .slice(0, 5)
-      .map((l) => `  • [${l.category}] ${l.feature}: ${l.whyUsersLoveIt}`);
+      .map((l) => `  • [${sanitizeForPrompt(l.category)}] ${sanitizeForPrompt(l.feature)}: ${sanitizeForPrompt(l.whyUsersLoveIt)}`);
 
     parts.push(
       "",
@@ -759,15 +767,17 @@ function buildInsightsSection(
 
   if (capabilities.insights) {
     const { genuinelyNew, technologyWaves, painCapabilityLinks } = capabilities.insights;
+    // B6 — sanitize LLM-produced insight fields before embedding them into the
+    // second-hop synthesizer prompt so injected instructions cannot propagate.
     const capLines = genuinelyNew
       .slice(0, 8)
-      .map((c) => `  • [${c.classification}] ${c.title} (${c.source})${capEvidence.annotate(c.title, c.source)}: ${c.whyNew}`);
+      .map((c) => `  • [${c.classification}] ${sanitizeForPrompt(c.title)} (${sanitizeForPrompt(c.source)})${capEvidence.annotate(c.title, c.source)}: ${sanitizeForPrompt(c.whyNew)}`);
     const waveLines = technologyWaves
       .slice(0, 5)
-      .map((w) => `  • ${w.name}: ${w.implication}`);
+      .map((w) => `  • ${sanitizeForPrompt(w.name)}: ${sanitizeForPrompt(w.implication)}`);
     const linkLines = painCapabilityLinks
       .slice(0, 8)
-      .map((l) => `  • Pain "${l.painTheme}" × Capability "${l.capability}": ${l.connectionReason}`);
+      .map((l) => `  • Pain "${sanitizeForPrompt(l.painTheme)}" × Capability "${sanitizeForPrompt(l.capability)}": ${sanitizeForPrompt(l.connectionReason)}`);
 
     parts.push(
       "",

@@ -90,7 +90,10 @@ export function createProcessSupervisor(
 
   async function doHeartbeat(): Promise<void> {
     try {
-      await heartbeat(name);
+      // Pass the same metadata used at registration (carries instanceId) so a
+      // heartbeat that has to re-INSERT a swept row keeps the instance identity
+      // intact for the single-instance guard.
+      await heartbeat(name, registryMetadata);
     } catch (err) {
       log.error("Heartbeat failed", { process: name, error: err });
     }

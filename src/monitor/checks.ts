@@ -1,5 +1,51 @@
 import { getDb } from "../store/db";
+import { createLogger } from "../logger";
+import { CRASH_LOOP_KEY, listProcesses } from "../process/registry";
 import type { CheckResult, MonitorThresholds } from "./types";
+
+const log = createLogger("monitor:checks");
+
+/** One-time "probe unsupported on this platform" warnings (keyed by probe). */
+const warnedUnsupported = new Set<string>();
+
+function warnUnsupportedOnce(probe: string): void {
+  if (warnedUnsupported.has(probe)) return;
+  warnedUnsupported.add(probe);
+  log.warn("Resource probe unsupported on this platform", {
+    probe,
+    platform: process.platform,
+  });
+}
+
+async function spawnText(cmd: readonly string[]): Promise<string | null> {
+  try {
+    const proc = Bun.spawn(cmd as string[], { stdout: "pipe", stderr: "pipe" });
+    const output = await new Response(proc.stdout).text();
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) return null;
+    return output;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse the used-percent of the filesystem backing `/` from POSIX `df -P`
+ * output. `-P` (portable) is supported on both GNU/Linux and macOS/BSD and
+ * always emits a fixed-column "Capacity" field ending in `%`.
+ *
+ * Exported for unit testing only — not part of the public API.
+ */
+export function parseDfCapacityPercent(output: string): number | null {
+  const lines = output.trim().split("\n");
+  const dataLine = lines[lines.length - 1];
+  if (!dataLine) return null;
+  // Columns: Filesystem Blocks Used Available Capacity MountedOn
+  const pctField = dataLine.trim().split(/\s+/).find((f) => f.endsWith("%"));
+  if (!pctField) return null;
+  const pct = parseInt(pctField.replace("%", ""), 10);
+  return Number.isFinite(pct) ? pct : null;
+}
 
 /**
  * Check if any registered process has a stale heartbeat.
@@ -25,6 +71,36 @@ export async function checkProcessHealth(
         threshold: thresholds.processHeartbeatStaleSec,
       });
     }
+  }
+
+  return results;
+}
+
+/**
+ * Check for processes the orchestrator has flagged as crash-looping.
+ *
+ * The orchestrator (a different process) persists a crash-loop marker onto the
+ * child's `process_registry` row when it exceeds maxRestarts within the restart
+ * window — a terminal state where the process will NOT self-recover. We surface
+ * it as a critical alert (separate from the heartbeat-staleness warning) so an
+ * operator gets a precise, actionable signal instead of only an "is stale" note.
+ */
+export async function checkCrashLoops(): Promise<readonly CheckResult[]> {
+  const processes = await listProcesses();
+  const results: CheckResult[] = [];
+
+  for (const rec of processes) {
+    const crashLoopAt = rec.metadata[CRASH_LOOP_KEY];
+    if (typeof crashLoopAt !== "number") continue;
+
+    const now = Math.floor(Date.now() / 1000);
+    const ageSec = Math.max(0, now - crashLoopAt);
+    results.push({
+      category: "process",
+      level: "critical",
+      title: `Process ${rec.name} is in crash-loop`,
+      detail: `${rec.name} exceeded its restart budget and was halted ${ageSec}s ago; it will not restart until manually intervened.`,
+    });
   }
 
   return results;
@@ -137,13 +213,19 @@ export async function checkCronFailures(
 export async function checkDiskUsage(
   thresholds: MonitorThresholds,
 ): Promise<readonly CheckResult[]> {
-  const proc = Bun.spawn(["df", "--output=pcent", "/"], { stdout: "pipe", stderr: "pipe" });
-  const output = (await new Response(proc.stdout).text()).trim();
-  await proc.exited;
+  // `df -P` is POSIX-portable (GNU/Linux and macOS/BSD), unlike the GNU-only
+  // `df --output=pcent` which silently failed on macOS.
+  const output = await spawnText(["df", "-P", "/"]);
+  if (output === null) {
+    warnUnsupportedOnce("disk");
+    return [];
+  }
 
-  const lines = output.split("\n");
-  const pctStr = lines[lines.length - 1]?.trim().replace("%", "");
-  const pct = parseInt(pctStr ?? "0", 10);
+  const pct = parseDfCapacityPercent(output);
+  if (pct === null) {
+    warnUnsupportedOnce("disk");
+    return [];
+  }
 
   if (pct >= thresholds.diskUsagePercent) {
     return [{
@@ -162,28 +244,78 @@ export async function checkDiskUsage(
 /**
  * Check system memory usage.
  */
-export async function checkMemoryUsage(
-  thresholds: MonitorThresholds,
-): Promise<readonly CheckResult[]> {
-  const proc = Bun.spawn(["free", "-m"], { stdout: "pipe", stderr: "pipe" });
-  const output = await new Response(proc.stdout).text();
-  await proc.exited;
+interface MemoryStat {
+  readonly totalMb: number;
+  readonly usedMb: number;
+}
+
+/** Linux: parse `free -m`. Uses the "available" column as effectively-free. */
+async function readLinuxMemory(): Promise<MemoryStat | null> {
+  const output = await spawnText(["free", "-m"]);
+  if (output === null) return null;
 
   const memLine = output.split("\n").find((l) => l.startsWith("Mem:"));
-  if (!memLine) return [];
+  if (!memLine) return null;
 
   const parts = memLine.split(/\s+/);
   const total = parseInt(parts[1] ?? "0", 10);
   const available = parseInt(parts[6] ?? "0", 10);
-  const usedEffective = total - available;
-  const pct = total > 0 ? Math.round((usedEffective / total) * 100) : 0;
+  if (!Number.isFinite(total) || total <= 0) return null;
+  return { totalMb: total, usedMb: total - available };
+}
+
+/**
+ * macOS: total from `sysctl -n hw.memsize` (bytes); free/inactive pages from
+ * `vm_stat`. Inactive pages are reclaimable, so they count as effectively free
+ * (mirrors the Linux "available" semantics above).
+ */
+async function readDarwinMemory(): Promise<MemoryStat | null> {
+  const sizeOut = await spawnText(["sysctl", "-n", "hw.memsize"]);
+  const vmOut = await spawnText(["vm_stat"]);
+  if (sizeOut === null || vmOut === null) return null;
+
+  const totalBytes = parseInt(sizeOut.trim(), 10);
+  if (!Number.isFinite(totalBytes) || totalBytes <= 0) return null;
+
+  const pageSizeMatch = vmOut.match(/page size of (\d+) bytes/);
+  const pageSize = pageSizeMatch ? parseInt(pageSizeMatch[1] ?? "4096", 10) : 4096;
+
+  const readPages = (label: string): number => {
+    const m = vmOut.match(new RegExp(`${label}:\\s+(\\d+)`));
+    return m ? parseInt(m[1] ?? "0", 10) : 0;
+  };
+
+  const freePages = readPages("Pages free") + readPages("Pages inactive");
+  const freeBytes = freePages * pageSize;
+  const totalMb = Math.round(totalBytes / (1024 * 1024));
+  const usedMb = Math.round((totalBytes - freeBytes) / (1024 * 1024));
+  return { totalMb, usedMb };
+}
+
+export async function checkMemoryUsage(
+  thresholds: MonitorThresholds,
+): Promise<readonly CheckResult[]> {
+  // `free` is Linux-only; macOS needs vm_stat/sysctl. Branch on platform so the
+  // probe produces real results instead of silently no-op'ing on Darwin.
+  const stat =
+    process.platform === "darwin"
+      ? await readDarwinMemory()
+      : await readLinuxMemory();
+
+  if (stat === null) {
+    warnUnsupportedOnce("memory");
+    return [];
+  }
+
+  const { totalMb, usedMb } = stat;
+  const pct = totalMb > 0 ? Math.round((usedMb / totalMb) * 100) : 0;
 
   if (pct >= thresholds.memoryUsagePercent) {
     return [{
       category: "memory",
       level: pct >= 95 ? "critical" : "warning",
       title: `Memory usage at ${pct}%`,
-      detail: `${usedEffective}MB / ${total}MB used (threshold: ${thresholds.memoryUsagePercent}%)`,
+      detail: `${usedMb}MB / ${totalMb}MB used (threshold: ${thresholds.memoryUsagePercent}%)`,
       metric: pct,
       threshold: thresholds.memoryUsagePercent,
     }];
@@ -201,6 +333,7 @@ export async function runAllChecks(
 ): Promise<readonly CheckResult[]> {
   const settled = await Promise.allSettled([
     checkProcessHealth(thresholds),
+    checkCrashLoops(),
     checkErrorRate(thresholds),
     checkCronFailures(thresholds),
     checkDiskUsage(thresholds),

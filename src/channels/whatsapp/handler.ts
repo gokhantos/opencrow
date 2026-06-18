@@ -12,7 +12,6 @@ const log = createLogger("whatsapp-handler");
 const STATUS_BROADCAST = "status@broadcast";
 const MAX_DEDUP_SIZE = 1000;
 const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 minutes
-const recentMessageIds = new Map<string, number>();
 
 type GetGroupParticipants = (
   chatId: string,
@@ -24,6 +23,11 @@ export function createWhatsAppHandler(
   botName: string,
   getGroupParticipants?: GetGroupParticipants,
 ): void {
+  // Scoped per channel instance so that a real channel and a pairing helper
+  // running concurrently do not share dedup state and suppress each other's
+  // legitimate messages.
+  const recentMessageIds = new Map<string, number>();
+
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
 
@@ -34,6 +38,7 @@ export function createWhatsAppHandler(
           sock,
           onMessage,
           botName,
+          recentMessageIds,
           getGroupParticipants,
         );
       } catch (error) {
@@ -48,6 +53,7 @@ async function processMessage(
   sock: WASocket,
   onMessage: MessageHandler,
   botName: string,
+  recentMessageIds: Map<string, number>,
   getGroupParticipants?: GetGroupParticipants,
 ): Promise<void> {
   // Skip own messages
