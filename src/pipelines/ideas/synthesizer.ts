@@ -18,6 +18,7 @@ import { createLogger } from "../../logger";
 import { loadConfig } from "../../config/loader";
 import type { SmartIdeasConfig } from "../../config/schema";
 import type { Mem0Client } from "../../sige/knowledge/mem0-client";
+import { UNTRUSTED_PREAMBLE } from "../../sige/untrusted";
 import { insightForge, panoramaSearch } from "../../sige/memory/retrieval-modes";
 import {
   candidateText,
@@ -990,6 +991,17 @@ function antiExemplarSection(antiExemplars: string): string {
   return antiExemplars ? `\n${antiExemplars}` : "";
 }
 
+/**
+ * Render the OUTCOME MEMORY block (learned REINFORCE/AVOID guidance from past
+ * idea verdicts) at the antiSection seam. Empty string in → empty string out
+ * (legacy prompt unchanged). The block produced by buildOutcomeMemoryBlock is
+ * ALREADY sanitized (sanitizeScrapedField) and fenced (wrapUntrusted) per memory
+ * — do NOT double-sanitize here, just thread it through.
+ */
+function outcomeMemorySection(outcomeMemory: string): string {
+  return outcomeMemory ? `\n${outcomeMemory}` : "";
+}
+
 // ── Pass 2: Idea Development ─────────────────────────────────────────────
 
 async function developIdeas(
@@ -1001,6 +1013,7 @@ async function developIdeas(
   validatedExemplars: string,
   chainOfEvidence: boolean,
   antiExemplars = "",
+  outcomeMemory = "",
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const intersectionLines = topIntersections.map((h, i) =>
     `${i + 1}. "${h.title}"\n   Pain: ${h.painSignal}\n   Capability: ${h.capabilitySignal}\n   Market: ${h.marketSignal}\n   Hypothesis: ${h.hypothesis}\n   Signal strength: ${h.signalStrength.toFixed(2)}`,
@@ -1012,6 +1025,7 @@ async function developIdeas(
 
   const exemplarSection = validatedExemplarSection(validatedExemplars);
   const antiSection = antiExemplarSection(antiExemplars);
+  const outcomeSection = outcomeMemorySection(outcomeMemory);
 
   const evidenceInstruction = chainOfEvidence
     ? `\n- supportingSignalIds: array of [id:...] tokens from the SIGNAL CITATIONS / capability annotations above that ground THIS idea (e.g. ["hackernews_3","producthunt_1"]). Cite only signals you actually used.`
@@ -1040,6 +1054,7 @@ ${intersectionLines}
 ${sanitizeForPrompt(deepSearchContext)}
 ${exemplarSection}
 ${antiSection}
+${outcomeSection}
 ${saturatedSection}
 ${existingIdeasContext}
 
@@ -1085,7 +1100,7 @@ Return ONLY a JSON array of ${topIntersections.length} ideas:
 
   const response = await chat(messages, {
     ...buildChatOptions(model),
-    systemPrompt: "You are a product strategist turning validated market opportunities into concrete product ideas. Output only valid JSON arrays.",
+    systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a product strategist turning validated market opportunities into concrete product ideas. Output only valid JSON arrays.`,
   });
 
   log.info("Pass 2 (development) raw response", {
@@ -1251,6 +1266,7 @@ async function developIdeasWide(
   chainOfEvidence: boolean,
   generateWide: GenerateWideConfig,
   antiExemplars = "",
+  outcomeMemory = "",
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const intersectionLines = topIntersections
     .map(
@@ -1275,6 +1291,7 @@ async function developIdeasWide(
     : "";
   const exemplarSection = validatedExemplarSection(validatedExemplars);
   const antiSection = antiExemplarSection(antiExemplars);
+  const outcomeSection = outcomeMemorySection(outcomeMemory);
 
   const evidenceInstruction = chainOfEvidence
     ? `\n  - supportingSignalIds: array of [id:...] tokens from the SIGNAL CITATIONS / capability annotations above that ground THIS idea. Cite only signals you actually used. EVERY seed MUST stay bound to its grounding signals.`
@@ -1309,6 +1326,7 @@ ${intersectionLines}
 ${sanitizeForPrompt(deepSearchContext)}
 ${exemplarSection}
 ${antiSection}
+${outcomeSection}
 ${saturatedSection}
 ${existingIdeasContext}
 
@@ -1360,8 +1378,7 @@ Return ONLY a JSON array of {idea, probability} seeds (${seedsPer} per hypothesi
     // pair it with the truncation-tolerant parser below so the pool never
     // silently collapses to the single-idea fallback.
     maxOutputTokens: 32000,
-    systemPrompt:
-      "You are a product strategist emitting a DIVERSE DISTRIBUTION of grounded product ideas via Verbalized Sampling. Each idea is a {idea, probability} pair. Output only a valid JSON array.",
+    systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a product strategist emitting a DIVERSE DISTRIBUTION of grounded product ideas via Verbalized Sampling. Each idea is a {idea, probability} pair. Output only a valid JSON array.`,
   });
 
   log.info("Pass 2 (wide over-generation) raw response", {
@@ -1708,6 +1725,7 @@ async function singlePassSynthesis(input: {
   readonly model: string;
   readonly validatedExemplars?: string;
   readonly antiExemplars?: string;
+  readonly outcomeMemory?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
 
@@ -1717,6 +1735,7 @@ async function singlePassSynthesis(input: {
 
   const exemplarSection = validatedExemplarSection(input.validatedExemplars ?? "");
   const antiSection = antiExemplarSection(input.antiExemplars ?? "");
+  const outcomeSection = outcomeMemorySection(input.outcomeMemory ?? "");
 
   const existingIdeasContext = await buildExistingIdeasContext();
 
@@ -1743,6 +1762,7 @@ ${sanitizeForPrompt(capabilities.summary || "No capability data")}
 ${sanitizeForPrompt(deepSearchContext)}
 ${exemplarSection}
 ${antiSection}
+${outcomeSection}
 ${saturatedSection}
 ${existingIdeasContext}
 
@@ -1771,8 +1791,7 @@ Generate ${maxIdeas} ideas. Return ONLY a JSON array:
 
   const response = await chat(messages, {
     ...buildChatOptions(model),
-    systemPrompt:
-      "You are a JSON API. You ONLY output valid JSON arrays. No markdown, no explanations, no preamble. Start your response with [ and end with ].",
+    systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a JSON API. You ONLY output valid JSON arrays. No markdown, no explanations, no preamble. Start your response with [ and end with ].`,
   });
 
   log.info("Fallback single-pass raw response", {
@@ -1836,6 +1855,16 @@ export async function synthesizeFromTrends(input: {
    * smart.generateWide.maxCandidates.
    */
   readonly extraCandidates?: readonly GeneratedIdeaCandidate[];
+  /**
+   * Step 5 OUTCOME MEMORY block: an already-rendered REINFORCE/AVOID guidance
+   * section (built by the Pipeline phase via fetchOutcomeMemoryBlock →
+   * buildOutcomeMemoryBlock from past idea verdicts in mem0). The block is
+   * already sanitized + fenced. Threaded into the generation prompts (NOT the
+   * GIANT critique) as semantic guidance. Optional — backward-compatible;
+   * injected only when smart.outcomeMemory.readAtSynthesis is on AND the caller
+   * supplies it. Empty/absent → today's behavior.
+   */
+  readonly outcomeMemory?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
 
@@ -1848,6 +1877,10 @@ export async function synthesizeFromTrends(input: {
   // inject when smart.taste.antiExemplars is on. The Pipeline phase already
   // passes "" when off; gate here too so the path is defended end-to-end.
   const antiExemplars = smart.taste.antiExemplars ? input.antiExemplars ?? "" : "";
+  // Step 5 OUTCOME MEMORY (learned REINFORCE/AVOID guidance from past verdicts):
+  // re-gate at the synthesis boundary so the path is defended end-to-end. Only
+  // inject when smart.outcomeMemory.readAtSynthesis is on; "" → today's behavior.
+  const outcomeMemory = smart.outcomeMemory.readAtSynthesis ? input.outcomeMemory ?? "" : "";
 
   // ── Pass 1: Discover intersections ──────────────────────────────────
   let intersections: readonly IntersectionHypothesis[];
@@ -1856,12 +1889,12 @@ export async function synthesizeFromTrends(input: {
     intersections = await discoverIntersections(trends, pains, capabilities, model, chainOfEvidence);
   } catch (err) {
     log.error("Pass 1 failed, falling back to single-pass synthesis", { err });
-    return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars });
+    return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars, outcomeMemory });
   }
 
   if (intersections.length === 0) {
     log.warn("No intersections found in Pass 1, falling back to single-pass synthesis");
-    return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars });
+    return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars, outcomeMemory });
   }
 
   // Deduplicate by capabilitySignal — if 3+ hypotheses cite the same capability, keep only the best
@@ -1917,6 +1950,7 @@ export async function synthesizeFromTrends(input: {
           chainOfEvidence,
           generateWide,
           antiExemplars,
+          outcomeMemory,
         );
         if (rawCandidates.length === 0) {
           log.warn(
@@ -1931,6 +1965,7 @@ export async function synthesizeFromTrends(input: {
             validatedExemplars,
             chainOfEvidence,
             antiExemplars,
+            outcomeMemory,
           );
         }
       } catch (wideErr) {
@@ -1947,6 +1982,7 @@ export async function synthesizeFromTrends(input: {
           validatedExemplars,
           chainOfEvidence,
           antiExemplars,
+          outcomeMemory,
         );
       }
     } else {
@@ -1959,11 +1995,12 @@ export async function synthesizeFromTrends(input: {
         validatedExemplars,
         chainOfEvidence,
         antiExemplars,
+        outcomeMemory,
       );
     }
   } catch (err) {
     log.error("Pass 2 failed, falling back to single-pass synthesis", { err });
-    return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars });
+    return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars, outcomeMemory });
   }
 
   if (rawCandidates.length === 0) {

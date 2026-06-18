@@ -400,6 +400,9 @@ export const sigeConfigSchema = z.object({
   mem0: z.object({
     baseUrl: z.string().url().default("http://127.0.0.1:8050"),
     userId: z.string().default("sige-global"),
+    // Dedicated userId for idea-outcome memories (separate namespace from raw
+    // signals so per-segment metadata filters stay clean).
+    ideasUserId: z.string().default("sige-ideas"),
     // Shared bearer token sent on every /v1/memories/* request to the mem0
     // sidecar (which has no upstream auth; GHSA-jfv9-68m5-gjjr). Optional so a
     // tokenless dev run still boots — the sidecar then rejects with 503 and SIGE
@@ -409,6 +412,7 @@ export const sigeConfigSchema = z.object({
   }).default({
     baseUrl: "http://127.0.0.1:8050",
     userId: "sige-global",
+    ideasUserId: "sige-ideas",
   }),
   simulation: z
     .object({
@@ -692,6 +696,31 @@ export const sigeAutoConfigSchema = z
   });
 export type SigeAutoConfig = z.infer<typeof sigeAutoConfigSchema>;
 
+// Phase 6 "outcome memory": write idea verdicts back to mem0 and/or read them
+// at synthesis time to guide the next generation round. Both behavior flags
+// default OFF so a default pipeline run is byte-identical to today.
+export const outcomeMemoryConfigSchema = z
+  .object({
+    // Write idea verdict sentences back to mem0 after persistence/proxy-labels.
+    writeBack: z.boolean().default(false),
+    // Read outcome memories at synthesis time and inject as GUIDANCE.
+    readAtSynthesis: z.boolean().default(false),
+    // Max REINFORCE bullets injected into the synthesis prompt.
+    reinforceCap: z.number().int().min(1).max(20).default(5),
+    // Max AVOID bullets injected into the synthesis prompt.
+    avoidCap: z.number().int().min(1).max(20).default(5),
+    // mem0 search limit per verdict bucket (3 parallel queries).
+    searchLimit: z.number().int().min(1).max(50).default(12),
+  })
+  .default({
+    writeBack: false,
+    readAtSynthesis: false,
+    reinforceCap: 5,
+    avoidCap: 5,
+    searchLimit: 12,
+  });
+export type OutcomeMemoryConfig = z.infer<typeof outcomeMemoryConfigSchema>;
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -733,6 +762,9 @@ export const smartConfigSchema = z.object({
   // Phase 5 "autonomous SIGE": seedless autonomous idea generation driven by
   // SIGE breadth + depth stages. Default OFF — no behavior change until enabled.
   sigeAuto: sigeAutoConfigSchema,
+  // Phase 6 "outcome memory": verdict write-back + synthesis-time guidance via
+  // mem0. Both flags default OFF — no behavior change until enabled.
+  outcomeMemory: outcomeMemoryConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -790,6 +822,13 @@ const SMART_IDEAS_DEFAULTS = {
     maxConcurrent: 1,
     memoryWriteback: false,
     perRunCostCeilingUsd: 0,
+  },
+  outcomeMemory: {
+    writeBack: false,
+    readAtSynthesis: false,
+    reinforceCap: 5,
+    avoidCap: 5,
+    searchLimit: 12,
   },
 } as const;
 
@@ -911,4 +950,5 @@ export type SigeHardeningConfig = z.infer<typeof sigeHardeningConfigSchema>;
 export type TasteConfig = z.infer<typeof tasteConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;
-// SigeAutoConfig is also exported directly from the schema declaration above.
+// SigeAutoConfig and OutcomeMemoryConfig are also exported directly from their
+// schema declarations above.

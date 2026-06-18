@@ -61,8 +61,16 @@ import {
   deriveProxyLabels,
   loadGiantWeights,
   parseGiantScores,
+  type ProxyLabel,
   type ScoredIdeaForProxy,
 } from "./feedback-bootstrap";
+import {
+  fetchOutcomeMemoryBlock,
+  renderOutcomeSentence,
+  toOutcomeMemory,
+  writeOutcomeMemories,
+  type OutcomeMemoryItem,
+} from "./outcome-memory";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import type { GiantAxisKey, GiantAxisScores } from "./giant";
 import { aggregateGiant, GIANT_AXIS_KEYS } from "./giant";
@@ -2113,6 +2121,21 @@ export async function runIdeasPipeline(
     const taste = smart.taste;
     const rotationSeed = rotationSeedFromRunId(runId);
 
+    // ── Outcome-memory: build a shared Mem0 client + ideasUserId ONCE, gated
+    //    so neither hook constructs anything when both flags are OFF (default).
+    //    Mirrors the existing applySigeValuation pattern (line ~1428). The client
+    //    constructor never throws; failures happen on the first actual call and are
+    //    caught inside fetchOutcomeMemoryBlock / writeOutcomeMemories. ──────────
+    const outcomeMemoryCfg = smart.outcomeMemory;
+    const ideasUserId = sigeConfig?.mem0.ideasUserId ?? "sige-ideas";
+    const outcomeMem0: Mem0Client | null =
+      outcomeMemoryCfg.readAtSynthesis || outcomeMemoryCfg.writeBack
+        ? new Mem0Client({
+            baseUrl: sigeConfig?.mem0.baseUrl ?? "http://127.0.0.1:8050",
+            apiToken: sigeConfig?.mem0.apiToken,
+          })
+        : null;
+
     // ── PHASE 4 (taste loop): LEARNED GIANT axis weights (gated calibrate-
     //    GiantWeights, default OFF). loadGiantWeights re-checks the flag and
     //    returns NEUTRAL (= GIANT_DEFAULT_WEIGHTS) when off / under-powered /
@@ -2353,6 +2376,29 @@ export async function runIdeasPipeline(
     });
     const extraCandidates = await fetchDivergentCandidates(generateWide, signalsContext, model);
 
+    // ── Outcome-memory READ hook (gated readAtSynthesis, default OFF) ─────────
+    // Fetch learned verdicts from mem0 and inject as semantic guidance into the
+    // generation prompt. REINFORCE = validated (not proxy), AVOID = archived +
+    // dedup-rejected. Query = top trending-category names + pipeline category so
+    // the search is relevant to this run's signal space. Returns "" on any
+    // failure (fetchOutcomeMemoryBlock never throws). Default OFF → byte-identical.
+    const outcomeMemory: string =
+      outcomeMemoryCfg.readAtSynthesis && outcomeMem0 !== null
+        ? await fetchOutcomeMemoryBlock({
+            mem0: outcomeMem0,
+            userId: ideasUserId,
+            query: [
+              ...trends.trendingCategories.slice(0, 6).map((c) => c.category),
+              config.category,
+            ]
+              .filter(Boolean)
+              .join(", "),
+            reinforceCap: outcomeMemoryCfg.reinforceCap,
+            avoidCap: outcomeMemoryCfg.avoidCap,
+            searchLimit: outcomeMemoryCfg.searchLimit,
+          })
+        : "";
+
     const synthesis = await runStep(
       runId,
       "synthesis",
@@ -2369,6 +2415,7 @@ export async function runIdeasPipeline(
           maxIdeas: config.maxIdeas,
           model,
           extraCandidates,
+          outcomeMemory,
         }),
       (s) =>
         `Generated ${s.totalGenerated} idea candidates from trend intersections` +
@@ -2451,6 +2498,12 @@ export async function runIdeasPipeline(
     // convergence verdict are persisted (best-effort) for the eval A/B.
     let sigeSignals: ReadonlyMap<string, SigeSignals> = new Map();
     let sigeOn = false;
+    // Captured ONCE from the convergence-veto check BELOW, BEFORE the `widen`
+    // action can wipe sigeSignals — both the proxy labeler and the outcome-memory
+    // write hook read this value, and recomputing it later would run against the
+    // wiped (empty) map and always return false, silently dropping the collapse
+    // signal. `undefined` when SIGE did not run.
+    let convergenceVetoed: boolean | undefined;
     if (smart.sigeValuation && sigeConfig?.enabled && kept.length > 0) {
       sigeOn = true;
       const hardened = await applySigeValuation(
@@ -2484,6 +2537,9 @@ export async function runIdeasPipeline(
       // over-trust the consensus (selection below still runs, but the audit line
       // tells the eval A/B the round was collapse-prone so it can widen).
       const veto = computeSigeConvergenceVeto(sigeSignals, smart.sige.convergenceVetoThreshold);
+      // Capture the verdict NOW, before the `widen` branch below may wipe
+      // sigeSignals — downstream consumers must see this true value.
+      convergenceVetoed = veto.vetoed;
       if (veto.vetoed) {
         const widen = smart.sige.convergenceVetoAction === "widen";
         log.warn("SIGE convergence veto fired — consensus is collapse-prone", {
@@ -2839,14 +2895,14 @@ export async function runIdeasPipeline(
     // the run. Convergence-veto / grounded / distinct-segments are DERIVED here
     // from this run's signals (no persisted columns); missing fields just don't
     // trigger their rule (safe).
+    //
+    // `proxyLabels` is lifted outside the try block so the outcome-memory write
+    // hook below can build its verdict map from the same labels. The run-level
+    // `convergenceVetoed` was captured earlier (pre-wipe) for the same reason.
+    let proxyLabels: readonly ProxyLabel[] = [];
+
     if (taste.autoProxyLabels && storedPairs.length > 0) {
       try {
-        // Run-level convergence veto (when SIGE ran): a collapsed/sycophantic
-        // round is strong KILL counter-evidence applied across the batch.
-        const convergenceVetoed = sigeOn
-          ? computeSigeConvergenceVeto(sigeSignals, smart.sige.convergenceVetoThreshold).vetoed
-          : undefined;
-
         // distinctSegments is a PER-IDEA multi-segment-credibility signal (gates
         // the rare weak auto-VALIDATE). Each candidate addresses ONE resolved
         // segment in this pipeline, so we leave it UNSET — the conjunctive
@@ -2870,7 +2926,7 @@ export async function runIdeasPipeline(
             }),
         );
 
-        const proxyLabels = deriveProxyLabels(proxyInputs, DEFAULT_PROXY_OPTIONS, runId);
+        proxyLabels = deriveProxyLabels(proxyInputs, DEFAULT_PROXY_OPTIONS, runId);
         let written = 0;
         for (const label of proxyLabels) {
           const row = await insertIdeaFeedback({
@@ -2889,6 +2945,103 @@ export async function runIdeasPipeline(
         });
       } catch (err) {
         log.warn("Phase 4 taste: auto-proxy labeling failed — skipping", { err });
+      }
+    }
+
+    // ── Outcome-memory WRITE hook (gated writeBack, default OFF) ─────────────
+    // Write one memory per stored idea (+ one per dedup-rejected title) back to
+    // mem0 under the dedicated `sige-ideas` userId so future synthesis rounds can
+    // learn from these verdicts. Placed AFTER persistence + proxy-labels (the
+    // verdict map is complete) and BEFORE markConsumed. Own try/catch — a write
+    // failure must never break the run. Default OFF → byte-identical.
+    if (outcomeMemoryCfg.writeBack && storedPairs.length > 0 && outcomeMem0 !== null) {
+      try {
+        // Build a verdict map from the proxy labels derived above:
+        //   ideaId → { verdict, verdictSource: "proxy:<reason>" }
+        // Stored ideas without any proxy label → verdict "stored-pending".
+        const proxyVerdictMap = new Map<
+          string,
+          { readonly verdict: "validated" | "archived"; readonly verdictSource: string }
+        >();
+        for (const label of proxyLabels) {
+          const kind = label.event.kind;
+          // Only "validated" and "archived" are valid OutcomeMemory verdict values
+          // from a proxy source; other FeedbackKind values (dismissed, built, etc.)
+          // are not materialised as outcome memories.
+          if (kind === "validated" || kind === "archived") {
+            proxyVerdictMap.set(label.event.idea_id, {
+              verdict: kind,
+              verdictSource: `proxy:${label.reason}`,
+            });
+          }
+        }
+
+        const outcomeContext = {
+          runId,
+          promptVersion: PROMPT_VERSION,
+          model,
+          createdAtSec: now(),
+        };
+
+        const items: OutcomeMemoryItem[] = [];
+
+        // Stored ideas: look up their proxy verdict; absent → stored-pending.
+        for (const { ideaId, candidate } of storedPairs) {
+          const proxyVerdict = proxyVerdictMap.get(ideaId);
+          const outcomeVerdict = proxyVerdict ?? {
+            verdict: "stored-pending" as const,
+            verdictSource: "none",
+          };
+
+          const gate = giantGateByCandidate.get(candidate);
+          const artifact = demandByCandidate.get(candidate);
+          const sigeSignal = sigeSignals.get(candidateJoinId(candidate.title));
+
+          const memory = toOutcomeMemory(
+            {
+              ideaId,
+              segment: resolveCandidateSegment(candidate),
+              archetype: candidate.archetype ?? null,
+              giantComposite: candidate.giantComposite ?? null,
+            },
+            outcomeVerdict,
+            {
+              gate: gate ?? null,
+              sigeDissent: sigeSignal?.dissent ?? null,
+              convergenceVeto: convergenceVetoed ?? null,
+              demand: artifact ?? null,
+            },
+            outcomeContext,
+          );
+
+          items.push({ sentence: renderOutcomeSentence(memory, candidate.title), metadata: memory });
+        }
+
+        // Dedup-rejected titles: verdict "dedup-rejected" / source "dedup" / no scores.
+        // `dedupRejected` entries are diagnostic strings from checkForDuplicates
+        // shaped like `"<title> [EXACT] matches existing idea"` — strip the
+        // ` [TAG] …` suffix so the AVOID memory carries the bare theme, not the
+        // internal match diagnostic.
+        for (const rejected of dedupRejected) {
+          const bareTitle = rejected.split(" [")[0] ?? rejected;
+          const memory = toOutcomeMemory(
+            { ideaId: null, segment: null, archetype: null, giantComposite: null },
+            { verdict: "dedup-rejected", verdictSource: "dedup" },
+            { gate: null, sigeDissent: null, convergenceVeto: null, demand: null },
+            outcomeContext,
+          );
+          items.push({ sentence: renderOutcomeSentence(memory, bareTitle), metadata: memory });
+        }
+
+        await writeOutcomeMemories(outcomeMem0, items, ideasUserId);
+        log.info("Outcome-memory write-back complete", {
+          stored: storedPairs.length,
+          dedupRejected: dedupRejected.length,
+          total: items.length,
+          userId: ideasUserId,
+        });
+      } catch (err) {
+        log.warn("Outcome-memory write-back failed — skipping", { err });
       }
     }
 

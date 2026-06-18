@@ -343,12 +343,22 @@ export class Mem0Client {
     readonly userId: string;
     readonly limit?: number;
     readonly enableGraph?: boolean;
+    readonly filters?: Record<string, unknown>;
   }): Promise<Mem0SearchResult> {
+    // The self-hosted mem0 OSS server accepts a top-level `filters` object on
+    // /v1/memories/search/ for simple metadata-equality matching (top-level keys
+    // only; equality/inequality/containment — no nested paths, array matching, or
+    // numeric comparisons). Support is version-dependent and silently ignored by
+    // older server builds, so callers MUST also apply a client-side post-filter
+    // as the net rather than trusting server-side filtering alone. Omitting
+    // `filters` produces a byte-identical request body to before this field
+    // existed (conditional spread below).
     const body = {
       query: params.query,
       user_id: params.userId,
       limit: params.limit ?? 30,
       enable_graph: params.enableGraph ?? true,
+      ...(params.filters ? { filters: params.filters } : {}),
     };
 
     let res: Mem0ApiSearchResponse | undefined;

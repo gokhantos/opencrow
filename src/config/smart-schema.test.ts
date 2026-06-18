@@ -83,6 +83,13 @@ describe("smartConfigSchema", () => {
         memoryWriteback: false,
         perRunCostCeilingUsd: 0,
       },
+      outcomeMemory: {
+        writeBack: false,
+        readAtSynthesis: false,
+        reinforceCap: 5,
+        avoidCap: 5,
+        searchLimit: 12,
+      },
     });
   });
 

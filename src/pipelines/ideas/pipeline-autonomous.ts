@@ -177,7 +177,10 @@ export async function runAutonomousSige(
       return { runId, summary };
     }
 
-    const mem0 = new Mem0Client({ baseUrl: sigeConfig.mem0.baseUrl });
+    const mem0 = new Mem0Client({
+      baseUrl: sigeConfig.mem0.baseUrl,
+      apiToken: sigeConfig.mem0.apiToken,
+    });
     const userId = sigeConfig.mem0.userId;
     const model = config.model ?? "claude-haiku-4-5-20251001";
 
