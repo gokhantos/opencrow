@@ -108,6 +108,25 @@ function rowToFusedScore(row: Record<string, unknown>): FusedScore {
   }
 }
 
+// ─── Terminal Status ───────────────────────────────────────────────────────────
+
+/**
+ * Statuses from which a session never advances. `cancelled` is sticky: once set
+ * (by the cancel route, in the WEB process) it must NOT be overwritten by a
+ * later `completed`/`failed` write from the still-unwinding run — see
+ * `updateSessionStatus`.
+ */
+const TERMINAL_STATUSES: readonly SigeSessionStatus[] = [
+  "completed",
+  "failed",
+  "cancelled",
+]
+
+/** True when `status` is one from which a session never advances. */
+export function isTerminalStatus(status: SigeSessionStatus): boolean {
+  return TERMINAL_STATUSES.includes(status)
+}
+
 // ─── Session Operations ───────────────────────────────────────────────────────
 
 export async function createSession(session: {
@@ -133,6 +152,24 @@ export async function getSession(id: string): Promise<SigeSession | null> {
   return rowToSession(rows[0] as Record<string, unknown>)
 }
 
+/**
+ * Lightweight status-only read for a session. Returns the current `status`
+ * column, or `null` when the session does not exist. Used by the cross-process
+ * cancel watcher (`cancel-watcher.ts`) which polls frequently and must not pay
+ * the cost of hydrating the full session (config + artifact JSON columns).
+ */
+export async function getSessionStatus(
+  id: string,
+): Promise<SigeSessionStatus | null> {
+  const db = getDb()
+  const rows = await db`
+    SELECT status FROM sige_sessions WHERE id = ${id}
+  `
+  const row = (rows as Record<string, unknown>[])[0]
+  if (!row) return null
+  return row.status as SigeSessionStatus
+}
+
 export async function updateSessionStatus(
   id: string,
   status: SigeSessionStatus,
@@ -148,12 +185,25 @@ export async function updateSessionStatus(
 ): Promise<void> {
   const db = getDb()
 
-  // Never allow completed/failed sessions to be reset to pending
-  const TERMINAL: readonly string[] = ["completed", "failed", "cancelled"]
-  if (!TERMINAL.includes(status)) {
+  // Status-write guard. Two cases require re-reading the current status first:
+  //   1. A non-terminal write onto an already-terminal session (legacy guard:
+  //      never resurrect a completed/failed/cancelled session to a running stage).
+  //   2. A terminal write (completed/failed) onto an already-`cancelled` session.
+  //      `cancelled` is sticky: it is set out-of-band by the cancel route while
+  //      the run is still unwinding. The run's terminal `completed` write (run.ts)
+  //      and the entry's `failed` write on the abort error (entries/sige.ts) would
+  //      otherwise clobber it, hiding the cancellation. Cancellation wins.
+  const writingTerminal = TERMINAL_STATUSES.includes(status)
+  if (!writingTerminal || status !== "cancelled") {
     const existing = await db`SELECT status FROM sige_sessions WHERE id = ${id}`
-    if (existing.length > 0 && TERMINAL.includes(existing[0].status as string)) {
-      return
+    const existingStatus = existing.length > 0 ? (existing[0].status as string) : null
+    if (existingStatus !== null) {
+      if (!writingTerminal && TERMINAL_STATUSES.includes(existingStatus as SigeSessionStatus)) {
+        return
+      }
+      if (writingTerminal && existingStatus === "cancelled") {
+        return
+      }
     }
   }
 

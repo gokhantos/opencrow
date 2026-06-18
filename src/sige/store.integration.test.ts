@@ -11,6 +11,7 @@ import { initDb, closeDb, getDb } from "../store/db";
 import {
   createSession,
   getSession,
+  getSessionStatus,
   updateSessionStatus,
   countActiveAutonomousSessions,
   claimNextPendingSession,
@@ -358,5 +359,83 @@ describe("resume context and claimInterruptedSession", () => {
     expect(session!.gameFormulation).toBeDefined();
     expect(session!.gameFormulation!.id).toBe("gf1");
     await updateSessionStatus(id, "cancelled");
+  });
+});
+
+describe("getSessionStatus — lightweight status read", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    await cleanup();
+  });
+  afterEach(async () => {
+    await cleanup();
+    await closeDb();
+  });
+
+  it("returns the current status of an existing session", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    expect(await getSessionStatus(id)).toBe("pending");
+    await updateSessionStatus(id, "expert_game");
+    expect(await getSessionStatus(id)).toBe("expert_game");
+    await updateSessionStatus(id, "cancelled");
+  });
+
+  it("returns null for a non-existent session", async () => {
+    expect(await getSessionStatus(crypto.randomUUID())).toBeNull();
+  });
+});
+
+describe("updateSessionStatus — cancelled is sticky (clobber guard)", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    await cleanup();
+  });
+  afterEach(async () => {
+    await cleanup();
+    await closeDb();
+  });
+
+  it("a 'completed' write does NOT overwrite an already-cancelled session", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    await updateSessionStatus(id, "expert_game");
+    // Cancel arrives out-of-band (web process).
+    await updateSessionStatus(id, "cancelled");
+    // The run unwinds and reaches its terminal completed write — must be ignored.
+    await updateSessionStatus(id, "completed", {
+      report: "should not be written",
+      finishedAt: Math.floor(Date.now() / 1000),
+    });
+    expect(await getSessionStatus(id)).toBe("cancelled");
+    const session = await getSession(id);
+    // The report from the clobbering completed write must not have landed
+    // (column stays NULL -> null/undefined, never the clobbering string).
+    expect(session!.report ?? null).toBeNull();
+  });
+
+  it("a 'failed' write does NOT overwrite an already-cancelled session", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    await updateSessionStatus(id, "expert_game");
+    await updateSessionStatus(id, "cancelled");
+    // The abort error propagates to the entry's catch, which writes 'failed'.
+    await updateSessionStatus(id, "failed", { error: "Expert game simulation aborted" });
+    expect(await getSessionStatus(id)).toBe("cancelled");
+  });
+
+  it("still blocks a non-terminal write onto a terminal session (legacy guard)", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    await updateSessionStatus(id, "completed");
+    // A late running-stage write must not resurrect a completed session.
+    await updateSessionStatus(id, "expert_game");
+    expect(await getSessionStatus(id)).toBe("completed");
+    await updateSessionStatus(id, "cancelled"); // for cleanup symmetry
+  });
+
+  it("a genuine 'completed' write still works on a non-cancelled run", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    await updateSessionStatus(id, "expert_game");
+    await updateSessionStatus(id, "completed", {
+      finishedAt: Math.floor(Date.now() / 1000),
+    });
+    expect(await getSessionStatus(id)).toBe("completed");
   });
 });

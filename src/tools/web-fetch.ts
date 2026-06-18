@@ -44,6 +44,46 @@ function recordRequest(): void {
 }
 
 // ---------------------------------------------------------------------------
+// Sensitive header stripping
+// ---------------------------------------------------------------------------
+
+/**
+ * Headers that may carry OpenCrow or upstream credentials and must never be
+ * forwarded to an agent-chosen host. The agent controls both the URL and the
+ * headers, so without this it could exfiltrate `Authorization` (the OpenCrow
+ * internal/web bearer token rides here), cookies, or proxy credentials to an
+ * attacker-controlled server. Matched case-insensitively.
+ */
+const DENIED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  // Anthropic / OpenAI native auth headers — never proxy these outbound.
+  "x-api-key",
+]);
+
+/**
+ * Drop sensitive, agent-supplied headers before the outbound fetch. Returns a
+ * new object (never mutates the input) containing only the safe headers, and
+ * the list of names that were stripped so the caller can log them.
+ */
+export function sanitizeRequestHeaders(headers: Record<string, string>): {
+  readonly headers: Record<string, string>;
+  readonly stripped: readonly string[];
+} {
+  const safe: Record<string, string> = {};
+  const stripped: string[] = [];
+  for (const [name, value] of Object.entries(headers)) {
+    if (DENIED_REQUEST_HEADERS.has(name.toLowerCase())) {
+      stripped.push(name);
+      continue;
+    }
+    safe[name] = value;
+  }
+  return { headers: safe, stripped };
+}
+
+// ---------------------------------------------------------------------------
 // SSRF Prevention
 // ---------------------------------------------------------------------------
 
@@ -426,7 +466,13 @@ async function executeWebFetch(
       "PATCH",
     ] as const) ?? "GET";
 
-  const headers = (input.headers ?? {}) as Record<string, string>;
+  const rawHeaders = (input.headers ?? {}) as Record<string, string>;
+  const { headers, stripped } = sanitizeRequestHeaders(rawHeaders);
+  if (stripped.length > 0) {
+    log.warn("Stripped sensitive agent-supplied headers before fetch", {
+      stripped,
+    });
+  }
   const body = getString(input, "body");
   const timeoutS = getNumber(input, "timeout", {
     min: 1,

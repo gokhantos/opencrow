@@ -3,7 +3,7 @@ import { createWebFetchTool } from "./web-fetch";
 import type { ToolDefinition, ToolResult } from "./types";
 
 // We need to test the exported helpers too
-import { isPrivateIp, validateUrl, resetRateLimit } from "./web-fetch";
+import { isPrivateIp, validateUrl, resetRateLimit, sanitizeRequestHeaders } from "./web-fetch";
 
 // ---------------------------------------------------------------------------
 // isPrivateIp
@@ -103,6 +103,108 @@ describe("validateUrl", () => {
     // This will do real DNS, so use a well-known domain
     const result = await validateUrl("https://example.com");
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeRequestHeaders
+// ---------------------------------------------------------------------------
+
+describe("sanitizeRequestHeaders", () => {
+  test("strips Authorization header", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({
+      Authorization: "Bearer super-secret-token",
+    });
+    expect(headers).not.toHaveProperty("Authorization");
+    expect(stripped).toContain("Authorization");
+  });
+
+  test("strips x-api-key header", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({
+      "x-api-key": "sk-proj-abc123",
+    });
+    expect(headers).not.toHaveProperty("x-api-key");
+    expect(stripped).toContain("x-api-key");
+  });
+
+  test("strips Cookie header", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({
+      Cookie: "session=abc; token=xyz",
+    });
+    expect(headers).not.toHaveProperty("Cookie");
+    expect(stripped).toContain("Cookie");
+  });
+
+  test("strips Proxy-Authorization header", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({
+      "Proxy-Authorization": "Basic dXNlcjpwYXNz",
+    });
+    expect(headers).not.toHaveProperty("Proxy-Authorization");
+    expect(stripped).toContain("Proxy-Authorization");
+  });
+
+  test("passes through safe Content-Type header", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({
+      "Content-Type": "application/json",
+    });
+    expect(headers["Content-Type"]).toBe("application/json");
+    expect(stripped).toHaveLength(0);
+  });
+
+  test("passes through safe Accept header", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({
+      Accept: "application/json",
+    });
+    expect(headers["Accept"]).toBe("application/json");
+    expect(stripped).toHaveLength(0);
+  });
+
+  test("strips case-insensitively — AUTHORIZATION uppercase", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({
+      AUTHORIZATION: "Bearer token",
+    });
+    expect(headers).not.toHaveProperty("AUTHORIZATION");
+    expect(stripped).toContain("AUTHORIZATION");
+  });
+
+  test("strips case-insensitively — X-Api-Key mixed case", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({
+      "X-Api-Key": "anthropic-key",
+    });
+    expect(headers).not.toHaveProperty("X-Api-Key");
+    expect(stripped).toContain("X-Api-Key");
+  });
+
+  test("empty input returns empty headers and empty stripped list", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({});
+    expect(headers).toEqual({});
+    expect(stripped).toHaveLength(0);
+  });
+
+  test("stripped list contains exactly the stripped names — mixed safe and sensitive", () => {
+    const { headers, stripped } = sanitizeRequestHeaders({
+      Authorization: "Bearer token",
+      "Content-Type": "application/json",
+      "x-api-key": "secret",
+      Accept: "text/html",
+      Cookie: "a=b",
+    });
+    // Safe headers preserved
+    expect(headers["Content-Type"]).toBe("application/json");
+    expect(headers["Accept"]).toBe("text/html");
+    // Sensitive stripped
+    expect(headers).not.toHaveProperty("Authorization");
+    expect(headers).not.toHaveProperty("x-api-key");
+    expect(headers).not.toHaveProperty("Cookie");
+    // Exactly the three stripped names
+    expect([...stripped].sort()).toEqual(["Authorization", "Cookie", "x-api-key"].sort());
+  });
+
+  test("does not mutate the input object", () => {
+    const input = { Authorization: "Bearer token", "Content-Type": "application/json" };
+    const before = { ...input };
+    sanitizeRequestHeaders(input);
+    expect(input).toEqual(before);
   });
 });
 
