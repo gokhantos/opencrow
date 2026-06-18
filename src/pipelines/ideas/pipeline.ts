@@ -36,6 +36,7 @@ import {
   createPipelineStep,
   findCompletedStep,
   getPipelineRun,
+  markRunFailed,
   touchPipelineStep,
   updatePipelineRun,
   updatePipelineStep,
@@ -2203,6 +2204,28 @@ export async function runIdeasPipeline(
       trends.trendingCategories.length === 0 &&
       pains.clusters.length === 0
     ) {
+      // On a resume, if collector steps already completed with data, empty
+      // collectors indicate a replay problem — do NOT hollow-complete.
+      // Check whether any collector checkpoint exists for this run.
+      const [lcCheck, rvCheck, cpCheck] = await Promise.all([
+        findCompletedStep(runId, "landscape"),
+        findCompletedStep(runId, "reviews"),
+        findCompletedStep(runId, "capabilities"),
+      ]);
+      const hasCollectorCheckpoints =
+        lcCheck.hasOutput || rvCheck.hasOutput || cpCheck.hasOutput;
+
+      if (hasCollectorCheckpoints) {
+        const reason =
+          "Resume replay produced empty collectors despite completed checkpoints — replay failure";
+        log.error("Resume hollow-success guard triggered — failing run", {
+          runId,
+          reason,
+        });
+        await markRunFailed(runId, reason);
+        throw new Error(reason);
+      }
+
       log.warn(
         "No fresh source data available — all sources already consumed. Skipping synthesis.",
         { runId },

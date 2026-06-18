@@ -3,6 +3,7 @@ import {
   Play,
   CheckCircle2,
   XCircle,
+  MinusCircle,
   Loader2,
   Clock,
   ChevronDown,
@@ -91,6 +92,7 @@ const STATUS_STYLES: Record<string, string> = {
   running: "bg-accent-subtle text-accent border border-accent/20",
   completed: "bg-success-subtle text-success border border-success/20",
   failed: "bg-danger-subtle text-danger border border-danger/20",
+  interrupted: "bg-warning-subtle text-warning border border-warning/20",
 };
 
 const STATUS_ICONS: Record<string, typeof CheckCircle2> = {
@@ -98,6 +100,7 @@ const STATUS_ICONS: Record<string, typeof CheckCircle2> = {
   running: Loader2,
   completed: CheckCircle2,
   failed: XCircle,
+  interrupted: MinusCircle,
 };
 
 const STEP_ICONS: Record<string, typeof Database> = {
@@ -161,11 +164,14 @@ function StepProgressBar({
                 step.status === "running" && "bg-accent-subtle text-accent",
                 step.status === "failed" && "bg-danger-subtle text-danger",
                 step.status === "pending" && "bg-bg-3 text-faint",
+                step.status === "interrupted" && "bg-warning-subtle text-warning",
               )}
               title={step.outputSummary ?? step.stepName}
             >
               {step.status === "running" ? (
                 <Loader2 size={11} className="animate-spin" />
+              ) : step.status === "interrupted" ? (
+                <MinusCircle size={11} />
               ) : (
                 <Icon size={11} />
               )}
@@ -391,10 +397,14 @@ function RunRow({
                             step.status === "failed" &&
                               "bg-danger-subtle text-danger",
                             step.status === "pending" && "bg-bg-3 text-faint",
+                            step.status === "interrupted" &&
+                              "bg-warning-subtle text-warning",
                           )}
                         >
                           {step.status === "running" ? (
                             <Loader2 size={14} className="animate-spin" />
+                          ) : step.status === "interrupted" ? (
+                            <MinusCircle size={14} />
                           ) : (
                             <Icon size={14} />
                           )}
@@ -416,7 +426,14 @@ function RunRow({
                             </p>
                           )}
                           {step.error && (
-                            <p className="text-xs text-danger mt-1">
+                            <p
+                              className={cn(
+                                "text-xs mt-1",
+                                step.status === "interrupted"
+                                  ? "text-muted"
+                                  : "text-danger",
+                              )}
+                            >
                               {step.error}
                             </p>
                           )}

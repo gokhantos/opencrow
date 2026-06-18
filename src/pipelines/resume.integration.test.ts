@@ -8,6 +8,7 @@ import {
   createPipelineStep,
   updatePipelineStep,
   getStepsForRun,
+  findCompletedStep,
 } from "./store";
 import {
   resumeRunById,
@@ -258,8 +259,8 @@ describe("ghost step reconcile on resume", () => {
 
     // Completed checkpoint must survive (runStep will replay it).
     expect(byName.get("landscape")!.status).toBe("completed");
-    // Ghost must be failed.
-    expect(byName.get("reviews")!.status).toBe("failed");
+    // Ghost must be interrupted.
+    expect(byName.get("reviews")!.status).toBe("interrupted");
     // Dispatcher was called exactly once.
     expect(spy.calls).toHaveLength(1);
     expect(spy.calls[0]!.runId).toBe(runId!);
@@ -281,7 +282,21 @@ describe("ghost step reconcile on resume", () => {
 
     const steps = await getStepsForRun(runId!);
     const synthStep = steps.find((s) => s.stepName === "synthesis");
-    expect(synthStep!.status).toBe("failed");
+    expect(synthStep!.status).toBe("interrupted");
     expect(spy.calls.map((c) => c.runId)).toContain(runId!);
+  });
+
+  it("interrupted steps are ignored by findCompletedStep (status='completed' only)", async () => {
+    const { runId } = await acquirePipelineLock(TEST_PIPELINE);
+    const step = await createPipelineStep({ runId: runId!, stepName: "synthesis" });
+    await updatePipelineStep(step.id, { outputJson: { data: "x" } });
+    // Manually set to interrupted.
+    await getDb().unsafe(
+      `UPDATE pipeline_steps SET status = 'interrupted', finished_at = extract(epoch from now())::int, last_heartbeat = NULL WHERE id = $1`,
+      [step.id],
+    );
+
+    const result = await findCompletedStep(runId!, "synthesis");
+    expect(result.found).toBe(false); // interrupted is not completed → re-run
   });
 });
