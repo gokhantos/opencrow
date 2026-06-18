@@ -210,6 +210,8 @@ export interface AgentActionRecord {
 export interface RoundArtifacts {
   readonly equilibria?: readonly unknown[];
   readonly coalitions?: readonly unknown[];
+  readonly selectedIdeasCount?: number;
+  readonly eliminatedIdeasCount?: number;
   readonly metagameHealth?: unknown;
   readonly tasteFilter?: unknown;
 }

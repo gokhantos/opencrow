@@ -201,6 +201,45 @@ function TasteFilterPanel({ artifacts }: { readonly artifacts: RoundArtifacts })
   );
 }
 
+// ─── Round outcomes summary ────────────────────────────────────────────────────
+
+/**
+ * Compact per-round outcome chips — coalitions formed, equilibria found, and how
+ * many ideas survived vs. were eliminated. Sourced from the persisted
+ * SimulationRound `outcomes`. Renders nothing when no outcome data is present.
+ */
+function OutcomesSummary({ artifacts }: { readonly artifacts: RoundArtifacts }) {
+  const chips: { label: string; value: number; tone: string }[] = [];
+  if (artifacts.coalitions != null)
+    chips.push({ label: "coalitions", value: artifacts.coalitions.length, tone: "text-purple-300 bg-purple-500/15" });
+  if (artifacts.equilibria != null)
+    chips.push({ label: "equilibria", value: artifacts.equilibria.length, tone: "text-blue-300 bg-blue-500/15" });
+  if (artifacts.selectedIdeasCount != null)
+    chips.push({ label: "selected", value: artifacts.selectedIdeasCount, tone: "text-green-300 bg-green-500/15" });
+  if (artifacts.eliminatedIdeasCount != null && artifacts.eliminatedIdeasCount > 0)
+    chips.push({ label: "eliminated", value: artifacts.eliminatedIdeasCount, tone: "text-red-300 bg-red-500/15" });
+
+  if (chips.length === 0) return null;
+
+  return (
+    <div className="px-3 py-2.5 border-t border-border/40">
+      <span className="text-[10px] text-faint uppercase tracking-wide font-semibold">
+        Round Outcomes
+      </span>
+      <ul role="list" className="mt-1.5 flex flex-wrap gap-1.5">
+        {chips.map((c) => (
+          <li
+            key={c.label}
+            className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded tabular-nums", c.tone)}
+          >
+            <span className="font-bold">{c.value}</span> {c.label}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 // ─── Empty / loading / error states ───────────────────────────────────────────
 
 function LedgerLoading() {
@@ -269,10 +308,11 @@ export function AgentLedger({ ledgers, loading, error, isTasteFilter = false }: 
           <AgentRow
             key={`${action.agentId}-${action.round}-${i}`}
             action={action}
-            isLast={i === allActions.length - 1 && (!isTasteFilter || combinedArtifacts == null)}
+            isLast={i === allActions.length - 1 && combinedArtifacts == null}
           />
         ))}
       </ul>
+      {combinedArtifacts != null && <OutcomesSummary artifacts={combinedArtifacts} />}
       {isTasteFilter && combinedArtifacts != null && (
         <TasteFilterPanel artifacts={combinedArtifacts} />
       )}

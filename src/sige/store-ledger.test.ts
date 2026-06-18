@@ -324,6 +324,18 @@ describe("mergeArtifacts — RoundArtifacts aggregation", () => {
     const merged = mergeArtifacts([null, art]);
     expect(merged!.tasteFilter).toEqual({ passed: ["idea-1"], eliminated: ["idea-2"] });
   });
+
+  test("carries selectedIdeasCount / eliminatedIdeasCount through the merge", () => {
+    const art: RoundArtifacts = {
+      coalitions: [{ id: "c1" }],
+      selectedIdeasCount: 12,
+      eliminatedIdeasCount: 3,
+    };
+    const merged = mergeArtifacts([null, art, null]);
+    expect(merged!.selectedIdeasCount).toBe(12);
+    expect(merged!.eliminatedIdeasCount).toBe(3);
+    expect((merged!.coalitions as unknown[]).length).toBe(1);
+  });
 });
 
 // ─── parseActionContent — JSON content parsing ────────────────────────────────

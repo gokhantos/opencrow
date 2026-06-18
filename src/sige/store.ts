@@ -462,6 +462,8 @@ export interface AgentActionRecord {
 export interface RoundArtifacts {
   readonly equilibria?: unknown[];
   readonly coalitions?: unknown[];
+  readonly selectedIdeasCount?: number;
+  readonly eliminatedIdeasCount?: number;
   readonly metagameHealth?: unknown;
   readonly tasteFilter?: unknown;
 }
@@ -613,16 +615,36 @@ export async function getRoundArtifacts(
     return null;
   }
 
-  return {
-    equilibria: Array.isArray(parsed.equilibria)
-      ? (parsed.equilibria as unknown[])
+  // result_json is a persisted SimulationRound: equilibria/coalitions and the
+  // selected/eliminated idea sets live under `outcomes` (RoundOutcome), NOT at
+  // the top level. metagameHealth is a whole-game artifact and may be absent
+  // per-round; tasteFilter is kept best-effort for forward compatibility.
+  const outcomes =
+    parsed.outcomes != null && typeof parsed.outcomes === "object"
+      ? (parsed.outcomes as Record<string, unknown>)
+      : {};
+
+  const artifacts: RoundArtifacts = {
+    equilibria: Array.isArray(outcomes.equilibria)
+      ? (outcomes.equilibria as unknown[])
       : undefined,
-    coalitions: Array.isArray(parsed.coalitions)
-      ? (parsed.coalitions as unknown[])
+    coalitions: Array.isArray(outcomes.coalitions)
+      ? (outcomes.coalitions as unknown[])
+      : undefined,
+    selectedIdeasCount: Array.isArray(outcomes.selectedIdeas)
+      ? (outcomes.selectedIdeas as unknown[]).length
+      : undefined,
+    eliminatedIdeasCount: Array.isArray(outcomes.eliminatedIdeas)
+      ? (outcomes.eliminatedIdeas as unknown[]).length
       : undefined,
     metagameHealth: parsed.metagameHealth ?? parsed.metaGameHealth ?? undefined,
     tasteFilter: parsed.tasteFilter ?? undefined,
   };
+
+  // Graceful-null: if nothing was extractable, signal "no artifacts" rather
+  // than an empty object the UI would have to special-case.
+  const hasAny = Object.values(artifacts).some((v) => v !== undefined);
+  return hasAny ? artifacts : null;
 }
 
 // ─── Simulation Result Operations ─────────────────────────────────────────────
