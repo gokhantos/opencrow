@@ -191,6 +191,35 @@ export interface SseStatusEvent {
   readonly message?: string;
 }
 
+// ─── Agent action ledger types (GET /api/sige/sessions/:id/actions) ──────────
+
+export interface AgentActionRecord {
+  readonly agentId: string;
+  readonly role: string;
+  readonly round: number;
+  readonly actionType: string;
+  /** Raw JSON string as stored in DB — parse defensively, may be truncated. */
+  readonly content: string;
+  readonly confidence: number;
+  readonly score: number | null;
+  readonly targetIdeas: readonly string[];
+  readonly reasoning: string;
+  readonly createdAt: number; // epoch seconds, Number()-converted
+}
+
+export interface RoundArtifacts {
+  readonly equilibria?: readonly unknown[];
+  readonly coalitions?: readonly unknown[];
+  readonly metagameHealth?: unknown;
+  readonly tasteFilter?: unknown;
+}
+
+export interface RoundLedger {
+  readonly round: number;
+  readonly actions: readonly AgentActionRecord[];
+  readonly artifacts: RoundArtifacts | null;
+}
+
 // ─── Step-monitor progress types (GET /api/sige/sessions/:id/progress) ─────────
 
 export type StepKey =
