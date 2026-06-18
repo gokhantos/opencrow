@@ -763,14 +763,23 @@ export const sigeAutoConfigSchema = z
 export type SigeAutoConfig = z.infer<typeof sigeAutoConfigSchema>;
 
 // Phase 6 "outcome memory": write idea verdicts back to mem0 and/or read them
-// at synthesis time to guide the next generation round. Both behavior flags
-// default OFF so a default pipeline run is byte-identical to today.
+// at synthesis time to guide the next generation round. Both behavior flags now
+// default ON to activate the REINFORCE/AVOID learning loop against the populated
+// graph — see the per-field comments for the rationale of each flip.
 export const outcomeMemoryConfigSchema = z
   .object({
     // Write idea verdict sentences back to mem0 after persistence/proxy-labels.
-    writeBack: z.boolean().default(false),
+    // Default ON: this is the WRITE half of the learning loop — without it no
+    // outcome memories ever accumulate, so the READ half has nothing to inject.
+    // Best-effort + circuit-broken (writeOutcomeMemories swallows failures), so a
+    // down mem0 sidecar degrades to a no-op rather than breaking the run.
+    writeBack: z.boolean().default(true),
     // Read outcome memories at synthesis time and inject as GUIDANCE.
-    readAtSynthesis: z.boolean().default(false),
+    // Default ON: this is the READ half — it injects learned REINFORCE/AVOID
+    // guidance into the synthesis prompt. Read-only and degrades to "" on any
+    // mem0 failure (fetchOutcomeMemoryBlock never throws), so the default path is
+    // byte-identical when mem0 is empty or unavailable.
+    readAtSynthesis: z.boolean().default(true),
     // Max REINFORCE bullets injected into the synthesis prompt.
     reinforceCap: z.number().int().min(1).max(20).default(5),
     // Max AVOID bullets injected into the synthesis prompt.
@@ -779,8 +788,8 @@ export const outcomeMemoryConfigSchema = z
     searchLimit: z.number().int().min(1).max(50).default(12),
   })
   .default({
-    writeBack: false,
-    readAtSynthesis: false,
+    writeBack: true,
+    readAtSynthesis: true,
     reinforceCap: 5,
     avoidCap: 5,
     searchLimit: 12,
@@ -791,7 +800,12 @@ export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
   sigeValuation: z.boolean().default(false),
-  knowledgeGraphRetrieval: z.boolean().default(false),
+  // Default ON: read-only retrieval that injects mem0 graph FACTS into synthesis.
+  // The graph is now populated, so this leverages it with no autonomous feedback
+  // loop. Retrieved facts are sanitize + untrusted-fenced before they reach the
+  // prompt (graphEvidence), and deepSearch degrades to the model-only path on any
+  // mem0 failure — so the flip adds grounding, not a new failure or injection mode.
+  knowledgeGraphRetrieval: z.boolean().default(true),
   deepSearchReranker: z.boolean().default(false),
   signalFacets: z.boolean().default(false),
   // Importance/relevance SCORING + CALIBRATION + retrieval filtering for
@@ -829,13 +843,13 @@ export const smartConfigSchema = z.object({
   // SIGE breadth + depth stages. Default OFF — no behavior change until enabled.
   sigeAuto: sigeAutoConfigSchema,
   // Phase 6 "outcome memory": verdict write-back + synthesis-time guidance via
-  // mem0. Both flags default OFF — no behavior change until enabled.
+  // mem0. Both flags now default ON — the REINFORCE/AVOID learning loop is live.
   outcomeMemory: outcomeMemoryConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
   sigeValuation: false,
-  knowledgeGraphRetrieval: false,
+  knowledgeGraphRetrieval: true,
   deepSearchReranker: false,
   signalFacets: false,
   signalRanking: false,
@@ -890,8 +904,8 @@ const SMART_IDEAS_DEFAULTS = {
     perRunCostCeilingUsd: 0,
   },
   outcomeMemory: {
-    writeBack: false,
-    readAtSynthesis: false,
+    writeBack: true,
+    readAtSynthesis: true,
     reinforceCap: 5,
     avoidCap: 5,
     searchLimit: 12,

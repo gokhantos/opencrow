@@ -380,7 +380,11 @@ export async function runIdeasPipeline(
     });
     const extraCandidates = await fetchDivergentCandidates(generateWide, signalsContext, model);
 
-    // ── Outcome-memory READ hook (gated readAtSynthesis, default OFF) ─────────
+    // ── Outcome-memory READ hook (gated readAtSynthesis, default ON) ──────────
+    // Injects learned REINFORCE/AVOID guidance into the generation prompt. Still
+    // guarded on outcomeMem0 !== null and returns "" on any failure or when mem0
+    // is empty (fetchOutcomeMemoryBlock never throws), so a run with no learned
+    // history is byte-identical to the pre-feature path.
     const outcomeMemory: string =
       outcomeMemoryCfg.readAtSynthesis && outcomeMem0 !== null
         ? await fetchOutcomeMemoryBlock({
@@ -675,7 +679,12 @@ export async function runIdeasPipeline(
           });
         }
 
-        // ── Outcome-memory WRITE hook ─────────────────────────────────────
+        // ── Outcome-memory WRITE hook (gated writeBack, default ON) ────────
+        // Writes one verdict memory per stored idea (+ one per dedup-rejected
+        // title) back to mem0 so future synthesis rounds learn from them. Still
+        // guarded on outcomeMem0 !== null; runOutcomeMemoryWriteBack is best-effort
+        // (writeOutcomeMemories swallows failures), so a down mem0 sidecar no-ops
+        // rather than breaking the run.
         if (outcomeMemoryCfg.writeBack && storedPairs.length > 0 && outcomeMem0 !== null) {
           await runOutcomeMemoryWriteBack({
             storedPairs,

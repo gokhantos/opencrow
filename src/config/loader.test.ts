@@ -337,29 +337,30 @@ describe("loadConfig — outcomeMemory env toggles", () => {
   test("no env vars set → all outcomeMemory fields carry schema defaults", () => {
     const cfg = loadConfig();
     const om = cfg.pipelines.ideas.smart.outcomeMemory;
-    expect(om.writeBack).toBe(false);
-    expect(om.readAtSynthesis).toBe(false);
+    // Both learning-loop halves now default ON (the REINFORCE/AVOID loop is live).
+    expect(om.writeBack).toBe(true);
+    expect(om.readAtSynthesis).toBe(true);
     expect(om.reinforceCap).toBe(5);
     expect(om.avoidCap).toBe(5);
     expect(om.searchLimit).toBe(12);
   });
 
-  test("WRITEBACK=true → writeBack becomes true; sibling fields keep defaults", () => {
-    process.env.OPENCROW_SMART_OUTCOME_MEMORY_WRITEBACK = "true";
+  test("WRITEBACK=false → writeBack overrides to false; sibling fields keep defaults", () => {
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_WRITEBACK = "false";
     const cfg = loadConfig();
     const om = cfg.pipelines.ideas.smart.outcomeMemory;
-    expect(om.writeBack).toBe(true);
-    // sibling defaults must survive the shallow-merge
-    expect(om.readAtSynthesis).toBe(false);
+    expect(om.writeBack).toBe(false);
+    // sibling defaults must survive the shallow-merge (readAtSynthesis stays ON)
+    expect(om.readAtSynthesis).toBe(true);
     expect(om.reinforceCap).toBe(5);
     expect(om.avoidCap).toBe(5);
     expect(om.searchLimit).toBe(12);
   });
 
-  test("READ_AT_SYNTHESIS=true → readAtSynthesis becomes true", () => {
-    process.env.OPENCROW_SMART_OUTCOME_MEMORY_READ_AT_SYNTHESIS = "true";
+  test("READ_AT_SYNTHESIS=false → readAtSynthesis overrides to false", () => {
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_READ_AT_SYNTHESIS = "false";
     const cfg = loadConfig();
-    expect(cfg.pipelines.ideas.smart.outcomeMemory.readAtSynthesis).toBe(true);
+    expect(cfg.pipelines.ideas.smart.outcomeMemory.readAtSynthesis).toBe(false);
   });
 
   test("REINFORCE_CAP=8 → reinforceCap becomes 8 (number, not string)", () => {

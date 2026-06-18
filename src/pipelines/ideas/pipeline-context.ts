@@ -378,8 +378,10 @@ export function buildTasteBlocks(
  * #13 — Assemble the optional deepSearch dependencies. The reranker `model` is
  * always supplied (deepSearch falls back to LLM-listwise rerank when no embedder
  * is present and the flag is on). The Mem0 client + userId are only built when
- * smart.knowledgeGraphRetrieval is on, so the default path constructs nothing.
- * deepSearch itself gates each enrichment on the smart flags it reads directly.
+ * smart.knowledgeGraphRetrieval is on (now the default) so graph FACTS can be
+ * injected into synthesis; if the client build throws we drop back to the
+ * model-only branch. deepSearch itself gates each enrichment on the smart flags
+ * it reads directly, and degrades to no graph context on any mem0 failure.
  */
 export function buildDeepSearchOptions(
   model: string,

@@ -11,6 +11,7 @@
 
 import { describe, test, expect } from "bun:test";
 import {
+  buildOutcomeMemoryBlock,
   outcomeMemorySchema,
   toOutcomeMemory,
   renderOutcomeSentence,
@@ -20,6 +21,7 @@ import {
   type OutcomeVerdict,
   type OutcomeSignals,
   type OutcomeContext,
+  type RetrievedOutcome,
 } from "./outcome-memory";
 import type { GiantAggregate } from "./giant";
 import type { DemandArtifact } from "./demand";
@@ -503,5 +505,143 @@ describe("renderOutcomeSentence", () => {
     const sentence = renderOutcomeSentence(mem, "Acute pain SaaS tool");
     expect(sentence).toContain("3.8/5");
     expect(sentence).toContain("4.1/5");
+  });
+});
+
+// ── buildOutcomeMemoryBlock — REINFORCE/AVOID bucketing contract ──────────────
+//
+// This is the load-bearing learning-loop logic now that outcomeMemory.{writeBack,
+// readAtSynthesis} default ON: the split into REINFORCE vs AVOID is driven SOLELY
+// by structured metadata. These tests pin the contract the synthesis prompt
+// depends on so a default run injects the right guidance (and nothing extra).
+
+describe("buildOutcomeMemoryBlock", () => {
+  function retrieved(
+    body: string,
+    overrides: Partial<OutcomeMemory> = {},
+  ): RetrievedOutcome {
+    return { memory: body, metadata: fullMemory(overrides) };
+  }
+
+  test("REINFORCE includes human-validated but EXCLUDES proxy-validated (no double-count)", () => {
+    const items: readonly RetrievedOutcome[] = [
+      retrieved("human win", {
+        ideaId: "idea-human",
+        verdict: "validated",
+        verdictSource: "human",
+      }),
+      retrieved("proxy win — must be excluded", {
+        ideaId: "idea-proxy",
+        verdict: "validated",
+        verdictSource: "proxy:high-giant",
+      }),
+    ];
+    const block = buildOutcomeMemoryBlock(items, 5, 5);
+
+    expect(block).toContain("REINFORCE");
+    expect(block).toContain("human win");
+    // Proxy-validated must NOT appear — it would double-count the Postgres
+    // GIANT/credibility calibration that already feeds generation.
+    expect(block).not.toContain("proxy win — must be excluded");
+    // With no archived/dedup-rejected inputs there is no AVOID section.
+    expect(block).not.toContain("AVOID");
+  });
+
+  test("AVOID includes BOTH archived (incl. proxy archives) and dedup-rejected", () => {
+    const items: readonly RetrievedOutcome[] = [
+      retrieved("archived by human", {
+        ideaId: "idea-arch",
+        verdict: "archived",
+        verdictSource: "human",
+      }),
+      retrieved("archived by proxy — kept (cheap archive is safe to learn from)", {
+        ideaId: "idea-arch-proxy",
+        verdict: "archived",
+        verdictSource: "proxy:very-low-giant",
+      }),
+      retrieved("dup theme", {
+        ideaId: null,
+        verdict: "dedup-rejected",
+        verdictSource: "dedup",
+      }),
+    ];
+    const block = buildOutcomeMemoryBlock(items, 5, 5);
+
+    expect(block).toContain("AVOID");
+    expect(block).toContain("archived by human");
+    expect(block).toContain("archived by proxy — kept (cheap archive is safe to learn from)");
+    expect(block).toContain("dup theme");
+    // No validated inputs → no REINFORCE section.
+    expect(block).not.toContain("REINFORCE");
+  });
+
+  test("stored-pending is NEUTRAL — never lands in REINFORCE or AVOID", () => {
+    const items: readonly RetrievedOutcome[] = [
+      retrieved("pending neutral", {
+        ideaId: "idea-pending",
+        verdict: "stored-pending",
+        verdictSource: "none",
+      }),
+    ];
+    // Only a neutral memory → both buckets empty → byte-identical "" contract.
+    expect(buildOutcomeMemoryBlock(items, 5, 5)).toBe("");
+  });
+
+  test('both buckets empty renders byte-identical "" (default-run invariant)', () => {
+    // Empty input.
+    expect(buildOutcomeMemoryBlock([], 5, 5)).toBe("");
+    // Non-empty input that maps to neither bucket (proxy-validated + stored-pending).
+    const nonContributing: readonly RetrievedOutcome[] = [
+      retrieved("excluded proxy", {
+        ideaId: "p",
+        verdict: "validated",
+        verdictSource: "proxy:high-giant",
+      }),
+      retrieved("excluded pending", {
+        ideaId: "q",
+        verdict: "stored-pending",
+        verdictSource: "none",
+      }),
+    ];
+    expect(buildOutcomeMemoryBlock(nonContributing, 5, 5)).toBe("");
+  });
+
+  test("caps are applied independently per bucket after de-dup", () => {
+    const items: readonly RetrievedOutcome[] = [
+      retrieved("v1", { ideaId: "v1", verdict: "validated", verdictSource: "human" }),
+      retrieved("v2", { ideaId: "v2", verdict: "validated", verdictSource: "human" }),
+      retrieved("v3", { ideaId: "v3", verdict: "validated", verdictSource: "human" }),
+      retrieved("a1", { ideaId: "a1", verdict: "archived", verdictSource: "human" }),
+      retrieved("a2", { ideaId: "a2", verdict: "archived", verdictSource: "human" }),
+    ];
+    const block = buildOutcomeMemoryBlock(items, 2, 1);
+    // reinforceCap=2 → v1, v2 kept; v3 dropped.
+    expect(block).toContain("v1");
+    expect(block).toContain("v2");
+    expect(block).not.toContain("v3");
+    // avoidCap=1 → only a1 kept.
+    expect(block).toContain("a1");
+    expect(block).not.toContain("a2");
+  });
+
+  test("de-dups by ideaId before capping (same idea retrieved twice counts once)", () => {
+    const items: readonly RetrievedOutcome[] = [
+      retrieved("dupe A", { ideaId: "same", verdict: "validated", verdictSource: "human" }),
+      retrieved("dupe B (same ideaId)", {
+        ideaId: "same",
+        verdict: "validated",
+        verdictSource: "human",
+      }),
+      retrieved("distinct", {
+        ideaId: "other",
+        verdict: "validated",
+        verdictSource: "human",
+      }),
+    ];
+    const block = buildOutcomeMemoryBlock(items, 5, 5);
+    // First occurrence of the duplicated ideaId wins; the second body is dropped.
+    expect(block).toContain("dupe A");
+    expect(block).not.toContain("dupe B (same ideaId)");
+    expect(block).toContain("distinct");
   });
 });
