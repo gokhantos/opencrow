@@ -679,6 +679,7 @@ export async function generateDivergentCandidates(
       config,
       roundContext: undefined,
       signalsContext,
+      signal,
     })
   })
 
