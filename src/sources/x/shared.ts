@@ -5,6 +5,21 @@ import { createLogger } from "../../logger";
 
 const log = createLogger("x-shared");
 
+/**
+ * Returns true when a Chromium executable is available for Playwright to use.
+ *
+ * Checks via `chromium.executablePath()` which throws when the browser is not
+ * installed (e.g. Docker builds with PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1).
+ */
+export function isBrowserAvailable(): boolean {
+  try {
+    chromium.executablePath();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // URLs & GraphQL
 export const BASE_URL = "https://x.com";
 export const HOME_URL = `${BASE_URL}/home`;
@@ -92,6 +107,17 @@ export async function launchXBrowser(
   authToken: string,
   ct0: string,
 ): Promise<XBrowserSession> {
+  if (!isBrowserAvailable()) {
+    log.warn(
+      "Chromium is not installed — skipping X browser scrape. " +
+        "Run 'bun run setup:browser' to enable browser-based scrapers.",
+    );
+    throw new Error(
+      "Chromium not available: browser scraping is disabled on this deploy. " +
+        "Run 'bun run setup:browser' to install Chromium.",
+    );
+  }
+
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1080 },

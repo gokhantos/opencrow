@@ -1,4 +1,5 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, mock } from "bun:test";
+import type { MessageHandler } from "../types";
 
 // The handler.ts exports only createWhatsAppHandler, but the pure functions
 // (extractText, stripMention, escapeRegex) are module-private.
@@ -159,5 +160,135 @@ describe("stripMention", () => {
   test("handles bot name with special regex chars", () => {
     expect(stripMention("@bot.name hello", "bot.name")).toBe("hello");
     expect(stripMention("@bot+name hello", "bot+name")).toBe("hello");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createWhatsAppHandler — per-instance dedup isolation
+// ---------------------------------------------------------------------------
+//
+// Security/correctness invariant: each call to createWhatsAppHandler must
+// create its own independent recentMessageIds map. Two handler instances
+// (e.g. the real channel and a pairing helper) MUST NOT share dedup state.
+//
+// The test imports createWhatsAppHandler and builds two minimal WASocket stubs
+// (duck-typed) that each capture their own `messages.upsert` listener. We then
+// trigger the same message ID on both and assert that the second instance does
+// NOT suppress the message (i.e. it invokes onMessage independently).
+//
+// The test would fail if recentMessageIds were module-level (the old bug):
+// after the first handler recorded msgId="dup-1", the second handler would
+// find it in the shared map and return early without calling onMessage.
+// ---------------------------------------------------------------------------
+
+import { createWhatsAppHandler } from "./handler";
+import type { WASocket } from "@whiskeysockets/baileys";
+
+/**
+ * Build a minimal WASocket stub that captures the `messages.upsert` listener.
+ * Only the surface area actually used by processMessage is provided.
+ */
+function makeSocketStub() {
+  type UpsertListener = (arg: { messages: unknown[]; type: string }) => Promise<void>;
+  let upsertListener: UpsertListener | null = null;
+
+  const sock = {
+    ev: {
+      on: (event: string, handler: UpsertListener) => {
+        if (event === "messages.upsert") {
+          upsertListener = handler;
+        }
+      },
+    },
+    user: { id: "bot@s.whatsapp.net" },
+  } as unknown as WASocket;
+
+  const trigger = async (messages: unknown[], type = "notify") => {
+    if (!upsertListener) throw new Error("messages.upsert listener not registered");
+    await upsertListener({ messages, type });
+  };
+
+  return { sock, trigger };
+}
+
+/**
+ * Build a minimal WAMessage that will pass all the early-exit guards in
+ * processMessage (fromMe=false, has remoteJid, has .message, has text).
+ */
+function makeWAMessage(id: string) {
+  return {
+    key: {
+      fromMe: false,
+      remoteJid: "1234567890@s.whatsapp.net",
+      id,
+    },
+    message: {
+      conversation: "hello world",
+    },
+    pushName: "Tester",
+    messageTimestamp: 1_700_000_000,
+  };
+}
+
+describe("createWhatsAppHandler — per-instance recentMessageIds isolation", () => {
+  test("two independent handler instances each process the same msgId once", async () => {
+    const handlerA = mock(async () => {});
+    const handlerB = mock(async () => {});
+
+    const { sock: sockA, trigger: triggerA } = makeSocketStub();
+    const { sock: sockB, trigger: triggerB } = makeSocketStub();
+
+    createWhatsAppHandler(sockA, handlerA as unknown as MessageHandler, "BotA");
+    createWhatsAppHandler(sockB, handlerB as unknown as MessageHandler, "BotB");
+
+    const msg = makeWAMessage("dup-msg-001");
+
+    // Trigger the same message on handler A first.
+    await triggerA([msg]);
+    // Then trigger it on handler B — must NOT be suppressed by A's dedup map.
+    await triggerB([msg]);
+
+    expect(handlerA).toHaveBeenCalledTimes(1);
+    expect(handlerB).toHaveBeenCalledTimes(1);
+  });
+
+  test("within a single handler, duplicate msgId IS suppressed (dedup still works)", async () => {
+    const onMessage = mock(async () => {});
+    const { sock, trigger } = makeSocketStub();
+
+    createWhatsAppHandler(sock, onMessage as unknown as MessageHandler, "Bot");
+
+    const msg = makeWAMessage("dup-msg-002");
+
+    // Same message upserted twice by Baileys.
+    await trigger([msg]);
+    await trigger([msg]);
+
+    // Second delivery must be deduped — onMessage called only once.
+    expect(onMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test("three handler instances are all independent — each processes the message", async () => {
+    const handlerA = mock(async () => {});
+    const handlerB = mock(async () => {});
+    const handlerC = mock(async () => {});
+
+    const { sock: sA, trigger: tA } = makeSocketStub();
+    const { sock: sB, trigger: tB } = makeSocketStub();
+    const { sock: sC, trigger: tC } = makeSocketStub();
+
+    createWhatsAppHandler(sA, handlerA as unknown as MessageHandler, "Bot");
+    createWhatsAppHandler(sB, handlerB as unknown as MessageHandler, "Bot");
+    createWhatsAppHandler(sC, handlerC as unknown as MessageHandler, "Bot");
+
+    const msg = makeWAMessage("shared-msg-003");
+
+    await tA([msg]);
+    await tB([msg]);
+    await tC([msg]);
+
+    expect(handlerA).toHaveBeenCalledTimes(1);
+    expect(handlerB).toHaveBeenCalledTimes(1);
+    expect(handlerC).toHaveBeenCalledTimes(1);
   });
 });

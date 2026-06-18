@@ -21,6 +21,7 @@ const log = createLogger("playstore-scraper");
 
 const DEFAULT_INTERVAL_MINUTES = 60;
 const REQUEST_DELAY_MS = 4_000; // 4 seconds between API calls
+const GPLAY_TIMEOUT_MS = 30_000; // hard cap per google-play-scraper call
 const TOP_APPS_PER_LIST = 5; // fetch reviews for top N from each list/category
 const DISCOVERY_LOOKUPS_PER_CYCLE = 3; // discover similar apps for N random seeds per cycle
 
@@ -88,6 +89,19 @@ interface GPlayReviewsResult {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Race a promise against a hard timeout so that a slow google-play-scraper
+ * call cannot wedge the scrape cycle with the `running` flag stuck.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms),
+    ),
+  ]);
 }
 
 export interface PlayStoreScraper {
@@ -195,7 +209,11 @@ export function createPlayStoreScraper(config?: {
         opts.category = categoryId;
       }
 
-      const apps = await gplay.list(opts);
+      const apps = await withTimeout(
+        gplay.list(opts),
+        GPLAY_TIMEOUT_MS,
+        `gplay.list(${listType})`,
+      );
       return apps.map((app, index) => mapAppToRanking(app, index + 1, listType));
     } catch (err) {
       const msg = getErrorMessage(err);
@@ -210,7 +228,11 @@ export function createPlayStoreScraper(config?: {
         app: (opts: Record<string, unknown>) => Promise<GPlayAppDetail>;
       } }).default;
 
-      return await gplay.app({ appId, country: "us", lang: "en" });
+      return await withTimeout(
+        gplay.app({ appId, country: "us", lang: "en" }),
+        GPLAY_TIMEOUT_MS,
+        `gplay.app(${appId})`,
+      );
     } catch (err) {
       const msg = getErrorMessage(err);
       log.warn("Failed to fetch app detail", { appId, error: msg });
@@ -228,13 +250,17 @@ export function createPlayStoreScraper(config?: {
         sort: Record<string, number>;
       } }).default;
 
-      const result = await gplay.reviews({
-        appId,
-        sort: gplay.sort.NEWEST,
-        num: 50,
-        country: "us",
-        lang: "en",
-      });
+      const result = await withTimeout(
+        gplay.reviews({
+          appId,
+          sort: gplay.sort.NEWEST,
+          num: 50,
+          country: "us",
+          lang: "en",
+        }),
+        GPLAY_TIMEOUT_MS,
+        `gplay.reviews(${appId})`,
+      );
 
       const now = Math.floor(Date.now() / 1000);
       return result.data.map((r) => ({
@@ -263,7 +289,11 @@ export function createPlayStoreScraper(config?: {
         similar: (opts: Record<string, unknown>) => Promise<readonly GPlayApp[]>;
       } }).default;
 
-      const apps = await gplay.similar({ appId, num: 20, country: "us", lang: "en" });
+      const apps = await withTimeout(
+        gplay.similar({ appId, num: 20, country: "us", lang: "en" }),
+        GPLAY_TIMEOUT_MS,
+        `gplay.similar(${appId})`,
+      );
       const now = Math.floor(Date.now() / 1000);
       return apps.map((app) => ({
         id: app.appId ?? "",

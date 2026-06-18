@@ -10,6 +10,7 @@ import {
 import { getErrorMessage } from "../../lib/error-serialization";
 import { getOverride } from "../../store/config-overrides";
 import { loadScraperIntervalMs } from "../scraper-config";
+import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 
 const log = createLogger("github-search-scraper");
 
@@ -166,10 +167,7 @@ async function fetchSearchPage(
   }
 
   try {
-    const resp = await fetch(url, {
-      headers,
-      signal: AbortSignal.timeout(30_000),
-    });
+    const resp = await fetchWithTimeout(url, { headers }, 30_000);
 
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
