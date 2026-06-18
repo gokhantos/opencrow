@@ -119,6 +119,33 @@ describe("resolveManifest", () => {
     expect(specs.find((s) => s.name === "cron")?.heartbeat).toBeUndefined();
   });
 
+  test("registers sige-ingestion with IPC hung-detection disabled when sige enabled", () => {
+    const config = makeConfig({
+      processes: { static: [] },
+      sige: { enabled: true } as OpenCrowConfig["sige"],
+    });
+    const specs = resolveManifest(config, []);
+    const ingestion = specs.find((s) => s.name === "sige-ingestion");
+    expect(ingestion).toBeDefined();
+    expect(ingestion?.entry).toBe("src/entries/sige-ingestion.ts");
+    expect(ingestion?.heartbeat?.enabled).toBe(false);
+  });
+
+  test("omits sige-ingestion when sige disabled", () => {
+    const config = makeConfig({
+      processes: { static: [] },
+      sige: { enabled: false } as OpenCrowConfig["sige"],
+    });
+    const specs = resolveManifest(config, []);
+    expect(specs.some((s) => s.name === "sige-ingestion")).toBe(false);
+  });
+
+  test("omits sige-ingestion when sige section absent", () => {
+    const config = makeConfig({ processes: { static: [] } });
+    const specs = resolveManifest(config, []);
+    expect(specs.some((s) => s.name === "sige-ingestion")).toBe(false);
+  });
+
   test("spawns agent processes for agents with telegram tokens", () => {
     const config = makeConfig({
       processes: {

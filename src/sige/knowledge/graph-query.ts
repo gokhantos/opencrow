@@ -15,6 +15,23 @@ export interface GraphNode {
   readonly name: string;
   readonly entityType: string;
   readonly summary?: string;
+  /**
+   * Mem0 search relevance score for the underlying memory, when available.
+   * Higher means more relevant to the query. Undefined when the search backend
+   * did not surface a score (e.g. getAll-style fetches). Used to rank nodes
+   * before truncation so the most relevant entities survive.
+   */
+  readonly relevanceScore?: number;
+  /**
+   * Credibility of the underlying memory's source in [0, 1], lifted from
+   * `metadata.credibility` when present. Undefined when absent.
+   */
+  readonly credibility?: number;
+  /**
+   * Source type of the underlying memory (e.g. "appstore_review"), lifted from
+   * `metadata.source_type` when present. Undefined when absent.
+   */
+  readonly sourceType?: string;
 }
 
 /**
@@ -39,6 +56,12 @@ export interface GraphView {
 export interface GraphQueryOptions {
   readonly maxNodes?: number;
   readonly maxEdges?: number;
+  /**
+   * When provided, mem0 is queried with this text instead of the broad graph
+   * query, so results are scoped to a seed/topic and ranked by relevance to it.
+   * Backward-compatible — omit it for the original broad behavior.
+   */
+  readonly scopeQuery?: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -48,6 +71,14 @@ const DEFAULT_MAX_EDGES = 200;
 const PROMPT_MAX_NODES = 15;
 const PROMPT_MAX_EDGES = 20;
 const BROAD_GRAPH_QUERY = "key entities relationships concepts";
+
+/**
+ * Weight applied to a node's credibility (0-1) when folding it into the
+ * relevance score in getFilteredGraphView. Tuned so a maximally-credible source
+ * (credibility 1) is worth half an amplified-entity match (+10), nudging
+ * high-credibility sources up the ranking without overriding topical relevance.
+ */
+const CREDIBILITY_SCORE_WEIGHT = 5;
 
 // ─── Mem0 → GraphView Conversion ──────────────────────────────────────────────
 
@@ -73,6 +104,10 @@ export function mem0ResultToGraphView(
     entityType:
       typeof m.metadata?.entityType === "string" ? m.metadata.entityType : "Fact",
     summary: m.memory,
+    relevanceScore: typeof m.score === "number" ? m.score : undefined,
+    credibility: readCredibility(m.metadata),
+    sourceType:
+      typeof m.metadata?.source_type === "string" ? m.metadata.source_type : undefined,
   }));
 
   // Build a name → uuid lookup for edge resolution
@@ -111,6 +146,46 @@ export function mem0ResultToGraphView(
 
 // ─── Scoring ──────────────────────────────────────────────────────────────────
 
+/**
+ * Reads a credibility value (0-1) from a memory's metadata. Returns undefined
+ * when absent or not a finite number in range, so callers stay graceful when
+ * the ingestion layer hasn't written it.
+ */
+function readCredibility(metadata?: Record<string, unknown>): number | undefined {
+  const raw = metadata?.credibility;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return undefined;
+  if (raw < 0 || raw > 1) return undefined;
+  return raw;
+}
+
+/**
+ * Ranks nodes by mem0 relevance score (descending) ahead of truncation, so the
+ * most relevant entities survive a maxNodes cut. Nodes without a score sort
+ * after scored ones while preserving their original relative order (stable),
+ * which preserves the previous behavior when no scores are present at all.
+ */
+function rankByRelevance(nodes: readonly GraphNode[]): readonly GraphNode[] {
+  const anyScored = nodes.some((n) => typeof n.relevanceScore === "number");
+  if (!anyScored) return nodes;
+
+  return nodes
+    .map((node, index) => ({ node, index }))
+    .sort((a, b) => {
+      const sa = a.node.relevanceScore;
+      const sb = b.node.relevanceScore;
+      const hasA = typeof sa === "number";
+      const hasB = typeof sb === "number";
+      if (hasA && hasB) {
+        if (sb !== sa) return (sb as number) - (sa as number);
+        return a.index - b.index;
+      }
+      if (hasA) return -1;
+      if (hasB) return 1;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.node);
+}
+
 function nodeMatchesTerms(node: GraphNode, terms: readonly string[]): boolean {
   if (terms.length === 0) return false;
   const haystack =
@@ -125,6 +200,12 @@ function nodeMatchesTerms(node: GraphNode, terms: readonly string[]): boolean {
  *   +10 per amplified match
  *    0  neutral
  *   -5  per attenuated match
+ *   + credibility * CREDIBILITY_SCORE_WEIGHT  (when metadata.credibility present)
+ *
+ * Credibility folds in additively so that, all else equal, a node backed by a
+ * higher-credibility source ranks above a lower-credibility one — letting
+ * callers prefer trustworthy sources. Absent credibility contributes 0, so the
+ * previous behavior is unchanged when the metadata is missing.
  */
 function scoreNode(node: GraphNode, filter: KnowledgeFilter): number {
   let score = 0;
@@ -134,6 +215,9 @@ function scoreNode(node: GraphNode, filter: KnowledgeFilter): number {
   }
   if (nodeMatchesTerms(node, filter.attenuatedEntities)) {
     score -= 5;
+  }
+  if (typeof node.credibility === "number") {
+    score += node.credibility * CREDIBILITY_SCORE_WEIGHT;
   }
 
   return score;
@@ -183,7 +267,11 @@ function truncateGraph(
 /**
  * Fetches the complete knowledge graph for a user from Mem0 and returns a
  * truncated GraphView. Uses a broad query with graph enabled to retrieve as
- * many relations as possible.
+ * many relations as possible, unless `options.scopeQuery` narrows it to a
+ * seed/topic.
+ *
+ * Returned nodes are ranked by mem0 relevance score before truncation, so the
+ * most relevant entities survive a maxNodes cut.
  *
  * Degrades gracefully — an empty GraphView is returned if Mem0 is unavailable.
  */
@@ -194,13 +282,14 @@ export async function getFullGraph(
 ): Promise<GraphView> {
   const maxNodes = options?.maxNodes ?? DEFAULT_MAX_NODES;
   const maxEdges = options?.maxEdges ?? DEFAULT_MAX_EDGES;
+  const query = options?.scopeQuery?.trim() ? options.scopeQuery : BROAD_GRAPH_QUERY;
 
   let memories: readonly Mem0Memory[];
   let relations: readonly Mem0Relation[];
 
   try {
     const result = await mem0.search({
-      query: BROAD_GRAPH_QUERY,
+      query,
       userId,
       limit: maxNodes,
       enableGraph: true,
@@ -208,20 +297,40 @@ export async function getFullGraph(
     memories = result.memories;
     relations = result.relations;
   } catch (err) {
-    log.error("getFullGraph: mem0.search failed — returning empty graph", { err, userId });
+    log.error("getFullGraph: mem0.search failed — returning empty graph", {
+      err,
+      userId,
+      breakerOpen: mem0.isUnavailable(),
+    });
     return { nodes: [], edges: [], summary: "No entities found in the knowledge graph." };
   }
 
   if (memories.length === 0 && relations.length === 0) {
-    log.debug("getFullGraph: empty graph", { userId });
+    log.info("getFullGraph: empty graph", {
+      userId,
+      memoryCount: 0,
+      relationCount: 0,
+      nodeCount: 0,
+      edgeCount: 0,
+      scoped: query !== BROAD_GRAPH_QUERY,
+      breakerOpen: mem0.isUnavailable(),
+    });
     return { nodes: [], edges: [], summary: "No entities found in the knowledge graph." };
   }
 
   const raw = mem0ResultToGraphView(memories, relations);
-  const { nodes, edges } = truncateGraph(raw.nodes, raw.edges, maxNodes, maxEdges);
+  const rankedNodes = rankByRelevance(raw.nodes);
+  const { nodes, edges } = truncateGraph(rankedNodes, raw.edges, maxNodes, maxEdges);
   const summary = buildSummary(nodes, edges);
 
-  log.debug("getFullGraph: done", { userId, nodeCount: nodes.length, edgeCount: edges.length });
+  log.info("getFullGraph: done", {
+    userId,
+    memoryCount: memories.length,
+    relationCount: relations.length,
+    nodeCount: nodes.length,
+    edgeCount: edges.length,
+    scoped: query !== BROAD_GRAPH_QUERY,
+  });
 
   return { nodes, edges, summary };
 }
@@ -241,13 +350,14 @@ export async function getFilteredGraphView(
 ): Promise<GraphView> {
   const maxNodes = options?.maxNodes ?? DEFAULT_MAX_NODES;
   const maxEdges = options?.maxEdges ?? DEFAULT_MAX_EDGES;
+  const query = options?.scopeQuery?.trim() ? options.scopeQuery : BROAD_GRAPH_QUERY;
 
   let memories: readonly Mem0Memory[];
   let relations: readonly Mem0Relation[];
 
   try {
     const result = await mem0.search({
-      query: BROAD_GRAPH_QUERY,
+      query,
       userId,
       limit: maxNodes,
       enableGraph: true,
@@ -259,6 +369,7 @@ export async function getFilteredGraphView(
       err,
       userId,
       role,
+      breakerOpen: mem0.isUnavailable(),
     });
     return { nodes: [], edges: [], summary: "No entities found in the knowledge graph." };
   }
@@ -266,7 +377,15 @@ export async function getFilteredGraphView(
   const raw = mem0ResultToGraphView(memories, relations);
 
   if (raw.nodes.length === 0) {
-    log.debug("getFilteredGraphView: empty graph", { userId, role });
+    log.info("getFilteredGraphView: empty graph", {
+      userId,
+      role,
+      memoryCount: memories.length,
+      relationCount: relations.length,
+      nodeCount: 0,
+      edgeCount: 0,
+      scoped: query !== BROAD_GRAPH_QUERY,
+    });
     return { nodes: [], edges: [], summary: "No entities found in the knowledge graph." };
   }
 
@@ -282,10 +401,18 @@ export async function getFilteredGraphView(
       ? afterInclude.filter((n) => !nodeMatchesTerms(n, filter.excludedTopics))
       : afterInclude;
 
-  // Step 3 — score and sort
+  // Step 3 — score and sort. Filter score (amplified/attenuated + credibility)
+  // dominates; mem0 relevance breaks ties so seed-scoped relevance still steers
+  // ordering when two nodes match the filter equally. `index` keeps it stable.
   const scored = afterExclude
-    .map((n) => ({ node: n, score: scoreNode(n, filter) }))
-    .sort((a, b) => b.score - a.score);
+    .map((node, index) => ({ node, index, score: scoreNode(node, filter) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const ra = a.node.relevanceScore ?? -Infinity;
+      const rb = b.node.relevanceScore ?? -Infinity;
+      if (rb !== ra) return rb - ra;
+      return a.index - b.index;
+    });
 
   const sortedNodes = scored.map((s) => s.node);
 
@@ -293,11 +420,14 @@ export async function getFilteredGraphView(
   const { nodes, edges } = truncateGraph(sortedNodes, raw.edges, maxNodes, maxEdges);
   const summary = buildSummary(nodes, edges);
 
-  log.debug("getFilteredGraphView: done", {
+  log.info("getFilteredGraphView: done", {
     userId,
     role,
+    memoryCount: memories.length,
+    relationCount: relations.length,
     nodeCount: nodes.length,
     edgeCount: edges.length,
+    scoped: query !== BROAD_GRAPH_QUERY,
   });
 
   return { nodes, edges, summary };

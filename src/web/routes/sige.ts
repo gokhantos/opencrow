@@ -14,6 +14,7 @@ import type { SigeSessionStatus, SigeSessionConfig } from "../../sige/types";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
 import { getFullGraph } from "../../sige/knowledge/graph-query";
 import type { GraphView } from "../../sige/knowledge/graph-query";
+import { loadSnapshot, saveSnapshot } from "../../sige/knowledge/graph-snapshot";
 import { loadConfig } from "../../config/loader";
 
 const log = createLogger("web:sige");
@@ -434,9 +435,23 @@ export function createSigeRoutes(): Hono {
   });
 
   // ─── GET /api/sige/sessions/:id/graph — Knowledge graph (graceful-empty) ────
+  //
+  // Enhancements over the original MVP:
+  //
+  // 1. Seed-scoped query: the session's seedInput (if present) is passed as
+  //    `scopeQuery` to getFullGraph so Mem0 returns memories relevant to THIS
+  //    session's topic rather than a generic blob.
+  //
+  // 2. Snapshot fallback: after a successful non-empty fetch the graph is
+  //    persisted to `sige_graph_snapshots`. When the live fetch returns empty
+  //    (or the circuit-breaker is open / fetch throws), we load the last saved
+  //    snapshot and return it with `stale: true` so the UI can indicate the
+  //    data is not fresh. If there is no snapshot either, we fall back to the
+  //    original empty-graph behaviour.
 
   app.get("/sige/sessions/:id/graph", async (c) => {
-    // :id is accepted for forward-compatibility; MVP returns the global graph.
+    const sessionId = c.req.param("id");
+
     let config;
     try {
       config = loadConfig();
@@ -458,6 +473,35 @@ export function createSigeRoutes(): Hono {
       return c.json({ success: true, data: cached });
     }
 
+    // ── Load the session to extract seedInput for scope-scoped querying ────────
+    let scopeQuery: string | undefined;
+    try {
+      const session = await getSession(sessionId);
+      if (session?.seedInput) {
+        scopeQuery = session.seedInput;
+      }
+    } catch (err) {
+      // Non-fatal: if the session can't be loaded we fall back to the broad query.
+      log.warn("graph: could not load session for scopeQuery — using broad query", {
+        err,
+        sessionId,
+      });
+    }
+
+    // ── Helper: serve a stale snapshot (or empty if none exists) ──────────────
+    async function serveStaleOrEmpty(): Promise<Response> {
+      try {
+        const snapshot = await loadSnapshot(userId);
+        if (snapshot) {
+          log.debug("graph: serving stale snapshot", { userId });
+          return c.json({ success: true, stale: true, data: snapshot.graph });
+        }
+      } catch (snapshotErr) {
+        log.warn("graph: snapshot load failed — falling back to empty", { snapshotErr });
+      }
+      return c.json({ success: true, data: EMPTY_GRAPH });
+    }
+
     // Stampede guard: if another request is already fetching this userId's graph,
     // share the same Promise instead of firing a second upstream call.
     const existing = graphPending.get(userId);
@@ -466,27 +510,45 @@ export function createSigeRoutes(): Hono {
       try {
         view = await existing;
       } catch {
-        return c.json({ success: true, data: EMPTY_GRAPH });
+        return serveStaleOrEmpty();
+      }
+      if (view.nodes.length === 0) {
+        return serveStaleOrEmpty();
       }
       return c.json({ success: true, data: view });
     }
 
     const mem0 = getGraphMem0Client(sigeConfig.mem0.baseUrl, sigeConfig.mem0.apiToken);
 
-    const fetchPromise = getFullGraph(mem0, userId);
+    const fetchPromise = getFullGraph(
+      mem0,
+      userId,
+      scopeQuery ? { scopeQuery } : undefined,
+    );
     graphPending.set(userId, fetchPromise);
 
     let view: GraphView;
     try {
       view = await fetchPromise;
     } catch (err) {
-      log.warn("graph: getFullGraph failed — returning empty graph", { err });
+      log.warn("graph: getFullGraph failed — serving stale snapshot or empty", { err });
       graphPending.delete(userId);
-      return c.json({ success: true, data: EMPTY_GRAPH });
+      return serveStaleOrEmpty();
     }
 
     graphPending.delete(userId);
+
+    if (view.nodes.length === 0) {
+      // Live graph is empty — serve stale snapshot if available
+      return serveStaleOrEmpty();
+    }
+
+    // Non-empty: cache locally and persist a snapshot for future fallback
     setCachedGraph(userId, view);
+    saveSnapshot(userId, view).catch((snapshotErr: unknown) => {
+      log.warn("graph: failed to save snapshot (non-fatal)", { snapshotErr });
+    });
+
     return c.json({ success: true, data: view });
   });
 
