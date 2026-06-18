@@ -9,7 +9,8 @@ import {
 } from "./path-utils";
 import { BASH_MAX_BYTES, BASH_HEAD_BYTES, BASH_TAIL_BYTES } from "./shell-runner";
 import { createLogger } from "../logger";
-import { isDangerousCommand } from "../agent/hooks";
+import { screenCommand } from "./command-gate";
+import { planSandboxedExec, createPrivateTmp, assertSandboxPosture } from "./sandbox";
 import { inputError, permissionError, timeoutError, serviceError } from "./error-helpers";
 import { killProcessGroup } from "./process-group";
 
@@ -37,33 +38,6 @@ function getSafeEnv(): Record<string, string> {
     }
   }
   return env;
-}
-
-function isCommandBlocked(
-  command: string,
-  blockedCommands: readonly string[],
-): boolean {
-  const trimmed = command.trim().toLowerCase();
-
-  // Split on shell metacharacters (including newlines) to check each segment
-  const segments = trimmed
-    .split(/[;&|`$()\n\r]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  return segments.some((segment) =>
-    blockedCommands.some((blocked) => {
-      const lower = blocked.toLowerCase();
-      // Get basename to catch absolute paths like /usr/bin/sudo
-      const firstToken = segment.split(/\s+/)[0] ?? "";
-      const basename = firstToken.split("/").pop() ?? firstToken;
-      return (
-        basename === lower ||
-        segment === lower ||
-        segment.startsWith(lower + " ")
-      );
-    }),
-  );
 }
 
 function truncateBashOutput(text: string, label: string): string {
@@ -94,6 +68,11 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
     }
   }
   const allowedDirs = resolveAllowedDirs(config.allowedDirectories);
+
+  // Surface the sandbox posture once at tool construction so operators are not
+  // lulled by the "sandbox is the real boundary" framing when no mechanism is
+  // present and only the bypassable blocklist actually protects execution.
+  assertSandboxPosture(config.sandbox);
 
   return {
     name: "bash",
@@ -128,23 +107,18 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
         return inputError("Error: empty command");
       }
 
-      if (isCommandBlocked(command, config.blockedCommands)) {
-        return permissionError(`Error: command blocked for safety: ${command}`);
-      }
-
-      // Defense-in-depth: the regex-based dangerous-command check also runs here
-      // so the custom "bash" tool (pi-ai/OpenRouter path, which does not go
-      // through the Agent SDK PreToolUse hook) is protected by default.
-      if (
-        config.dangerousCommandBlocking !== false &&
-        isDangerousCommand(command)
-      ) {
-        log.warn("Blocked dangerous command", {
-          command: command.slice(0, 200),
-        });
-        return permissionError(
-          `Error: command blocked for safety: ${command}`,
-        );
+      // Shared safety gate (blocklist + regex dangerous-command check). The
+      // dangerous-command check also runs here so the custom "bash" tool
+      // (pi-ai/OpenRouter path, which does not go through the Agent SDK
+      // PreToolUse hook) is protected by default. NOTE: this gate is
+      // defense-in-depth; the OS sandbox below is the real boundary.
+      const gate = screenCommand(command, {
+        blockedCommands: config.blockedCommands,
+        dangerousCommandBlocking: config.dangerousCommandBlocking,
+      });
+      if (gate.blocked) {
+        log.warn("Blocked command", { command: command.slice(0, 200) });
+        return permissionError(gate.reason ?? `Error: command blocked for safety: ${command}`);
       }
 
       {
@@ -168,14 +142,44 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
         );
       }
 
-      log.debug("Executing bash command", { command: command.slice(0, 200) });
+      // Per-invocation private temp dir inside the workspace so the command's
+      // TMPDIR scribbles stay confined (the sandbox no longer grants the host's
+      // shared /tmp). Created only when actually sandboxing.
+      const privateTmp =
+        config.sandbox !== "off" ? createPrivateTmp(workDir) : null;
+
+      // Wrap execution in an OS sandbox (sandbox-exec on macOS, bwrap on Linux)
+      // confining the filesystem to allowedDirs and denying network egress.
+      // This — not the string gate above — is the real boundary. In "required"
+      // mode with no mechanism available we fail closed.
+      const plan = planSandboxedExec({
+        command,
+        cwd: workDir,
+        allowedDirs,
+        mode: config.sandbox,
+        allowNetwork: false,
+        privateTmpDir: privateTmp?.dir,
+      });
+      if (plan.kind === "refuse") {
+        privateTmp?.cleanup();
+        log.error("Bash command refused: sandbox required but unavailable");
+        return permissionError(plan.reason);
+      }
+
+      log.debug("Executing bash command", {
+        command: command.slice(0, 200),
+        sandbox: plan.mechanism,
+      });
 
       try {
-        const proc = Bun.spawn(["bash", "-c", command], {
+        const sandboxEnv = getSafeEnv();
+        if (privateTmp) sandboxEnv.TMPDIR = privateTmp.dir;
+        const proc = Bun.spawn([...plan.argv], {
           cwd: workDir,
           stdout: "pipe",
           stderr: "pipe",
-          env: getSafeEnv(),
+          // Sandbox/private-tmp env (the OS confinement boundary); see above.
+          env: sandboxEnv,
           // setsid() the child so it leads its own process group; lets us kill
           // the whole pipeline (children included) via `process.kill(-pid)`
           // instead of orphaning forked children on timeout. Works natively on
@@ -238,6 +242,8 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
         const message = error instanceof Error ? error.message : String(error);
         log.error("Bash execution error", error);
         return serviceError(`Error executing command: ${message}`);
+      } finally {
+        privateTmp?.cleanup();
       }
     },
   };

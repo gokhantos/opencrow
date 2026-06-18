@@ -2,8 +2,10 @@ import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
 import { expandHome, isPathAllowedSync, resolveAllowedDirs } from "./path-utils";
 import { detectProjectContext } from "./project-context";
-import type { ProjectContext } from "./project-context";
+import type { ProjectContext, DetectedTool } from "./project-context";
 import { runShell, truncateOutput, VALIDATE_MAX_BYTES } from "./shell-runner";
+import { screenCommand } from "./command-gate";
+import { checkDevToolSandboxPosture } from "./sandbox";
 import { createLogger } from "../logger";
 
 import { getErrorMessage } from "../lib/error-serialization";
@@ -161,6 +163,23 @@ export function createValidateCodeTool(config: ToolsConfig): ToolDefinition {
         return { output: `Error: path not allowed: ${resolvedPath}`, isError: true };
       }
 
+      // Fail closed: every validate_code step (lint/typecheck/test) runs
+      // workspace-authored, attacker-controllable code — not just package.json
+      // scripts but the CONFIG BODIES the dev tools load (eslint.config.mjs,
+      // tsconfig `extends`, biome config). The OS sandbox is the boundary that
+      // contains that code; refuse when it is not active and the operator has
+      // not opted in.
+      const posture = checkDevToolSandboxPosture(
+        config.sandbox,
+        config.allowUnsandboxedDevTools === true,
+      );
+      if (posture.refusalReason) {
+        log.warn("validate_code refused: sandbox not active", {
+          sandbox: config.sandbox,
+        });
+        return { output: posture.refusalReason, isError: true };
+      }
+
       let ctx: ProjectContext;
       try {
         ctx = await detectProjectContext(resolvedPath);
@@ -178,19 +197,29 @@ export function createValidateCodeTool(config: ToolsConfig): ToolDefinition {
       const fix = args.fix === true;
 
       // Map steps to their detected commands
-      const stepToolMap: Record<StepName, { name: string; command: string } | null> = {
+      const stepToolMap: Record<StepName, DetectedTool | null> = {
         typecheck: ctx.typeChecker,
         lint: ctx.linter,
         test: ctx.testRunner,
       };
 
-      const availableSteps: { step: StepName; name: string; command: string }[] = [];
+      const availableSteps: {
+        step: StepName;
+        name: string;
+        command: string;
+        resolvedScript?: string;
+      }[] = [];
       const missingSteps: StepName[] = [];
 
       for (const step of requestedSteps) {
         const tool = stepToolMap[step];
         if (tool) {
-          availableSteps.push({ step, name: tool.name, command: tool.command });
+          availableSteps.push({
+            step,
+            name: tool.name,
+            command: tool.command,
+            resolvedScript: tool.resolvedScript,
+          });
         } else {
           missingSteps.push(step);
         }
@@ -215,7 +244,7 @@ export function createValidateCodeTool(config: ToolsConfig): ToolDefinition {
       // Run each step
       const results: StepResult[] = [];
 
-      for (const { step, name, command: rawCommand } of availableSteps) {
+      for (const { step, name, command: rawCommand, resolvedScript } of availableSteps) {
         const command = fix ? applyFixMode(step, rawCommand) : rawCommand;
 
         let exitCode = 0;
@@ -225,8 +254,63 @@ export function createValidateCodeTool(config: ToolsConfig): ToolDefinition {
         let execError: string | undefined;
         let durationMs = 0;
 
+        // Defense-in-depth string screening. We screen BOTH the resolved command
+        // string (`npx eslint .`, `npx tsc --noEmit`, biome, or the resolved
+        // package.json script for the test step) so an obviously-dangerous
+        // invocation is rejected before it runs.
+        //
+        // IMPORTANT — this is NOT a full content scan. The dev tools EXECUTE
+        // workspace-authored config files (eslint.config.mjs, tsconfig `extends`,
+        // biome config) and script bodies whose contents are arbitrary,
+        // attacker-controllable code. Those bodies are NOT statically screened —
+        // string matching on shell/JS is fundamentally bypassable. The real
+        // boundary for that arbitrary code is the OS sandbox (enforced by the
+        // fail-closed posture check above + the runShell sandbox wrapping below),
+        // not this gate.
+        const screenTarget = resolvedScript ?? command;
+        {
+          const gate = screenCommand(screenTarget, {
+            blockedCommands: config.blockedCommands,
+            dangerousCommandBlocking: config.dangerousCommandBlocking,
+          });
+          if (gate.blocked) {
+            results.push({
+              step,
+              tool: name,
+              command,
+              passed: false,
+              exitCode: 126,
+              errorCount: 1,
+              durationMs: 0,
+              output: gate.reason ?? "Error: resolved script blocked for safety",
+              timedOut: false,
+              execError: "blocked for safety",
+            });
+            continue;
+          }
+        }
+
         try {
-          const result = await runShell(command, { cwd: resolvedPath, timeoutMs: timeout });
+          // OS sandbox is the boundary here: validate_code runs dev tools that
+          // EXECUTE attacker-controllable config bodies (eslint.config.mjs,
+          // tsconfig `extends`, biome config), which are NOT statically scanned —
+          // only the command STRINGS are (defense-in-depth above + safetyGate
+          // here). The fail-closed posture check above guarantees the sandbox is
+          // active (or the operator opted in). Network is DENIED by default
+          // (devToolsAllowNetwork=false) because the config bodies are
+          // attacker-controllable; open egress would allow exfiltration even with
+          // a perfect filesystem sandbox.
+          const result = await runShell(command, {
+            cwd: resolvedPath,
+            timeoutMs: timeout,
+            allowedDirs,
+            safetyGate: {
+              blockedCommands: config.blockedCommands,
+              dangerousCommandBlocking: config.dangerousCommandBlocking,
+            },
+            sandbox: config.sandbox,
+            allowNetwork: config.devToolsAllowNetwork === true,
+          });
           exitCode = result.exitCode;
           stdout = result.stdout;
           stderr = result.stderr;

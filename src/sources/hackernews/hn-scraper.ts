@@ -4,6 +4,7 @@ import { createLogger } from "../../logger";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 import { inBatches } from "../shared/in-batches";
 import { getErrorMessage } from "../../lib/error-serialization";
+import { validateUrl, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
 
 const log = createLogger("hn-front-page");
 
@@ -146,8 +147,16 @@ async function fetchMetaDescription(url: string): Promise<string> {
     return "";
   }
 
+  // Validate the URL for SSRF before fetching — HN story URLs are
+  // attacker-controlled (any user can submit a link), so we must guard here.
+  const rejection = validateUrl(url);
+  if (rejection) {
+    log.debug("Skipping meta-description fetch — SSRF rejected", { url, reason: rejection });
+    return "";
+  }
+
   try {
-    const res = await fetchWithTimeout(url, {}, META_TIMEOUT_MS);
+    const res = await ssrfSafeFetch(url, { timeoutMs: META_TIMEOUT_MS });
     if (!res.ok) return "";
     const contentType = res.headers.get("content-type") ?? "";
     if (!contentType.includes("text/html")) return "";

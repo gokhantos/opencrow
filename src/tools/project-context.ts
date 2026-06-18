@@ -11,6 +11,15 @@ import { expandHome, isPathAllowedSync, resolveAllowedDirs } from "./path-utils"
 export interface DetectedTool {
   readonly name: string;
   readonly command: string;
+  /**
+   * When `command` is a package-manager wrapper (e.g. `npm test`,
+   * `bun run test`) that merely INDIRECTS to a script body the agent could have
+   * authored (package.json scripts.test), this carries the raw resolved script
+   * so the dev-tool exec path can screen the ACTUAL payload through the safety
+   * gate — not just the harmless wrapper. Undefined for direct commands
+   * (`cargo test`, `pytest`) where the command IS the payload.
+   */
+  readonly resolvedScript?: string;
 }
 
 export interface ProjectContext {
@@ -196,13 +205,14 @@ function detectTestRunner(
   // Check package.json scripts.test first as explicit override
   if (pkg?.scripts?.test && pkg.scripts.test !== "echo \"Error: no test specified\" && exit 1") {
     const run = pm === "bun" ? "bun run test" : pm === "pnpm" ? "pnpm test" : pm === "yarn" ? "yarn test" : "npm test";
-    // Try to identify the runner name from the script
+    // The wrapper (`npm test`) indirects to this script body, which the agent
+    // could have authored — carry it so the exec path screens the real payload.
     const script = pkg.scripts.test;
-    if (script.includes("vitest")) return { name: "vitest", command: run };
-    if (script.includes("jest")) return { name: "jest", command: run };
-    if (script.includes("mocha")) return { name: "mocha", command: run };
-    if (script.includes("bun test")) return { name: "bun:test", command: "bun test" };
-    return { name: "custom", command: run };
+    if (script.includes("vitest")) return { name: "vitest", command: run, resolvedScript: script };
+    if (script.includes("jest")) return { name: "jest", command: run, resolvedScript: script };
+    if (script.includes("mocha")) return { name: "mocha", command: run, resolvedScript: script };
+    if (script.includes("bun test")) return { name: "bun:test", command: "bun test", resolvedScript: script };
+    return { name: "custom", command: run, resolvedScript: script };
   }
 
   // JS/TS detection from deps

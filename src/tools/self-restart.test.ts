@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { createSelfRestartTool } from "./self-restart";
+import { createSelfRestartTool, __resetProcessManageState } from "./self-restart";
 
 // We need to mock the global fetch to prevent real HTTP calls
 const originalFetch = globalThis.fetch;
@@ -8,6 +8,8 @@ describe("self-restart tool (process_manage)", () => {
   let mockFetchFn: ReturnType<typeof mock>;
 
   beforeEach(() => {
+    // Reset module-level cooldown + global rate-limit state so cases don't pollute each other.
+    __resetProcessManageState();
     mockFetchFn = mock(() =>
       Promise.resolve(
         new Response(JSON.stringify({ data: [] }), {
@@ -280,34 +282,45 @@ describe("self-restart tool (process_manage)", () => {
   });
 
   describe("restart action", () => {
-    it("should reject unknown process target", async () => {
-      const processes = [
-        {
-          name: "web",
-          status: "running",
-          syncStatus: "synced",
-          pid: 1,
-          restartCount: 0,
-          uptimeSeconds: 100,
-        },
-      ];
-
-      mockFetchFn.mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: processes }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-
+    it("should reject non-self target (self-only)", async () => {
+      // Owner is "web" (no agent/scraper env). Targeting another process is
+      // rejected by the self-only guard before any network call.
       const tool = createSelfRestartTool();
       const result = await tool.execute({
         action: "restart",
-        target: "nonexistent",
+        target: "agent:someone-else",
         reason: "testing",
       });
 
       expect(result.isError).toBe(true);
-      expect(result.output).toContain("unknown process");
+      expect(result.output).toContain("Permission denied");
+    });
+
+    it("should reject unknown self process target (fail closed)", async () => {
+      // Self is web, but the process list does not contain it → fail closed.
+      const prev = process.env.OPENCROW_AGENT_ID;
+      process.env.OPENCROW_AGENT_ID = "ghost";
+      try {
+        mockFetchFn.mockResolvedValueOnce(
+          new Response(JSON.stringify({ data: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+
+        const tool = createSelfRestartTool();
+        const result = await tool.execute({
+          action: "restart",
+          target: "agent:ghost",
+          reason: "testing",
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain("unknown process");
+      } finally {
+        if (prev === undefined) delete process.env.OPENCROW_AGENT_ID;
+        else process.env.OPENCROW_AGENT_ID = prev;
+      }
     });
 
     it("should trigger restart for known process", async () => {
@@ -351,151 +364,168 @@ describe("self-restart tool (process_manage)", () => {
     });
 
     it("should handle restart failure from orchestrator", async () => {
-      // Use a unique target name to avoid cooldown from previous tests
-      const processes = [
-        {
-          name: "agent:fail-test",
-          status: "running",
-          syncStatus: "synced",
-          pid: 1,
-          restartCount: 0,
-          uptimeSeconds: 100,
-        },
-      ];
+      // Self-only: act as the owning agent so the target is self.
+      const prev = process.env.OPENCROW_AGENT_ID;
+      process.env.OPENCROW_AGENT_ID = "fail-test";
+      try {
+        const processes = [
+          {
+            name: "agent:fail-test",
+            status: "running",
+            syncStatus: "synced",
+            pid: 1,
+            restartCount: 0,
+            uptimeSeconds: 100,
+          },
+        ];
 
-      mockFetchFn
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ data: processes }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockResolvedValueOnce(
-          new Response(
-            JSON.stringify({ ok: false, error: "process locked" }),
-            {
+        mockFetchFn
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: processes }), {
               status: 200,
               headers: { "Content-Type": "application/json" },
-            },
-          ),
-        );
+            }),
+          )
+          .mockResolvedValueOnce(
+            new Response(
+              JSON.stringify({ ok: false, error: "process locked" }),
+              {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+              },
+            ),
+          );
 
-      const tool = createSelfRestartTool();
-      const result = await tool.execute({
-        action: "restart",
-        target: "agent:fail-test",
-        reason: "testing error",
-      });
+        const tool = createSelfRestartTool();
+        const result = await tool.execute({
+          action: "restart",
+          target: "agent:fail-test",
+          reason: "testing error",
+        });
 
-      expect(result.isError).toBe(true);
-      expect(result.output).toContain("process locked");
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain("process locked");
+      } finally {
+        if (prev === undefined) delete process.env.OPENCROW_AGENT_ID;
+        else process.env.OPENCROW_AGENT_ID = prev;
+      }
     });
 
     it("should handle network errors for restart", async () => {
-      // Use a unique target name to avoid cooldown from previous tests
-      const processes = [
-        {
-          name: "agent:net-err-test",
-          status: "running",
-          syncStatus: "synced",
-          pid: 1,
-          restartCount: 0,
-          uptimeSeconds: 100,
-        },
-      ];
+      // Self-only: act as the owning agent so the target is self.
+      const prev = process.env.OPENCROW_AGENT_ID;
+      process.env.OPENCROW_AGENT_ID = "net-err-test";
+      try {
+        const processes = [
+          {
+            name: "agent:net-err-test",
+            status: "running",
+            syncStatus: "synced",
+            pid: 1,
+            restartCount: 0,
+            uptimeSeconds: 100,
+          },
+        ];
 
-      mockFetchFn
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ data: processes }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        .mockRejectedValueOnce(new Error("ECONNREFUSED"));
+        mockFetchFn
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: processes }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          )
+          .mockRejectedValueOnce(new Error("ECONNREFUSED"));
 
-      const tool = createSelfRestartTool();
-      const result = await tool.execute({
-        action: "restart",
-        target: "agent:net-err-test",
-        reason: "testing",
-      });
+        const tool = createSelfRestartTool();
+        const result = await tool.execute({
+          action: "restart",
+          target: "agent:net-err-test",
+          reason: "testing",
+        });
 
-      expect(result.isError).toBe(true);
-      expect(result.output).toContain("Failed to restart");
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain("Failed to restart");
+      } finally {
+        if (prev === undefined) delete process.env.OPENCROW_AGENT_ID;
+        else process.env.OPENCROW_AGENT_ID = prev;
+      }
     });
   });
 
   describe("cooldown logic", () => {
     it("should enforce cooldown after successful action", async () => {
-      const processes = [
-        {
-          name: "cron",
-          status: "running",
-          syncStatus: "synced",
-          pid: 1,
-          restartCount: 0,
-          uptimeSeconds: 100,
-        },
-      ];
+      // Self-only: act as the owning agent so the target is self.
+      const prev = process.env.OPENCROW_AGENT_ID;
+      process.env.OPENCROW_AGENT_ID = "cooldown-test";
+      try {
+        const processes = [
+          {
+            name: "agent:cooldown-test",
+            status: "running",
+            syncStatus: "synced",
+            pid: 1,
+            restartCount: 0,
+            uptimeSeconds: 100,
+          },
+        ];
 
-      // First restart: success
-      mockFetchFn
-        .mockResolvedValueOnce(
+        // First stop: success
+        mockFetchFn
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: processes }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          )
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ ok: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+
+        const tool = createSelfRestartTool();
+        const result1 = await tool.execute({
+          action: "stop",
+          target: "agent:cooldown-test",
+          reason: "first stop",
+        });
+        expect(result1.isError).toBe(false);
+
+        // Second stop immediately: should be throttled by per-target cooldown
+        mockFetchFn.mockResolvedValueOnce(
           new Response(JSON.stringify({ data: processes }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
           }),
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ ok: true }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
         );
 
-      const tool = createSelfRestartTool();
-      const result1 = await tool.execute({
-        action: "stop",
-        target: "cron",
-        reason: "first stop",
-      });
-      expect(result1.isError).toBe(false);
-
-      // Second restart immediately: should be throttled
-      mockFetchFn.mockResolvedValueOnce(
-        new Response(JSON.stringify({ data: processes }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-
-      const result2 = await tool.execute({
-        action: "stop",
-        target: "cron",
-        reason: "second stop",
-      });
-      expect(result2.isError).toBe(false);
-      expect(result2.output).toContain("already triggered");
-      expect(result2.output).toContain("Cooldown");
+        const result2 = await tool.execute({
+          action: "stop",
+          target: "agent:cooldown-test",
+          reason: "second stop",
+        });
+        expect(result2.isError).toBe(false);
+        expect(result2.output).toContain("already triggered");
+        expect(result2.output).toContain("Cooldown");
+      } finally {
+        if (prev === undefined) delete process.env.OPENCROW_AGENT_ID;
+        else process.env.OPENCROW_AGENT_ID = prev;
+      }
     });
   });
 
   describe("default action", () => {
-    it("should default to restart when action not specified", async () => {
-      // If the process list call fails, the action still proceeds
-      mockFetchFn
-        .mockRejectedValueOnce(new Error("list failed"))
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ ok: true }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
+    it("should default to restart and fail closed if the process list is unavailable", async () => {
+      // Action defaults to "restart", target defaults to own process (self, so
+      // the self-only guard passes). If the process list cannot be fetched, the
+      // tool fails CLOSED rather than acting on an unverified target.
+      mockFetchFn.mockRejectedValueOnce(new Error("list failed"));
 
       const tool = createSelfRestartTool();
       const result = await tool.execute({ reason: "default action test" });
-      // The action defaults to "restart" and target to own process name
-      expect(result.output).toContain("restart");
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("Refusing to restart");
     });
   });
 });

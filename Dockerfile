@@ -20,7 +20,52 @@ ENV HOME=/home/bun \
     # the runtime + restart policy own singleton-ness and PIDs are recycled, so
     # the supervisor must take over a stale registry row WITHOUT killing by PID
     # (a recycled PID is typically the container's own bun/start-script parent).
-    OPENCROW_IN_CONTAINER=1
+    OPENCROW_IN_CONTAINER=1 \
+    # Shell execution (bash tool + dev-tool exec path) MUST be sandboxed in the
+    # canonical deployment. "required" fails CLOSED: if the bubblewrap mechanism
+    # installed below is somehow unavailable at runtime, shell commands are
+    # refused rather than run unsandboxed. Without this the LLM (which ingests
+    # untrusted scraped content) could read/exfiltrate arbitrary files. Operators
+    # who deliberately accept the risk can override to "best-effort"/"off".
+    OPENCROW_TOOLS_SANDBOX=required
+
+# bubblewrap is the OS sandbox mechanism the shell-exec path (bash tool +
+# run_tests/validate_code) wraps every command in. On Debian trixie it installs
+# setuid-root, so the non-root `bun` user can still create the sandbox namespace.
+# It is REQUIRED here (OPENCROW_TOOLS_SANDBOX=required above) — the image fails
+# closed without it. Headless-Chromium OS libraries for the scrapers follow.
+# Installed as root (apt needs it) BEFORE switching to the bun user. This is the
+# Debian 13 / "trixie" chromium
+# dependency set that `playwright install-deps chromium` would install (the base
+# image, oven/bun:1.3.14, is debian:trixie-slim — note the t64 time64 suffixes);
+# we list it explicitly so the layer is deterministic and doesn't need playwright
+# present yet. The browser binary itself is fetched later, as the bun user.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      bubblewrap \
+      libasound2t64 \
+      libatk-bridge2.0-0t64 \
+      libatk1.0-0t64 \
+      libatspi2.0-0t64 \
+      libcairo2 \
+      libcups2t64 \
+      libdbus-1-3 \
+      libdrm2 \
+      libgbm1 \
+      libglib2.0-0t64 \
+      libnspr4 \
+      libnss3 \
+      libpango-1.0-0 \
+      libx11-6 \
+      libxcb1 \
+      libxcomposite1 \
+      libxdamage1 \
+      libxext6 \
+      libxfixes3 \
+      libxkbcommon0 \
+      libxrandr2 \
+      fonts-liberation \
+      fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
 
 # Headless-Chromium OS libraries for the scrapers. Installed as root (apt needs
 # it) BEFORE switching to the bun user. This is the Debian 13 / "trixie" chromium

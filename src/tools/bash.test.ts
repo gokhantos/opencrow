@@ -30,6 +30,9 @@ describe("createBashTool", () => {
       allowedDirectories: [tempDir],
       blockedCommands: ["sudo", "rm -rf /", "mkfs", "dd"],
       dangerousCommandBlocking: true,
+      sandbox: "off",
+      devToolsAllowNetwork: false,
+      allowUnsandboxedDevTools: false,
       maxBashTimeout: 30000,
       maxFileSize: 1024 * 1024,
       maxIterations: 200,
@@ -177,6 +180,9 @@ describe("createBashTool", () => {
     it("should timeout long running commands", async () => {
       const shortTimeoutConfig: ToolsConfig = {
         ...config,
+        sandbox: "off",
+        devToolsAllowNetwork: false,
+        allowUnsandboxedDevTools: false,
         maxBashTimeout: 100, // 100ms timeout
       };
       const tool = createBashTool(shortTimeoutConfig);

@@ -16,6 +16,9 @@ import type { ToolDefinition } from './types'
 const testConfig: ToolsConfig = {
   allowedDirectories: ['$HOME'],
   blockedCommands: ['rm -rf', 'sudo', 'su', 'curl', 'wget'],
+  sandbox: "off",
+  devToolsAllowNetwork: false,
+  allowUnsandboxedDevTools: false,
   maxBashTimeout: 10_000,
   maxFileSize: 1_048_576,
   maxIterations: 50,

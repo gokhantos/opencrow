@@ -9,6 +9,48 @@ import { deepMergeSigeOverride, loadConfig } from "./loader";
  * DB dependency; it is a pure function over plain objects.
  */
 
+describe("tools sandbox env overrides", () => {
+  afterEach(() => {
+    delete process.env.OPENCROW_TOOLS_SANDBOX;
+    delete process.env.OPENCROW_DEV_TOOLS_ALLOW_NETWORK;
+    delete process.env.OPENCROW_ALLOW_UNSANDBOXED_DEV_TOOLS;
+  });
+
+  test("defaults to best-effort sandbox, network-denied dev tools, fail-closed unsandboxed", () => {
+    delete process.env.OPENCROW_TOOLS_SANDBOX;
+    delete process.env.OPENCROW_DEV_TOOLS_ALLOW_NETWORK;
+    delete process.env.OPENCROW_ALLOW_UNSANDBOXED_DEV_TOOLS;
+    const cfg = loadConfig();
+    expect(cfg.tools.sandbox).toBe("best-effort");
+    expect(cfg.tools.devToolsAllowNetwork).toBe(false);
+    expect(cfg.tools.allowUnsandboxedDevTools).toBe(false);
+  });
+
+  test("OPENCROW_ALLOW_UNSANDBOXED_DEV_TOOLS=true opts into unsandboxed dev tools", () => {
+    process.env.OPENCROW_ALLOW_UNSANDBOXED_DEV_TOOLS = "true";
+    const cfg = loadConfig();
+    expect(cfg.tools.allowUnsandboxedDevTools).toBe(true);
+  });
+
+  test("OPENCROW_TOOLS_SANDBOX=required forces fail-closed mode", () => {
+    process.env.OPENCROW_TOOLS_SANDBOX = "required";
+    const cfg = loadConfig();
+    expect(cfg.tools.sandbox).toBe("required");
+  });
+
+  test("ignores an invalid OPENCROW_TOOLS_SANDBOX value", () => {
+    process.env.OPENCROW_TOOLS_SANDBOX = "garbage";
+    const cfg = loadConfig();
+    expect(cfg.tools.sandbox).toBe("best-effort");
+  });
+
+  test("OPENCROW_DEV_TOOLS_ALLOW_NETWORK=true opts dev tools into egress", () => {
+    process.env.OPENCROW_DEV_TOOLS_ALLOW_NETWORK = "true";
+    const cfg = loadConfig();
+    expect(cfg.tools.devToolsAllowNetwork).toBe(true);
+  });
+});
+
 describe("deepMergeSigeOverride", () => {
   describe("precedence matrix", () => {
     test("DB override with only 'enabled' leaves env-derived mem0.baseUrl intact", () => {

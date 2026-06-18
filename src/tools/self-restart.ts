@@ -7,8 +7,38 @@ const log = createLogger("tool:process-manage");
 const CORE_URL = "http://127.0.0.1:48081";
 const RESTART_COOLDOWN_MS = 60_000; // 60s cooldown per target
 
+/**
+ * Global cross-target rate limit. The per-target cooldown alone let an agent
+ * sweep every process (one stop per target). This caps how many distinct
+ * mutating actions any single agent process can issue within the window, so a
+ * compromised agent cannot stop the whole platform in a burst.
+ */
+const GLOBAL_ACTION_WINDOW_MS = 60_000;
+const GLOBAL_ACTION_MAX = 3;
+
 /** Tracks last restart/stop/start timestamp per target to prevent rapid-fire calls */
 const lastActionAt = new Map<string, number>();
+
+/** Timestamps of recent mutating actions for the global rate limit. */
+let recentActionTimes: number[] = [];
+
+/**
+ * Test-only seam: clears the per-target cooldown and global rate-limit state so
+ * tests do not pollute each other (both are module-level by design). Not used in
+ * production code paths.
+ */
+export function __resetProcessManageState(): void {
+  lastActionAt.clear();
+  recentActionTimes = [];
+}
+
+/**
+ * Header carrying the caller's own process identity to the control plane. The
+ * bearer token authorizes ANY caller, so the server cannot infer who is calling
+ * from auth alone — the tool advertises its identity and the server enforces
+ * self-only on top of it.
+ */
+const CALLER_PROCESS_HEADER = "X-OpenCrow-Caller-Process";
 
 /**
  * Builds the auth headers for internal control-plane calls. The internal API is
@@ -64,10 +94,16 @@ async function processAction(
     `${CORE_URL}/internal/processes/${encodeURIComponent(name)}/${action}`,
     {
       method: "POST",
-      headers: internalAuthHeaders({ "Content-Type": "application/json" }),
+      headers: internalAuthHeaders({
+        "Content-Type": "application/json",
+        [CALLER_PROCESS_HEADER]: getOwnProcessName(),
+      }),
       signal: AbortSignal.timeout(5000),
     },
   );
+  if (res.status === 403) {
+    return { error: "self-only: cannot act on another process" };
+  }
   return (await res.json()) as { ok?: boolean; error?: string };
 }
 
@@ -150,9 +186,27 @@ export function createSelfRestartTool(): ToolDefinition {
       }
 
       // --- Restart / Stop / Start ---
-      const target = String(input.target ?? getOwnProcessName());
+      const ownName = getOwnProcessName();
+      const target = String(input.target ?? ownName);
 
-      // Validate target is a known process
+      // SELF-ONLY: an agent may only act on the process it owns. Acting on web,
+      // cron, other scrapers, or other agents is rejected here (defense in depth
+      // — the control plane enforces this server-side too, since the shared
+      // bearer token authorizes any caller).
+      if (target !== ownName) {
+        log.warn("process_manage rejected non-self target", {
+          action,
+          target,
+          owner: ownName,
+        });
+        return {
+          output: `Permission denied: '${ownName}' may only ${action} itself, not '${target}'. Cross-process control requires an operator.`,
+          isError: true,
+        };
+      }
+
+      // Validate target is a known process. FAIL CLOSED: if we cannot confirm
+      // the target is known, refuse rather than proceeding blindly.
       try {
         const procs = await listProcesses();
         const knownNames = procs.map((p) => p.name);
@@ -162,9 +216,35 @@ export function createSelfRestartTool(): ToolDefinition {
             isError: true,
           };
         }
-      } catch {
-        // If we can't list processes, allow the action to proceed
-        // (the orchestrator will validate the target itself)
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        log.warn("process_manage failing closed — could not verify target", {
+          action,
+          target,
+          error: msg,
+        });
+        return {
+          output: `Error: could not verify process list (${msg}). Refusing to ${action} '${target}' without confirmation.`,
+          isError: true,
+        };
+      }
+
+      // Global cross-target rate limit: cap mutating actions per window so a
+      // burst cannot churn the platform even within the per-target cooldown.
+      const now = Date.now();
+      recentActionTimes = recentActionTimes.filter(
+        (t) => now - t < GLOBAL_ACTION_WINDOW_MS,
+      );
+      if (recentActionTimes.length >= GLOBAL_ACTION_MAX) {
+        log.warn("process_manage throttled by global rate limit", {
+          action,
+          target,
+          recent: recentActionTimes.length,
+        });
+        return {
+          output: `Rate limited: too many process actions (${recentActionTimes.length}/${GLOBAL_ACTION_MAX} in the last ${GLOBAL_ACTION_WINDOW_MS / 1000}s). Wait before issuing another.`,
+          isError: true,
+        };
       }
 
       // Cooldown: refuse if same target was acted on within RESTART_COOLDOWN_MS
@@ -212,6 +292,7 @@ export function createSelfRestartTool(): ToolDefinition {
 
         if (result.ok) {
           lastActionAt.set(key, Date.now());
+          recentActionTimes.push(Date.now());
           return {
             output: `${action} triggered for '${target}'. Other processes are unaffected.`,
             isError: false,

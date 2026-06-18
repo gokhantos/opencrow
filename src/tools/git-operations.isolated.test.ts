@@ -20,7 +20,14 @@ const mockRunShell =
   mock<
     (
       command: string,
-      opts: { cwd: string; timeoutMs?: number; env?: Record<string, string> },
+      opts: {
+        cwd: string;
+        timeoutMs?: number;
+        env?: Record<string, string>;
+        allowedDirs?: readonly string[];
+        sandbox?: "off" | "best-effort" | "required";
+        allowNetwork?: boolean;
+      },
     ) => Promise<ShellResult>
   >();
 
@@ -40,12 +47,25 @@ mock.module("./shell-runner", () => ({
 // Import after mocking
 const { createGitOperationsTool } = await import("./git-operations");
 
+// Most command-path tests opt in to unsandboxed execution because runShell is
+// mocked here (no real sandbox). The fail-closed refusal behavior is covered by
+// its own describe block below using FAILCLOSED_CONFIG.
 const DEFAULT_CONFIG: ToolsConfig = {
   allowedDirectories: [PROJECTS_ROOT],
   blockedCommands: [],
+  sandbox: "off",
+  devToolsAllowNetwork: false,
+  allowUnsandboxedDevTools: true,
   maxBashTimeout: 600_000,
   maxFileSize: 10_485_760,
   maxIterations: 200,
+};
+
+// Fail-closed posture: sandbox off AND no opt-in -> every action must refuse
+// before touching runShell.
+const FAILCLOSED_CONFIG: ToolsConfig = {
+  ...DEFAULT_CONFIG,
+  allowUnsandboxedDevTools: false,
 };
 
 function shellOk(stdout: string): ShellResult {
@@ -549,5 +569,106 @@ describe("git_operations execute", () => {
 
     // truncateOutput should have been called
     expect(mockTruncateOutput).toHaveBeenCalled();
+  });
+});
+
+// --- Fail-closed posture (MEDIUM): refuse when sandbox not active ------------
+
+describe("git_operations fail-closed posture", () => {
+  let tool: ReturnType<typeof createGitOperationsTool>;
+
+  beforeEach(() => {
+    mockRunShell.mockReset();
+    mockTruncateOutput.mockReset();
+    mockTruncateOutput.mockImplementation((text: string) => text);
+    // sandbox "off" + no opt-in. With no real mechanism this is unprotected, so
+    // git_operations must refuse before running any subcommand.
+    tool = createGitOperationsTool(FAILCLOSED_CONFIG);
+  });
+
+  test("refuses a read-only action (status) without active sandbox", async () => {
+    const result = await tool.execute({ action: "status", path: REPO_PATH });
+    expect(result.isError).toBe(true);
+    expect(result.output.toLowerCase()).toContain("sandbox");
+    // It must NOT have shelled out at all (not even the repo-verify rev-parse).
+    expect(mockRunShell).not.toHaveBeenCalled();
+  });
+
+  test("refuses a network action (push) without active sandbox", async () => {
+    const result = await tool.execute({ action: "push", path: REPO_PATH });
+    expect(result.isError).toBe(true);
+    expect(result.output.toLowerCase()).toContain("sandbox");
+    expect(mockRunShell).not.toHaveBeenCalled();
+  });
+});
+
+// --- Sandbox wiring (MEDIUM): confinement + per-subcommand network -----------
+
+describe("git_operations sandbox wiring", () => {
+  let tool: ReturnType<typeof createGitOperationsTool>;
+
+  beforeEach(() => {
+    mockRunShell.mockReset();
+    mockTruncateOutput.mockReset();
+    mockTruncateOutput.mockImplementation((text: string) => text);
+    tool = createGitOperationsTool(DEFAULT_CONFIG);
+  });
+
+  test("read-only status runs sandboxed with network DENIED and dirs confined", async () => {
+    mockRunShell.mockResolvedValueOnce(shellOk(".git"));
+    mockRunShell.mockResolvedValueOnce(shellOk("# branch.head main\n"));
+
+    await tool.execute({ action: "status", path: REPO_PATH });
+
+    // Both the repo-verify (rev-parse) and the status command must be confined.
+    for (const call of mockRunShell.mock.calls) {
+      const opts = call[1];
+      expect(opts.sandbox).toBe("off"); // threaded from config.sandbox
+      expect(opts.allowNetwork).toBe(false);
+      expect(opts.allowedDirs).toEqual([PROJECTS_ROOT]);
+    }
+  });
+
+  test("diff and log keep network DENIED", async () => {
+    mockRunShell.mockResolvedValueOnce(shellOk(".git"));
+    mockRunShell.mockResolvedValueOnce(shellOk("stat\n"));
+    mockRunShell.mockResolvedValueOnce(shellOk("diff body\n"));
+
+    await tool.execute({ action: "diff", path: REPO_PATH });
+
+    for (const call of mockRunShell.mock.calls) {
+      expect(call[1].allowNetwork).toBe(false);
+    }
+  });
+
+  test("push allows network on the push command but not on branch detection", async () => {
+    mockRunShell.mockResolvedValueOnce(shellOk(".git")); // rev-parse
+    mockRunShell.mockResolvedValueOnce(shellOk("feat/x\n")); // branch --show-current
+    mockRunShell.mockResolvedValueOnce(shellOk("Everything up-to-date\n")); // push
+
+    await tool.execute({ action: "push", path: REPO_PATH });
+
+    const calls = mockRunShell.mock.calls;
+    // rev-parse + branch detection are read-only -> no network.
+    expect(calls[0]![1].allowNetwork).toBe(false);
+    expect(calls[1]![1].allowNetwork).toBe(false);
+    // The actual push needs the network.
+    expect(calls[2]![0]).toContain("push origin");
+    expect(calls[2]![1].allowNetwork).toBe(true);
+    // Still filesystem-confined while network is allowed.
+    expect(calls[2]![1].allowedDirs).toEqual([PROJECTS_ROOT]);
+  });
+
+  test("pull allows network on the pull command", async () => {
+    mockRunShell.mockResolvedValueOnce(shellOk(".git"));
+    mockRunShell.mockResolvedValueOnce(shellOk("main\n"));
+    mockRunShell.mockResolvedValueOnce(shellOk("Already up to date.\n"));
+
+    await tool.execute({ action: "pull", path: REPO_PATH });
+
+    const calls = mockRunShell.mock.calls;
+    expect(calls[2]![0]).toContain("pull --rebase");
+    expect(calls[2]![1].allowNetwork).toBe(true);
+    expect(calls[2]![1].allowedDirs).toEqual([PROJECTS_ROOT]);
   });
 });

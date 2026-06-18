@@ -5,6 +5,11 @@ import type { ToolsConfig } from "../config/schema";
 const config: ToolsConfig = {
   allowedDirectories: ["/tmp"],
   blockedCommands: [],
+  sandbox: "off",
+  devToolsAllowNetwork: false,
+  // Opt in so execute() reaches detection/steps instead of the fail-closed
+  // refusal; the refusal itself is covered in "execute - fail-closed posture".
+  allowUnsandboxedDevTools: true,
   maxBashTimeout: 30000,
   maxFileSize: 1024 * 1024,
   maxIterations: 200,
@@ -81,6 +86,9 @@ describe("createValidateCodeTool", () => {
       const restrictedConfig: ToolsConfig = {
         allowedDirectories: ["/tmp/allowed-only-xyz"],
         blockedCommands: [],
+        sandbox: "off",
+        devToolsAllowNetwork: false,
+        allowUnsandboxedDevTools: false,
         maxBashTimeout: 30000,
         maxFileSize: 1024 * 1024,
         maxIterations: 200,
@@ -100,6 +108,21 @@ describe("createValidateCodeTool", () => {
       // Should succeed with "no validation tools detected" or similar
       expect(result.isError).toBe(false);
       expect(result.output.toLowerCase()).toContain("no validation tools detected");
+    });
+  });
+
+  describe("execute - fail-closed posture", () => {
+    it("refuses when sandbox is off and not opted in", async () => {
+      const failClosed: ToolsConfig = {
+        ...config,
+        allowUnsandboxedDevTools: false,
+      };
+      const tool = createValidateCodeTool(failClosed);
+      const result = await tool.execute({
+        path: "/tmp/nonexistent-project-xyzzy-" + Date.now(),
+      });
+      expect(result.isError).toBe(true);
+      expect(result.output.toLowerCase()).toContain("sandbox");
     });
   });
 });

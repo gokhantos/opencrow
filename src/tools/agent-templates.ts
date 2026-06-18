@@ -1,6 +1,7 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import { createLogger } from "../logger";
 import { AGENT_SEEDS } from "../config/agent-seeds";
+import { DEFAULT_AGENT_TOOL_ALLOWLIST } from "./privilege";
 
 const log = createLogger("tool:agent-templates");
 
@@ -47,7 +48,12 @@ const GENERIC_TEMPLATES: readonly AgentTemplate[] = [
       maxIterations: 50,
       stateless: false,
       reasoning: false,
-      toolFilter: { mode: "all", tools: [] },
+      // Fail-closed: a blank agent starts with the conservative default allowlist
+      // (read/research/memory + read-only scrapers), NOT every tool.
+      toolFilter: {
+        mode: "allowlist",
+        tools: [...DEFAULT_AGENT_TOOL_ALLOWLIST],
+      },
       modelParams: { thinkingMode: "disabled", effort: "medium" },
     },
   },
@@ -63,7 +69,10 @@ const SEED_TEMPLATES: readonly AgentTemplate[] = AGENT_SEEDS.map((seed) => ({
     maxIterations: seed.maxIterations ?? 50,
     stateless: seed.stateless ?? false,
     reasoning: seed.reasoning ?? false,
-    toolFilter: seed.toolFilter ?? { mode: "all", tools: [] },
+    toolFilter: seed.toolFilter ?? {
+      mode: "allowlist",
+      tools: [...DEFAULT_AGENT_TOOL_ALLOWLIST],
+    },
     modelParams: (seed.modelParams as Record<string, unknown>) ?? {},
   },
 }));

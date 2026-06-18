@@ -113,9 +113,17 @@ describe("createAgentRegistry", () => {
     expect(agent.toolFilter.tools).toEqual(["bash"]);
   });
 
-  test("uses default tool filter when not specified", () => {
+  test("uses the fail-closed default tool filter when not specified", () => {
     const agents: AgentDefinition[] = [{ id: "full", name: "Full" }];
     const registry = createAgentRegistry(agents, globalDefaults);
-    expect(registry.getById("full")!.toolFilter.mode).toBe("all");
+    const filter = registry.getById("full")!.toolFilter;
+    // Fail-closed: a conservative allowlist, never mode:"all", and no high-impact
+    // tools granted implicitly.
+    expect(filter.mode).toBe("allowlist");
+    expect(filter.tools).not.toContain("bash");
+    expect(filter.tools).not.toContain("db_query");
+    expect(filter.tools).not.toContain("process_manage");
+    expect(filter.tools).toContain("read_file");
+    expect(filter.tools).toContain("search_memory");
   });
 });

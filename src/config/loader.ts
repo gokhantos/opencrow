@@ -196,6 +196,35 @@ function applyEnvOverrides(
     result.sige = sige;
   }
 
+  // --- tools (OS sandbox mode + dev-tool network egress) ---
+  // The canonical Docker image sets OPENCROW_TOOLS_SANDBOX=required so that a
+  // container missing a sandbox mechanism (bubblewrap) FAILS CLOSED instead of
+  // silently running shell commands unsandboxed. Operators can also use this to
+  // harden any deployment without editing a config file.
+  const toolsSandbox = process.env.OPENCROW_TOOLS_SANDBOX;
+  const devToolsNet = boolEnv("OPENCROW_DEV_TOOLS_ALLOW_NETWORK");
+  // Opt-in escape hatch (default OFF / fail-closed) that lets the dev-tool exec
+  // path run without an active OS sandbox. Exposed as env so a trusted-host
+  // deployment can flip it without a config file edit; leave unset to fail closed.
+  const allowUnsandboxedDevTools = boolEnv(
+    "OPENCROW_ALLOW_UNSANDBOXED_DEV_TOOLS",
+  );
+  if (
+    (toolsSandbox && ["off", "best-effort", "required"].includes(toolsSandbox)) ||
+    devToolsNet !== undefined ||
+    allowUnsandboxedDevTools !== undefined
+  ) {
+    const tools = { ...((result.tools ?? {}) as Record<string, unknown>) };
+    if (toolsSandbox && ["off", "best-effort", "required"].includes(toolsSandbox)) {
+      tools.sandbox = toolsSandbox;
+    }
+    if (devToolsNet !== undefined) tools.devToolsAllowNetwork = devToolsNet;
+    if (allowUnsandboxedDevTools !== undefined) {
+      tools.allowUnsandboxedDevTools = allowUnsandboxedDevTools;
+    }
+    result.tools = tools;
+  }
+
   return result;
 }
 

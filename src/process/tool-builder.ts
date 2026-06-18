@@ -29,6 +29,7 @@ import { createProcessMonitorTools } from "../tools/process-monitor";
 import { createEconomicCalendarTool } from "../tools/economic-calendar";
 import { createDbTools } from "../tools/db-query";
 import { createSigeTools } from "../tools/sige-tools";
+import { isToolGranted } from "../tools/privilege";
 
 const log = createLogger("tool-builder");
 
@@ -193,15 +194,26 @@ export function buildRegistryForAgent(
     getCronToolConfig,
   } = deps;
 
-  let registry = baseToolRegistry.withFilter(agent.toolFilter);
-
+  // Fail-closed grant check: high-impact tools (bash, write_file, edit_file,
+  // process_manage, db_query, cron, manage_agent, git_operations, spawn_agent, …)
+  // are NEVER granted implicitly — not even under mode:"all". They require an
+  // explicit allowlist entry. See src/tools/privilege.ts.
   const allowsTool = (name: string): boolean => {
     if (disabledTools.has(name)) return false;
-    if (agent.toolFilter.mode === "all") return true;
-    if (agent.toolFilter.mode === "allowlist")
-      return agent.toolFilter.tools.includes(name);
-    return !agent.toolFilter.tools.includes(name);
+    return isToolGranted(agent.toolFilter, name);
   };
+
+  // Base registry includes high-impact native-adjacent tools (e.g. process_manage,
+  // trigger_cron). Filter the base set through the same grant check so mode:"all"
+  // cannot leak them in via withFilter (which is a no-op for mode:"all").
+  let registry = baseToolRegistry
+    .withFilter(agent.toolFilter)
+    .withFilter({
+      mode: "blocklist",
+      tools: baseToolRegistry.definitions
+        .filter((t) => !allowsTool(t.name))
+        .map((t) => t.name),
+    });
 
   if (agent.subagents.allowAgents.length > 0) {
     const listAgents = createListAgentsTool(agentRegistry, agent.id);

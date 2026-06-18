@@ -315,9 +315,26 @@ function parsePost(
   if (postId.startsWith("t3_")) postId = postId.slice(3);
 
   const isSelf = Boolean(data.is_self);
-  let permalink = String(data.permalink ?? "");
-  if (permalink && !permalink.startsWith("http")) {
-    permalink = `https://www.reddit.com${permalink}`;
+  const rawPermalink = String(data.permalink ?? "");
+  // Build the canonical permalink via URL constructor and assert it stays on
+  // www.reddit.com with no embedded credentials — prevents open-redirect SSRF
+  // if the API ever returns a crafted permalink value.
+  let permalink = "";
+  if (rawPermalink) {
+    try {
+      const resolved = new URL(rawPermalink, "https://www.reddit.com");
+      if (
+        resolved.protocol === "https:" &&
+        resolved.hostname === "www.reddit.com" &&
+        resolved.username === "" &&
+        resolved.password === ""
+      ) {
+        permalink = resolved.toString();
+      }
+      // If assertion fails, leave permalink empty — post is still stored without comments.
+    } catch {
+      // Malformed — drop.
+    }
   }
 
   const selftext = String(data.selftext ?? "").slice(0, 5000);
@@ -381,7 +398,23 @@ async function fetchTopComments(
   limit = 3,
 ): Promise<readonly string[]> {
   try {
-    const url = `https://www.reddit.com${permalink.replace(/^https?:\/\/www\.reddit\.com/, "")}.json?limit=${limit}&depth=1&sort=top&raw_json=1`;
+    // Normalise: strip any existing scheme+host so we always build from a known base.
+    // Then assert the resolved URL stays on www.reddit.com before fetching.
+    const path = permalink.replace(/^https?:\/\/www\.reddit\.com/, "");
+    const resolved = new URL(`${path}.json`, "https://www.reddit.com");
+    if (
+      resolved.protocol !== "https:" ||
+      resolved.hostname !== "www.reddit.com" ||
+      resolved.username !== "" ||
+      resolved.password !== ""
+    ) {
+      return [];
+    }
+    resolved.searchParams.set("limit", String(limit));
+    resolved.searchParams.set("depth", "1");
+    resolved.searchParams.set("sort", "top");
+    resolved.searchParams.set("raw_json", "1");
+    const url = resolved.toString();
     const resp = await fetchWithTimeout(url, { headers }, REQUEST_TIMEOUT_MS);
     if (!resp.ok) return [];
 
