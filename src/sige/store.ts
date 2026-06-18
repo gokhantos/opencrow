@@ -215,11 +215,21 @@ export async function updateSessionStatus(
   }
 
   if (!extra || Object.keys(extra).length === 0) {
-    await db`
-      UPDATE sige_sessions
-      SET status = ${status}
-      WHERE id = ${id}
-    `
+    if (TERMINAL_STATUSES.includes(status)) {
+      await db`
+        UPDATE sige_sessions
+        SET
+          status      = ${status},
+          finished_at = COALESCE(finished_at, EXTRACT(EPOCH FROM NOW())::BIGINT)
+        WHERE id = ${id}
+      `
+    } else {
+      await db`
+        UPDATE sige_sessions
+        SET status = ${status}
+        WHERE id = ${id}
+      `
+    }
     return
   }
 

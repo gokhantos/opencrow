@@ -601,7 +601,23 @@ export function createSigeRoutes(): Hono {
       }
 
       await updateSessionStatus(id, "cancelled");
-      log.info("SIGE session cancelled", { id });
+
+      const xForwardedFor = c.req.header("x-forwarded-for");
+      const firstHop = xForwardedFor?.split(",")[0]?.trim();
+      const clientIp = firstHop ?? c.req.header("x-real-ip") ?? undefined;
+      const userAgent = c.req.header("user-agent");
+      const referer = c.req.header("referer");
+      const origin = c.req.header("origin");
+
+      log.info("SIGE session cancelled", {
+        id,
+        clientIp,
+        userAgent,
+        referer,
+        origin,
+        priorStatus: session.status,
+        sessionOrigin: session.origin,
+      });
       return c.json({ success: true });
     } catch (err) {
       log.error("Failed to cancel SIGE session", { err, id });
