@@ -142,6 +142,33 @@ export interface PipelineRunResult {
   readonly summary: PipelineResultSummary;
 }
 
+/**
+ * Merge a collector's selectedIds into a mutable accumulator map.
+ *
+ * On a FRESH run `ids` is a real `Map<string, readonly string[]>` (iterable
+ * via `for...of`). On a RESUMED run the step output was round-tripped through
+ * `JSON.stringify` → JSONB → `JSON.parse`, which silently converts any `Map`
+ * to `{}` (Maps do not serialize to JSON). In that case `ids` comes back as a
+ * plain `Record<string, string[]>` — an ordinary object whose keys are the
+ * table names. This helper normalises both shapes so the caller always gets a
+ * correct merge regardless of whether the value is live in-process or was
+ * replayed from a persisted checkpoint.
+ *
+ * Exported so it can be unit-tested without exercising the full pipeline.
+ */
+export function mergeSelectedIds(
+  into: Map<string, string[]>,
+  ids: ReadonlyMap<string, readonly string[]> | Record<string, readonly string[]> | undefined,
+): void {
+  if (ids == null) return;
+  const entries: Iterable<[string, readonly string[]]> =
+    ids instanceof Map ? ids.entries() : (Object.entries(ids) as [string, readonly string[]][]);
+  for (const [table, tableIds] of entries) {
+    const existing = into.get(table) ?? [];
+    into.set(table, [...existing, ...tableIds]);
+  }
+}
+
 /** Zero-value summary returned when a duplicate dispatch is suppressed and the
  *  run has no persisted summary yet. */
 const EMPTY_RUN_SUMMARY: PipelineResultSummary = {
@@ -273,17 +300,12 @@ export async function runIdeasPipeline(
     );
 
     // B7 — merge selected IDs from each collector's result into a single map.
+    // On resume, selectedIds arrives as a plain Record (JSON round-trip erases
+    // Map). mergeSelectedIds normalises both shapes — see its JSDoc.
     const mergedSelected = new Map<string, string[]>();
-    const mergeIntoSelected = (ids?: ReadonlyMap<string, readonly string[]>): void => {
-      if (!ids) return;
-      for (const [table, tableIds] of ids) {
-        const existing = mergedSelected.get(table) ?? [];
-        mergedSelected.set(table, [...existing, ...tableIds]);
-      }
-    };
-    mergeIntoSelected(trends.selectedIds);
-    mergeIntoSelected(pains.selectedIds);
-    mergeIntoSelected(capabilities.selectedIds);
+    mergeSelectedIds(mergedSelected, trends.selectedIds);
+    mergeSelectedIds(mergedSelected, pains.selectedIds);
+    mergeSelectedIds(mergedSelected, capabilities.selectedIds);
 
     // ── Guard: short-circuit if no fresh source data ──────────────────────
     if (

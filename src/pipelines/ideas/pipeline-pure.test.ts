@@ -15,6 +15,7 @@
  *   - paretoSelect: respects limit, delegates to Pareto for oversized pools
  *   - computeSigeConvergenceVeto: veto logic driven by jury agreement
  *   - buildPairwiseWins: both-direction registration for position-switch
+ *   - mergeSelectedIds: Map + resumed-Record + undefined inputs; no-throw on {}
  */
 
 import { test, expect, describe } from "bun:test";
@@ -31,6 +32,7 @@ import {
   enforceSegmentSpread,
   paretoSelect,
   computeSigeConvergenceVeto,
+  mergeSelectedIds,
 } from "./pipeline";
 import type { GiantAxisScores } from "./giant";
 import { GIANT_AXIS_KEYS } from "./giant";
@@ -556,5 +558,73 @@ describe("computeSigeConvergenceVeto", () => {
     // mean agreement = 0.25 → convergenceRate well below 0.85.
     const result = computeSigeConvergenceVeto(signals, 0.85);
     expect(result.vetoed).toBe(false);
+  });
+});
+
+// ── mergeSelectedIds ─────────────────────────────────────────────────────────
+//
+// Regression tests for the resume-path bug where JSON.stringify(new Map())
+// produces "{}", so on resume selectedIds comes back as a plain object instead
+// of a Map. mergeSelectedIds must handle both shapes without throwing.
+
+describe("mergeSelectedIds", () => {
+  test("undefined ids: no-op, accumulator unchanged", () => {
+    const into = new Map<string, string[]>();
+    mergeSelectedIds(into, undefined);
+    expect(into.size).toBe(0);
+  });
+
+  test("empty plain object (JSON-round-tripped empty Map) — must NOT throw", () => {
+    // This is the exact shape that arrives on resume when the collector stored
+    // `new Map()` and JSON.stringify produced "{}".
+    const into = new Map<string, string[]>();
+    expect(() => mergeSelectedIds(into, {})).not.toThrow();
+    expect(into.size).toBe(0);
+  });
+
+  test("populated plain Record (JSON-round-tripped non-empty Map) — merges correctly", () => {
+    // Simulates: JSON.parse(JSON.stringify(selectedIds)) where selectedIds had entries.
+    // JSON.stringify a Map always gives "{}" so real data is lost in the DB —
+    // but this test proves the helper itself handles a populated Record correctly
+    // once the caller produces one (e.g. a future fix that serialises as an array).
+    const into = new Map<string, string[]>();
+    const resumed: Record<string, readonly string[]> = {
+      app_store_reviews: ["id-1", "id-2"],
+      producthunt_posts: ["id-3"],
+    };
+    mergeSelectedIds(into, resumed);
+    expect(into.get("app_store_reviews")).toEqual(["id-1", "id-2"]);
+    expect(into.get("producthunt_posts")).toEqual(["id-3"]);
+    expect(into.size).toBe(2);
+  });
+
+  test("real Map (fresh in-process run) — merges correctly", () => {
+    const into = new Map<string, string[]>();
+    const live: ReadonlyMap<string, readonly string[]> = new Map([
+      ["hackernews_posts", ["hn-1", "hn-2"]],
+      ["reddit_posts", ["r-1"]],
+    ]);
+    mergeSelectedIds(into, live);
+    expect(into.get("hackernews_posts")).toEqual(["hn-1", "hn-2"]);
+    expect(into.get("reddit_posts")).toEqual(["r-1"]);
+  });
+
+  test("merges from multiple calls accumulate without overwriting existing ids", () => {
+    // Simulates three collector outputs (landscape + reviews + capabilities)
+    // each calling mergeSelectedIds on the same accumulator — the key concern
+    // when one table appears in two collector outputs.
+    const into = new Map<string, string[]>();
+    mergeSelectedIds(into, new Map([["reviews", ["a", "b"]]]));
+    mergeSelectedIds(into, new Map([["reviews", ["c"]], ["posts", ["p-1"]]]));
+    mergeSelectedIds(into, undefined);
+    expect(into.get("reviews")).toEqual(["a", "b", "c"]);
+    expect(into.get("posts")).toEqual(["p-1"]);
+  });
+
+  test("empty Map (fresh run, no rows selected) — no-op", () => {
+    const into = new Map<string, string[]>([["existing", ["x"]]]);
+    mergeSelectedIds(into, new Map());
+    expect(into.get("existing")).toEqual(["x"]);
+    expect(into.size).toBe(1);
   });
 });
