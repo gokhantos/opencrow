@@ -10,7 +10,10 @@ import {
   getPopulationDynamics,
   countPendingSessions,
   getSessionProgressRaw,
+  getAgentActionLedger,
+  getRoundArtifacts,
 } from "../../sige/store";
+import type { RoundLedger } from "../../sige/store";
 import { deriveSessionProgress } from "../../sige/progress";
 import type { SigeSessionStatus, SigeSessionConfig } from "../../sige/types";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
@@ -576,6 +579,77 @@ export function createSigeRoutes(): Hono {
     } catch (err) {
       log.error("Failed to get SIGE session progress", { err, id });
       return c.json({ success: false, error: "Failed to fetch progress" }, 500);
+    }
+  });
+
+  // ─── GET /api/sige/sessions/:id/actions — Per-agent action ledger ────────────
+  //
+  // Returns all agent actions for a session, grouped by round, with per-round
+  // simulation artifacts (equilibria, coalitions, metagameHealth, tasteFilter)
+  // attached. Artifacts are graceful-empty (null) when not yet persisted.
+  //
+  // Optional query param `round` restricts to a single round number.
+
+  app.get("/sige/sessions/:id/actions", async (c) => {
+    const id = c.req.param("id");
+    const roundParam = c.req.query("round");
+
+    const idSchema = z.string().uuid();
+    const idParsed = idSchema.safeParse(id);
+    if (!idParsed.success) {
+      return c.json({ success: false, error: "Invalid session id" }, 400);
+    }
+
+    let roundFilter: number | undefined;
+    if (roundParam !== undefined) {
+      const roundParsed = z.coerce.number().int().positive().safeParse(roundParam);
+      if (!roundParsed.success) {
+        return c.json(
+          { success: false, error: "round must be a positive integer" },
+          400,
+        );
+      }
+      roundFilter = roundParsed.data;
+    }
+
+    try {
+      const session = await getSession(id);
+      if (!session) {
+        return c.json({ success: false, error: "Session not found" }, 404);
+      }
+
+      const actions = await getAgentActionLedger(id, roundFilter);
+
+      // Group by round into a Map to preserve insertion order
+      const roundMap = new Map<number, typeof actions[number][]>();
+      for (const action of actions) {
+        const list = roundMap.get(action.round);
+        if (list) {
+          list.push(action);
+        } else {
+          roundMap.set(action.round, [action]);
+        }
+      }
+
+      // Fetch artifacts for each round in parallel (graceful-empty on absence)
+      const roundNumbers = Array.from(roundMap.keys());
+      const artifactsResults = await Promise.all(
+        roundNumbers.map((r) => getRoundArtifacts(id, r)),
+      );
+
+      const rounds: RoundLedger[] = roundNumbers.map((r, idx) => ({
+        round: r,
+        actions: roundMap.get(r) ?? [],
+        artifacts: artifactsResults[idx] ?? null,
+      }));
+
+      return c.json({
+        success: true,
+        data: { sessionId: id, rounds },
+      });
+    } catch (err) {
+      log.error("Failed to get SIGE agent action ledger", { err, id });
+      return c.json({ success: false, error: "Failed to fetch action ledger" }, 500);
     }
   });
 

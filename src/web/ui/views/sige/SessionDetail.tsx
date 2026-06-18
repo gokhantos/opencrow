@@ -174,7 +174,7 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
       {/* Step-level progress timeline — live monitor shown when data is available */}
       {progress != null && (
         <div className="mb-6">
-          <ProgressTimeline progress={progress} />
+          <ProgressTimeline progress={progress} sessionId={sessionId} />
         </div>
       )}
 

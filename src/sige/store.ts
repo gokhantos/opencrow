@@ -423,6 +423,46 @@ export async function countPendingSessions(): Promise<number> {
   return Number((rows[0] as { cnt: string | number }).cnt)
 }
 
+// ─── Agent Action Ledger Types ───────────────────────────────────────────────
+
+/**
+ * A single agent action as returned by the drill-down ledger endpoint.
+ * Includes `score` and `createdAt` which rowToAgentAction (the simulation path)
+ * intentionally drops — do NOT merge these types.
+ */
+export interface AgentActionRecord {
+  readonly agentId: string;
+  readonly role: string;
+  readonly round: number;
+  readonly actionType: string;
+  /** Raw JSON string as stored in the DB (content column). */
+  readonly content: string;
+  readonly confidence: number;
+  readonly score: number | null;
+  readonly targetIdeas: readonly string[];
+  readonly reasoning: string;
+  /** Epoch seconds, Number()-converted from BIGINT. */
+  readonly createdAt: number;
+}
+
+/**
+ * Per-round simulation artifacts from sige_simulation_results.
+ * Any field may be absent when not yet persisted.
+ */
+export interface RoundArtifacts {
+  readonly equilibria?: unknown[];
+  readonly coalitions?: unknown[];
+  readonly metagameHealth?: unknown;
+  readonly tasteFilter?: unknown;
+}
+
+/** One round of the expert game ledger — actions + optional simulation result. */
+export interface RoundLedger {
+  readonly round: number;
+  readonly actions: readonly AgentActionRecord[];
+  readonly artifacts: RoundArtifacts | null;
+}
+
 // ─── Agent Action Operations ──────────────────────────────────────────────────
 
 export async function saveAgentAction(action: {
@@ -472,6 +512,107 @@ export async function getAgentActions(
   }
 
   return (rows as Record<string, unknown>[]).map(rowToAgentAction)
+}
+
+/**
+ * Fetch agent actions as `AgentActionRecord[]` for the drill-down ledger.
+ * Unlike `getAgentActions` (which uses `rowToAgentAction` and drops score /
+ * createdAt to keep the domain type stable), this mapper includes all ledger
+ * fields the UI needs. The two functions are intentionally separate.
+ */
+export async function getAgentActionLedger(
+  sessionId: string,
+  round?: number,
+): Promise<readonly AgentActionRecord[]> {
+  const db = getDb();
+
+  let rows: unknown[];
+
+  // Defensive ceiling: a normal session has ≤ a few hundred actions (≤4 expert
+  // rounds × bounded agent count), but cap the payload as defense-in-depth so a
+  // pathological session can't return an unbounded result set.
+  const LEDGER_LIMIT = 5000;
+
+  if (round !== undefined) {
+    rows = await db`
+      SELECT agent_id, agent_role, round, action_type, content, confidence,
+             score, target_ideas_json, reasoning, created_at
+      FROM sige_agent_actions
+      WHERE session_id = ${sessionId} AND round = ${round}
+      ORDER BY created_at ASC
+      LIMIT ${LEDGER_LIMIT}
+    `;
+  } else {
+    rows = await db`
+      SELECT agent_id, agent_role, round, action_type, content, confidence,
+             score, target_ideas_json, reasoning, created_at
+      FROM sige_agent_actions
+      WHERE session_id = ${sessionId}
+      ORDER BY round ASC, created_at ASC
+      LIMIT ${LEDGER_LIMIT}
+    `;
+  }
+
+  return (rows as Record<string, unknown>[]).map(
+    (row): AgentActionRecord => ({
+      agentId: row.agent_id as string,
+      role: row.agent_role as string,
+      round: row.round as number,
+      actionType: row.action_type as string,
+      content: row.content as string,
+      confidence: (row.confidence as number) ?? 0,
+      score: row.score != null ? Number(row.score) : null,
+      targetIdeas: row.target_ideas_json
+        ? (JSON.parse(row.target_ideas_json as string) as string[])
+        : [],
+      reasoning: (row.reasoning as string) ?? "",
+      // created_at is stored as BIGINT — Bun.sql returns BIGINT columns as
+      // string. Number() converts safely; epoch seconds are well within f64.
+      createdAt: Number(row.created_at),
+    }),
+  );
+}
+
+/**
+ * Fetch simulation artifacts (equilibria, coalitions, metagame health, taste-
+ * filter verdict) for a specific round of a session.
+ *
+ * We re-use `sige_simulation_results` where `layer = 'expert'`. The result_json
+ * blob is a per-round ExpertGameResult partial; we extract the top-level keys
+ * the ledger needs. Returns null (graceful-empty) when no row exists.
+ */
+export async function getRoundArtifacts(
+  sessionId: string,
+  round: number,
+): Promise<RoundArtifacts | null> {
+  const db = getDb();
+  const rows = await db`
+    SELECT result_json
+    FROM sige_simulation_results
+    WHERE session_id = ${sessionId} AND layer = 'expert' AND round = ${round}
+    ORDER BY created_at ASC
+    LIMIT 1
+  `;
+  const row = (rows as Record<string, unknown>[])[0];
+  if (!row) return null;
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(row.result_json as string) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  return {
+    equilibria: Array.isArray(parsed.equilibria)
+      ? (parsed.equilibria as unknown[])
+      : undefined,
+    coalitions: Array.isArray(parsed.coalitions)
+      ? (parsed.coalitions as unknown[])
+      : undefined,
+    metagameHealth: parsed.metagameHealth ?? parsed.metaGameHealth ?? undefined,
+    tasteFilter: parsed.tasteFilter ?? undefined,
+  };
 }
 
 // ─── Simulation Result Operations ─────────────────────────────────────────────

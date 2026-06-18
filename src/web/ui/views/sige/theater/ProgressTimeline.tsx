@@ -32,8 +32,11 @@ import type {
   ProgressStep,
   ProgressSubstep,
   SubstepState,
+  RoundLedger,
 } from "../types";
 import { TERMINAL_STATUSES } from "../statusConfig";
+import { fetchSessionActions } from "../api";
+import { AgentLedger } from "./AgentLedger";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -45,6 +48,108 @@ const STEP_ORDER: readonly string[] = [
   "scoring",
   "report_generation",
 ];
+
+/**
+ * Substep keys that have a drillable agent ledger.
+ * round_1..round_4 map to round numbers 1-4; taste_filter is a pseudo-round.
+ */
+const LEDGER_SUBSTEP_KEYS = new Set([
+  "round_1",
+  "round_2",
+  "round_3",
+  "round_4",
+  "taste_filter",
+]);
+
+/** Parse the round number from a substep key like "round_3" → 3, taste_filter → 0 */
+function substepKeyToRound(key: string): number | undefined {
+  if (key === "taste_filter") return 0;
+  const m = key.match(/^round_(\d+)$/);
+  if (m?.[1] != null) return Number(m[1]);
+  return undefined;
+}
+
+// ─── Ledger cache ─────────────────────────────────────────────────────────────
+
+/** In-memory cache keyed by `${sessionId}:${round}` to avoid re-fetching on collapse/expand. */
+const ledgerCache = new Map<string, readonly RoundLedger[]>();
+
+// ─── useLedger hook ────────────────────────────────────────────────────────────
+
+interface UseLedgerResult {
+  readonly ledgers: readonly RoundLedger[];
+  readonly loading: boolean;
+  readonly error: string | null;
+}
+
+/**
+ * Lazy-fetch: does nothing until `enabled` is true.
+ * Caches per (sessionId, round) so re-expanding doesn't re-fetch.
+ * Aborts the request on unmount or when `enabled` flips back to false.
+ */
+function useLedger(
+  sessionId: string | undefined,
+  round: number | undefined,
+  enabled: boolean,
+): UseLedgerResult {
+  const cacheKey =
+    sessionId != null && round != null ? `${sessionId}:${round}` : null;
+
+  const cached = cacheKey != null ? ledgerCache.get(cacheKey) : undefined;
+
+  const [ledgers, setLedgers] = useState<readonly RoundLedger[]>(cached ?? []);
+  const [loading, setLoading] = useState(!cached && enabled);
+  const [error, setError] = useState<string | null>(null);
+
+  const abortRef = useRef<AbortController | null>(null);
+  const fetchedRef = useRef(cached != null);
+
+  useEffect(() => {
+    if (!enabled || sessionId == null || round == null) return;
+    if (fetchedRef.current) return;
+
+    fetchedRef.current = true;
+    setLoading(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    // taste_filter is pseudo-round 0 — pass no round filter to get all actions
+    // for that step (the API may store taste_filter actions under a different round
+    // value; passing undefined fetches all rounds and we display them together).
+    const roundParam = round === 0 ? undefined : round;
+
+    fetchSessionActions(sessionId, roundParam, controller.signal)
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        if (cacheKey != null) ledgerCache.set(cacheKey, res.rounds);
+        setLedgers(res.rounds);
+        setError(null);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        const msg =
+          typeof err === "object" &&
+          err !== null &&
+          "message" in err
+            ? String((err as { message: unknown }).message)
+            : "Failed to load";
+        setError(msg);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+
+    return () => {
+      controller.abort();
+    };
+    // Only re-run when enabled flips true for a new (sessionId, round) pair.
+    // fetchedRef prevents double-fetching on re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, sessionId, round]);
+
+  return { ledgers, loading, error };
+}
 
 // ─── Time formatting ──────────────────────────────────────────────────────────
 
@@ -174,53 +279,105 @@ interface SubstepNodeProps {
   readonly substep: ProgressSubstep;
   readonly nowSec: number;
   readonly isLast: boolean;
+  /** When provided and substep key is a ledger key, enables drill-down fetch. */
+  readonly sessionId?: string;
 }
 
-function SubstepNode({ substep, nowSec, isLast }: SubstepNodeProps) {
+function SubstepNode({ substep, nowSec, isLast, sessionId }: SubstepNodeProps) {
+  const isLedgerKey = LEDGER_SUBSTEP_KEYS.has(substep.key);
+  // Only allow expansion when substep has started (done or running) — no data yet for waiting.
+  const canExpand =
+    isLedgerKey &&
+    sessionId != null &&
+    (substep.state === "done" || substep.state === "running");
+
+  const [open, setOpen] = useState(false);
+  const round = canExpand ? substepKeyToRound(substep.key) : undefined;
+  const { ledgers, loading: ledgerLoading, error: ledgerError } = useLedger(
+    canExpand ? sessionId : undefined,
+    round,
+    open && canExpand,
+  );
+
+  const isTasteFilter = substep.key === "taste_filter";
+
   return (
     <li
       className={cn(
-        "flex items-start gap-2.5 pl-2 py-1.5",
+        "pl-2",
         !isLast && "border-b border-border/40",
       )}
     >
-      {/* Spine continuation dot */}
-      <div className="flex flex-col items-center shrink-0 mt-0.5">
-        <StateIcon state={substep.state} small />
-      </div>
+      {/* Header row */}
+      <div className="flex items-start gap-2.5 py-1.5">
+        {/* Spine continuation dot */}
+        <div className="flex flex-col items-center shrink-0 mt-0.5">
+          <StateIcon state={substep.state} small />
+        </div>
 
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span
-            className={cn(
-              "text-xs font-medium",
-              substep.state === "running"
-                ? "text-foreground"
-                : substep.state === "done"
-                ? "text-muted"
-                : substep.state === "error"
-                ? "text-danger"
-                : "text-faint",
-            )}
-          >
-            {substep.label}
-          </span>
-
-          {substep.detail != null && (
-            <span className="text-[10px] text-faint bg-bg-3 border border-border px-1.5 py-0.5 rounded font-mono">
-              {substep.detail}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className={cn(
+                "text-xs font-medium",
+                substep.state === "running"
+                  ? "text-foreground"
+                  : substep.state === "done"
+                  ? "text-muted"
+                  : substep.state === "error"
+                  ? "text-danger"
+                  : "text-faint",
+              )}
+            >
+              {substep.label}
             </span>
-          )}
 
-          <Elapsed
-            startedAt={substep.startedAt}
-            endedAt={substep.endedAt}
-            elapsedSec={substep.elapsedSec}
-            state={substep.state}
-            nowSec={nowSec}
-          />
+            {substep.detail != null && (
+              <span className="text-[10px] text-faint bg-bg-3 border border-border px-1.5 py-0.5 rounded font-mono">
+                {substep.detail}
+              </span>
+            )}
+
+            <Elapsed
+              startedAt={substep.startedAt}
+              endedAt={substep.endedAt}
+              elapsedSec={substep.elapsedSec}
+              state={substep.state}
+              nowSec={nowSec}
+            />
+
+            {/* Drill-down toggle */}
+            {canExpand && (
+              <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                aria-expanded={open}
+                className={cn(
+                  "ml-auto flex items-center gap-0.5 text-[10px] font-mono",
+                  "bg-transparent border-none cursor-pointer p-0 transition-colors",
+                  open ? "text-accent" : "text-faint hover:text-muted",
+                )}
+                aria-label={open ? "Collapse agent ledger" : "Expand agent ledger"}
+              >
+                {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                <span>ledger</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Lazy-loaded agent ledger */}
+      {open && canExpand && (
+        <div className="pb-2 pr-1">
+          <AgentLedger
+            ledgers={ledgers}
+            loading={ledgerLoading}
+            error={ledgerError}
+            isTasteFilter={isTasteFilter}
+          />
+        </div>
+      )}
     </li>
   );
 }
@@ -287,6 +444,8 @@ interface StepNodeProps {
   readonly stalledReason: string | null;
   readonly nowSec: number;
   readonly defaultOpen?: boolean;
+  /** Forwarded to SubstepNode for drill-down ledger fetches. */
+  readonly sessionId?: string;
 }
 
 function StepNode({
@@ -297,6 +456,7 @@ function StepNode({
   stalledReason,
   nowSec,
   defaultOpen = false,
+  sessionId,
 }: StepNodeProps) {
   const [open, setOpen] = useState(defaultOpen || step.state === "running");
   const hasSubsteps = step.substeps.length > 0;
@@ -437,6 +597,7 @@ function StepNode({
                   substep={sub}
                   nowSec={nowSec}
                   isLast={i === step.substeps.length - 1}
+                  sessionId={sessionId}
                 />
               ))}
             </ul>
@@ -545,9 +706,15 @@ function ErrorPanel({ error }: { readonly error: string }) {
 
 export interface ProgressTimelineProps {
   readonly progress: SessionProgress;
+  /**
+   * Session ID — used to fetch per-round agent ledgers when a substep is
+   * expanded. Optional for backwards-compat; without it, substeps won't
+   * show the drill-down toggle.
+   */
+  readonly sessionId?: string;
 }
 
-export function ProgressTimeline({ progress }: ProgressTimelineProps) {
+export function ProgressTimeline({ progress, sessionId }: ProgressTimelineProps) {
   const isTerminal = TERMINAL_STATUSES.has(progress.status);
 
   // Single tick drives ALL live elapsed timers in the tree.
@@ -594,6 +761,7 @@ export function ProgressTimeline({ progress }: ProgressTimelineProps) {
                 stalledReason={progress.stalled && step.state === "running" ? progress.stalledReason : null}
                 nowSec={currentNow}
                 defaultOpen={step.state === "running" || step.state === "error"}
+                sessionId={sessionId}
               />
             </div>
           );

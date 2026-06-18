@@ -5,6 +5,7 @@ import type {
   FusedScore,
   PopulationEntry,
   SessionProgress,
+  RoundLedger,
 } from "./types";
 import type { GraphView } from "../../../../sige/knowledge/graph-query";
 
@@ -124,6 +125,32 @@ export async function fetchSessionGraph(
 ): Promise<GraphView> {
   const res = await apiFetch<GraphResponse>(
     `/api/sige/sessions/${sessionId}/graph`,
+    signal ? { signal } : undefined,
+  );
+  return res.data;
+}
+
+interface ActionsResponse {
+  readonly success: boolean;
+  readonly data: {
+    readonly sessionId: string;
+    readonly rounds: readonly RoundLedger[];
+  };
+}
+
+/**
+ * Fetch agent action ledger for a session.
+ * Pass `round` to scope to a single round (e.g. 1-4 for expert-game rounds,
+ * or the taste_filter pseudo-round). Omit for all rounds.
+ */
+export async function fetchSessionActions(
+  sessionId: string,
+  round?: number,
+  signal?: AbortSignal,
+): Promise<{ readonly sessionId: string; readonly rounds: readonly RoundLedger[] }> {
+  const qs = round != null ? `?round=${round}` : "";
+  const res = await apiFetch<ActionsResponse>(
+    `/api/sige/sessions/${sessionId}/actions${qs}`,
     signal ? { signal } : undefined,
   );
   return res.data;

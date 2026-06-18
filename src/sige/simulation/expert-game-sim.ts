@@ -12,7 +12,7 @@ import {
   graphViewToPromptContext,
 } from "../knowledge/graph-query"
 import type { Mem0Client } from "../knowledge/mem0-client"
-import { saveAgentAction, saveSimulationResult } from "../store"
+import { saveAgentAction, saveSimulationResult, touchSessionActivity } from "../store"
 import type { GameFormulation } from "../types"
 import type {
   AgentAction,
@@ -119,6 +119,7 @@ export async function runDivergentGeneration(params: {
       roundContext: undefined,
       signalsContext,
       signal,
+      persistIncrementally: true,
     })
   })
 
@@ -180,6 +181,7 @@ export async function runStrategicInteraction(params: {
       roundContext,
       signalsContext,
       signal,
+      persistIncrementally: true,
     })
   })
 
@@ -340,6 +342,7 @@ export async function runEquilibriumAnalysis(params: {
       roundContext,
       signalsContext,
       signal,
+      persistIncrementally: true,
     })
   })
 
@@ -364,6 +367,77 @@ export async function runEquilibriumAnalysis(params: {
   }
 }
 
+// ─── Incremental Persistence ──────────────────────────────────────────────────
+
+/**
+ * Deterministic, collision-resistant row id for a single agent action.
+ *
+ * Derived purely from the action's identity + payload so that the SAME action,
+ * persisted incrementally as it completes AND (defensively) re-persisted later,
+ * always resolves to ONE row id. Because `saveAgentAction` is a plain INSERT
+ * against a PRIMARY KEY, a duplicate id throws — which we swallow — giving
+ * idempotent upsert-by-id semantics without touching the store layer.
+ *
+ * Round 3 runs the same `agentId`/`round` repeatedly across generations and
+ * across eval/mutate/crossover phases; `actionType` + `content` discriminate
+ * those genuinely-distinct actions so they each get their own row.
+ */
+function stableActionId(sessionId: string, action: AgentAction): string {
+  const hasher = new Bun.CryptoHasher("sha256")
+  hasher.update(
+    [
+      sessionId,
+      action.agentId,
+      String(action.round),
+      action.actionType,
+      action.content,
+    ].join(" "),
+  )
+  return hasher.digest("hex")
+}
+
+/**
+ * Persist a single agent action the moment it completes, so the UI can render
+ * a live per-agent ledger mid-round instead of waiting for round end.
+ *
+ * Fire-and-forget + fully defensive: ANY persistence error (incl. duplicate-id
+ * on re-save, FK/connection issues) is logged and swallowed so the simulation
+ * loop can never stall or break on a write. Uses a stable id so this is the
+ * single source of truth for action rows — `persistRound` no longer batch-saves
+ * the same actions.
+ */
+async function persistActionIncremental(
+  sessionId: string,
+  action: AgentAction,
+): Promise<void> {
+  try {
+    await saveAgentAction({
+      id: stableActionId(sessionId, action),
+      sessionId,
+      round: action.round,
+      agentRole: action.role,
+      agentId: action.agentId,
+      actionType: action.actionType,
+      content: action.content,
+      confidence: action.confidence,
+      targetIdeasJson: action.targetIdeas
+        ? JSON.stringify(action.targetIdeas)
+        : undefined,
+      reasoning: action.reasoning,
+    })
+    await touchSessionActivity(sessionId)
+  } catch (err) {
+    // Duplicate-id (already persisted) and transient write errors must NOT
+    // surface into the simulation loop — the ledger is best-effort.
+    log.debug("Incremental agent-action persist skipped/failed", {
+      sessionId,
+      agentId: action.agentId,
+      round: action.round,
+      err,
+    })
+  }
+}
+
 // ─── Single Agent Execution ───────────────────────────────────────────────────
 
 export async function runSingleAgent(params: {
@@ -377,8 +451,15 @@ export async function runSingleAgent(params: {
   readonly roundContext: string | undefined
   readonly signalsContext?: string
   readonly signal?: AbortSignal
+  /**
+   * Opt-in: persist the produced action incrementally as soon as it completes.
+   * Only the full 4-round game supplies this; generation-only callers (e.g.
+   * `generateDivergentCandidates`, which may use an ephemeral session id with
+   * no `sige_sessions` row) leave it off to avoid orphan/FK writes.
+   */
+  readonly persistIncrementally?: boolean
 }): Promise<AgentAction> {
-  const { def, round, sessionId, gameFormulation, mem0, userId, config, roundContext, signalsContext, signal } = params
+  const { def, round, sessionId, gameFormulation, mem0, userId, config, roundContext, signalsContext, signal, persistIncrementally } = params
 
   const filter = def.defaultKnowledgeFilter
   const agentGraphView = await getFilteredGraphView(mem0, userId, def.role, filter)
@@ -414,7 +495,16 @@ export async function runSingleAgent(params: {
   })
 
   const agentId = `${def.role}:${sessionId}`
-  return parseAgentAction(response.text, round, agentId, def.role)
+  const action = parseAgentAction(response.text, round, agentId, def.role)
+
+  // Persist as soon as the action exists so a stuck/long round still streams
+  // per-agent detail to the UI. Fire-and-forget: never await into the loop and
+  // never let a write error escape `persistActionIncremental`.
+  if (persistIncrementally) {
+    void persistActionIncremental(sessionId, action)
+  }
+
+  return action
 }
 
 // ─── Evolutionary Generation ──────────────────────────────────────────────────
@@ -453,6 +543,7 @@ async function runEvolutionaryGeneration(params: {
       roundContext,
       signalsContext,
       signal,
+      persistIncrementally: true,
     })
   })
 
@@ -490,6 +581,7 @@ async function runEvolutionaryGeneration(params: {
       roundContext: `## Generation ${gen} — Propose mutations of the surviving ideas:\n\n${mutatorContext}`,
       signalsContext,
       signal,
+      persistIncrementally: true,
     })
   })
 
@@ -513,6 +605,7 @@ async function runEvolutionaryGeneration(params: {
       roundContext: `## Generation ${gen} — Combine pairs of ideas into hybrids:\n\n${mutatorContext}`,
       signalsContext,
       signal,
+      persistIncrementally: true,
     })
   })
 
@@ -552,29 +645,13 @@ export function filterActions(
 }
 
 export async function persistRound(sessionId: string, round: SimulationRound): Promise<void> {
-  const actionSaves = round.agentActions.map((action) =>
-    saveAgentAction({
-      id: crypto.randomUUID(),
-      sessionId,
-      round: round.roundNumber,
-      agentRole: action.role,
-      agentId: action.agentId,
-      actionType: action.actionType,
-      content: action.content,
-      confidence: action.confidence,
-      targetIdeasJson: action.targetIdeas ? JSON.stringify(action.targetIdeas) : undefined,
-      reasoning: action.reasoning,
-    }).catch((err) => {
-      log.warn("Failed to persist agent action", {
-        sessionId,
-        agentId: action.agentId,
-        err,
-      })
-    }),
-  )
-
-  await Promise.all(actionSaves)
-
+  // Agent actions are now persisted INCREMENTALLY as each one completes (see
+  // `persistActionIncremental` in `runSingleAgent`), so the UI can render a live
+  // per-agent ledger mid-round and a stuck round is no longer opaque. We
+  // deliberately do NOT batch-save them here: a stable, content-derived id makes
+  // the incremental write the single source of truth and avoids double-inserts
+  // (a duplicate id would otherwise hit the PRIMARY KEY). Round end only persists
+  // the aggregated artifacts below.
   await saveSimulationResult({
     id: crypto.randomUUID(),
     sessionId,
