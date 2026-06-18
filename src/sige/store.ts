@@ -43,9 +43,11 @@ function rowToSession(row: Record<string, unknown>): SigeSession {
   // origin column added by migration 019; default 'human' for pre-migration rows.
   const origin = ((row.origin as string | null) ?? "human") as SigeSessionOrigin;
 
-  // last_activity_at: NULL for pre-migration rows — map to undefined.
+  // last_activity_at: NULL for pre-migration rows — map to undefined. Bun.sql
+  // returns BIGINT as a string, so convert (not just cast) to a real number —
+  // otherwise numeric comparisons on lastActivityAt fail at runtime.
   const lastActivityAt =
-    row.last_activity_at != null ? (row.last_activity_at as number) : undefined;
+    row.last_activity_at != null ? Number(row.last_activity_at) : undefined;
 
   return {
     id: row.id as string,
