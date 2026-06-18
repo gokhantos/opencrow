@@ -6,6 +6,7 @@
 import { loadConfig } from "../config/loader";
 import { resolveAllowedDirs, isPathAllowedSync } from "./path-utils";
 import { createLogger } from "../logger";
+import { killProcessGroup } from "./process-group";
 
 const log = createLogger("tool:shell-runner");
 
@@ -102,6 +103,10 @@ export async function runShell(
     stdout: "pipe",
     stderr: "pipe",
     env: { ...getSafeDevEnv(), ...opts.env },
+    // setsid() the child so it leads its own process group; lets us kill the
+    // whole pipeline (forked children included) via `process.kill(-pid)` on
+    // timeout instead of orphaning them. Works natively on macOS and Linux.
+    detached: true,
   });
 
   const result = await Promise.race([
@@ -120,11 +125,18 @@ export async function runShell(
       timedOut: boolean;
     }>((resolve) =>
       setTimeout(() => {
-        proc.kill(9);
+        // Kill the whole process group, not just bash, so forked children
+        // (e.g. the producer in `yes | head`) die too instead of re-parenting
+        // to PID 1 and spinning a CPU core.
+        killProcessGroup(proc.pid);
         resolve({ stdout: "", stderr: "", exitCode: -1, timedOut: true });
       }, timeout),
     ),
   ]);
+
+  // Defensive sweep: even on a clean exit a forked child can outlive bash via
+  // a pipe-close race. Reap any strays in the group. Best-effort.
+  killProcessGroup(proc.pid);
 
   return { ...result, durationMs: Date.now() - start };
 }

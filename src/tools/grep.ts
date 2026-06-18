@@ -3,6 +3,7 @@ import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { ToolsConfig } from "../config/schema";
 import { resolveAllowedDirs, expandHome, isPathAllowed } from "./path-utils";
 import { createLogger } from "../logger";
+import { killProcessGroup } from "./process-group";
 
 const log = createLogger("tool:grep");
 
@@ -11,7 +12,12 @@ const DEFAULT_RESULTS = 20;
 const MAX_PATTERN_LENGTH = 500;
 const GREP_TIMEOUT_MS = 15_000;
 
-export function createGrepTool(config: ToolsConfig): ToolDefinition {
+export function createGrepTool(
+  config: ToolsConfig,
+  // Override the hard timeout. Defaults to GREP_TIMEOUT_MS; exists so tests can
+  // exercise the timeout/process-group-kill path without waiting the full 15s.
+  timeoutMs: number = GREP_TIMEOUT_MS,
+): ToolDefinition {
   const allowedDirs = resolveAllowedDirs(config.allowedDirectories);
 
   return {
@@ -102,6 +108,12 @@ export function createGrepTool(config: ToolsConfig): ToolDefinition {
         const proc = Bun.spawn(["grep", ...args], {
           stdout: "pipe",
           stderr: "pipe",
+          // setsid() the child so it leads its own process group. grep is a
+          // single binary that does not fork a pipeline, but spawning detached
+          // and killing the group keeps the timeout path consistent with the
+          // bash/shell-runner tools and is robust if the spawn shape ever gains
+          // children. Works natively on macOS and Linux.
+          detached: true,
         });
 
         const result = await Promise.race([
@@ -120,15 +132,17 @@ export function createGrepTool(config: ToolsConfig): ToolDefinition {
             timedOut: boolean;
           }>((res) =>
             setTimeout(() => {
-              proc.kill(9);
+              // Kill the whole process group rather than just the grep PID so
+              // nothing is orphaned on timeout.
+              killProcessGroup(proc.pid);
               res({ stdout: "", stderr: "", exitCode: -1, timedOut: true });
-            }, GREP_TIMEOUT_MS),
+            }, timeoutMs),
           ),
         ]);
 
         if (result.timedOut) {
           return {
-            output: `Error: grep timed out after ${GREP_TIMEOUT_MS}ms`,
+            output: `Error: grep timed out after ${timeoutMs}ms`,
             isError: true,
           };
         }

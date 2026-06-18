@@ -5,6 +5,21 @@ import { mkdtemp, writeFile, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
+// Returns the count of live processes whose command line contains `marker`.
+// Uses pgrep -f (matches full args). Exit code 1 = no matches (count 0).
+async function countProcesses(marker: string): Promise<number> {
+  const proc = Bun.spawn(["pgrep", "-f", marker], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = (await new Response(proc.stdout).text()).trim();
+  await proc.exited;
+  if (!out) return 0;
+  return out.split("\n").filter(Boolean).length;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 describe("createBashTool", () => {
   let config: ToolsConfig;
   let tempDir: string;
@@ -171,6 +186,55 @@ describe("createBashTool", () => {
       });
       expect(result.isError).toBe(true);
       expect(result.output).toContain("timed out");
+    });
+
+    // Regression: on timeout, bash forks the pipeline (e.g. `yes | head`) as
+    // children. SIGKILLing only the bash PID re-parents those children to PID 1
+    // where they spin forever (`yes` pins a CPU core). Spawning detached +
+    // killing the whole process group must reap them too.
+    describe("process-group cleanup", () => {
+      // Unique per-test marker so we can detect leaks via pgrep without
+      // cross-test interference, plus defensive cleanup if a regression leaks.
+      let marker: string;
+
+      beforeEach(() => {
+        marker = `UNIQUEMARKER_${crypto.randomUUID().replace(/-/g, "")}`;
+      });
+
+      afterEach(() => {
+        // Best-effort: reap anything this test may have leaked so a regression
+        // can't bleed CPU-spinning processes across the suite.
+        Bun.spawnSync(["pkill", "-9", "-f", marker]);
+      });
+
+      it("does not leave child processes alive after a TIMEOUT", async () => {
+        const shortTimeoutConfig: ToolsConfig = {
+          ...config,
+          maxBashTimeout: 100, // 100ms timeout
+        };
+        const tool = createBashTool(shortTimeoutConfig);
+
+        // `yes <marker>` is a long-lived, CPU-spinning producer; `head` caps
+        // the buffer so it doesn't fill memory. The marker rides in argv so
+        // pgrep -f can find a survivor. The tool returns "" on timeout, so we
+        // detect leaks via the OS process table, not the tool output.
+        const result = await tool.execute({
+          command: `yes ${marker} | head -n 100000000`,
+          workingDirectory: tempDir,
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain("timed out");
+
+        // Poll briefly: the kill is async w.r.t. the OS reaping the group.
+        // Assert the producer is fully gone within a ~2s budget.
+        let count = await countProcesses(marker);
+        for (let i = 0; i < 20 && count > 0; i++) {
+          await sleep(100);
+          count = await countProcesses(marker);
+        }
+        expect(count).toBe(0);
+      });
     });
   });
 

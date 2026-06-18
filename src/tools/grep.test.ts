@@ -5,6 +5,21 @@ import { mkdtemp, writeFile, rm, mkdir } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
+// Returns the count of live processes whose command line contains `marker`.
+// Uses pgrep -f (matches full args). Exit code 1 = no matches (count 0).
+async function countProcesses(marker: string): Promise<number> {
+  const proc = Bun.spawn(["pgrep", "-f", marker], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = (await new Response(proc.stdout).text()).trim();
+  await proc.exited;
+  if (!out) return 0;
+  return out.split("\n").filter(Boolean).length;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 describe("createGrepTool", () => {
   let config: ToolsConfig;
   let tempDir: string;
@@ -180,6 +195,50 @@ describe("createGrepTool", () => {
       });
       // grep with nonexistent path typically returns exit code 2
       expect(result.output).toBeDefined();
+    });
+  });
+
+  // Regression: on timeout the grep child must be killed via its process group,
+  // not orphaned. grep is a single non-forking binary so the orphan risk is low,
+  // but the timeout path is spawned `detached: true` and routed through
+  // killProcessGroup to stay consistent with the bash/shell-runner tools and to
+  // be robust if the spawn shape ever gains children.
+  describe("execute - process-group cleanup on timeout", () => {
+    // Unique per-test marker so we can detect leaks via pgrep without
+    // cross-test interference, plus defensive cleanup if a regression leaks.
+    let marker: string;
+
+    beforeEach(() => {
+      marker = `UNIQUEMARKER_${crypto.randomUUID().replace(/-/g, "")}`;
+    });
+
+    afterEach(() => {
+      Bun.spawnSync(["pkill", "-9", "-f", marker]);
+    });
+
+    it("does not leave a grep process alive after a TIMEOUT", async () => {
+      // Build a large enough tree that the recursive scan can't finish within a
+      // 1ms timeout. The marker is the search pattern, so it rides in grep's
+      // argv where `pgrep -f` can find a survivor.
+      const big = "filler line that grep must scan\n".repeat(2000);
+      for (let i = 0; i < 60; i++) {
+        await writeFile(join(tempDir, `big-${i}.txt`), big);
+      }
+
+      // 1ms timeout fires before grep can complete the scan.
+      const tool = createGrepTool(config, 1);
+      const result = await tool.execute({ pattern: marker, path: tempDir });
+
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("timed out");
+
+      // Poll briefly: the kill is async w.r.t. the OS reaping the process.
+      let count = await countProcesses(marker);
+      for (let i = 0; i < 20 && count > 0; i++) {
+        await sleep(100);
+        count = await countProcesses(marker);
+      }
+      expect(count).toBe(0);
     });
   });
 });
