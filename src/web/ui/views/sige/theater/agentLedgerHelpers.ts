@@ -86,6 +86,8 @@ export function mergeArtifacts(
     return {
       equilibria: a.equilibria ?? acc?.equilibria,
       coalitions: a.coalitions ?? acc?.coalitions,
+      selectedIdeasCount: a.selectedIdeasCount ?? acc?.selectedIdeasCount,
+      eliminatedIdeasCount: a.eliminatedIdeasCount ?? acc?.eliminatedIdeasCount,
       metagameHealth: a.metagameHealth ?? acc?.metagameHealth,
       tasteFilter: a.tasteFilter ?? acc?.tasteFilter,
     };

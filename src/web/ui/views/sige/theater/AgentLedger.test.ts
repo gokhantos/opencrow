@@ -393,6 +393,72 @@ describe("AgentLedger — TasteFilterPanel for taste filter substep", () => {
   });
 });
 
+// ─── OutcomesSummary ──────────────────────────────────────────────────────────
+
+describe("AgentLedger — OutcomesSummary for round artifacts", () => {
+  test("renders coalition/equilibria/selected/eliminated counts when present", () => {
+    const artifacts: RoundArtifacts = {
+      coalitions: [{ id: "c1" }, { id: "c2" }],
+      equilibria: [{ id: "e1" }],
+      selectedIdeasCount: 69,
+      eliminatedIdeasCount: 4,
+    };
+    const html = renderHTML(
+      React.createElement(AgentLedger, {
+        ledgers: [makeLedger(2, [makeAction()], artifacts)],
+        loading: false,
+        error: null,
+      }),
+    );
+    expect(html).toContain("Round Outcomes");
+    expect(html).toContain("coalitions");
+    expect(html).toContain("equilibria");
+    expect(html).toContain("selected");
+    expect(html).toContain("eliminated");
+    expect(html).toContain("69");
+  });
+
+  test("renders OutcomesSummary even when isTasteFilter=false (all rounds, not just taste filter)", () => {
+    const artifacts: RoundArtifacts = { coalitions: [{ id: "c1" }] };
+    const html = renderHTML(
+      React.createElement(AgentLedger, {
+        ledgers: [makeLedger(2, [makeAction()], artifacts)],
+        loading: false,
+        error: null,
+        isTasteFilter: false,
+      }),
+    );
+    expect(html).toContain("Round Outcomes");
+  });
+
+  test("hides the eliminated chip when eliminatedIdeasCount is 0", () => {
+    const artifacts: RoundArtifacts = {
+      selectedIdeasCount: 50,
+      eliminatedIdeasCount: 0,
+    };
+    const html = renderHTML(
+      React.createElement(AgentLedger, {
+        ledgers: [makeLedger(1, [makeAction()], artifacts)],
+        loading: false,
+        error: null,
+      }),
+    );
+    expect(html).toContain("selected");
+    expect(html).not.toContain("eliminated");
+  });
+
+  test("renders no OutcomesSummary when artifacts are null", () => {
+    const html = renderHTML(
+      React.createElement(AgentLedger, {
+        ledgers: [makeLedger(1, [makeAction()], null)],
+        loading: false,
+        error: null,
+      }),
+    );
+    expect(html).not.toContain("Round Outcomes");
+  });
+});
+
 // ─── Ordering ────────────────────────────────────────────────────────────────
 
 describe("AgentLedger — agent sort order", () => {

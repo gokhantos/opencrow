@@ -14,7 +14,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { initDb, closeDb, getDb } from "../../store/db";
-import { createSession, saveAgentAction } from "../../sige/store";
+import { createSession, saveAgentAction, saveSimulationResult } from "../../sige/store";
 import { createWebApp } from "../app";
 import type { WebAppDeps } from "../app";
 import { createAgentRegistry } from "../../agents/registry";
@@ -142,6 +142,10 @@ async function cleanup(): Promise<void> {
   }
   if (testSessionIds.length > 0) {
     const ph = testSessionIds.map((_, i) => `$${i + 1}`).join(",");
+    await db.unsafe(
+      `DELETE FROM sige_simulation_results WHERE session_id IN (${ph})`,
+      testSessionIds,
+    );
     await db.unsafe(`DELETE FROM sige_sessions WHERE id IN (${ph})`, testSessionIds);
     testSessionIds.length = 0;
   }
@@ -222,6 +226,46 @@ describe("GET /api/sige/sessions/:id/actions — response shape", () => {
     expect(Array.isArray(r1!.actions)).toBe(true);
     // artifacts is null when no sige_simulation_results row exists
     expect(r1!.artifacts === null || typeof r1!.artifacts === "object").toBe(true);
+  });
+
+  it("populates artifacts from the persisted SimulationRound `outcomes` (coalitions/equilibria/idea counts)", async () => {
+    const app = createWebApp(makeMinimalDeps());
+    const sessionId = await createTestSession({});
+
+    await insertAction({ sessionId, round: 2, agentRole: "challenger" });
+    // Persist a real SimulationRound: artifacts live under `outcomes`, NOT top-level.
+    await saveSimulationResult({
+      id: crypto.randomUUID(),
+      sessionId,
+      layer: "expert",
+      round: 2,
+      resultJson: JSON.stringify({
+        roundNumber: 2,
+        roundType: "strategic_interaction",
+        agentActions: [],
+        outcomes: {
+          selectedIdeas: [{ id: "i1" }, { id: "i2" }, { id: "i3" }],
+          eliminatedIdeas: ["x1"],
+          coalitions: [{ id: "c1" }, { id: "c2" }],
+          equilibria: [{ id: "e1" }],
+        },
+      }),
+    });
+
+    const res = await authedGet(app, `/api/sige/sessions/${sessionId}/actions?round=2`);
+    const body = await res.json() as {
+      data: { rounds: Array<{ round: number; artifacts: Record<string, unknown> | null }> };
+    };
+    const r2 = body.data.rounds.find((r) => r.round === 2);
+    expect(r2).toBeDefined();
+    expect(r2!.artifacts).not.toBeNull();
+    const a = r2!.artifacts!;
+    expect(Array.isArray(a["coalitions"])).toBe(true);
+    expect((a["coalitions"] as unknown[]).length).toBe(2);
+    expect(Array.isArray(a["equilibria"])).toBe(true);
+    expect((a["equilibria"] as unknown[]).length).toBe(1);
+    expect(a["selectedIdeasCount"]).toBe(3);
+    expect(a["eliminatedIdeasCount"]).toBe(1);
   });
 
   it("each action record has required ledger fields", async () => {
