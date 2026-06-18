@@ -15,7 +15,7 @@
  * It degrades gracefully: any failure (dedup search, DB insert) is caught and
  * logged — a cross-write failure must NEVER break the SIGE session pipeline.
  *
- * Mapping (columns already exist in 004_sige.sql):
+ * Mapping (columns already exist in 004_z_sige.sql):
  *   ScoredIdea.title              → generated_ideas.title
  *   ScoredIdea.description         → generated_ideas.summary
  *   ScoredIdea.fusedScore          → generated_ideas.game_theoretic_score

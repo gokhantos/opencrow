@@ -21,6 +21,7 @@ import {
   resolveEntities,
   type EntityRow,
 } from "../../sources/shared/entity-resolution";
+import { sanitizeForPrompt } from "./synthesizer";
 import {
   buildFacetContext,
   REVIEW_FACET_KINDS,
@@ -187,7 +188,7 @@ workingPatterns: features or product patterns that users consistently love acros
 whiteSpaces: combinations of app categories or feature sets that do not currently exist but would be useful.
 
 APP STORE DATA:
-${rawSummary.slice(0, 60000)}`;
+${sanitizeForPrompt(rawSummary).slice(0, 60000)}`;
 
   const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
 
@@ -206,15 +207,19 @@ ${rawSummary.slice(0, 60000)}`;
  * - What existing apps offer (descriptions = feature landscape)
  * - Which categories are underserved (low satisfaction + many apps = opportunity)
  */
-export async function analyzeAppLandscape(model?: string, ctx?: CollectorContext): Promise<TrendData> {
+export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContext): Promise<TrendData> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
   const summaryLines: string[] = [];
 
+  // B7 — accumulate selected IDs into a local map; return them in the result
+  // so pipeline.ts can merge them after runStep (survives cache-replay path).
+  // ctx is no longer mutated; _ctx is kept in the signature for API stability.
+  const localSelected = new Map<string, string[]>();
   const registerSelected = (table: string, ids: readonly string[]): void => {
-    if (!ctx || ids.length === 0) return;
-    const existing = ctx.selected.get(table) ?? [];
-    ctx.selected.set(table, [...existing, ...ids]);
+    if (ids.length === 0) return;
+    const existing = localSelected.get(table) ?? [];
+    localSelected.set(table, [...existing, ...ids]);
   };
 
   try {
@@ -338,7 +343,11 @@ export async function analyzeAppLandscape(model?: string, ctx?: CollectorContext
     for (const [category, apps] of appsByCategory) {
       summaryLines.push(`\n${category}:`);
       for (const app of apps) {
-        summaryLines.push(`  ${app.name}: ${(app.description as string).replace(/\n/g, " ").slice(0, 300)}`);
+        // B6 — sanitize scraped app name + description at the per-field level
+        // before they enter the summary that will be interpolated into the LLM prompt.
+        const safeName = sanitizeForPrompt(app.name as string);
+        const safeDesc = sanitizeForPrompt((app.description as string).replace(/\n/g, " ").slice(0, 300));
+        summaryLines.push(`  ${safeName}: ${safeDesc}`);
       }
     }
 
@@ -359,7 +368,11 @@ export async function analyzeAppLandscape(model?: string, ctx?: CollectorContext
     if (sampledPlayApps.length > 0) {
       summaryLines.push("\n=== PLAY STORE APPS (with install counts) ===");
       for (const app of sampledPlayApps) {
-        summaryLines.push(`  ${app.name} (${app.category}, ${app.installs} installs, ${app.rating}/5): ${(app.description as string).replace(/\n/g, " ").slice(0, 200)}`);
+        // B6 — sanitize scraped Play Store app name + description at the per-field
+        // level before they enter the summary interpolated into the LLM prompt.
+        const safeName = sanitizeForPrompt(app.name as string);
+        const safeDesc = sanitizeForPrompt((app.description as string).replace(/\n/g, " ").slice(0, 200));
+        summaryLines.push(`  ${safeName} (${app.category}, ${app.installs} installs, ${app.rating}/5): ${safeDesc}`);
       }
     }
 
@@ -397,6 +410,7 @@ export async function analyzeAppLandscape(model?: string, ctx?: CollectorContext
       trendingCategories,
       summary: summaryLines.join("\n"),
       insights,
+      selectedIds: new Map(localSelected) as ReadonlyMap<string, readonly string[]>,
     };
   } catch (err) {
     log.warn("App landscape analysis failed", { err });
@@ -460,16 +474,21 @@ ${rawSummary.slice(0, 60000)}`;
 export async function clusterReviews(
   focusCategories?: readonly string[],
   model?: string,
-  ctx?: CollectorContext,
+  _ctx?: CollectorContext,
 ): Promise<ClusteredPains> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
   const clusters: PainCluster[] = [];
 
+  // B7 — accumulate selected IDs locally; return in result instead of
+  // mutating the shared ctx.selected Map. _ctx is kept in the signature for
+  // API stability; clusterReviews does not use ctx.consumed (reviews are not
+  // de-duplicated by consumption ledger).
+  const localSelected = new Map<string, string[]>();
   const registerSelected = (table: string, ids: readonly string[]): void => {
-    if (!ctx || ids.length === 0) return;
-    const existing = ctx.selected.get(table) ?? [];
-    ctx.selected.set(table, [...existing, ...ids]);
+    if (ids.length === 0) return;
+    const existing = localSelected.get(table) ?? [];
+    localSelected.set(table, [...existing, ...ids]);
   };
 
   try {
@@ -573,13 +592,24 @@ export async function clusterReviews(
       for (const r of reviews.positive) noteReview(r);
 
       const negApps = [...new Set(reviews.negative.map((r) => r.app_name as string))];
+      // B6 — sanitize attacker-controllable review content before it reaches
+      // the LLM prompt. sanitizeForPrompt strips prompt-injection patterns
+      // (role tags, "ignore previous instructions"). The content is also
+      // delimited as a fenced DATA block so the model treats it as data, not
+      // as additional instructions.
       const negSamples = reviews.negative
         .slice(0, 6)
-        .map((r) => `[${r.rating}/5] "${r.app_name}": ${(r.content as string).slice(0, 150)}`);
+        .map(
+          (r) =>
+            `[${r.rating}/5] "${sanitizeForPrompt(r.app_name as string)}":\n<<<review\n${sanitizeForPrompt((r.content as string).slice(0, 150))}\n>>>`,
+        );
 
       const posSamples = reviews.positive
         .slice(0, 4)
-        .map((r) => `[${r.rating}/5] "${r.app_name}": ${(r.content as string).slice(0, 150)}`);
+        .map(
+          (r) =>
+            `[${r.rating}/5] "${sanitizeForPrompt(r.app_name as string)}":\n<<<review\n${sanitizeForPrompt((r.content as string).slice(0, 150))}\n>>>`,
+        );
 
       clusters.push({
         category,
@@ -629,6 +659,7 @@ export async function clusterReviews(
     clusters: clusters.slice(0, 15),
     summary: summaryText,
     insights,
+    selectedIds: new Map(localSelected) as ReadonlyMap<string, readonly string[]>,
   };
 }
 
@@ -640,7 +671,11 @@ async function extractCapabilityInsights(
 ): Promise<CapabilityInsight | undefined> {
   const lines: string[] = [];
   for (const c of capabilities) {
-    lines.push(`[${c.source.toUpperCase()}] ${c.title}\n  ${c.description}`);
+    // B6 — sanitize scraped capability title + description at the per-field level
+    // before they are joined into the raw text interpolated into the LLM prompt.
+    const safeTitle = sanitizeForPrompt(c.title);
+    const safeDesc = sanitizeForPrompt(c.description);
+    lines.push(`[${c.source.toUpperCase()}] ${safeTitle}\n  ${safeDesc}`);
   }
   const rawText = lines.join("\n");
 
@@ -673,7 +708,7 @@ technologyWaves: group capabilities by the underlying technology shift they repr
 painCapabilityLinks: cross-reference capabilities with common mobile app pain points — imagine which user frustrations each capability could finally solve.
 
 CAPABILITY DATA:
-${rawText.slice(0, 50000)}`;
+${sanitizeForPrompt(rawText).slice(0, 50000)}`;
 
   const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
 
@@ -736,11 +771,13 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
   const consumedFor = (table: string): ReadonlySet<string> =>
     ctx?.consumed.get(table) ?? new Set<string>();
 
-  // Helper to register selected IDs into the context so pipeline.ts can mark them.
+  // B7 — accumulate selected IDs locally; return in result instead of
+  // mutating the shared ctx.selected Map.
+  const localSelected = new Map<string, string[]>();
   const registerSelected = (table: string, ids: readonly string[]): void => {
-    if (!ctx || ids.length === 0) return;
-    const existing = ctx.selected.get(table) ?? [];
-    ctx.selected.set(table, [...existing, ...ids]);
+    if (ids.length === 0) return;
+    const existing = localSelected.get(table) ?? [];
+    localSelected.set(table, [...existing, ...ids]);
   };
 
   // Accumulate per-source fresh candidate pools (before top-K selection) so we
@@ -1203,5 +1240,10 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
   // LLM insight extraction (graceful degradation on failure)
   const insights = await extractCapabilityInsights(capabilities, resolvedModel);
 
-  return { capabilities, summary: summaryLines.join("\n"), insights };
+  return {
+    capabilities,
+    summary: summaryLines.join("\n"),
+    insights,
+    selectedIds: new Map(localSelected) as ReadonlyMap<string, readonly string[]>,
+  };
 }

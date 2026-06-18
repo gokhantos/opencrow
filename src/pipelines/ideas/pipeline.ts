@@ -451,116 +451,108 @@ interface StampIdeaQualityMetaParams {
 }
 
 /**
- * #12 part1 — Best-effort stamp of prompt_version, model, and critique
- * sub-scores onto a stored idea (columns added by migration 010). Done as a
- * separate UPDATE so it never blocks or breaks the core insert; swallows errors
- * (e.g. pre-migration DBs) gracefully.
+ * All optional per-idea stamp columns merged into a single UPDATE (B3 perf).
+ * Previously four sequential awaited UPDATEs; collapsed to one so the store
+ * loop emits a single round-trip to Postgres per idea instead of five.
+ *
+ * MIGRATION ASSUMPTION: this function writes columns introduced by migrations
+ * 010 (critique_subscores_json, prompt_version, model), 014 (giant_scores_json,
+ * why_now_json, archetype, pain_severity, giant_composite, giant_gated),
+ * 015 (demand_json, demand_score, whitespace, segment), and 016
+ * (sige_signals_json). All four migrations run idempotently at startup, so every
+ * column is guaranteed present in any running system. Per-column partial-column
+ * degradation is intentionally NOT supported — the single-round-trip design
+ * assumes the full schema is in place. A DB that has not run these migrations
+ * will surface a Postgres error which is caught and logged by the outer try/catch.
  */
-async function stampIdeaQualityMeta(
+async function stampIdeaAllMeta(
   ideaId: string,
-  params: StampIdeaQualityMetaParams,
+  qualityMeta: StampIdeaQualityMetaParams,
+  giantCandidate?: { readonly candidate: GeneratedIdeaCandidate; readonly gate: CandidateGiantGate },
+  demandArgs?: { readonly artifact: DemandArtifact | undefined; readonly segment: SegmentId },
+  sigeSignals?: SigeSignals,
 ): Promise<void> {
   try {
+    // ── quality meta (migration 010) ──────────────────────────────────────────
     const subscores =
-      params.critiqueSubscores !== undefined
-        ? JSON.stringify(params.critiqueSubscores)
-        : params.signalGrounding !== undefined
-          ? JSON.stringify({ signalGrounding: params.signalGrounding })
+      qualityMeta.critiqueSubscores !== undefined
+        ? JSON.stringify(qualityMeta.critiqueSubscores)
+        : qualityMeta.signalGrounding !== undefined
+          ? JSON.stringify({ signalGrounding: qualityMeta.signalGrounding })
           : null;
+
+    // ── GIANT scorecard (migration 014) ───────────────────────────────────────
+    const hasGiant =
+      giantCandidate !== undefined && giantCandidate.candidate.giant !== undefined;
+    const giantScoresJson = hasGiant
+      ? JSON.stringify({
+          scores: giantCandidate!.candidate.giant,
+          evidence: giantCandidate!.candidate.giantEvidence ?? {},
+        })
+      : null;
+    const whyNowJson =
+      hasGiant && giantCandidate!.candidate.whyNow !== undefined
+        ? JSON.stringify(giantCandidate!.candidate.whyNow)
+        : null;
+    const archetype = hasGiant ? (giantCandidate!.candidate.archetype ?? null) : null;
+    const painSeverity = hasGiant
+      ? (giantCandidate!.candidate.painSeverity ??
+          giantCandidate!.candidate.giant!.acuteProblem ??
+          null)
+      : null;
+    const giantComposite = hasGiant ? giantCandidate!.gate.composite : null;
+    const giantGated = hasGiant ? giantCandidate!.gate.gated : null;
+
+    // ── demand artifact (migration 015) ───────────────────────────────────────
+    const { artifact, segment } = demandArgs ?? { artifact: undefined, segment: "consumer" as SegmentId };
+    const demandParsed = artifact !== undefined ? demandArtifactSchema.safeParse(artifact) : undefined;
+    const demandJson =
+      demandParsed !== undefined && demandParsed.success
+        ? JSON.stringify(demandParsed.data)
+        : null;
+    const demandScore =
+      demandParsed !== undefined && demandParsed.success ? demandParsed.data.score : null;
+    const whitespace =
+      demandParsed !== undefined && demandParsed.success ? demandParsed.data.whitespace : null;
+
+    // ── SIGE signals (migration 016) ──────────────────────────────────────────
+    const sigeJson =
+      sigeSignals !== undefined
+        ? JSON.stringify({
+            expertScore: sigeSignals.expertScore,
+            ...(sigeSignals.juryScore !== undefined ? { juryScore: sigeSignals.juryScore } : {}),
+            ...(sigeSignals.juryAgreement !== undefined
+              ? { juryAgreement: sigeSignals.juryAgreement }
+              : {}),
+            ...(sigeSignals.dissent !== undefined ? { dissent: sigeSignals.dissent } : {}),
+            ...(sigeSignals.judgeCount !== undefined
+              ? { judgeCount: sigeSignals.judgeCount }
+              : {}),
+            ...(sigeSignals.evolved ? { evolved: true } : {}),
+          })
+        : null;
+
     const db = getDb();
     await db`
       UPDATE generated_ideas
-      SET prompt_version = ${params.promptVersion},
-          model = ${params.model},
-          critique_subscores_json = ${subscores}::jsonb
+      SET prompt_version      = ${qualityMeta.promptVersion},
+          model               = ${qualityMeta.model},
+          critique_subscores_json = ${subscores}::jsonb,
+          giant_scores_json   = ${giantScoresJson}::jsonb,
+          why_now_json        = ${whyNowJson}::jsonb,
+          archetype           = ${archetype},
+          pain_severity       = ${painSeverity},
+          giant_composite     = ${giantComposite},
+          giant_gated         = ${giantGated},
+          demand_json         = ${demandJson}::jsonb,
+          demand_score        = ${demandScore},
+          whitespace          = ${whitespace},
+          segment             = ${segment},
+          sige_signals_json   = ${sigeJson}::jsonb
       WHERE id = ${ideaId}
     `;
   } catch (err) {
-    log.warn("Failed to stamp idea quality meta", { ideaId, err });
-  }
-}
-
-/**
- * PHASE 0 (GIANT) — Best-effort stamp of the GIANT scorecard onto a stored idea
- * (columns added by migration 014). Done as a separate UPDATE — like
- * {@link stampIdeaQualityMeta} — so it never blocks or breaks the core insert and
- * swallows errors (e.g. pre-migration DBs) gracefully.
- *
- * Stores in SHADOW mode: giant_gated is recorded REGARDLESS of enforcement so
- * kill-logs are reviewable; the Pipeline phase never re-drops a gated idea here.
- *
- *   giant_scores_json  ← the 7-axis scores combined with the per-axis evidence
- *                        citations ({ scores, evidence })
- *   why_now_json       ← the dated, source-bound enabling shifts
- *   archetype          ← the Sequoia archetype tag
- *   pain_severity      ← the acuteProblem axis (fast pain filter)
- *   giant_composite    ← the non-compensatory weighted geometric mean (0..5)
- *   giant_gated        ← whether the hard gates / demand evidence-gate fired
- */
-async function stampIdeaGiant(
-  ideaId: string,
-  candidate: GeneratedIdeaCandidate,
-  gate: CandidateGiantGate,
-): Promise<void> {
-  // Skip entirely when the candidate carries no GIANT scorecard (e.g. GIANT
-  // disabled or critique unmatched) — nothing to persist.
-  if (candidate.giant === undefined) return;
-
-  try {
-    const giantScoresJson = JSON.stringify({
-      scores: candidate.giant,
-      evidence: candidate.giantEvidence ?? {},
-    });
-    const whyNowJson = candidate.whyNow !== undefined ? JSON.stringify(candidate.whyNow) : null;
-    const archetype = candidate.archetype ?? null;
-    const painSeverity = candidate.painSeverity ?? candidate.giant.acuteProblem ?? null;
-
-    const db = getDb();
-    await db`
-      UPDATE generated_ideas
-      SET giant_scores_json = ${giantScoresJson}::jsonb,
-          why_now_json = ${whyNowJson}::jsonb,
-          archetype = ${archetype},
-          pain_severity = ${painSeverity},
-          giant_composite = ${gate.composite},
-          giant_gated = ${gate.gated}
-      WHERE id = ${ideaId}
-    `;
-  } catch (err) {
-    log.warn("Failed to stamp idea GIANT scores", { ideaId, err });
-  }
-}
-
-/**
- * PHASE 3 (SIGE hardening) — Best-effort persistence of the independent-jury /
- * dissent signals so the eval A/B (SIGE-hardened vs self-critique) can read them
- * back per idea. Stored in the dedicated `sige_signals_json` column (migration
- * 016) rather than overloading the GIANT scorecard blob. Swallows errors (e.g.
- * pre-migration DBs / missing column) so it never blocks or breaks the core
- * insert.
- */
-async function stampIdeaSigeSignals(
-  ideaId: string,
-  signals: SigeSignals | undefined,
-): Promise<void> {
-  if (signals === undefined) return;
-  try {
-    const payload = JSON.stringify({
-      expertScore: signals.expertScore,
-      ...(signals.juryScore !== undefined ? { juryScore: signals.juryScore } : {}),
-      ...(signals.juryAgreement !== undefined ? { juryAgreement: signals.juryAgreement } : {}),
-      ...(signals.dissent !== undefined ? { dissent: signals.dissent } : {}),
-      ...(signals.judgeCount !== undefined ? { judgeCount: signals.judgeCount } : {}),
-      ...(signals.evolved ? { evolved: true } : {}),
-    });
-    const db = getDb();
-    await db`
-      UPDATE generated_ideas
-      SET sige_signals_json = ${payload}::jsonb
-      WHERE id = ${ideaId}
-    `;
-  } catch (err) {
-    log.warn("Failed to stamp idea SIGE signals", { ideaId, err });
+    log.warn("Failed to stamp idea metadata", { ideaId, err });
   }
 }
 
@@ -876,40 +868,6 @@ export function summarizeDemandCoverage(
 }
 
 /**
- * PHASE 2 (demand) — Best-effort stamp of the cited {@link DemandArtifact} +
- * resolved segment onto a stored idea (migration 015 columns: demand_json,
- * demand_score, whitespace, segment). Done as a SEPARATE UPDATE — like
- * {@link stampIdeaGiant} — so it never blocks or breaks the core insert and
- * swallows errors (e.g. pre-migration DBs) gracefully. The artifact is validated
- * via {@link demandArtifactSchema} before persistence so only well-formed,
- * count-backed evidence is written.
- */
-async function stampIdeaDemand(
-  ideaId: string,
-  artifact: DemandArtifact | undefined,
-  segment: SegmentId,
-): Promise<void> {
-  try {
-    const parsed = artifact !== undefined ? demandArtifactSchema.safeParse(artifact) : undefined;
-    const demandJson = parsed !== undefined && parsed.success ? JSON.stringify(parsed.data) : null;
-    const demandScore = parsed !== undefined && parsed.success ? parsed.data.score : null;
-    const whitespace = parsed !== undefined && parsed.success ? parsed.data.whitespace : null;
-
-    const db = getDb();
-    await db`
-      UPDATE generated_ideas
-      SET demand_json = ${demandJson}::jsonb,
-          demand_score = ${demandScore},
-          whitespace = ${whitespace},
-          segment = ${segment}
-      WHERE id = ${ideaId}
-    `;
-  } catch (err) {
-    log.warn("Failed to stamp idea demand artifact", { ideaId, err });
-  }
-}
-
-/**
  * #5 — Fetch human-validated ideas to use as positive few-shot exemplars.
  * Degrades to [] on any error; the caller passes the rendered block
  * unconditionally (synthesizeFromTrends re-gates it via smart.validatedExemplars).
@@ -970,7 +928,7 @@ interface ScoredIdeaDbRow {
 /**
  * PHASE 4 — Map a raw generated_ideas row onto the PURE {@link ScoredIdeaRow} the
  * taste selectors consume. The GIANT scorecard is unwrapped via parseGiantScores
- * (handles flat {axis:n} AND the nested {scores:{axis:n}} blob stampIdeaGiant
+ * (handles flat {axis:n} AND the nested {scores:{axis:n}} blob stampIdeaAllMeta
  * writes). `whitespace` (a REAL 0..1 in the DB) is projected to the boolean flag
  * the row carries. All scoring fields stay optional so partial rows degrade. PURE.
  */
@@ -2221,6 +2179,22 @@ export async function runIdeasPipeline(
         `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
     );
 
+    // B7 — merge selected IDs from each collector's result into a single map.
+    // Collectors no longer mutate collectorCtx.selected; they embed the IDs in
+    // their return value so the selected set is correct even on cache-replay
+    // paths (where the collector work() is never re-run).
+    const mergedSelected = new Map<string, string[]>();
+    const mergeIntoSelected = (ids?: ReadonlyMap<string, readonly string[]>): void => {
+      if (!ids) return;
+      for (const [table, tableIds] of ids) {
+        const existing = mergedSelected.get(table) ?? [];
+        mergedSelected.set(table, [...existing, ...tableIds]);
+      }
+    };
+    mergeIntoSelected(trends.selectedIds);
+    mergeIntoSelected(pains.selectedIds);
+    mergeIntoSelected(capabilities.selectedIds);
+
     // ── Guard: short-circuit if no fresh source data ──────────────────
     if (
       capabilities.capabilities.length === 0 &&
@@ -2734,8 +2708,10 @@ export async function runIdeasPipeline(
     // ── Step 7: Store ideas ───────────────────────────────────────────
     // #4 part1 — run-level provenance entries; narrowed per-idea below using
     // each candidate's cited signal tokens (chain-of-evidence binding).
+    // B7: now built from mergedSelected (not collectorCtx.selected) so it
+    // is populated correctly even on cache-replay paths.
     const runLevelProvenance: readonly ProvenanceEntry[] = [
-      ...collectorCtx.selected.entries(),
+      ...mergedSelected.entries(),
     ].flatMap(([table, selectedIds]) => selectedIds.map((id) => ({ table, id })));
 
     // PHASE 4 (taste loop) — capture each successfully-stored idea alongside its
@@ -2816,49 +2792,35 @@ export async function runIdeasPipeline(
               source_ids_json: JSON.stringify(ideaProvenance),
             });
 
-            // #12 part1 — stamp prompt_version + model and persist the full
-            // Pass-3 critique breakdown (specificity, signalGrounding,
-            // differentiation, buildability) as critique sub-scores when the
-            // candidate matched a critique entry; otherwise fall back to the
-            // per-idea signalGrounding alone. Best-effort (columns added by
-            // migration 010); never breaks the insert.
-            await stampIdeaQualityMeta(idea.id, {
-              promptVersion: PROMPT_VERSION,
-              model,
-              signalGrounding: groundingByTitle.get(candidate.title),
-              critiqueSubscores: candidate.critiqueSubscores,
-            });
+            // B3 perf: collapse the four separate stamp UPDATEs (quality meta,
+            // GIANT scores, demand artifact, SIGE signals) into one round-trip
+            // per idea. stampIdeaAllMeta handles every optional block internally
+            // and swallows errors so nothing here can break the core insert.
+            const giantGateForIdea =
+              smart.giant.enabled && candidate.giant !== undefined
+                ? {
+                    candidate,
+                    gate:
+                      giantGateByCandidate.get(candidate) ??
+                      evaluateCandidateGiantGate(candidate, effectiveGiant),
+                  }
+                : undefined;
 
-            // PHASE 0 (GIANT) — stamp the GIANT scorecard (migration 014
-            // columns) in SHADOW mode: giant_gated is persisted regardless of
-            // enforcement so kill-logs stay reviewable; we do NOT re-drop here.
-            // Reuses the gate verdict computed at the quality gate when present
-            // (config weights + demand evidence-gate); recomputes as a fallback.
-            // Best-effort — never blocks the insert.
-            if (smart.giant.enabled && candidate.giant !== undefined) {
-              const gate =
-                giantGateByCandidate.get(candidate) ??
-                evaluateCandidateGiantGate(candidate, effectiveGiant);
-              await stampIdeaGiant(idea.id, candidate, gate);
-            }
-
-            // PHASE 2 (demand) — stamp the cited DemandArtifact + resolved
-            // segment (migration 015 columns: demand_json / demand_score /
-            // whitespace / segment). The segment is persisted for EVERY idea
-            // (previously orphaned) so downstream selection / the eval harness
-            // can read it. Best-effort — validated via demandArtifactSchema and
-            // swallows errors on pre-migration DBs; never blocks the insert.
-            await stampIdeaDemand(
+            await stampIdeaAllMeta(
               idea.id,
-              demandByCandidate.get(candidate),
-              resolveCandidateSegment(candidate),
+              {
+                promptVersion: PROMPT_VERSION,
+                model,
+                signalGrounding: groundingByTitle.get(candidate.title),
+                critiqueSubscores: candidate.critiqueSubscores,
+              },
+              giantGateForIdea,
+              {
+                artifact: demandByCandidate.get(candidate),
+                segment: resolveCandidateSegment(candidate),
+              },
+              sigeSignals.get(candidateJoinId(candidate.title)),
             );
-
-            // PHASE 3 (SIGE hardening) — persist the jury / dissent / convergence
-            // signals (best-effort, merged into giant_scores_json under `sige`)
-            // so the eval A/B can compare SIGE-hardened vs self-critique. Empty
-            // when SIGE was off, so the default path stamps nothing.
-            await stampIdeaSigeSignals(idea.id, sigeSignals.get(candidateJoinId(candidate.title)));
 
             if (memoryManager) {
               try {
@@ -3046,8 +3008,10 @@ export async function runIdeasPipeline(
     }
 
     // ── Mark consumed signals ─────────────────────────────────────────
+    // B7: use mergedSelected (built from collector results) instead of
+    // collectorCtx.selected (which is no longer mutated by collectors).
     // Run sequentially to avoid overwhelming the database with parallel writes.
-    for (const [table, ids] of collectorCtx.selected) {
+    for (const [table, ids] of mergedSelected) {
       await markConsumed(runId, table, ids);
     }
 
