@@ -11,6 +11,7 @@ import { BASH_MAX_BYTES, BASH_HEAD_BYTES, BASH_TAIL_BYTES } from "./shell-runner
 import { createLogger } from "../logger";
 import { isDangerousCommand } from "../agent/hooks";
 import { inputError, permissionError, timeoutError, serviceError } from "./error-helpers";
+import { killProcessGroup } from "./process-group";
 
 const log = createLogger("tool:bash");
 
@@ -175,6 +176,11 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
           stdout: "pipe",
           stderr: "pipe",
           env: getSafeEnv(),
+          // setsid() the child so it leads its own process group; lets us kill
+          // the whole pipeline (children included) via `process.kill(-pid)`
+          // instead of orphaning forked children on timeout. Works natively on
+          // macOS and Linux.
+          detached: true,
         });
 
         const timeout = config.maxBashTimeout;
@@ -195,7 +201,9 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
             timedOut: boolean;
           }>((res) =>
             setTimeout(() => {
-              proc.kill(9); // SIGKILL
+              // Kill the whole process group, not just bash, so forked
+              // children (e.g. the producer in `yes | head`) die too.
+              killProcessGroup(proc.pid);
               res({ stdout: "", stderr: "", exitCode: -1, timedOut: true });
             }, timeout),
           ),
@@ -204,6 +212,12 @@ export function createBashTool(config: ToolsConfig): ToolDefinition {
         if (result.timedOut) {
           return timeoutError(`Error: command timed out after ${timeout}ms`);
         }
+
+        // Defensive sweep: even on a clean exit a forked child can outlive
+        // bash via a pipe-close race (e.g. `head` exits and closes the pipe
+        // while `yes` is mid-write). Reap any strays in the group. Best-effort
+        // and side-effect-free — does not affect the returned output/exit code.
+        killProcessGroup(proc.pid);
 
         const output = [
           result.stdout.trim()
