@@ -169,6 +169,10 @@ describe("scheduleRestart — crash-loop calls markProcessCrashLoop", () => {
     const onSpawn = mock(() => {});
 
     scheduleRestart(state, () => true, onSpawn); // 1st — ok, backoff
+    // Fire the armed backoff timer (nulls state.backoffTimer, as the real
+    // respawn callback does) so the next scheduleRestart is treated as a fresh
+    // death, not a deduped duplicate concurrent trigger.
+    capturedTimers.at(-1)?.fn();
     scheduleRestart(state, () => true, onSpawn); // 2nd — exceeds maxRestarts
 
     expect(state.status).toBe("crash-loop");

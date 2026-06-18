@@ -78,6 +78,7 @@ export function createOrchestrator(
   let reconcileTimer: ReturnType<typeof setInterval> | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
   let orphanTimer: ReturnType<typeof setInterval> | null = null;
+  let pingInFlight = false;
   let running = false;
   let config = initialConfig;
 
@@ -233,9 +234,23 @@ export function createOrchestrator(
       }, RECONCILE_INTERVAL_MS);
 
       pingTimer = setInterval(() => {
-        pingChildren(children, doScheduleRestart).catch((err) => {
-          log.error("Ping check failed", { error: err });
-        });
+        // Mutex: a ping cycle awaits the per-spec timeout window, so a slow/loaded
+        // cycle can exceed PING_INTERVAL_MS. Without this guard, overlapping cycles
+        // could each independently declare the same hung-but-alive process dead and
+        // trigger a restart → duplicate spawns. Skip the tick if the previous cycle
+        // has not resolved.
+        if (pingInFlight) {
+          log.debug("Ping cycle still in flight; skipping this tick");
+          return;
+        }
+        pingInFlight = true;
+        pingChildren(children, doScheduleRestart)
+          .catch((err) => {
+            log.error("Ping check failed", { error: err });
+          })
+          .finally(() => {
+            pingInFlight = false;
+          });
       }, PING_INTERVAL_MS);
 
       orphanTimer = setInterval(() => {
