@@ -107,6 +107,18 @@ describe("resolveManifest", () => {
     expect(specs.some((s) => s.name === "web")).toBe(true);
   });
 
+  test("sige disables IPC hung-detection; web/cron keep default detection", () => {
+    const config = makeConfig({
+      processes: { static: [] },
+      sige: { enabled: true } as OpenCrowConfig["sige"],
+    });
+    const specs = resolveManifest(config, []);
+    const sige = specs.find((s) => s.name === "sige");
+    expect(sige?.heartbeat?.enabled).toBe(false);
+    expect(specs.find((s) => s.name === "web")?.heartbeat).toBeUndefined();
+    expect(specs.find((s) => s.name === "cron")?.heartbeat).toBeUndefined();
+  });
+
   test("spawns agent processes for agents with telegram tokens", () => {
     const config = makeConfig({
       processes: {

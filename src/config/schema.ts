@@ -330,6 +330,15 @@ export const observationsConfigSchema = z
     debounceSec: 300,
   });
 
+export const heartbeatSpecSchema = z.object({
+  enabled: z.boolean().optional(),
+  // Bounded: pingChildren waits max(per-spec pingTimeoutMs) for the whole cycle,
+  // so one oversized value would stretch every child's hung-detection window and
+  // (via the orchestrator's pingInFlight mutex) suppress subsequent ticks. Cap it.
+  pingTimeoutMs: z.number().int().min(100).max(60_000).optional(),
+  hungStrikesMax: z.number().int().min(1).max(10).optional(),
+});
+
 export const processSpecSchema = z.object({
   name: z.string().min(1),
   entry: z.string().min(1),
@@ -337,6 +346,7 @@ export const processSpecSchema = z.object({
   restartPolicy: z.enum(["always", "on-failure", "never"]).default("always"),
   maxRestarts: z.number().int().min(0).default(10),
   restartWindowSec: z.number().int().min(10).default(300),
+  heartbeat: heartbeatSpecSchema.optional(),
 });
 
 export const agentProcessesConfigSchema = z

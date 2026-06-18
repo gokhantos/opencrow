@@ -124,6 +124,7 @@ function isRetryableError(err: unknown): boolean {
 
 async function callOpenRouter(
   body: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<OpenRouterResponse> {
   const apiKey = await getApiKey();
 
@@ -136,6 +137,9 @@ async function callOpenRouter(
       "X-Title": "OpenCrow AI Assistant",
     },
     body: JSON.stringify(body),
+    // Wire the per-call deadline / external abort into the HTTP request so a
+    // hung response is actually cancelled.
+    ...(signal ? { signal } : {}),
   });
 
   if (!res.ok) {
@@ -171,10 +175,14 @@ export async function chat(
     };
     const reasoning = buildReasoningConfig(options);
     if (reasoning) chatBody.reasoning = reasoning;
-    const response = await retryAsync(() => callOpenRouter(chatBody), {
-      label: "openrouter.chat",
-      shouldRetry: isRetryableError,
-    });
+    const response = await retryAsync(
+      () => callOpenRouter(chatBody, options.abortSignal),
+      {
+        label: "openrouter.chat",
+        shouldRetry: isRetryableError,
+        ...(options.abortSignal ? { signal: options.abortSignal } : {}),
+      },
+    );
 
     const rawText = response.choices[0]?.message.content ?? "";
     const text = stripThinkingBlocks(rawText);
@@ -262,10 +270,14 @@ export async function agenticChat(
       const iterReasoning = buildReasoningConfig(options);
       if (iterReasoning) requestBody.reasoning = iterReasoning;
 
-      const response = await retryAsync(() => callOpenRouter(requestBody), {
-        label: "openrouter.agenticChat",
-        shouldRetry: isRetryableError,
-      });
+      const response = await retryAsync(
+        () => callOpenRouter(requestBody, options.abortSignal),
+        {
+          label: "openrouter.agenticChat",
+          shouldRetry: isRetryableError,
+          ...(options.abortSignal ? { signal: options.abortSignal } : {}),
+        },
+      );
 
       const choice = response.choices[0];
       if (!choice) {

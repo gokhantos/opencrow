@@ -38,6 +38,7 @@ interface CapturedTimer {
 
 let capturedTimers: CapturedTimer[];
 let realSetTimeout: typeof globalThis.setTimeout;
+let realProcessKill: typeof process.kill;
 
 beforeEach(() => {
   capturedTimers = [];
@@ -47,10 +48,17 @@ beforeEach(() => {
     capturedTimers.push({ fn, delay });
     return { ref() {}, unref() {} } as unknown as ReturnType<typeof setTimeout>;
   }) as typeof globalThis.setTimeout;
+
+  // Stub process.kill so the group-kill path (process.kill(-pid)) used by
+  // pingChildren's hung-kill never signals a real process group; the fake
+  // Subprocess.kill still records the per-proc fallback signal.
+  realProcessKill = process.kill;
+  process.kill = (() => true) as typeof process.kill;
 });
 
 afterEach(() => {
   globalThis.setTimeout = realSetTimeout;
+  process.kill = realProcessKill;
 });
 
 // ── scheduleRestart: exponential backoff ───────────────────────────────────
@@ -77,17 +85,18 @@ describe("scheduleRestart — exponential backoff", () => {
     const state = createInitialChildState(makeSpec({ maxRestarts: 100 }));
     const onSpawn = mock(() => {});
 
-    scheduleRestart(state, () => true, onSpawn);
-    expect(capturedTimers[0]!.delay).toBe(1_000);
-
-    scheduleRestart(state, () => true, onSpawn);
-    expect(capturedTimers[1]!.delay).toBe(2_000);
-
-    scheduleRestart(state, () => true, onSpawn);
-    expect(capturedTimers[2]!.delay).toBe(4_000);
-
-    scheduleRestart(state, () => true, onSpawn);
-    expect(capturedTimers[3]!.delay).toBe(8_000);
+    // Each iteration models one full crash cycle: schedule a restart, then fire
+    // its backoff timer (which nulls state.backoffTimer, as the real respawn
+    // callback does) so the dedup guard does not suppress the next schedule. A
+    // stacked schedule without firing in between is (correctly) deduped as a
+    // duplicate concurrent trigger.
+    const expectedDelays = [1_000, 2_000, 4_000, 8_000];
+    for (const expected of expectedDelays) {
+      scheduleRestart(state, () => true, onSpawn);
+      const timer = capturedTimers.at(-1)!;
+      expect(timer.delay).toBe(expected);
+      timer.fn(); // fire → state.backoffTimer = null, ready for the next cycle
+    }
   });
 
   test("backoff is capped at BACKOFF_MAX_MS", () => {
@@ -153,13 +162,22 @@ describe("scheduleRestart — crash-loop detection", () => {
     const onSpawn = mock(() => {});
 
     // maxRestarts = 3 → the 4th restart within the window trips the crash-loop.
-    scheduleRestart(state, () => true, onSpawn);
+    // Fire each backoff timer between schedules (nulling state.backoffTimer, as
+    // the real respawn callback does) so the dedup guard treats each call as a
+    // fresh death rather than a duplicate concurrent trigger.
+    const cycle = () => {
+      scheduleRestart(state, () => true, onSpawn);
+      capturedTimers.at(-1)?.fn();
+    };
+
+    cycle();
     expect(state.status).toBe("backoff");
-    scheduleRestart(state, () => true, onSpawn);
+    cycle();
     expect(state.status).toBe("backoff");
-    scheduleRestart(state, () => true, onSpawn);
+    cycle();
     expect(state.status).toBe("backoff");
 
+    // 4th trigger exceeds maxRestarts → crash-loop, no further timer scheduled.
     scheduleRestart(state, () => true, onSpawn);
     expect(state.status).toBe("crash-loop");
     expect(state.restartsInWindow.length).toBeGreaterThan(state.spec.maxRestarts);
@@ -170,6 +188,7 @@ describe("scheduleRestart — crash-loop detection", () => {
     const onSpawn = mock(() => {});
 
     scheduleRestart(state, () => true, onSpawn); // 1 — ok
+    capturedTimers.at(-1)?.fn(); // fire backoff timer (nulls state.backoffTimer)
     capturedTimers = [];
     scheduleRestart(state, () => true, onSpawn); // 2 — exceeds maxRestarts(1)
 

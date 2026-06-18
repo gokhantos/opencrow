@@ -48,6 +48,14 @@ export function resolveManifest(
       restartPolicy: "always",
       maxRestarts: 10,
       restartWindowSec: 300,
+      // sige is a heavy LLM workload: Round 1 runs ~10 concurrent agents streaming
+      // simultaneously plus a cancel-watcher DB poll, which intermittently saturates
+      // its event loop and delays the IPC pong past any reasonable window. Its
+      // genuinely-stuck LLM calls are already bounded by a per-call deadline
+      // (src/agent/llm-timeout.ts), so orchestrator hung-detection adds no safety
+      // and only produced false SIGKILLs that prevented any run from completing.
+      // Disable IPC hung-detection for sige; crash/exit-based restart still applies.
+      heartbeat: { enabled: false },
     });
   }
 
@@ -106,6 +114,26 @@ export function resolveManifest(
   return specs;
 }
 
+/**
+ * Per-process tuning of the orchestrator's IPC liveness (ping/pong) detection.
+ *
+ * The defaults (in child-lifecycle.ts) suit short-lived, event-loop-responsive
+ * processes (web, cron, scrapers, agents). A heavy LLM workload like `sige`
+ * legitimately saturates its event loop during concurrent streaming and can miss
+ * the tight pong window without being hung — its genuinely-stuck calls are already
+ * bounded by a per-call deadline (src/agent/llm-timeout.ts), so IPC hung-detection
+ * adds no safety for it and only causes false SIGKILLs. Such a process either
+ * disables hung-detection (`enabled: false`) or is given a generous budget.
+ */
+export interface HeartbeatSpec {
+  /** When false, the orchestrator never pings this child and never hung-kills it. */
+  readonly enabled?: boolean;
+  /** How long to wait for a pong before counting a missed ping (ms). */
+  readonly pingTimeoutMs?: number;
+  /** Consecutive missed pings before the child is declared hung and SIGKILLed. */
+  readonly hungStrikesMax?: number;
+}
+
 export interface ResolvedProcessSpec {
   readonly name: string;
   readonly entry: string;
@@ -113,4 +141,5 @@ export interface ResolvedProcessSpec {
   readonly restartPolicy: "always" | "on-failure" | "never";
   readonly maxRestarts: number;
   readonly restartWindowSec: number;
+  readonly heartbeat?: HeartbeatSpec;
 }

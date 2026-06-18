@@ -12,6 +12,7 @@ import { chat as chatAnthropicDirect } from "./anthropic-direct";
 import type { AgentOptions, AgentResponse, ConversationMessage } from "./types";
 import { recordTokenUsage } from "../store/token-usage";
 import { createLogger } from "../logger";
+import { createCallDeadline, LlmCallTimeoutError } from "./llm-timeout";
 
 const log = createLogger("agent");
 
@@ -38,7 +39,46 @@ function persistUsage(response: AgentResponse, options: AgentOptions): void {
   }).catch((err) => log.error("Failed to record token usage", { error: err }));
 }
 
+/**
+ * Public entry point for every LLM call.
+ *
+ * Wraps the provider dispatch with a per-call timeout (see ./llm-timeout): the
+ * caller's AbortSignal (if any) is combined with an internal deadline so a hung
+ * provider request can't wedge the caller indefinitely. On timeout we throw a
+ * typed {@link LlmCallTimeoutError} so existing per-step/per-agent error
+ * handling treats it as a normal failure instead of hanging.
+ */
 export async function chat(
+  messages: readonly ConversationMessage[],
+  options: AgentOptions,
+): Promise<AgentResponse> {
+  const deadline = createCallDeadline(options.abortSignal, options.callTimeoutMs);
+  const dispatchOptions: AgentOptions = {
+    ...options,
+    abortSignal: deadline.signal,
+  };
+
+  try {
+    return await dispatchChat(messages, dispatchOptions);
+  } catch (error) {
+    // If our deadline fired, surface a clear typed timeout regardless of how
+    // the underlying provider reported the abort (DOMException, generic Error,
+    // wrapped "Agent SDK error: …", etc.).
+    if (deadline.timedOut()) {
+      log.warn("LLM call timed out", {
+        agentId: options.agentId,
+        model: options.model,
+        timeoutMs: deadline.timeoutMs,
+      });
+      throw new LlmCallTimeoutError(deadline.timeoutMs);
+    }
+    throw error;
+  } finally {
+    deadline.clear();
+  }
+}
+
+async function dispatchChat(
   messages: readonly ConversationMessage[],
   options: AgentOptions,
 ): Promise<AgentResponse> {
