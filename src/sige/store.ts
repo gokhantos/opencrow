@@ -259,6 +259,81 @@ export async function claimNextPendingSession(): Promise<SigeSession | null> {
   return row ? rowToSession(row) : null
 }
 
+// ─── Resume Context ───────────────────────────────────────────────────────────
+
+/**
+ * Context persisted to survive a process restart mid-session.
+ * Stored as JSONB in `resume_context_json` and read back on the first poll
+ * after a restart so the session skips enrichment/discovery and jumps straight
+ * into `runSeededSteps`.
+ */
+export interface ResumeContext {
+  readonly enrichedSeed: string;
+  readonly signalsContext: string | undefined;
+  readonly isScrapedSeed: boolean;
+}
+
+/**
+ * Persist the resume context for a session. Called once after signal synthesis
+ * so a process restart can skip the expensive enrichment/discovery pass.
+ */
+export async function saveResumeContext(
+  sessionId: string,
+  ctx: ResumeContext,
+): Promise<void> {
+  const db = getDb();
+  await db`
+    UPDATE sige_sessions
+    SET resume_context_json = ${JSON.stringify(ctx)}::jsonb
+    WHERE id = ${sessionId}
+  `;
+}
+
+/**
+ * Load the persisted resume context for a session. Returns null when no context
+ * has been saved (fresh session or context was never reached).
+ */
+export async function loadResumeContext(
+  sessionId: string,
+): Promise<ResumeContext | null> {
+  const db = getDb();
+  const rows = await db`
+    SELECT resume_context_json FROM sige_sessions WHERE id = ${sessionId}
+  `;
+  const row = (rows as Record<string, unknown>[])[0];
+  if (!row || row.resume_context_json == null) return null;
+  return JSON.parse(row.resume_context_json as string) as ResumeContext;
+}
+
+/**
+ * Atomically claim the oldest interrupted session: a session stuck in a
+ * non-terminal, non-pending status (e.g. expert_game) with no running process.
+ * Race-safe via FOR UPDATE SKIP LOCKED. Returns null when nothing is interrupted.
+ *
+ * On a single-SIGE-process deployment, any such session at startup is guaranteed
+ * to be orphaned — its process died. We re-use its current status as the running
+ * status (no flip needed beyond the lock).
+ */
+export async function claimInterruptedSession(): Promise<SigeSession | null> {
+  const db = getDb();
+  // SET status = status touches the row (acquiring the lock) without changing it.
+  // RETURNING * gives us the full row for rowToSession.
+  const rows = await db`
+    UPDATE sige_sessions
+    SET status = status
+    WHERE id = (
+      SELECT id FROM sige_sessions
+      WHERE status NOT IN ('pending', 'completed', 'failed', 'cancelled')
+      ORDER BY created_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING *
+  `;
+  const row = (rows as Record<string, unknown>[])[0];
+  return row ? rowToSession(row) : null;
+}
+
 /**
  * Count autonomous sessions that are currently active (not in a terminal state).
  * Used by the scheduler to enforce single-flight before enqueuing a new session.

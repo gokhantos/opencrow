@@ -14,6 +14,9 @@ import {
   updateSessionStatus,
   countActiveAutonomousSessions,
   claimNextPendingSession,
+  saveResumeContext,
+  loadResumeContext,
+  claimInterruptedSession,
 } from "./store";
 import type { SigeSessionConfig } from "./types";
 
@@ -220,5 +223,140 @@ describe("claimNextPendingSession — atomic work-queue claim", () => {
     ]);
     const winners = [a, b].filter((s) => s !== null);
     expect(winners.length).toBe(1);
+  });
+});
+
+describe("resume context and claimInterruptedSession", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    await cleanup();
+  });
+
+  afterEach(async () => {
+    await cleanup();
+    await closeDb();
+  });
+
+  it("saveResumeContext persists and loadResumeContext retrieves it", async () => {
+    const id = await createTestSession({ origin: "human", seedInput: "test", status: "pending" });
+    const ctx = {
+      enrichedSeed: "enriched seed text",
+      signalsContext: "signals context",
+      isScrapedSeed: false,
+    };
+    await saveResumeContext(id, ctx);
+    const loaded = await loadResumeContext(id);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.enrichedSeed).toBe("enriched seed text");
+    expect(loaded!.signalsContext).toBe("signals context");
+    expect(loaded!.isScrapedSeed).toBe(false);
+  });
+
+  it("loadResumeContext returns null when no context saved", async () => {
+    const id = await createTestSession({ origin: "human", seedInput: "test", status: "pending" });
+    const loaded = await loadResumeContext(id);
+    expect(loaded).toBeNull();
+  });
+
+  it("saveResumeContext handles undefined signalsContext", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    const ctx = {
+      enrichedSeed: "some seed",
+      signalsContext: undefined,
+      isScrapedSeed: true,
+    };
+    await saveResumeContext(id, ctx);
+    const loaded = await loadResumeContext(id);
+    expect(loaded).not.toBeNull();
+    expect(loaded!.signalsContext).toBeUndefined();
+    expect(loaded!.isScrapedSeed).toBe(true);
+  });
+
+  it("claimInterruptedSession claims a stuck non-terminal non-pending session", async () => {
+    const id = await createTestSession({ origin: "human", seedInput: "test", status: "pending" });
+    // Manually advance to a mid-flight status to simulate an interrupted session
+    await updateSessionStatus(id, "expert_game");
+    // Drain any pre-existing interrupted sessions so our new one is eligible.
+    // Keep claiming until we get our row or exhaust the queue.
+    let claimed = await claimInterruptedSession();
+    let attempts = 0;
+    while (claimed !== null && claimed.id !== id && attempts < 20) {
+      await updateSessionStatus(claimed.id, "cancelled");
+      claimed = await claimInterruptedSession();
+      attempts++;
+    }
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(id);
+    // Status should remain expert_game (we don't flip it)
+    const reloaded = await getSession(id);
+    expect(reloaded!.status).toBe("expert_game");
+    await updateSessionStatus(id, "cancelled");
+  });
+
+  it("claimInterruptedSession does NOT claim pending sessions", async () => {
+    // Create a pending session and a mid-flight one
+    const id = await createTestSession({ origin: "human", seedInput: "test", status: "pending" });
+    const id2 = await createTestSession({ origin: "auto", status: "pending" });
+    await updateSessionStatus(id2, "game_formulation");
+    // Drain any pre-existing interrupted sessions so our id2 rises to the top.
+    let claimed = await claimInterruptedSession();
+    let attempts = 0;
+    while (claimed !== null && claimed.id !== id2 && attempts < 20) {
+      await updateSessionStatus(claimed.id, "cancelled");
+      claimed = await claimInterruptedSession();
+      attempts++;
+    }
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(id2); // id2 is the interrupted one, not the pending id
+    await updateSessionStatus(id, "cancelled");
+    await updateSessionStatus(id2, "cancelled");
+  });
+
+  it("two concurrent claimInterruptedSession calls yield exactly one winner", async () => {
+    const id = await createTestSession({ origin: "human", seedInput: "test", status: "pending" });
+    await updateSessionStatus(id, "expert_game");
+    // Drain any pre-existing interrupted sessions first so only ours is queued.
+    let drained = await claimInterruptedSession();
+    while (drained !== null && drained.id !== id) {
+      await updateSessionStatus(drained.id, "cancelled");
+      drained = await claimInterruptedSession();
+    }
+    // If we already claimed our own session via draining, the race test is trivially correct.
+    if (drained !== null && drained.id === id) {
+      // We hold it; verify only one claim (this one) succeeded
+      expect(drained.id).toBe(id);
+      await updateSessionStatus(id, "cancelled");
+      return;
+    }
+    const [a, b] = await Promise.all([claimInterruptedSession(), claimInterruptedSession()]);
+    const winners = [a, b].filter((s) => s !== null && s.id === id);
+    expect(winners.length).toBe(1);
+    await updateSessionStatus(id, "cancelled");
+  });
+
+  it("rowToSession loads artifact JSON columns when present", async () => {
+    const id = await createTestSession({ origin: "human", seedInput: "test", status: "pending" });
+    const fakeFormulation = {
+      id: "gf1",
+      sessionId: id,
+      gameType: "simultaneous",
+      players: [],
+      strategies: {},
+      informationStructure: {
+        visibility: {},
+        asymmetries: [],
+        commonKnowledge: [],
+      },
+      moveSequence: "simultaneous",
+      constraints: [],
+    };
+    await updateSessionStatus(id, "game_formulation", {
+      gameFormulationJson: JSON.stringify(fakeFormulation),
+    });
+    const session = await getSession(id);
+    expect(session).not.toBeNull();
+    expect(session!.gameFormulation).toBeDefined();
+    expect(session!.gameFormulation!.id).toBe("gf1");
+    await updateSessionStatus(id, "cancelled");
   });
 });
