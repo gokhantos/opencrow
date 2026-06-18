@@ -87,6 +87,11 @@ async function main(): Promise<void> {
     skipMemory: true,
     skipObservations: true,
     dbPoolSize: 5,
+    // A SIGE game idles the DB for minutes between writes while LLM calls run.
+    // Disable idle-close so the pooled connection isn't dropped mid-session
+    // (otherwise the next heartbeat/status write throws "Idle timeout reached
+    // after 30s" and fails the whole session).
+    dbIdleTimeoutSec: 0,
   });
 
   const config = await loadConfigWithOverrides();

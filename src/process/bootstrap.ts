@@ -74,6 +74,15 @@ export interface BootstrapOpts {
   readonly skipMemory?: boolean;
   readonly skipObservations?: boolean;
   readonly dbPoolSize?: number;
+  /**
+   * Bun.sql connection idle timeout in seconds for this process's pool.
+   * Omit to use the global default. Pass 0 to DISABLE idle-close — required for
+   * processes (e.g. SIGE) whose DB legitimately sits idle for minutes during
+   * long LLM phases; otherwise Bun closes the pooled connection at the default
+   * timeout and the next query throws "Idle timeout reached after 30s",
+   * failing the in-flight work.
+   */
+  readonly dbIdleTimeoutSec?: number;
 }
 
 function buildAgentOptions(
@@ -118,7 +127,10 @@ export async function bootstrap(
   setLogLevel(config.logLevel);
 
   const dbUrl = process.env.DATABASE_URL ?? config.postgres.url;
-  const db = await initDb(dbUrl, { max: opts.dbPoolSize ?? 5 });
+  const db = await initDb(dbUrl, {
+    max: opts.dbPoolSize ?? 5,
+    ...(opts.dbIdleTimeoutSec !== undefined ? { idleTimeout: opts.dbIdleTimeoutSec } : {}),
+  });
   startLogPersistence(db);
   log.info("Database initialized (PostgreSQL)");
 
