@@ -37,7 +37,7 @@ import type { DemandArtifact } from "./demand";
 import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
 import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
-import { fetchOutcomeMemoryBlock } from "./outcome-memory";
+import { fetchOutcomeMemoryGuidance } from "./outcome-memory";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import { getDb } from "../../store/db";
 import { annotateOriginality, checkForDuplicates, verifyEvidence } from "./validate";
@@ -381,13 +381,16 @@ export async function runIdeasPipeline(
     const extraCandidates = await fetchDivergentCandidates(generateWide, signalsContext, model);
 
     // ── Outcome-memory READ hook (gated readAtSynthesis, default ON) ──────────
-    // Injects learned REINFORCE/AVOID guidance into the generation prompt. Still
+    // ONE mem0 read yields BOTH the Pass-2 REINFORCE/AVOID block (outcomeMemory)
+    // and the Pass-1 SEED segment-diversity directive (segmentDirective). Still
     // guarded on outcomeMem0 !== null and returns "" on any failure or when mem0
-    // is empty (fetchOutcomeMemoryBlock never throws), so a run with no learned
-    // history is byte-identical to the pre-feature path.
-    const outcomeMemory: string =
+    // is empty (fetchOutcomeMemoryGuidance never throws), so a run with no learned
+    // history is byte-identical to the pre-feature path. rotationSeed (run-id
+    // derived) rotates WHICH under-explored segments lead so consecutive runs
+    // explore different corners.
+    const guidance =
       outcomeMemoryCfg.readAtSynthesis && outcomeMem0 !== null
-        ? await fetchOutcomeMemoryBlock({
+        ? await fetchOutcomeMemoryGuidance({
             mem0: outcomeMem0,
             userId: ideasUserId,
             query: [
@@ -399,8 +402,11 @@ export async function runIdeasPipeline(
             reinforceCap: outcomeMemoryCfg.reinforceCap,
             avoidCap: outcomeMemoryCfg.avoidCap,
             searchLimit: outcomeMemoryCfg.searchLimit,
+            rotationSeed,
           })
-        : "";
+        : { block: "", segmentDirective: "" };
+    const outcomeMemory: string = guidance.block;
+    const segmentDirective: string = guidance.segmentDirective;
 
     const synthesis = await runStep(
       runId,
@@ -419,6 +425,7 @@ export async function runIdeasPipeline(
           model,
           extraCandidates,
           outcomeMemory,
+          segmentDirective,
         }),
       (s) =>
         `Generated ${s.totalGenerated} idea candidates from trend intersections` +

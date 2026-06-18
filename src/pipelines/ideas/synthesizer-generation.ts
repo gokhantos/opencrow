@@ -68,12 +68,21 @@ export async function discoverIntersections(
   capabilities: CapabilityScan,
   model: string,
   chainOfEvidence: boolean,
+  segmentDirective = "",
 ): Promise<readonly IntersectionHypothesis[]> {
   const insightsSection = buildInsightsSection(trends, pains, capabilities, chainOfEvidence);
+  // SEED diversity steering (learned from past verdicts, flag-gated upstream).
+  // Injected at the TOP of the seed prompt so it redirects WHICH intersections
+  // the model surfaces — the deterministic seed (avg-rating / complaint-count
+  // ordering) otherwise repeats the same over-explored segments every run. The
+  // v2 directive asks for a BALANCED SPREAD across several under-explored
+  // segments (not a single new one) so the pool the cap balances is multi-segment.
+  // Empty string → prompt is byte-identical to today.
+  const diversitySection = segmentDirective ? `${segmentDirective}\n\n` : "";
 
   const prompt = `You have structured market intelligence from three sources. Find the non-obvious intersections.
 
-${insightsSection}
+${diversitySection}${insightsSection}
 
 Generate 15-20 intersection hypotheses. Each hypothesis should represent a SPECIFIC opportunity where:
 - A real pain or gap in the market (from the landscape/review data) meets

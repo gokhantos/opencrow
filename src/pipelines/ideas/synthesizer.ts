@@ -262,6 +262,17 @@ export async function synthesizeFromTrends(input: {
    * supplies it. Empty/absent → today's behavior.
    */
   readonly outcomeMemory?: string;
+  /**
+   * SEED segment-diversity directive (built by the Pipeline phase via
+   * fetchOutcomeMemoryGuidance → buildSegmentDiversityDirective from the SAME
+   * past-verdict mem0 read as outcomeMemory). Injected ONLY at Pass 1
+   * (discoverIntersections) to redirect the deterministic seed toward a BALANCED
+   * SPREAD across several under-explored segments — the earliest point diversity
+   * can take effect. Already sanitized + untrusted-fenced. Optional —
+   * backward-compatible; injected only when smart.outcomeMemory.readAtSynthesis
+   * is on AND the caller supplies it. Empty/absent → today's behavior.
+   */
+  readonly segmentDirective?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
 
@@ -278,12 +289,23 @@ export async function synthesizeFromTrends(input: {
   // re-gate at the synthesis boundary so the path is defended end-to-end. Only
   // inject when smart.outcomeMemory.readAtSynthesis is on; "" → today's behavior.
   const outcomeMemory = smart.outcomeMemory.readAtSynthesis ? input.outcomeMemory ?? "" : "";
+  // SEED segment-diversity directive (Pass 1 only): re-gate at the synthesis
+  // boundary on the SAME flag as outcomeMemory so the path is defended
+  // end-to-end. "" → today's seed prompt.
+  const segmentDirective = smart.outcomeMemory.readAtSynthesis ? input.segmentDirective ?? "" : "";
 
   // ── Pass 1: Discover intersections ──────────────────────────────────
   let intersections: readonly IntersectionHypothesis[];
 
   try {
-    intersections = await discoverIntersections(trends, pains, capabilities, model, chainOfEvidence);
+    intersections = await discoverIntersections(
+      trends,
+      pains,
+      capabilities,
+      model,
+      chainOfEvidence,
+      segmentDirective,
+    );
   } catch (err) {
     log.error("Pass 1 failed, falling back to single-pass synthesis", { err });
     return singlePassSynthesis({ ...input, validatedExemplars, antiExemplars, outcomeMemory });
