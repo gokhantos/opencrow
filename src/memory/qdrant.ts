@@ -83,6 +83,56 @@ interface QdrantClientConfig {
   readonly apiKey?: string;
 }
 
+/**
+ * Thrown when an existing Qdrant collection's vector dimension does not match
+ * the embeddings dimension from config. This is a fatal configuration error
+ * (search would silently corrupt), so {@link QdrantClient.ensureCollection}
+ * re-throws it instead of degrading to the "unavailable" fallback.
+ */
+export class QdrantDimensionMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "QdrantDimensionMismatchError";
+  }
+}
+
+/**
+ * Extract the configured vector dimension from a Qdrant `GET /collections/{name}`
+ * response. Handles both the single (unnamed) vector layout
+ * (`config.params.vectors.size`) and the named-vectors layout
+ * (`config.params.vectors.<name>.size`, where every named vector should share
+ * the same dimension for our single-embedding usage). Returns `undefined` when
+ * the shape is unrecognized, so callers treat it as "could not verify" rather
+ * than a mismatch.
+ *
+ * Exported for unit testing only — not part of the public API.
+ */
+export function readVectorSize(body: unknown): number | undefined {
+  if (typeof body !== "object" || body === null) return undefined;
+  const result = (body as { result?: unknown }).result;
+  if (typeof result !== "object" || result === null) return undefined;
+  const config = (result as { config?: unknown }).config;
+  if (typeof config !== "object" || config === null) return undefined;
+  const params = (config as { params?: unknown }).params;
+  if (typeof params !== "object" || params === null) return undefined;
+  const vectors = (params as { vectors?: unknown }).vectors;
+  if (typeof vectors !== "object" || vectors === null) return undefined;
+
+  // Unnamed (default) vector: `vectors.size` is a number.
+  const directSize = (vectors as { size?: unknown }).size;
+  if (typeof directSize === "number") return directSize;
+
+  // Named vectors: pick the first entry's size (all should match for our usage).
+  for (const value of Object.values(vectors as Record<string, unknown>)) {
+    if (typeof value === "object" && value !== null) {
+      const size = (value as { size?: unknown }).size;
+      if (typeof size === "number") return size;
+    }
+  }
+
+  return undefined;
+}
+
 function buildHeaders(apiKey?: string): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -223,6 +273,22 @@ export async function createQdrantClient(
             }
           }
         } else {
+          // Collection already exists — assert its configured vector dimension
+          // matches the embeddings dimension passed in by config. A mismatch
+          // (e.g. config.embeddings.dimensions changed, or embedding provider
+          // swapped) would silently corrupt search: vectors of one dimension
+          // cannot be compared against another. Fail loudly and require a
+          // re-index rather than proceeding.
+          const actualSize = readVectorSize(await resp.json());
+          if (actualSize !== undefined && actualSize !== vectorSize) {
+            throw new QdrantDimensionMismatchError(
+              `Qdrant collection "${name}" has vector dimension ${actualSize}, ` +
+                `but config embeddings.dimensions is ${vectorSize}. ` +
+                "A re-index is required (drop and recreate the collection, then " +
+                "re-embed sources) before vector search can be used.",
+            );
+          }
+
           // Ensure HNSW indexing threshold is set (segments < 20k default
           // would otherwise do flat O(n) scans instead of HNSW)
           await request("PATCH", `/collections/${name}`, {
@@ -283,6 +349,15 @@ export async function createQdrantClient(
         }
         return true;
       } catch (error) {
+        // A dimension mismatch is a fatal config error, not a transient outage:
+        // re-throw so startup fails loudly instead of silently corrupting search.
+        if (error instanceof QdrantDimensionMismatchError) {
+          log.error("Qdrant collection dimension mismatch", {
+            name,
+            error: error.message,
+          });
+          throw error;
+        }
         log.error("Failed to ensure Qdrant collection", { name, error });
         markUnavailable();
         return false;

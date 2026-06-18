@@ -33,6 +33,7 @@ import {
   MAX_DETAIL_LENGTH,
   MAX_THINKING_SUMMARY,
 } from "./sdk-progress";
+import { createLoopDetector } from "./loop-detection";
 
 
 
@@ -274,6 +275,7 @@ async function runQuery(
   sessionId: string | undefined,
   prev: QueryRunState,
   stderrCapture: StderrCapture,
+  loopDetector: ReturnType<typeof createLoopDetector>,
   onProgress?: (event: ProgressEvent) => void,
 ): Promise<QueryRunState> {
   const enrichedPrompt = await enrichPromptWithContext(prompt, sessionId);
@@ -357,6 +359,24 @@ async function runQuery(
               const toolInput = (block.input as Record<string, unknown>) ?? {};
               const display = formatToolProgress(toolName, toolInput);
               onProgress?.({ type: "tool_start", agentId, tool: display });
+
+              // Loop guard: the Agent SDK runs its own internal tool loop, so a
+              // stuck agent (same tool + same args repeatedly) would otherwise
+              // burn the whole turn budget. We can't inject a corrective message
+              // mid-stream the way the OpenRouter path does, so on a critical
+              // loop we abort the SDK subprocess to stop the runaway.
+              const loop = loopDetector.check(toolName, toolInput);
+              if (loop.message) {
+                log.warn("Tool loop detected (Agent SDK)", {
+                  agentId,
+                  level: loop.level,
+                  tool: toolName,
+                  message: loop.message,
+                });
+              }
+              if (loop.stuck && abortController) {
+                abortController.abort(new Error(loop.message ?? "tool loop"));
+              }
             }
           }
           // Text in a message that also contains tool_use is planning/reasoning
@@ -491,6 +511,9 @@ export async function agenticChat(
   const agentId = options.agentId ?? "default";
   const opencrowMcp = createOpenCrowMcpServer(registry);
   const stderrCapture = buildStderrHandler(agentId);
+  // Shared across the initial query and every auto-continuation so a loop that
+  // spans continuations is still detected.
+  const loopDetector = createLoopDetector();
 
   log.debug("Agent SDK agentic chat", {
     model: options.model,
@@ -517,11 +540,14 @@ export async function agenticChat(
       state.sessionId,
       state,
       stderrCapture,
+      loopDetector,
       onProgress,
     );
 
     // Auto-continue: if agent exited with tool work but no text response,
-    // resume the session asking for a summary.
+    // resume the session asking for a summary. Each continuation is a full
+    // context resume query, so we cap the count and log every one — a stuck
+    // agent must not silently burn MAX_CONTINUATIONS full-context round-trips.
     const MAX_CONTINUATIONS = 5;
     const abortSignal = options.abortSignal;
     let continues = 0;
@@ -535,7 +561,9 @@ export async function agenticChat(
     ) {
       continues++;
       log.info("Auto-continuing (empty result after tool use)", {
+        agentId,
         attempt: continues,
+        maxContinuations: MAX_CONTINUATIONS,
         toolUseCount: state.toolUseCount,
         sessionId: state.sessionId,
       });
@@ -555,8 +583,24 @@ export async function agenticChat(
         state.sessionId,
         state,
         stderrCapture,
+        loopDetector,
         onProgress,
       );
+    }
+
+    // Surface when we exhausted the continuation budget without a usable result
+    // (otherwise this looks like a normal completion in the logs).
+    if (
+      continues >= MAX_CONTINUATIONS &&
+      !state.resultText.trim() &&
+      !state.lastAssistantText.trim()
+    ) {
+      log.warn("Auto-continuation cap reached without a usable result", {
+        agentId,
+        maxContinuations: MAX_CONTINUATIONS,
+        toolUseCount: state.toolUseCount,
+        sessionId: state.sessionId,
+      });
     }
 
     // Fall back to last assistant text if result is still empty

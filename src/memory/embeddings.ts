@@ -200,15 +200,27 @@ export function createEmbeddingProviderFromConfig(
 }
 
 /**
+ * Default embedding model and dimension — the documented source of truth, kept
+ * in sync with embeddingsConfigSchema defaults in config/schema.ts. The Qdrant
+ * collection is sized to this dimension, so the two MUST agree or vector search
+ * silently mismatches. Changing either requires a coordinated re-index.
+ */
+const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
+const DEFAULT_EMBEDDING_DIMENSIONS = 512;
+
+/**
  * @deprecated Use createEmbeddingProviderFromConfig instead.
- * Kept for backward compatibility with embedding-generator.ts
+ * Kept for backward compatibility with embedding-generator.ts. Uses the
+ * documented default model/dimension (512-dim text-embedding-3-small) rather
+ * than a hardcoded 4096-dim model, so it cannot drift from the configured
+ * collection dimension and produce unsearchable vectors.
  */
 export function createEmbeddingProvider(apiKey: string): EmbeddingProvider {
   return createOpenAICompatibleEmbeddingProvider({
     baseUrl: "https://openrouter.ai/api/v1",
     apiKey,
-    model: "qwen/qwen3-embedding-8b",
-    dimensions: 4096,
+    model: DEFAULT_EMBEDDING_MODEL,
+    dimensions: DEFAULT_EMBEDDING_DIMENSIONS,
     batchSize: 100,
     label: "openrouter",
   });
