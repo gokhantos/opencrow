@@ -11,6 +11,10 @@ import {
   countPendingSessions,
 } from "../../sige/store";
 import type { SigeSessionStatus, SigeSessionConfig } from "../../sige/types";
+import { Mem0Client } from "../../sige/knowledge/mem0-client";
+import { getFullGraph } from "../../sige/knowledge/graph-query";
+import type { GraphView } from "../../sige/knowledge/graph-query";
+import { loadConfig } from "../../config/loader";
 
 const log = createLogger("web:sige");
 
@@ -98,6 +102,57 @@ function mergeConfig(
       : DEFAULT_CONFIG.incentiveWeights,
   };
 }
+
+// ─── Graph endpoint — 10s in-memory cache + stampede guard ──────────────────
+//
+// The Mem0Client is hoisted to module scope alongside the cache so the
+// circuit-breaker state (private fields) persists across requests. A per-request
+// instantiation would reset the breaker on every call, making it useless.
+//
+// The `graphPending` map is a simple stampede guard: if a fetch is already
+// in-flight for a given userId, subsequent callers wait for the same Promise
+// instead of firing independent upstream requests. Combined with the 10 s cache
+// TTL this bounds concurrent Mem0 searches to 1 per userId per polling cycle
+// regardless of how many browser tabs are open.
+
+interface GraphCacheEntry {
+  readonly view: GraphView;
+  readonly expiresAt: number;
+}
+
+const graphCache = new Map<string, GraphCacheEntry>();
+const GRAPH_CACHE_TTL_MS = 10_000;
+
+// In-flight de-duplication: userId → pending Promise<GraphView>
+const graphPending = new Map<string, Promise<GraphView>>();
+
+// Module-level Mem0Client singleton — lazily initialised from config on first
+// request so the circuit-breaker state (unavailable/openedAt/probing) persists
+// across the lifetime of the web process rather than resetting per-request.
+let _graphMem0: Mem0Client | null = null;
+
+function getGraphMem0Client(baseUrl: string, apiToken: string | undefined): Mem0Client {
+  if (_graphMem0 === null) {
+    _graphMem0 = new Mem0Client({ baseUrl, apiToken });
+  }
+  return _graphMem0;
+}
+
+function getCachedGraph(userId: string): GraphView | undefined {
+  const entry = graphCache.get(userId);
+  if (!entry) return undefined;
+  if (Date.now() > entry.expiresAt) {
+    graphCache.delete(userId);
+    return undefined;
+  }
+  return entry.view;
+}
+
+function setCachedGraph(userId: string, view: GraphView): void {
+  graphCache.set(userId, { view, expiresAt: Date.now() + GRAPH_CACHE_TTL_MS });
+}
+
+const EMPTY_GRAPH: GraphView = { nodes: [], edges: [], summary: "" };
 
 export function createSigeRoutes(): Hono {
   const app = new Hono();
@@ -376,6 +431,63 @@ export function createSigeRoutes(): Hono {
       log.error("Failed to get SIGE population dynamics", { err, id });
       return c.json({ success: false, error: "Failed to fetch population dynamics" }, 500);
     }
+  });
+
+  // ─── GET /api/sige/sessions/:id/graph — Knowledge graph (graceful-empty) ────
+
+  app.get("/sige/sessions/:id/graph", async (c) => {
+    // :id is accepted for forward-compatibility; MVP returns the global graph.
+    let config;
+    try {
+      config = loadConfig();
+    } catch (err) {
+      log.warn("graph: failed to load config — returning empty graph", { err });
+      return c.json({ success: true, data: EMPTY_GRAPH });
+    }
+
+    const sigeConfig = config.sige;
+    if (!sigeConfig) {
+      log.debug("graph: SIGE not configured — returning empty graph");
+      return c.json({ success: true, data: EMPTY_GRAPH });
+    }
+
+    const userId = sigeConfig.mem0.userId;
+
+    const cached = getCachedGraph(userId);
+    if (cached) {
+      return c.json({ success: true, data: cached });
+    }
+
+    // Stampede guard: if another request is already fetching this userId's graph,
+    // share the same Promise instead of firing a second upstream call.
+    const existing = graphPending.get(userId);
+    if (existing) {
+      let view: GraphView;
+      try {
+        view = await existing;
+      } catch {
+        return c.json({ success: true, data: EMPTY_GRAPH });
+      }
+      return c.json({ success: true, data: view });
+    }
+
+    const mem0 = getGraphMem0Client(sigeConfig.mem0.baseUrl, sigeConfig.mem0.apiToken);
+
+    const fetchPromise = getFullGraph(mem0, userId);
+    graphPending.set(userId, fetchPromise);
+
+    let view: GraphView;
+    try {
+      view = await fetchPromise;
+    } catch (err) {
+      log.warn("graph: getFullGraph failed — returning empty graph", { err });
+      graphPending.delete(userId);
+      return c.json({ success: true, data: EMPTY_GRAPH });
+    }
+
+    graphPending.delete(userId);
+    setCachedGraph(userId, view);
+    return c.json({ success: true, data: view });
   });
 
   // ─── DELETE /api/sige/sessions/:id — Cancel a session ───────────────────────

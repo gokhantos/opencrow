@@ -5,6 +5,7 @@ import type {
   FusedScore,
   PopulationEntry,
 } from "./types";
+import type { GraphView } from "../../../../sige/knowledge/graph-query";
 
 interface ListSessionsResponse {
   readonly success: boolean;
@@ -95,4 +96,14 @@ export async function fetchPopulationDynamics(
 
 export async function cancelSession(id: string): Promise<void> {
   await apiFetch(`/api/sige/sessions/${id}`, { method: "DELETE" });
+}
+
+interface GraphResponse {
+  readonly success: boolean;
+  readonly data: GraphView;
+}
+
+export async function fetchSessionGraph(sessionId: string): Promise<GraphView> {
+  const res = await apiFetch<GraphResponse>(`/api/sige/sessions/${sessionId}/graph`);
+  return res.data;
 }

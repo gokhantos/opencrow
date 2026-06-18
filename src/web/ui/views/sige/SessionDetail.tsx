@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronRight, X } from "lucide-react";
 import { Button, LoadingState } from "../../components";
 import { cn } from "../../lib/cn";
 import { ProgressBar } from "./ProgressBar";
@@ -11,6 +11,7 @@ import { GameTab } from "./GameTab";
 import { PopulationTab } from "./PopulationTab";
 import { TERMINAL_STATUSES } from "./statusConfig";
 import { fetchSession, cancelSession } from "./api";
+import { ProcessTheater } from "./theater/ProcessTheater";
 import type { SigeSessionDetail } from "./types";
 
 type DetailTab = "report" | "ideas" | "game" | "population";
@@ -33,6 +34,7 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState<DetailTab>("report");
   const [cancelling, setCancelling] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const loadSession = useCallback(async () => {
     try {
@@ -99,9 +101,7 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
   }
 
   const isTerminal = TERMINAL_STATUSES.has(session.status);
-  const isCompleted = session.status === "completed";
-  const canCancel =
-    !isTerminal && !cancelling;
+  const canCancel = !isTerminal && !cancelling;
 
   return (
     <div>
@@ -143,7 +143,7 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
         </p>
       </div>
 
-      {/* Progress bar — always shown while active, also shown for terminal */}
+      {/* Progress bar — always shown */}
       <ProgressBar status={session.status} />
 
       {/* Error message for failed sessions */}
@@ -156,62 +156,78 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
         </div>
       )}
 
-      {/* Tabs — only shown when completed */}
-      {isCompleted && (
-        <>
-          <div className="flex gap-1 bg-bg border border-border rounded-lg p-1 mb-6 flex-wrap">
-            {DETAIL_TABS.map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  "px-4 py-2 rounded-md text-sm font-medium cursor-pointer bg-transparent border-none transition-colors",
-                  activeTab === tab.id
-                    ? "bg-bg-1 text-strong shadow-sm border border-border"
-                    : "text-muted hover:text-foreground hover:bg-bg-2",
-                )}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          <div>
-            {activeTab === "report" && (
-              <ReportTab
-                sessionId={sessionId}
-                initialReport={session.report}
-              />
-            )}
-            {activeTab === "ideas" && <IdeasTab sessionId={sessionId} />}
-            {activeTab === "game" && <GameTab session={session} />}
-            {activeTab === "population" && (
-              <PopulationTab sessionId={sessionId} />
-            )}
-          </div>
-        </>
-      )}
-
-      {/* In-progress: show live status message */}
-      {!isTerminal && (
-        <div className="bg-bg-1 border border-border rounded-xl px-5 py-6 text-center">
-          <div className="flex items-center justify-center gap-3 mb-2">
-            <span className="w-4 h-4 border-2 border-border-2 border-t-accent rounded-full animate-spin" />
-            <span className="text-sm font-medium text-foreground">
-              Session running...
-            </span>
-          </div>
-          <p className="text-xs text-faint m-0">
-            Results will appear automatically when the session completes.
-          </p>
+      {/* Cancelled state notice */}
+      {session.status === "cancelled" && (
+        <div className="bg-bg-1 border border-border rounded-xl px-5 py-3 mb-4 text-center">
+          <p className="text-sm text-muted m-0">This session was cancelled.</p>
         </div>
       )}
 
-      {/* Cancelled state */}
-      {session.status === "cancelled" && (
-        <div className="bg-bg-1 border border-border rounded-xl px-5 py-6 text-center">
-          <p className="text-sm text-muted m-0">This session was cancelled.</p>
+      {/* Process Theater — primary view for both in-progress and completed */}
+      <ProcessTheater session={session} sessionId={sessionId} />
+
+      {/* Details expander — legacy tabs (report / ideas / game / population) */}
+      {session.status === "completed" && (
+        <div className="mt-6">
+          <button
+            type="button"
+            onClick={() => setDetailsOpen((v) => !v)}
+            className={cn(
+              "w-full flex items-center gap-2 px-5 py-3.5 rounded-xl border transition-colors text-left cursor-pointer bg-transparent",
+              detailsOpen
+                ? "border-border bg-bg-1"
+                : "border-border hover:border-hover hover:bg-bg-2",
+            )}
+            aria-expanded={detailsOpen}
+          >
+            {detailsOpen ? (
+              <ChevronDown size={14} className="text-muted shrink-0" />
+            ) : (
+              <ChevronRight size={14} className="text-muted shrink-0" />
+            )}
+            <span className="text-sm font-medium text-foreground">
+              Details
+            </span>
+            <span className="text-xs text-faint ml-1">
+              — Report, Ranked Ideas, Game Analysis, Population Dynamics
+            </span>
+          </button>
+
+          {detailsOpen && (
+            <div className="mt-3">
+              <div className="flex gap-1 bg-bg border border-border rounded-lg p-1 mb-4 flex-wrap">
+                {DETAIL_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveTab(tab.id)}
+                    className={cn(
+                      "px-4 py-2 rounded-md text-sm font-medium cursor-pointer bg-transparent border-none transition-colors",
+                      activeTab === tab.id
+                        ? "bg-bg-1 text-strong shadow-sm border border-border"
+                        : "text-muted hover:text-foreground hover:bg-bg-2",
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div>
+                {activeTab === "report" && (
+                  <ReportTab
+                    sessionId={sessionId}
+                    initialReport={session.report}
+                  />
+                )}
+                {activeTab === "ideas" && <IdeasTab sessionId={sessionId} />}
+                {activeTab === "game" && <GameTab session={session} />}
+                {activeTab === "population" && (
+                  <PopulationTab sessionId={sessionId} />
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
