@@ -103,10 +103,11 @@ async function main(): Promise<void> {
     skipMemory: true,
     skipObservations: true,
     dbPoolSize: 5,
-    // A SIGE game idles the DB for minutes between writes while LLM calls run.
-    // Disable idle-close so the pooled connection isn't dropped mid-session
-    // (otherwise the next heartbeat/status write throws "Idle timeout reached
-    // after 30s" and fails the whole session).
+    // A SIGE game idles the DB for minutes between writes while LLM calls run,
+    // so the pooled connection must not be idle-closed mid-session (else the
+    // next heartbeat/status write throws "Idle timeout reached"). Idle-close is
+    // now disabled globally (see DEFAULT_IDLE_TIMEOUT_SEC in store/db.ts); this
+    // explicit 0 stays as a defensive pin of SIGE's hard requirement.
     dbIdleTimeoutSec: 0,
   });
 

@@ -18,11 +18,15 @@ services:
     # ---------------------------------------------------------------------------
     command:
       - "postgres"
-      # Pool sizing: app uses ~5 conns/process across ~5-8 processes. 50 gives
-      # generous headroom while avoiding the per-connection memory/bookkeeping
-      # that the old max_connections=2000 wasted under emulation.
+      # Pool sizing: each process holds its own pool (cron 10, web/agent/sige 5,
+      # scraper 2, core/ingestion 3). Idle-close is now disabled (see
+      # DEFAULT_IDLE_TIMEOUT_SEC in store/db.ts), so a saturated pool stays
+      # saturated for the process lifetime instead of draining at rest. Worst
+      # case across the full scraper set + a few agents approaches ~56, so 100
+      # (the standard Postgres default) gives honest headroom. On native arm64
+      # idle connections are essentially free; the old 2000 was the real waste.
       - "-c"
-      - "max_connections=50"
+      - "max_connections=100"
       # Don't block COMMIT on WAL flush to disk. Biggest single CPU/I/O win under
       # emulation. Risk: a crash can lose the last few committed txns (dev only).
       - "-c"

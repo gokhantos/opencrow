@@ -25,11 +25,21 @@ const DEFAULT_POOL_MAX = 3;
 
 /**
  * How long (in seconds) an idle connection is kept open before being closed.
- * 0 = no timeout (Bun default, leads to connection sprawl in a multi-process
- * setup). 30 s gives idle backends time to close on their own so Postgres sees
- * fewer connections at rest.
+ * 0 = no idle-close (Bun's own default).
+ *
+ * Disabled by default. A 30 s idle-close was briefly used to shed idle
+ * connections that were costing CPU under the x86 Colima/QEMU emulation — but
+ * the stack now runs native arm64 where idle connections are essentially free,
+ * and `DEFAULT_POOL_MAX` already caps each process to a few connections. The
+ * idle-close, meanwhile, is a footgun in Bun 1.3.x: when the timer reaps a
+ * pooled connection, the *next* query throws "Idle timeout reached after 30s"
+ * instead of transparently reconnecting. Any process that legitimately sits
+ * idle past the timeout between writes (SIGE games during long LLM phases, a
+ * scraper polling every 30 min, batch ingestion) then fails its next write.
+ * Keeping connections open avoids the footgun for all processes; callers that
+ * truly want idle-close can still pass `idleTimeout` explicitly.
  */
-const DEFAULT_IDLE_TIMEOUT_SEC = 30;
+const DEFAULT_IDLE_TIMEOUT_SEC = 0;
 
 export async function initDb(
   url?: string,
