@@ -1,7 +1,7 @@
 import { chat } from "../../agent/chat"
 import type { ConversationMessage } from "../../agent/types"
 import { createLogger } from "../../logger"
-import { saveSimulationResult } from "../store"
+import { saveSimulationResult, touchSessionActivity } from "../store"
 import type {
   CitizenAgent,
   CitizenStance,
@@ -402,6 +402,8 @@ export async function runSocialSimulation(params: {
       themes.length > 0
         ? `Round ${round} discussion themes: ${themes.join(", ")}`
         : ""
+
+    await touchSessionActivity(sessionId).catch(() => {/* non-fatal */})
   }
 
   const result = aggregateResults(accumulated, citizenCount, ideas)

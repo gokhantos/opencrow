@@ -353,5 +353,7 @@ export interface SigeSession {
   readonly report?: string;
   readonly createdAt: Date;
   readonly finishedAt?: Date;
+  /** Epoch seconds of the most recent activity touch. NULL for pre-migration rows. */
+  readonly lastActivityAt?: number;
   readonly error?: string;
 }

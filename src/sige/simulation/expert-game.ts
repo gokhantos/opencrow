@@ -8,6 +8,7 @@ import type { GraphView } from "../knowledge/graph-query"
 import { Mem0Client } from "../knowledge/mem0-client"
 import type { GameFormulation } from "../types"
 import { runTasteFilter } from "../taste-filter"
+import { touchSessionActivity } from "../store"
 import type {
   ExpertGameResult,
   SigeSessionConfig,
@@ -104,6 +105,7 @@ export async function runExpertGame(params: {
   })
 
   await persistRound(sessionId, round1)
+  await touchSessionActivity(sessionId).catch(() => {/* non-fatal */})
   log.info("Round 1 complete", {
     sessionId,
     ideasCount: round1.outcomes.selectedIdeas.length,
@@ -123,6 +125,7 @@ export async function runExpertGame(params: {
   })
 
   await persistRound(sessionId, round2)
+  await touchSessionActivity(sessionId).catch(() => {/* non-fatal */})
   log.info("Round 2 complete", {
     sessionId,
     ideasCount: round2.outcomes.selectedIdeas.length,
@@ -150,6 +153,7 @@ export async function runExpertGame(params: {
       avgSpecificity: tasteResult.filterStats.avgSpecificityScore,
       avgSignalGrounding: tasteResult.filterStats.avgSignalGroundingScore,
     })
+    await touchSessionActivity(sessionId).catch(() => {/* non-fatal */})
     filteredRound2 = {
       ...round2,
       outcomes: {
@@ -172,6 +176,7 @@ export async function runExpertGame(params: {
   })
 
   await persistRound(sessionId, round3)
+  await touchSessionActivity(sessionId).catch(() => {/* non-fatal */})
   log.info("Round 3 complete", {
     sessionId,
     ideasCount: round3.outcomes.selectedIdeas.length,
@@ -194,6 +199,7 @@ export async function runExpertGame(params: {
   })
 
   await persistRound(sessionId, round4)
+  await touchSessionActivity(sessionId).catch(() => {/* non-fatal */})
   log.info("Round 4 complete", {
     sessionId,
     equilibria: round4.outcomes.equilibria?.length ?? 0,

@@ -42,7 +42,7 @@ import { signalsToPromptContext, synthesizeSignals } from "./signal-synthesis";
 import { computeSocialViabilityScore, fuseScores } from "./simulation/score-fusion";
 import { runSocialSimulation } from "./simulation/social-sim";
 import { startCancelWatcher } from "./cancel-watcher";
-import { loadResumeContext, saveIdeaScore, saveResumeContext, updateSessionStatus } from "./store";
+import { loadResumeContext, saveIdeaScore, saveResumeContext, touchSessionActivity, updateSessionStatus } from "./store";
 import type { ResumeContext } from "./store";
 import type { FusedScore, ScoredIdea, SigeReport, SigeSession, SigeSessionConfig } from "./types";
 
@@ -395,6 +395,7 @@ async function runSeededSteps(
 
   if (needsSignals) {
     await updateSessionStatus(sessionId, "knowledge_construction");
+    await touchSessionActivity(sessionId);
     log.info("Status → knowledge_construction", { sessionId });
 
     if (resumeCtx !== undefined) {
@@ -429,6 +430,7 @@ async function runSeededSteps(
   // ── Step 2: Game formulation ─────────────────────────────────────────────────
   if (gameFormulation === undefined) {
     await updateSessionStatus(sessionId, "game_formulation");
+    await touchSessionActivity(sessionId);
     log.info("Status → game_formulation", { sessionId });
 
     gameFormulation = await formulateGame(graphView, enrichedSeed, {
@@ -448,6 +450,7 @@ async function runSeededSteps(
   // ── Step 3: Expert game ──────────────────────────────────────────────────────
   if (expertResult === undefined) {
     await updateSessionStatus(sessionId, "expert_game");
+    await touchSessionActivity(sessionId);
     log.info("Status → expert_game", { sessionId });
 
     expertResult = await runExpertGame({
@@ -472,6 +475,7 @@ async function runSeededSteps(
   // ── Step 4: Social simulation ────────────────────────────────────────────────
   if (socialResult === undefined) {
     await updateSessionStatus(sessionId, "social_simulation");
+    await touchSessionActivity(sessionId);
     log.info("Status → social_simulation", { sessionId });
 
     socialResult = await runSocialSimulation({
@@ -496,6 +500,7 @@ async function runSeededSteps(
   // INSERT, not upsert; re-running would duplicate rows).
   if (fusedScores === undefined) {
     await updateSessionStatus(sessionId, "scoring");
+    await touchSessionActivity(sessionId);
     log.info("Status → scoring", { sessionId });
 
     // socialResult is guaranteed non-null here: either just assigned above or
@@ -628,6 +633,7 @@ async function runSeededSteps(
   // overwrites the report column, and generateReport has no side effects beyond that).
 
   await updateSessionStatus(sessionId, "report_generation");
+  await touchSessionActivity(sessionId);
   log.info("Status → report_generation", { sessionId });
 
   // ── Cross-session write-back: persist top ideas to Mem0 for future sessions ─

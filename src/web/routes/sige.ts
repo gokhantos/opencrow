@@ -9,7 +9,9 @@ import {
   getIdeaScores,
   getPopulationDynamics,
   countPendingSessions,
+  getSessionProgressRaw,
 } from "../../sige/store";
+import { deriveSessionProgress } from "../../sige/progress";
 import type { SigeSessionStatus, SigeSessionConfig } from "../../sige/types";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
 import { getFullGraph } from "../../sige/knowledge/graph-query";
@@ -550,6 +552,31 @@ export function createSigeRoutes(): Hono {
     });
 
     return c.json({ success: true, data: view });
+  });
+
+  // ─── GET /api/sige/sessions/:id/progress — Step-level progress + stall ───────
+
+  app.get("/sige/sessions/:id/progress", async (c) => {
+    const id = c.req.param("id");
+
+    const idSchema = z.string().uuid();
+    const idParsed = idSchema.safeParse(id);
+    if (!idParsed.success) {
+      return c.json({ success: false, error: "Invalid session id" }, 400);
+    }
+
+    try {
+      const raw = await getSessionProgressRaw(id);
+      if (raw === null) {
+        return c.json({ success: false, error: "Session not found" }, 404);
+      }
+      const nowSec = Math.floor(Date.now() / 1000);
+      const progress = deriveSessionProgress(raw, nowSec);
+      return c.json({ success: true, data: progress });
+    } catch (err) {
+      log.error("Failed to get SIGE session progress", { err, id });
+      return c.json({ success: false, error: "Failed to fetch progress" }, 500);
+    }
   });
 
   // ─── DELETE /api/sige/sessions/:id — Cancel a session ───────────────────────

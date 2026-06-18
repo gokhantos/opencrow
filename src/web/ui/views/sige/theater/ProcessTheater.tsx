@@ -11,6 +11,7 @@
  *   sessionId  — used for the /graph fetch
  */
 import { useEffect, useRef, useState } from "react";
+import type React from "react";
 import type { SigeSessionDetail } from "../types";
 import type { GraphView } from "../../../../../sige/knowledge/graph-query";
 import { fetchSessionGraph } from "../api";
@@ -161,6 +162,10 @@ function stageSummaryStat(
   }
 }
 
+// ─── ProcessTheaterProps (extended) ────────────────────────────────────────────
+// ProgressTimeline is imported at the bottom of this file to avoid circular
+// dependencies (both live in the theater/ directory, no cycle).
+
 // ─── useGraph hook ─────────────────────────────────────────────────────────────
 
 function useGraph(
@@ -204,9 +209,11 @@ function useGraph(
 export interface ProcessTheaterProps {
   readonly session: SigeSessionDetail;
   readonly sessionId: string;
+  /** When provided, renders the ProgressTimeline as a live-progress header rail. */
+  readonly progressTimeline?: React.ReactNode;
 }
 
-export function ProcessTheater({ session, sessionId }: ProcessTheaterProps) {
+export function ProcessTheater({ session, sessionId, progressTimeline }: ProcessTheaterProps) {
   const panelRefs = useRef<Map<StageKey, HTMLDivElement>>(new Map());
 
   // Determine which stage is currently running (for auto-scroll)
@@ -247,6 +254,9 @@ export function ProcessTheater({ session, sessionId }: ProcessTheaterProps) {
 
   return (
     <div className="space-y-4">
+      {/* Live-progress rail — rendered as a collapsible header when provided */}
+      {progressTimeline}
+
       {STAGE_ORDER.map((key, idx) => {
         const status = deriveStageStatus(key, session);
         const summaryStat = stageSummaryStat(key, session, graphView);
