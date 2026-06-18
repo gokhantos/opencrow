@@ -22,7 +22,7 @@ const QUERY_STATEMENT_TIMEOUT_MS = 10_000;
 /**
  * Lazily-initialised connection that authenticates as the `opencrow_readonly`
  * PostgreSQL role. Populated on first use when OPENCROW_READONLY_DATABASE_URL
- * is set. The role must be created and granted via the 022_readonly_role
+ * is set. The role must be created and granted via the 023_readonly_role
  * migration before this is useful.
  *
  * SECURITY: When the env var is absent this function throws rather than
@@ -64,7 +64,7 @@ function getReadonlyDb(): InstanceType<typeof SQL> {
  * references these — even via schema-qualified or double-quoted identifiers —
  * is rejected before touching the database.
  *
- * Sync this list with the REVOKE statements in 022_readonly_role.sql.
+ * Sync this list with the REVOKE statements in 023_readonly_role.sql.
  */
 const SENSITIVE_TABLES: readonly string[] = [
   // Application credential tables
