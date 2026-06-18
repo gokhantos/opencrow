@@ -41,7 +41,8 @@ import { enrichSeedWithProjectData } from "./seed-enricher";
 import { signalsToPromptContext, synthesizeSignals } from "./signal-synthesis";
 import { computeSocialViabilityScore, fuseScores } from "./simulation/score-fusion";
 import { runSocialSimulation } from "./simulation/social-sim";
-import { saveIdeaScore, updateSessionStatus } from "./store";
+import { loadResumeContext, saveIdeaScore, saveResumeContext, updateSessionStatus } from "./store";
+import type { ResumeContext } from "./store";
 import type { FusedScore, ScoredIdea, SigeReport, SigeSession, SigeSessionConfig } from "./types";
 
 const log = createLogger("sige:run");
@@ -177,6 +178,31 @@ export async function runSession(
 
   log.info("Starting SIGE session pipeline", { sessionId, userId, mode: mode ?? "seeded" });
 
+  // ── RESUME PATH ──────────────────────────────────────────────────────────────
+  //
+  // If a resume context was persisted before the process died, skip all
+  // discovery/enrichment and jump straight into runSeededSteps. The function is
+  // idempotent: already-persisted stages are detected via the session's artifact
+  // fields and skipped.
+  const resumeCtx = await loadResumeContext(sessionId);
+  if (resumeCtx !== null) {
+    log.info("Resuming interrupted SIGE session", {
+      sessionId,
+      fromStatus: session.status,
+      isScrapedSeed: resumeCtx.isScrapedSeed,
+    });
+    await runSeededSteps(
+      session,
+      mem0,
+      userId,
+      signal,
+      resumeCtx.enrichedSeed,
+      resumeCtx.isScrapedSeed,
+      resumeCtx,
+    );
+    return;
+  }
+
   // ── AUTONOMOUS PATH (new, default-OFF) ──────────────────────────────────────
   //
   // When the session has no seedInput (origin='auto', mode='autonomous'), run
@@ -306,13 +332,19 @@ async function runAutonomousSession(
 }
 
 /**
- * Run SIGE steps 1-6 with a pre-built enrichedSeed. Called by both the seeded
- * path (with the actual operator seed) and the autonomous path (with a frontier
- * seedText). Byte-for-byte identical for both callers: the only difference is
- * the enrichedSeed text that drives knowledge construction.
+ * Run SIGE steps 1-6 with a pre-built enrichedSeed. Called by the seeded path
+ * (with the actual operator seed), the autonomous path (with a frontier seedText),
+ * and the resume path (with the persisted enrichedSeed from resumeCtx).
+ *
+ * Each stage is guarded so that already-persisted artifacts are skipped on
+ * resume: the session's artifact fields (gameFormulation, expertResult, etc.)
+ * are hydrated by rowToSession when the session is loaded from the DB, so a
+ * resume will skip stages whose results are already stored.
  *
  * @param isScrapedSeed When true (autonomous path), `enrichedSeed` is
  *   scraper-derived and must be sanitized before entering LLM prompts.
+ * @param resumeCtx When provided, signal synthesis is skipped and the persisted
+ *   signalsContext is used instead.
  */
 async function runSeededSteps(
   session: SigeSession,
@@ -321,200 +353,260 @@ async function runSeededSteps(
   signal: AbortSignal,
   enrichedSeed: string,
   isScrapedSeed = false,
+  resumeCtx?: ResumeContext,
 ): Promise<void> {
   const { id: sessionId, config } = session;
 
+  // ── Load already-persisted artifacts from session ────────────────────────────
+  // These fields are hydrated by rowToSession when a session is loaded from DB.
+  // On a fresh run they're all undefined; on resume some may already be set.
+  let gameFormulation = session.gameFormulation;
+  let expertResult = session.expertResult;
+  let socialResult = session.socialResult;
+  let fusedScores = session.fusedScores;
+
   // ── Step 1: Knowledge construction ──────────────────────────────────────────
+  // Only run signal synthesis if we still need it (gameFormulation not yet done).
+  // On resume, we restore signalsContext from the resume context to avoid
+  // re-running the LLM call.
 
-  await updateSessionStatus(sessionId, "knowledge_construction");
-  log.info("Status → knowledge_construction", { sessionId });
+  let signalsContext: string | undefined;
 
-  // Run signal synthesis (LLM) and graph query (Mem0) in parallel — they're independent
-  const signalSynthesisPromise = synthesizeSignals(enrichedSeed, {
-    model: config.model,
-    provider: config.provider,
-  })
-    .then((signals) => signalsToPromptContext(signals))
-    .catch((err) => {
-      log.warn("Signal synthesis failed — continuing without synthesized signals", {
-        sessionId,
-        err,
-      });
-      return undefined;
-    });
+  const needsSignals = gameFormulation === undefined || expertResult === undefined;
 
-  const graphViewPromise = getFullGraph(mem0, userId);
+  if (needsSignals) {
+    await updateSessionStatus(sessionId, "knowledge_construction");
+    log.info("Status → knowledge_construction", { sessionId });
 
-  const [signalsContext, graphView] = await Promise.all([signalSynthesisPromise, graphViewPromise]);
+    if (resumeCtx !== undefined) {
+      // Resume path: restore signalsContext from persisted context.
+      signalsContext = resumeCtx.signalsContext;
+      log.info("Restored signalsContext from resume context", { sessionId });
+    } else {
+      // Fresh path: run signal synthesis in parallel with graph query.
+      signalsContext = await synthesizeSignals(enrichedSeed, {
+        model: config.model,
+        provider: config.provider,
+      })
+        .then((signals) => signalsToPromptContext(signals))
+        .catch((err) => {
+          log.warn("Signal synthesis failed — continuing without synthesized signals", {
+            sessionId,
+            err,
+          });
+          return undefined;
+        });
+
+      // Persist resume context now that we have signalsContext, before any
+      // expensive LLM stage. If the process dies after this point, we can
+      // resume from here without re-running signal synthesis.
+      await saveResumeContext(sessionId, { enrichedSeed, signalsContext, isScrapedSeed });
+    }
+  }
+
+  // graphView is always re-fetched (Mem0 read, fast, degrades to empty on error).
+  const graphView = await getFullGraph(mem0, userId);
 
   // ── Step 2: Game formulation ─────────────────────────────────────────────────
+  if (gameFormulation === undefined) {
+    await updateSessionStatus(sessionId, "game_formulation");
+    log.info("Status → game_formulation", { sessionId });
 
-  await updateSessionStatus(sessionId, "game_formulation");
-  log.info("Status → game_formulation", { sessionId });
+    gameFormulation = await formulateGame(graphView, enrichedSeed, {
+      model: config.model,
+      provider: config.provider,
+      sessionId,
+      isScrapedSeed,
+    });
 
-  const gameFormulation = await formulateGame(graphView, enrichedSeed, {
-    model: config.model,
-    provider: config.provider,
-    sessionId,
-    isScrapedSeed,
-  });
-
-  await updateSessionStatus(sessionId, "game_formulation", {
-    gameFormulationJson: JSON.stringify(gameFormulation),
-  });
+    await updateSessionStatus(sessionId, "game_formulation", {
+      gameFormulationJson: JSON.stringify(gameFormulation),
+    });
+  } else {
+    log.info("Skipping game_formulation — already persisted", { sessionId });
+  }
 
   // ── Step 3: Expert game ──────────────────────────────────────────────────────
+  if (expertResult === undefined) {
+    await updateSessionStatus(sessionId, "expert_game");
+    log.info("Status → expert_game", { sessionId });
 
-  await updateSessionStatus(sessionId, "expert_game");
-  log.info("Status → expert_game", { sessionId });
+    expertResult = await runExpertGame({
+      sessionId,
+      gameFormulation,
+      graphView,
+      mem0,
+      userId,
+      config,
+      signal,
+      signalsContext,
+      enrichedSeed,
+    });
 
-  const expertResult = await runExpertGame({
-    sessionId,
-    gameFormulation,
-    graphView,
-    mem0,
-    userId,
-    config,
-    signal,
-    signalsContext,
-    enrichedSeed,
-  });
-
-  await updateSessionStatus(sessionId, "expert_game", {
-    expertResultJson: JSON.stringify(expertResult),
-  });
+    await updateSessionStatus(sessionId, "expert_game", {
+      expertResultJson: JSON.stringify(expertResult),
+    });
+  } else {
+    log.info("Skipping expert_game — already persisted", { sessionId });
+  }
 
   // ── Step 4: Social simulation ────────────────────────────────────────────────
+  if (socialResult === undefined) {
+    await updateSessionStatus(sessionId, "social_simulation");
+    log.info("Status → social_simulation", { sessionId });
 
-  await updateSessionStatus(sessionId, "social_simulation");
-  log.info("Status → social_simulation", { sessionId });
+    socialResult = await runSocialSimulation({
+      sessionId,
+      ideas: expertResult.rankedIdeas,
+      citizenCount: config.socialAgentCount,
+      rounds: config.socialRounds,
+      config,
+      signal,
+    });
 
-  const socialResult = await runSocialSimulation({
-    sessionId,
-    ideas: expertResult.rankedIdeas,
-    citizenCount: config.socialAgentCount,
-    rounds: config.socialRounds,
-    config,
-    signal,
-  });
-
-  await updateSessionStatus(sessionId, "social_simulation", {
-    socialResultJson: JSON.stringify(socialResult),
-  });
+    await updateSessionStatus(sessionId, "social_simulation", {
+      socialResultJson: JSON.stringify(socialResult),
+    });
+  } else {
+    log.info("Skipping social_simulation — already persisted", { sessionId });
+  }
 
   // ── Step 5: Scoring ──────────────────────────────────────────────────────────
+  // fusedScores presence means scoring is done. The cross-write and idea score
+  // rows are also skipped because they were already written (saveIdeaScore uses
+  // INSERT, not upsert; re-running would duplicate rows).
+  if (fusedScores === undefined) {
+    await updateSessionStatus(sessionId, "scoring");
+    log.info("Status → scoring", { sessionId });
 
-  await updateSessionStatus(sessionId, "scoring");
-  log.info("Status → scoring", { sessionId });
-
-  const fusedScores = fuseScores(expertResult.rankedIdeas, socialResult, config.alpha);
-
-  // Apply incentives to each ranked idea and persist idea scores
-  const allIdeas: readonly ScoredIdea[] = expertResult.rankedIdeas;
-
-  await Promise.all(
-    fusedScores.map(async (fused: FusedScore) => {
-      const idea = allIdeas.find((i) => i.id === fused.ideaId);
-      if (!idea) return;
-
-      const socialViabilityScore = computeSocialViabilityScore(fused.ideaId, socialResult);
-
-      const incentiveBreakdown = computeIncentives(idea, {
-        allIdeas,
-        socialViabilityScore,
-        weights: config.incentiveWeights,
-      });
-
-      const adjustedScore = applyIncentives(
-        fused.fusedScore,
-        incentiveBreakdown,
-        config.incentiveWeights,
-      );
-
-      await saveIdeaScore({
-        id: crypto.randomUUID(),
-        ideaId: fused.ideaId,
-        sessionId,
-        expertScore: fused.expertScore,
-        socialScore: fused.socialScore,
-        fusedScore: adjustedScore,
-        incentiveJson: JSON.stringify(incentiveBreakdown),
-        strategicMetadataJson: JSON.stringify(idea.strategicMetadata),
-      });
-    }),
-  );
-
-  // Build a fused score lookup and enrich ranked ideas with final scores
-  const scoreMap = new Map(fusedScores.map((f) => [f.ideaId, f]));
-  const enrichedRankedIdeas: readonly ScoredIdea[] = expertResult.rankedIdeas.map((idea) => {
-    const fused = scoreMap.get(idea.id);
-    return fused ? { ...idea, fusedScore: fused.fusedScore, socialScore: fused.socialScore } : idea;
-  });
-
-  const enrichedExpertResult = { ...expertResult, rankedIdeas: enrichedRankedIdeas };
-
-  await updateSessionStatus(sessionId, "scoring", {
-    fusedScoresJson: JSON.stringify(fusedScores),
-    expertResultJson: JSON.stringify(enrichedExpertResult),
-  });
-
-  // ── Step 5b: SIGE → generated_ideas cross-write (#11 part2) ────────────────────
-  //
-  // GATED, default OFF. Only when smart.sigeValuation is on AND config.sige is
-  // enabled do we promote the top scored ideas into the shared generated_ideas
-  // table (routed through the same 3-layer dedup the ideas pipeline uses). When
-  // off, SIGE behavior is completely unchanged. Degrades gracefully — a failure
-  // here never breaks the session.
-  try {
-    const appConfig = loadConfig();
-    const sigeCrossWriteEnabled =
-      appConfig.pipelines.ideas.smart.sigeValuation && appConfig.sige?.enabled === true;
-
-    if (sigeCrossWriteEnabled) {
-      // Build a vector MemoryManager so the Qdrant (>0.65) semantic dedup layer
-      // runs. Falls back to null when memory/Qdrant is unconfigured or
-      // construction fails — then only the exact-title + pg_trgm layers run
-      // (the prior behavior). Never breaks the session.
-      const memoryManager = await buildSigeMemoryManager();
-
-      const result = await crossWriteSigeIdeas(enrichedRankedIdeas, sessionId, memoryManager);
-      log.info("SIGE cross-write into generated_ideas", {
-        sessionId,
-        inserted: result.inserted,
-        rejected: result.rejected.length,
-        semanticDedup: memoryManager !== null,
-      });
-
-      // Mirror the trend pipeline (pipeline.ts step 7): index the cross-written
-      // ideas into memory so future dedup/search can see them. Best-effort and
-      // gated by the same try/catch — failures here never break the session.
-      if (memoryManager !== null && result.insertedIdeas.length > 0) {
-        await Promise.all(
-          result.insertedIdeas.map((idea) =>
-            memoryManager
-              .indexIdea(SIGE_AGENT_ID, {
-                id: idea.id,
-                title: idea.title,
-                summary: idea.description,
-                category: "sige",
-                reasoning: idea.description,
-              })
-              .catch((err) => {
-                log.warn("Failed to index SIGE idea into memory (non-fatal)", {
-                  sessionId,
-                  ideaId: idea.id,
-                  err,
-                });
-              }),
-          ),
-        );
-      }
+    // socialResult is guaranteed non-null here: either just assigned above or
+    // already loaded from the DB (session.socialResult was set). The outer guard
+    // `fusedScores === undefined` ensures we only reach this block when scoring
+    // hasn't happened yet, so social_simulation must have run.
+    const confirmedSocialResult = socialResult;
+    if (confirmedSocialResult === undefined) {
+      throw new Error(`SIGE session ${sessionId}: socialResult missing before scoring — unexpected state`);
     }
-  } catch (err) {
-    log.warn("SIGE cross-write step failed (non-fatal)", { sessionId, err });
+
+    fusedScores = fuseScores(expertResult.rankedIdeas, confirmedSocialResult, config.alpha);
+
+    // Apply incentives to each ranked idea and persist idea scores
+    const allIdeas: readonly ScoredIdea[] = expertResult.rankedIdeas;
+
+    await Promise.all(
+      fusedScores.map(async (fused: FusedScore) => {
+        const idea = allIdeas.find((i) => i.id === fused.ideaId);
+        if (!idea) return;
+
+        const socialViabilityScore = computeSocialViabilityScore(
+          fused.ideaId,
+          confirmedSocialResult,
+        );
+
+        const incentiveBreakdown = computeIncentives(idea, {
+          allIdeas,
+          socialViabilityScore,
+          weights: config.incentiveWeights,
+        });
+
+        const adjustedScore = applyIncentives(
+          fused.fusedScore,
+          incentiveBreakdown,
+          config.incentiveWeights,
+        );
+
+        await saveIdeaScore({
+          id: crypto.randomUUID(),
+          ideaId: fused.ideaId,
+          sessionId,
+          expertScore: fused.expertScore,
+          socialScore: fused.socialScore,
+          fusedScore: adjustedScore,
+          incentiveJson: JSON.stringify(incentiveBreakdown),
+          strategicMetadataJson: JSON.stringify(idea.strategicMetadata),
+        });
+      }),
+    );
+
+    // Build a fused score lookup and enrich ranked ideas with final scores
+    const scoreMap = new Map(fusedScores.map((f) => [f.ideaId, f]));
+    const enrichedRankedIdeas: readonly ScoredIdea[] = expertResult.rankedIdeas.map((idea) => {
+      const fused = scoreMap.get(idea.id);
+      return fused
+        ? { ...idea, fusedScore: fused.fusedScore, socialScore: fused.socialScore }
+        : idea;
+    });
+
+    const enrichedExpertResult = { ...expertResult, rankedIdeas: enrichedRankedIdeas };
+
+    await updateSessionStatus(sessionId, "scoring", {
+      fusedScoresJson: JSON.stringify(fusedScores),
+      expertResultJson: JSON.stringify(enrichedExpertResult),
+    });
+
+    // Update local variable to the enriched version for report generation.
+    expertResult = enrichedExpertResult;
+
+    // ── Step 5b: SIGE → generated_ideas cross-write (#11 part2) ────────────────────
+    //
+    // GATED, default OFF. Only when smart.sigeValuation is on AND config.sige is
+    // enabled do we promote the top scored ideas into the shared generated_ideas
+    // table (routed through the same 3-layer dedup the ideas pipeline uses). When
+    // off, SIGE behavior is completely unchanged. Degrades gracefully — a failure
+    // here never breaks the session.
+    //
+    // On resume after scoring (fusedScores was already set): this block is skipped
+    // entirely — the ideas were already cross-written in the original run.
+    try {
+      const appConfig = loadConfig();
+      const sigeCrossWriteEnabled =
+        appConfig.pipelines.ideas.smart.sigeValuation && appConfig.sige?.enabled === true;
+
+      if (sigeCrossWriteEnabled) {
+        const memoryManager = await buildSigeMemoryManager();
+
+        const result = await crossWriteSigeIdeas(enrichedRankedIdeas, sessionId, memoryManager);
+        log.info("SIGE cross-write into generated_ideas", {
+          sessionId,
+          inserted: result.inserted,
+          rejected: result.rejected.length,
+          semanticDedup: memoryManager !== null,
+        });
+
+        if (memoryManager !== null && result.insertedIdeas.length > 0) {
+          await Promise.all(
+            result.insertedIdeas.map((idea) =>
+              memoryManager
+                .indexIdea(SIGE_AGENT_ID, {
+                  id: idea.id,
+                  title: idea.title,
+                  summary: idea.description,
+                  category: "sige",
+                  reasoning: idea.description,
+                })
+                .catch((err) => {
+                  log.warn("Failed to index SIGE idea into memory (non-fatal)", {
+                    sessionId,
+                    ideaId: idea.id,
+                    err,
+                  });
+                }),
+            ),
+          );
+        }
+      }
+    } catch (err) {
+      log.warn("SIGE cross-write step failed (non-fatal)", { sessionId, err });
+    }
+  } else {
+    log.info("Skipping scoring — already persisted", { sessionId });
+    // On resume after scoring: expertResult loaded from DB already has the
+    // enriched rankedIdeas (stored during the scoring update). Use it as-is.
   }
 
   // ── Step 6: Report generation ────────────────────────────────────────────────
+  // Always run if status != completed (report generation is idempotent — it just
+  // overwrites the report column, and generateReport has no side effects beyond that).
 
   await updateSessionStatus(sessionId, "report_generation");
   log.info("Status → report_generation", { sessionId });
@@ -532,8 +624,12 @@ async function runSeededSteps(
   const autonomousWritebackEnabled = loadConfig().pipelines.ideas.smart.sigeAuto.memoryWriteback;
   const shouldWriteBack = !isAutonomous || autonomousWritebackEnabled;
 
+  // expertResult.rankedIdeas has fusedScore/socialScore merged in from scoring
+  // (either just computed above, or loaded from DB with the enriched form).
+  const rankedIdeasForReport = expertResult.rankedIdeas;
+
   if (shouldWriteBack) {
-    const topIdeasForMemory = enrichedRankedIdeas.slice(0, 5);
+    const topIdeasForMemory = rankedIdeasForReport.slice(0, 5);
     await mem0
       .addMemories({
         items: topIdeasForMemory.map((idea) => ({
@@ -558,15 +654,22 @@ async function runSeededSteps(
     log.info("Skipping autonomous Mem0 write-back (memoryWriteback disabled)", { sessionId });
   }
 
+  const confirmedFusedScores = fusedScores;
+  if (confirmedFusedScores === undefined) {
+    throw new Error(
+      `SIGE session ${sessionId}: fusedScores missing before report generation — unexpected state`,
+    );
+  }
+
   const report = await generateReport({
     session: {
       ...session,
       gameFormulation,
-      expertResult: enrichedExpertResult,
+      expertResult,
       socialResult,
-      fusedScores,
+      fusedScores: confirmedFusedScores,
     },
-    fusedScores,
+    fusedScores: confirmedFusedScores,
     mem0,
     userId,
     model: config.model,

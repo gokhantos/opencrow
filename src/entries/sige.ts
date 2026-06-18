@@ -16,7 +16,7 @@ import { loadConfig, loadConfigWithOverrides } from "../config/loader";
 import { bootstrap } from "../process/bootstrap";
 import { createProcessSupervisor } from "../process/supervisor";
 import { Mem0Client } from "../sige/knowledge/mem0-client";
-import { claimNextPendingSession, updateSessionStatus } from "../sige/store";
+import { claimInterruptedSession, claimNextPendingSession, updateSessionStatus } from "../sige/store";
 import type { SigeSession } from "../sige/types";
 import { runSession } from "../sige/run";
 import { createAutonomousSigeScheduler } from "../sige/auto/scheduler";
@@ -45,18 +45,34 @@ async function pollAndProcess(
   isProcessing = true;
 
   try {
-    // Atomically claim one pending session (flips it off 'pending' so no other
-    // cycle/process can re-select it during the long first stage).
+    // Prefer pending (new work) then fall back to interrupted sessions left by
+    // a prior process restart. Both claims are atomic and race-safe via
+    // FOR UPDATE SKIP LOCKED.
     let session: SigeSession | null;
+    let isResume = false;
     try {
       session = await claimNextPendingSession();
+      if (session === null) {
+        session = await claimInterruptedSession();
+        if (session !== null) {
+          isResume = true;
+        }
+      }
     } catch (err) {
-      log.error("Failed to claim a pending session", { err });
+      log.error("Failed to claim a session", { err });
       return;
     }
     if (session === null) return;
 
-    log.info("Claimed SIGE session", { sessionId: session.id, origin: session.origin });
+    if (isResume) {
+      log.info("Resuming interrupted SIGE session", {
+        sessionId: session.id,
+        fromStatus: session.status,
+        origin: session.origin,
+      });
+    } else {
+      log.info("Claimed SIGE session", { sessionId: session.id, origin: session.origin });
+    }
 
     try {
       await runSession(session, mem0, userId, signal);
