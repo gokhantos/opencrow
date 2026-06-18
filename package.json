@@ -56,6 +56,9 @@
     "test:unit": "bun test --timeout 30000 $(find src -name '*.test.ts' -not -name '*.integration.test.ts' -not -name '*.isolated.test.ts')",
     "test:integration": "bun test --timeout 30000 $(find src -name '*.integration.test.ts')",
     "test:all": "bun run test:unit && bun run test:isolated && bun run test:integration",
+    "test:e2e": "E2E_SKIP_SERVER=1 bunx playwright test --config=playwright.config.ts",
+    "test:e2e:headed": "E2E_SKIP_SERVER=1 bunx playwright test --config=playwright.config.ts --headed",
+    "test:e2e:with-server": "bunx playwright test --config=playwright.config.ts",
     "tw": "bunx @tailwindcss/cli -i src/web/ui/tailwind.css -o src/web/ui/tailwind-out.css --watch",
     "tw:build": "bunx @tailwindcss/cli -i src/web/ui/tailwind.css -o src/web/ui/tailwind-out.css --minify"
   },

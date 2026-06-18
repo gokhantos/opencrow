@@ -40,6 +40,13 @@ import { selectWithNoveltyReserve } from "./generate-wide";
 import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
 import { insertIdea } from "../../sources/ideas/store";
+import {
+  fetchOutcomeMemoryBlock,
+  renderOutcomeSentence,
+  toOutcomeMemory,
+  writeOutcomeMemories,
+  type OutcomeMemoryItem,
+} from "./outcome-memory";
 import { annotateOriginality, checkForDuplicates, verifyEvidence } from "./validate";
 import {
   applyDemandRescore,
@@ -52,6 +59,7 @@ import {
   toDemandCandidateText,
 } from "./pipeline";
 import type { PipelineRunResult } from "./pipeline";
+import { resolveCandidateSegment } from "./pipeline-sige-math";
 import type { GeneratedIdeaCandidate } from "./types";
 
 export const AUTONOMOUS_SIGE_PIPELINE_ID = "autonomous-sige";
@@ -59,6 +67,9 @@ export const AUTONOMOUS_SIGE_PIPELINE_ID = "autonomous-sige";
 const log = createLogger("pipeline:autonomous");
 
 const AGENT_ID = "autonomous-sige-pipeline";
+
+/** Prompt provenance stamped on outcome memories written from this pipeline. */
+const PROMPT_VERSION = "autonomous-sige-v1";
 
 /** Wall-clock ceiling for a single autonomous pipeline run (mirrors sige/run.ts). */
 const RUN_TIMEOUT_MS = 90 * 60 * 1_000;
@@ -184,6 +195,14 @@ export async function runAutonomousSige(
     const userId = sigeConfig.mem0.userId;
     const model = config.model ?? "claude-haiku-4-5-20251001";
 
+    // ── Outcome-memory parity with the seeded pipeline ────────────────────────
+    // Read past verdicts at synthesis (gated readAtSynthesis) and write fresh
+    // ones post-persist (gated writeBack). Both default OFF: when off the SIGE
+    // graph client (`mem0`) is reused for nothing here and no extra mem0 call is
+    // made, so the autonomous call-graph is byte-identical to before.
+    const outcomeMemoryCfg = smart.outcomeMemory;
+    const ideasUserId = sigeConfig.mem0.ideasUserId;
+
     // ── GIANT axis weights (calibrated when enabled; neutral otherwise) ─────────
     const giantCalibration = await loadGiantWeights();
     const effectiveGiant: GiantConfig = giantCalibration.neutral
@@ -242,6 +261,28 @@ export async function runAutonomousSige(
 
     const corpus: BroadCorpus = { trends, pains, capabilities };
 
+    // ── Outcome-memory READ hook (gated readAtSynthesis, default OFF) ─────────
+    // Mirror the seeded pipeline: pull past validated/archived/dedup verdicts as
+    // a fenced GUIDANCE block and prepend it to each frontier's seedText so the
+    // divergent (synthesis-equivalent) pass leans toward proven rigor and away
+    // from archived patterns. When OFF this is "" → seedText is byte-identical.
+    const outcomeMemory: string =
+      outcomeMemoryCfg.readAtSynthesis
+        ? await fetchOutcomeMemoryBlock({
+            mem0,
+            userId: ideasUserId,
+            query: [
+              ...trends.trendingCategories.slice(0, 6).map((cat) => cat.category),
+              config.category,
+            ]
+              .filter(Boolean)
+              .join(", "),
+            reinforceCap: outcomeMemoryCfg.reinforceCap,
+            avoidCap: outcomeMemoryCfg.avoidCap,
+            searchLimit: outcomeMemoryCfg.searchLimit,
+          }).catch(() => "")
+        : "";
+
     // ── Step: discovery ───────────────────────────────────────────────────────
     const discovery = await runStep(
       runId,
@@ -296,7 +337,13 @@ export async function runAutonomousSige(
         runId,
         stepName,
         async () => {
-          const divergent = await generateDivergentIdeas(frontier.seedText, {
+          // Prepend the outcome-memory GUIDANCE block (empty when the flag is
+          // OFF → seedText unchanged). The block is already untrusted-fenced and
+          // re-sanitized inside fetchOutcomeMemoryBlock.
+          const seedText = outcomeMemory
+            ? `${outcomeMemory}\n\n${frontier.seedText}`
+            : frontier.seedText;
+          const divergent = await generateDivergentIdeas(seedText, {
             maxCandidates: sigeAutoConfig.broadPoolSize,
             userId,
             signal: runSignal,
@@ -421,6 +468,11 @@ export async function runAutonomousSige(
     }
 
     // ── Back-half: store (idempotent) ─────────────────────────────────────────
+    // Captured in the OUTER scope so the post-store outcome-memory write hook can
+    // pair each persisted id with its source candidate. On a checkpoint RESUME
+    // the store step is skipped (cached) and this stays empty → the write hook is
+    // a no-op, which is correct (write-back already ran on the first attempt).
+    const storedPairs: Array<{ readonly ideaId: string; readonly candidate: GeneratedIdeaCandidate }> = [];
     const ideaIds = await runStep(
       runId,
       "store",
@@ -473,6 +525,7 @@ export async function runAutonomousSige(
             }
 
             ids.push(idea.id);
+            storedPairs.push({ ideaId: idea.id, candidate });
           } catch (err) {
             log.warn("autonomous: failed to save idea", {
               title: candidate.title,
@@ -484,6 +537,45 @@ export async function runAutonomousSige(
       },
       (ids) => `Stored ${ids.length} autonomous ideas`,
     );
+
+    // ── Outcome-memory WRITE hook (gated writeBack, default OFF) ──────────────
+    // Mirror the seeded pipeline: distil each persisted idea into a neutral
+    // "stored-pending" outcome memory so a future synthesis round can retrieve
+    // it. Autonomous has no proxy-label pass, so every persisted idea is
+    // stored-pending (verdictSource:"none"); the REAL verdicts arrive later via
+    // the human PATCH path. Best-effort + own try/catch — a mem0 failure must
+    // never fail the run. Titles are routed through renderOutcomeSentence (which
+    // sanitizes) and written with enableGraph:false.
+    if (outcomeMemoryCfg.writeBack && storedPairs.length > 0) {
+      try {
+        const createdAtSec = now();
+        const items: OutcomeMemoryItem[] = storedPairs.map(({ ideaId, candidate }) => {
+          const memory = toOutcomeMemory(
+            {
+              ideaId,
+              segment: resolveCandidateSegment(candidate),
+              archetype: candidate.archetype ?? null,
+              giantComposite: candidate.giantComposite ?? null,
+            },
+            { verdict: "stored-pending", verdictSource: "none" },
+            { gate: null, sigeDissent: null, convergenceVeto: null, demand: null },
+            { runId, promptVersion: PROMPT_VERSION, model, createdAtSec },
+          );
+          return { sentence: renderOutcomeSentence(memory, candidate.title), metadata: memory };
+        });
+        await writeOutcomeMemories(mem0, items, ideasUserId);
+        log.info("autonomous: outcome-memory write-back complete", {
+          runId,
+          count: items.length,
+          userId: ideasUserId,
+        });
+      } catch (err) {
+        log.warn("autonomous: outcome-memory write-back failed — skipping", {
+          runId,
+          err: getErrorMessage(err),
+        });
+      }
+    }
 
     // ── Mark consumed signals ─────────────────────────────────────────────────
     for (const [table, ids] of collectorCtx.selected) {

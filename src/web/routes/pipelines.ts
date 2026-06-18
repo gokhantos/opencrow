@@ -19,6 +19,8 @@ import {
   getPipelineRunsList,
 } from "../../pipelines/store";
 import { updateIdeaStage } from "../../sources/ideas/store";
+import { Mem0Client } from "../../sige/knowledge/mem0-client";
+import { writeHumanOutcomeMemory } from "../../pipelines/ideas/outcome-memory";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
 import { DEFAULT_PIPELINE_CONFIG } from "../../pipelines/types";
 import {
@@ -30,6 +32,14 @@ import type { MemoryManager } from "../../memory/types";
 import { createLogger } from "../../logger";
 
 const log = createLogger("routes:pipelines");
+
+// Provenance stamped onto outcome memories that originate from a human verdict
+// in the dashboard (PATCH /pipeline-ideas/:id/stage). The run-time path stamps a
+// pipeline run id + PROMPT_VERSION; a human verdict has no run, so we use stable
+// sentinels — the body sentence and `verdictSource:"human"` carry the meaning.
+const HUMAN_VERDICT_RUN_ID = "human-verdict";
+const HUMAN_VERDICT_PROMPT_VERSION = "human-verdict";
+const HUMAN_VERDICT_MODEL = "human";
 
 const VALID_SOURCES = [
   "appstore",
@@ -396,6 +406,48 @@ export function createPipelineRoutes(deps?: {
     const updated = await updateIdeaStage(id, body.stage, { actor: "web" });
     if (!updated) {
       return c.json({ success: false, error: "Idea not found" }, 404);
+    }
+
+    // ── Outcome-memory: human-verdict write-back (gated, best-effort) ──────────
+    // Feed the REAL-WORLD human verdict back into mem0 so the next synthesis
+    // round can REINFORCE validated patterns and AVOID archived ones. Gated on
+    // the existing smart.outcomeMemory.writeBack flag (default OFF): when off we
+    // build NO client and make NO network call, so the call-graph is unchanged.
+    // Wrapped so a mem0 failure can NEVER break the stage update / HTTP response.
+    try {
+      const appConfig = loadConfig();
+      const outcomeMemoryCfg = appConfig.pipelines.ideas.smart.outcomeMemory;
+      const sigeMem0 = appConfig.sige?.mem0;
+      if (outcomeMemoryCfg.writeBack && sigeMem0) {
+        const mem0 = new Mem0Client({
+          baseUrl: sigeMem0.baseUrl,
+          apiToken: sigeMem0.apiToken,
+        });
+        await writeHumanOutcomeMemory(
+          mem0,
+          {
+            ideaId: updated.id,
+            title: updated.title,
+            stage: body.stage,
+            // generated_ideas carries no segment/archetype/giant-composite
+            // columns; null is fine — the verdict + verdictSource:"human" drive
+            // the learning. (quality_score is a 1-5 rating, not the GIANT
+            // composite, so we deliberately do NOT pass it as giantComposite.)
+            segment: null,
+            archetype: null,
+            giantComposite: null,
+            runId: HUMAN_VERDICT_RUN_ID,
+            promptVersion: HUMAN_VERDICT_PROMPT_VERSION,
+            model: HUMAN_VERDICT_MODEL,
+            createdAtSec: Math.floor(Date.now() / 1000),
+          },
+          sigeMem0.ideasUserId,
+        );
+      }
+    } catch (err) {
+      // Defense in depth: writeHumanOutcomeMemory is already best-effort, but a
+      // config/construction failure must not affect the response either.
+      log.warn("Human outcome-memory write-back skipped (non-fatal)", { err, id });
     }
 
     return c.json({ success: true, data: updated });

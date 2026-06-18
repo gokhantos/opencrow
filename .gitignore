@@ -50,3 +50,7 @@ src/news/scraper/.venv/
 # Playwright MCP
 .playwright-mcp/
 .mcp.json
+
+# Playwright e2e artifacts
+playwright-report/
+test-results/

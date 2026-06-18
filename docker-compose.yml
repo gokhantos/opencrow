@@ -171,11 +171,22 @@ services:
     # The app runs the orchestrator + web + cron + agents/scrapers as child
     # processes; give it the largest slice but still bounded so it can't starve
     # the host (dev/local).
+    #
+    # Memory: 8G (was 4G). During the SIGE "expert-game" phase the app spawns
+    # ~4 parallel Claude Code (Agent SDK) subprocesses on top of the bun parent;
+    # the combined RSS spiked past the old 4G cap and the kernel OOM-killer
+    # SIGKILLed the subprocesses ("Claude Code process terminated by signal
+    # SIGKILL"), degrading idea-generation sessions. 8G gives that fan-out
+    # honest headroom. NOTE: this assumes a 16 GiB Colima VM (bump from 8 → 16:
+    # `colima stop && colima start --memory 16`). Per-service limits then total
+    # 8 (app) + 2 (qdrant) + 2 (mem0) + 1 (postgres) = 13G < 16G, leaving ~3G
+    # for VM/runtime overhead. Do not push the app past 8G without raising the
+    # VM, or you reintroduce the overcommit that caused the OOM.
     deploy:
       resources:
         limits:
           cpus: "4"
-          memory: 4G
+          memory: 8G
     # Liveness for the whole app: the core orchestrator serves :48081
     # /internal/health (unauthenticated). A wedged orchestrator/crash-loop fails
     # this and surfaces as `unhealthy` rather than a silently-up container.
