@@ -746,19 +746,26 @@ async function main(): Promise<void> {
   }, POLL_INTERVAL_MS);
 }
 
-process.on("unhandledRejection", (reason: unknown) => {
-  log.error("Unhandled promise rejection (non-fatal)", { error: reason });
-});
-
-process.on("uncaughtException", (error: Error) => {
-  log.error("Uncaught exception — exiting", {
-    error: error.message,
-    stack: error.stack,
+// Import-safe: only register process-level handlers and start the process when
+// this file is executed directly (`bun run src/entries/sige-ingestion.ts`), NOT
+// when imported (e.g. by sige-ingestion.test.ts for the pure computeCredibility
+// helper). Without this guard, importing the module ran main() → DB connect →
+// process.exit(1) in the no-DB unit lane (CI exit 123).
+if (import.meta.main) {
+  process.on("unhandledRejection", (reason: unknown) => {
+    log.error("Unhandled promise rejection (non-fatal)", { error: reason });
   });
-  process.exit(1);
-});
 
-main().catch((err) => {
-  log.error("SIGE ingestion process failed to start", { error: err });
-  process.exit(1);
-});
+  process.on("uncaughtException", (error: Error) => {
+    log.error("Uncaught exception — exiting", {
+      error: error.message,
+      stack: error.stack,
+    });
+    process.exit(1);
+  });
+
+  main().catch((err) => {
+    log.error("SIGE ingestion process failed to start", { error: err });
+    process.exit(1);
+  });
+}
