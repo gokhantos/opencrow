@@ -341,6 +341,152 @@ export async function writeOutcomeMemories(
   }
 }
 
+// ─── writeHumanOutcomeMemory (best-effort I/O) ────────────────────────────────
+
+/**
+ * Stage → terminal verdict mapping for HUMAN-driven write-back. A human can only
+ * push an idea to one of the terminal buckets we learn from:
+ *   - "validated" → verdict "validated" (REINFORCE)
+ *   - "archived"  → verdict "archived"  (AVOID)
+ * Any other stage (e.g. "idea" — an un-archive / restore) maps to null: there is
+ * no terminal verdict, so we RETRACT prior memories and write nothing. PURE.
+ */
+export function humanStageToVerdict(stage: string): "validated" | "archived" | null {
+  if (stage === "validated") return "validated";
+  if (stage === "archived") return "archived";
+  return null;
+}
+
+/**
+ * Idempotency primitive: best-effort delete of every prior outcome memory for a
+ * given ideaId under the ideas userId. mem0's addMemory has no upsert key, so a
+ * human toggling archive → restore → archive would otherwise append contradictory
+ * sentences. We getAll → client-side filter by metadata.ideaId (the OSS server's
+ * metadata query is version-dependent and unreliable) → deleteMemory each match.
+ * Every step is wrapped so a mem0 hiccup never escalates past a log.warn. PURE of
+ * any throw — returns the count actually deleted. NEVER trusts the body text;
+ * matching is on structured metadata only.
+ */
+async function deletePriorOutcomeMemories(
+  mem0: Mem0Client,
+  userId: string,
+  ideaId: string,
+): Promise<number> {
+  let all: readonly Mem0Memory[];
+  try {
+    all = await mem0.getAll({ userId, limit: 100 });
+  } catch (err) {
+    log.warn("deletePriorOutcomeMemories: getAll failed (continuing)", { err, userId });
+    return 0;
+  }
+
+  const stale = all.filter((m) => {
+    const parsed = outcomeMemorySchema.safeParse(m.metadata);
+    return parsed.success && parsed.data.kind === "idea-outcome" && parsed.data.ideaId === ideaId;
+  });
+
+  let deleted = 0;
+  for (const m of stale) {
+    try {
+      await mem0.deleteMemory(m.id);
+      deleted += 1;
+    } catch (err) {
+      log.warn("deletePriorOutcomeMemories: deleteMemory failed (continuing)", {
+        err,
+        memoryId: m.id,
+      });
+    }
+  }
+  return deleted;
+}
+
+/** Inputs for a single human-verdict write-back. */
+export interface HumanOutcomeInput {
+  readonly ideaId: string;
+  readonly title: string;
+  readonly stage: string;
+  readonly segment?: string | null;
+  readonly archetype?: Archetype | null;
+  readonly giantComposite?: number | null;
+  readonly runId: string;
+  readonly promptVersion: string;
+  readonly model: string;
+  readonly createdAtSec: number;
+}
+
+/**
+ * Write back a POST-RUN HUMAN verdict (validate / archive) as an outcome memory,
+ * replacing any prior memory for the same ideaId so the LATEST human decision is
+ * authoritative. This closes the loop the proxy/run-time path opens: these are
+ * the real-world outcomes, stamped verdictSource:"human".
+ *
+ * Idempotency: always delete-prior-by-ideaId FIRST. A restore / un-archive
+ * (stage that maps to no terminal verdict) therefore RETRACTS the prior archived
+ * memory and writes nothing — the idea returns to a neutral, un-learned state.
+ *
+ * Security: the title is scraped/LLM text. It is routed through
+ * renderOutcomeSentence (which sanitizeScrapedField's it) and written with
+ * enableGraph:false — untrusted idea text never reaches mem0's graph extractor.
+ *
+ * Best-effort: every mem0 interaction is wrapped; a failure here must NEVER break
+ * the caller (the HTTP stage-update response). Returns silently.
+ */
+export async function writeHumanOutcomeMemory(
+  mem0: Mem0Client,
+  input: HumanOutcomeInput,
+  userId: string,
+): Promise<void> {
+  try {
+    // Idempotency: the latest human verdict supersedes older ones. Run FIRST so a
+    // restore (verdict === null) leaves the idea with no outcome memory at all.
+    await deletePriorOutcomeMemories(mem0, userId, input.ideaId);
+
+    const verdict = humanStageToVerdict(input.stage);
+    if (verdict === null) {
+      log.info("Human outcome-memory: restore/neutral — prior retracted, nothing written", {
+        ideaId: input.ideaId,
+        stage: input.stage,
+        userId,
+      });
+      return;
+    }
+
+    const memory = toOutcomeMemory(
+      {
+        ideaId: input.ideaId,
+        segment: input.segment ?? null,
+        archetype: input.archetype ?? null,
+        giantComposite: input.giantComposite ?? null,
+      },
+      { verdict, verdictSource: "human" },
+      { gate: null, sigeDissent: null, convergenceVeto: null, demand: null },
+      {
+        runId: input.runId,
+        promptVersion: input.promptVersion,
+        model: input.model,
+        createdAtSec: input.createdAtSec,
+      },
+    );
+
+    await writeOutcomeMemories(
+      mem0,
+      [{ sentence: renderOutcomeSentence(memory, input.title), metadata: memory }],
+      userId,
+    );
+
+    log.info("Human outcome-memory write-back complete", {
+      ideaId: input.ideaId,
+      verdict,
+      userId,
+    });
+  } catch (err) {
+    log.warn("writeHumanOutcomeMemory failed — skipping (non-fatal)", {
+      err,
+      ideaId: input.ideaId,
+    });
+  }
+}
+
 // ─── fetchOutcomeMemoryBlock (best-effort I/O) ────────────────────────────────
 
 const FETCH_VERDICTS = ["validated", "archived", "dedup-rejected"] as const;
