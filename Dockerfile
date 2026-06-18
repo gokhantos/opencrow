@@ -8,13 +8,51 @@ FROM oven/bun:1.3.14
 # user (uid 1000) with home at /home/bun.
 ENV HOME=/home/bun \
     NODE_ENV=production \
-    # The Agent SDK runs the bundled Claude Code CLI under bun — no browser needed.
+    # The Agent SDK runs the bundled Claude Code CLI under bun and needs no browser.
+    # This var ONLY gates Playwright's npm-postinstall auto-download — it does NOT
+    # affect the explicit `playwright install chromium` step below, which we run
+    # deliberately because the news/producthunt/github scrapers (src/sources/*)
+    # drive a headless Chromium via `playwright`. Keeping the var set means
+    # `bun install` stays lean (no surprise download) while we still ship the one
+    # browser the scrapers actually require.
     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
     # Explicit container signal for the single-instance guard: inside a container
     # the runtime + restart policy own singleton-ness and PIDs are recycled, so
     # the supervisor must take over a stale registry row WITHOUT killing by PID
     # (a recycled PID is typically the container's own bun/start-script parent).
     OPENCROW_IN_CONTAINER=1
+
+# Headless-Chromium OS libraries for the scrapers. Installed as root (apt needs
+# it) BEFORE switching to the bun user. This is the Debian 13 / "trixie" chromium
+# dependency set that `playwright install-deps chromium` would install (the base
+# image, oven/bun:1.3.14, is debian:trixie-slim — note the t64 time64 suffixes);
+# we list it explicitly so the layer is deterministic and doesn't need playwright
+# present yet. The browser binary itself is fetched later, as the bun user.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libasound2t64 \
+      libatk-bridge2.0-0t64 \
+      libatk1.0-0t64 \
+      libatspi2.0-0t64 \
+      libcairo2 \
+      libcups2t64 \
+      libdbus-1-3 \
+      libdrm2 \
+      libgbm1 \
+      libglib2.0-0t64 \
+      libnspr4 \
+      libnss3 \
+      libpango-1.0-0 \
+      libx11-6 \
+      libxcb1 \
+      libxcomposite1 \
+      libxdamage1 \
+      libxext6 \
+      libxfixes3 \
+      libxkbcommon0 \
+      libxrandr2 \
+      fonts-liberation \
+      fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 RUN chown bun:bun /app
@@ -28,6 +66,18 @@ COPY --chown=bun:bun package.json bun.lock ./
 # install: bun 1.3.14 intermittently reports "lockfile had changes" on a cold
 # x64 resolve even when the lock is correct (same quirk handled in CI).
 RUN bun install --frozen-lockfile || bun install
+
+# Install the Chromium the scrapers drive, using the project's pinned `playwright`
+# (the same one `import { chromium } from "playwright"` loads at runtime) so the
+# downloaded browser revision matches exactly — for playwright@1.58.2 this is
+# chromium / chromium_headless_shell v1208. Runs as the bun user with
+# HOME=/home/bun, so it lands in /home/bun/.cache/ms-playwright/... — the precise
+# path the runtime "Executable doesn't exist" error referenced. `headless: true`
+# (src/sources/news/scrapers/browser.ts) uses the headless shell, which
+# `playwright install chromium` includes by default. This is the documented
+# `setup:browser` script. PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD does NOT block this
+# explicit command (it only gates the npm postinstall auto-download).
+RUN bunx playwright install chromium
 
 # Application source.
 COPY --chown=bun:bun . .
