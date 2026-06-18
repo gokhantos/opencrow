@@ -327,30 +327,6 @@ export async function runIdeasPipeline(
       return { runId, summary };
     }
 
-    // ── Demotion guard (default-OFF): when autonomous SIGE is the primary idea ─
-    if (smart.sigeAuto.enabled) {
-      log.info(
-        "Pipeline demoted to signal collector (smart.sigeAuto.enabled=true) — skipping synthesis",
-        { runId },
-      );
-      const demotedSummary: PipelineResultSummary = {
-        totalSourcesQueried: 8,
-        totalSignalsFound: 0,
-        totalIdeasGenerated: 0,
-        totalIdeasKept: 0,
-        totalIdeasDuplicate: 0,
-        topThemes: [],
-        ideaIds: [],
-        durationMs: nowMs() - startTime,
-      };
-      await updatePipelineRun(runId, {
-        status: "completed",
-        resultSummary: demotedSummary,
-        finishedAt: now(),
-      });
-      return { runId, summary: demotedSummary };
-    }
-
     // ── Step 4: Deep search (optional) ────────────────────────────────────
     let deepSearchContext = "";
     if (memoryManager && trends.trendingCategories.length > 0) {
