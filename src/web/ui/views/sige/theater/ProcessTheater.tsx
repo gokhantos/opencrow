@@ -175,13 +175,25 @@ function useGraph(
     if (!shouldFetch || fetchedRef.current) return;
     fetchedRef.current = true;
 
-    fetchSessionGraph(sessionId)
-      .then((g) => setGraph(g))
-      .catch(() => {
+    const controller = new AbortController();
+
+    fetchSessionGraph(sessionId, controller.signal)
+      .then((g) => {
+        if (!controller.signal.aborted) setGraph(g);
+      })
+      .catch((e: unknown) => {
+        if (
+          controller.signal.aborted ||
+          (e instanceof Error && e.name === "AbortError")
+        ) {
+          return;
+        }
         setGraphError(true);
         // Provide an empty graph so the stage renders the unavailable state
         setGraph({ nodes: [], edges: [], summary: "" });
       });
+
+    return () => controller.abort();
   }, [sessionId, shouldFetch]);
 
   return { graph, graphError };

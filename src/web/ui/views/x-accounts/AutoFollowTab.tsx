@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../../api";
+import { LoadingState, EmptyState } from "../../components";
 import { JobStatusHero } from "./JobStatusHero";
 import { JobControls } from "./JobControls";
 import { FollowedUserRow } from "./FollowedUserRow";
@@ -71,16 +72,20 @@ export function AutoFollowTab({ accountId }: AutoFollowTabProps) {
 
   // ─── Data fetching ────────────────────────────────────────────────────────
 
-  const loadStatus = useCallback(async () => {
+  const loadStatus = useCallback(async (signal?: AbortSignal) => {
     try {
       const [statusRes, historyRes] = await Promise.all([
         apiFetch<{ success: boolean; data: AutofollowJob | null }>(
           `/api/x/follow/status?account_id=${accountId}`,
+          { signal },
         ),
         apiFetch<{ success: boolean; data: FollowedUser[] }>(
           `/api/x/follow/history?account_id=${accountId}&limit=100`,
+          { signal },
         ),
       ]);
+
+      if (signal?.aborted) return;
 
       if (statusRes.success && statusRes.data) {
         const j = statusRes.data;
@@ -89,13 +94,18 @@ export function AutoFollowTab({ accountId }: AutoFollowTabProps) {
         setMaxFollows(j.max_follows_per_run);
       }
       if (historyRes.success) setHistory(historyRes.data);
+    } catch (err) {
+      if (signal?.aborted) return;
+      throw err;
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [accountId]);
 
   useEffect(() => {
-    loadStatus();
+    const controller = new AbortController();
+    loadStatus(controller.signal);
+    return () => controller.abort();
   }, [loadStatus]);
 
   // ─── Hooks ────────────────────────────────────────────────────────────────
@@ -110,7 +120,7 @@ export function AutoFollowTab({ accountId }: AutoFollowTabProps) {
       stopUrl: "/api/x/follow/stop",
       runNowUrl: "/api/x/follow/run-now",
       accountId,
-      onSuccess: loadStatus,
+      onSuccess: () => loadStatus(),
     });
 
   // ─── Start with runtime config ────────────────────────────────────────────
@@ -126,11 +136,7 @@ export function AutoFollowTab({ accountId }: AutoFollowTabProps) {
   // ─── Render ───────────────────────────────────────────────────────────────
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <span className="w-4 h-4 border-2 border-border-2 border-t-accent rounded-full animate-spin inline-block" />
-      </div>
-    );
+    return <LoadingState />;
   }
 
   return (
@@ -186,9 +192,7 @@ export function AutoFollowTab({ accountId }: AutoFollowTabProps) {
       {/* History list */}
       <div className="flex flex-col gap-1">
         {history.length === 0 ? (
-          <div className="text-center text-faint py-8 text-sm font-sans">
-            No users followed yet
-          </div>
+          <EmptyState title="No users followed yet" />
         ) : (
           history.map((u) => (
             <FollowedUserRow

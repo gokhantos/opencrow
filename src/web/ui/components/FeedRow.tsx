@@ -1,4 +1,5 @@
 import React from "react";
+import { cn } from "../lib/cn";
 
 interface FeedRowProps {
   readonly rank?: number;
@@ -12,7 +13,14 @@ interface FeedRowProps {
 
 export function FeedRow({ rank, title, url, domain, description, meta, stats }: FeedRowProps) {
   return (
-    <div className="grid grid-cols-[3rem_1fr_auto] max-sm:grid-cols-[1fr_auto] items-start gap-4 px-4 py-3.5 rounded-lg text-base transition-colors hover:bg-bg-1">
+    <div
+      className={cn(
+        "grid items-start gap-4 px-4 py-3.5 rounded-lg text-base transition-colors hover:bg-bg-1",
+        rank !== undefined
+          ? "grid-cols-[3rem_1fr_auto] max-sm:grid-cols-[1fr_auto]"
+          : "grid-cols-[1fr_auto]",
+      )}
+    >
       {rank !== undefined && (
         <span className="font-mono text-sm font-medium text-faint text-right pt-0.5 max-sm:hidden">
           {rank}

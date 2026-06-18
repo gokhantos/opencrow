@@ -1,8 +1,7 @@
-import { useState, useEffect } from "react";
+import { EmptyState, LoadingState } from "../../components";
+import { usePolledFetch } from "../../hooks/usePolledFetch";
 import { cn } from "../../lib/cn";
-import { apiFetch } from "../../api";
-import { LoadingState, EmptyState } from "../../components";
-import { TH, TD, formatTvl, formatPct } from "./shared";
+import { ErrorState, formatPct, formatTvl, TD, TH } from "./shared";
 
 interface BridgeRow {
   readonly id: string;
@@ -12,35 +11,15 @@ interface BridgeRow {
 }
 
 export default function BridgesTab() {
-  const [bridges, setBridges] = useState<BridgeRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { data, loading, error, refetch } = usePolledFetch<{
+    success: boolean;
+    data: BridgeRow[];
+  }>("/api/defi/bridges?limit=50", { intervalMs: 60_000 });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  async function fetchData() {
-    try {
-      const res = await apiFetch<{ success: boolean; data: BridgeRow[] }>(
-        "/api/defi/bridges?limit=50",
-      );
-      if (res.success) setBridges(res.data);
-      setError("");
-    } catch {
-      setError("Failed to load bridge data");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const bridges = data?.success ? data.data : [];
 
   if (loading) return <LoadingState message="Loading bridges..." />;
-  if (error)
-    return (
-      <div className="text-danger text-sm px-4 py-3 rounded-lg bg-danger/5 border border-danger/20">
-        {error}
-      </div>
-    );
+  if (error) return <ErrorState message="Failed to load bridge data" onRetry={refetch} />;
   if (bridges.length === 0) return <EmptyState description="No bridge data found." />;
 
   return (
@@ -68,12 +47,7 @@ export default function BridgesTab() {
                 className="border-b border-border/50 hover:bg-bg-1 transition-colors"
                 style={{ animationDelay: `${Math.min(idx * 20, 400)}ms` }}
               >
-                <td
-                  className={cn(
-                    TD,
-                    "text-right text-faint font-mono text-xs w-10",
-                  )}
-                >
+                <td className={cn(TD, "text-right text-faint font-mono text-xs w-10")}>
                   {idx + 1}
                 </td>
                 <td className={cn(TD, "text-left")}>
@@ -89,12 +63,7 @@ export default function BridgesTab() {
                 >
                   {formatTvl(bridge.last_24h)}
                 </td>
-                <td
-                  className={cn(
-                    TD,
-                    "text-right font-mono text-[13px] text-muted tabular-nums",
-                  )}
-                >
+                <td className={cn(TD, "text-right font-mono text-[13px] text-muted tabular-nums")}>
                   {formatTvl(bridge.prev_day)}
                 </td>
                 <td className={cn(TD, "text-right")}>

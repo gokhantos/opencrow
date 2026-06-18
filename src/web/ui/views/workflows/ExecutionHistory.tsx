@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { apiFetch } from "../../api";
+import { usePolledFetch } from "../../hooks/usePolledFetch";
 import { cn } from "../../lib/cn";
 import type { ExecutionRecord, ExecutionStepMap, StepInfo } from "./types";
 
@@ -43,24 +44,14 @@ function formatTimestamp(createdAt: number): string {
 }
 
 export function ExecutionHistory({ workflowId, onLoadExecution }: ExecutionHistoryProps) {
-  const [executions, setExecutions] = useState<ExecutionRecord[]>([]);
-  const [loading, setLoading] = useState(false);
   const [loadingId, setLoadingId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!workflowId) {
-      setExecutions([]);
-      return;
-    }
+  const { data: fetchedData, loading } = usePolledFetch<{ success: boolean; data: ExecutionRecord[] }>(
+    `/api/workflows/${workflowId ?? ""}/executions?limit=20`,
+    { intervalMs: 10_000, enabled: !!workflowId },
+  );
 
-    setLoading(true);
-    apiFetch<{ success: boolean; data: ExecutionRecord[] }>(
-      `/api/workflows/${workflowId}/executions?limit=20`,
-    )
-      .then((res) => setExecutions(res.data))
-      .catch(() => setExecutions([]))
-      .finally(() => setLoading(false));
-  }, [workflowId]);
+  const executions: readonly ExecutionRecord[] = fetchedData?.data ?? [];
 
   const handleLoadExecution = useCallback(
     async (executionId: string) => {

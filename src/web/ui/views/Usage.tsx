@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import * as echarts from "echarts";
 import { apiFetch } from "../api";
 import { PageHeader, LoadingState, EmptyState, FilterTabs } from "../components";
-import { formatNumber, relativeTime } from "../lib/format";
+import { formatNumber, relativeTime, formatCost } from "../lib/format";
 import { cn } from "../lib/cn";
 
 interface UsageSummary {
@@ -67,12 +67,6 @@ const RANGES = [
   { id: "30d", label: "30d", seconds: 30 * 86400 },
   { id: "all", label: "All", seconds: 0 },
 ] as const;
-
-function formatCost(usd: number): string {
-  if (usd === 0) return "$0.00";
-  if (usd < 0.01) return `$${usd.toFixed(4)}`;
-  return `$${usd.toFixed(2)}`;
-}
 
 function formatDuration(ms: number): string {
   if (!ms) return "\u2014";
@@ -150,6 +144,15 @@ function UsageChart({
     const chart = chartRef.current;
     if (!chart || data.length === 0) return;
 
+    // Read semantic tokens from CSS so the chart adapts to the active theme.
+    const cs = getComputedStyle(document.documentElement);
+    const tokenBg2 = cs.getPropertyValue("--color-bg-2").trim() || "rgba(20,20,25,0.95)";
+    const tokenBorder = cs.getPropertyValue("--color-border").trim() || "rgba(255,255,255,0.08)";
+    const tokenForeground = cs.getPropertyValue("--color-foreground").trim() || "#e0e0e0";
+    const tokenMuted = cs.getPropertyValue("--color-muted").trim() || "#888";
+    const tokenSplitLine = cs.getPropertyValue("--color-border-2").trim() || "rgba(255,255,255,0.05)";
+    const tokenAxisLine = cs.getPropertyValue("--color-border").trim() || "rgba(255,255,255,0.1)";
+
     const labels = data.map((d) => {
       const date = new Date(d.bucket);
       return granularity === "hour"
@@ -161,9 +164,9 @@ function UsageChart({
       {
         tooltip: {
           trigger: "axis",
-          backgroundColor: "rgba(20,20,25,0.95)",
-          borderColor: "rgba(255,255,255,0.08)",
-          textStyle: { color: "#e0e0e0", fontSize: 12 },
+          backgroundColor: tokenBg2,
+          borderColor: tokenBorder,
+          textStyle: { color: tokenForeground, fontSize: 12 },
           formatter: (
             params: Array<{
               seriesName: string;
@@ -186,35 +189,35 @@ function UsageChart({
               point.cacheCreationTokens;
             return `<div style="font-weight:600;margin-bottom:4px">${header}</div>
               ${params.map((p) => `${p.marker} ${p.seriesName}: <b>${typeof p.value === "number" && p.seriesName === "Cost" ? formatCost(p.value) : formatNumber(p.value)}</b>`).join("<br>")}
-              <br/><span style="color:#888">Cache read: ${formatNumber(point.cacheReadTokens)} | Fresh: ${formatNumber(fresh)}</span>
-              <br/><span style="color:#888">Requests: ${point.requestCount}</span>`;
+              <br/><span style="color:${tokenMuted}">Cache read: ${formatNumber(point.cacheReadTokens)} | Fresh: ${formatNumber(fresh)}</span>
+              <br/><span style="color:${tokenMuted}">Requests: ${point.requestCount}</span>`;
           },
         },
         grid: { left: 60, right: 60, top: 20, bottom: 30 },
         xAxis: {
           type: "category",
           data: labels,
-          axisLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
-          axisLabel: { color: "#888", fontSize: 11 },
+          axisLine: { lineStyle: { color: tokenAxisLine } },
+          axisLabel: { color: tokenMuted, fontSize: 11 },
         },
         yAxis: [
           {
             type: "value",
             name: "Tokens",
-            nameTextStyle: { color: "#888", fontSize: 11 },
+            nameTextStyle: { color: tokenMuted, fontSize: 11 },
             axisLabel: {
-              color: "#888",
+              color: tokenMuted,
               fontSize: 11,
               formatter: (v: number) => formatNumber(v),
             },
-            splitLine: { lineStyle: { color: "rgba(255,255,255,0.05)" } },
+            splitLine: { lineStyle: { color: tokenSplitLine } },
           },
           {
             type: "value",
             name: "Cost",
-            nameTextStyle: { color: "#888", fontSize: 11 },
+            nameTextStyle: { color: tokenMuted, fontSize: 11 },
             axisLabel: {
-              color: "#888",
+              color: tokenMuted,
               fontSize: 11,
               formatter: (v: number) => formatCost(v),
             },
@@ -465,49 +468,97 @@ export default function Usage() {
   const [recent, setRecent] = useState<RecentRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const fetchData = useCallback(async () => {
-    const since = sinceEpoch(range);
-    const qs = since ? `?since=${since}` : "";
-    const granularity = range === "24h" ? "hour" : "day";
-    const tsQs = since
-      ? `?since=${since}&granularity=${granularity}`
-      : `?granularity=${granularity}`;
+  const fetchData = useCallback(
+    async (signal: AbortSignal) => {
+      const since = sinceEpoch(range);
+      const qs = since ? `?since=${since}` : "";
+      const granularity = range === "24h" ? "hour" : "day";
+      const tsQs = since
+        ? `?since=${since}&granularity=${granularity}`
+        : `?granularity=${granularity}`;
 
-    try {
-      const [sumRes, agentRes, modelRes, tsRes, recentRes] = await Promise.all([
-        apiFetch<{ success: boolean; data: UsageSummary }>(
-          `/api/usage/summary${qs}`,
-        ),
-        apiFetch<{ success: boolean; data: AgentUsage[] }>(
-          `/api/usage/by-agent${qs}`,
-        ),
-        apiFetch<{ success: boolean; data: ModelUsage[] }>(
-          `/api/usage/by-model${qs}`,
-        ),
-        apiFetch<{ success: boolean; data: TimePoint[] }>(
-          `/api/usage/timeseries${tsQs}`,
-        ),
-        apiFetch<{ success: boolean; data: RecentRecord[] }>(
-          "/api/usage/recent?limit=50",
-        ),
-      ]);
-      if (sumRes.success) setSummary(sumRes.data);
-      if (agentRes.success) setByAgent(agentRes.data);
-      if (modelRes.success) setByModel(modelRes.data);
-      if (tsRes.success) setTimeSeries(tsRes.data);
-      if (recentRes.success) setRecent(recentRes.data);
-    } catch {
-      // ignore
-    } finally {
-      setLoading(false);
-    }
-  }, [range]);
+      try {
+        const [sumRes, agentRes, modelRes, tsRes, recentRes] = await Promise.all([
+          apiFetch<{ success: boolean; data: UsageSummary }>(
+            `/api/usage/summary${qs}`,
+            { signal },
+          ),
+          apiFetch<{ success: boolean; data: AgentUsage[] }>(
+            `/api/usage/by-agent${qs}`,
+            { signal },
+          ),
+          apiFetch<{ success: boolean; data: ModelUsage[] }>(
+            `/api/usage/by-model${qs}`,
+            { signal },
+          ),
+          apiFetch<{ success: boolean; data: TimePoint[] }>(
+            `/api/usage/timeseries${tsQs}`,
+            { signal },
+          ),
+          apiFetch<{ success: boolean; data: RecentRecord[] }>(
+            "/api/usage/recent?limit=50",
+            { signal },
+          ),
+        ]);
+        if (signal.aborted) return;
+        if (sumRes.success) setSummary(sumRes.data);
+        if (agentRes.success) setByAgent(agentRes.data);
+        if (modelRes.success) setByModel(modelRes.data);
+        if (tsRes.success) setTimeSeries(tsRes.data);
+        if (recentRes.success) setRecent(recentRes.data);
+      } catch {
+        // ignore (includes AbortError)
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    },
+    [range],
+  );
 
   useEffect(() => {
     setLoading(true);
-    fetchData();
-    const interval = setInterval(fetchData, 30_000);
-    return () => clearInterval(interval);
+
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+    let controller = new AbortController();
+
+    const run = () => {
+      if (document.visibilityState !== "visible") return;
+      controller.abort();
+      controller = new AbortController();
+      void fetchData(controller.signal);
+    };
+
+    const start = () => {
+      if (intervalId !== null) return;
+      run();
+      intervalId = setInterval(run, 30_000);
+    };
+
+    const stop = () => {
+      if (intervalId !== null) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+      controller.abort();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    if (document.visibilityState === "visible") {
+      start();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      stop();
+    };
   }, [fetchData]);
 
   if (loading && !summary) {

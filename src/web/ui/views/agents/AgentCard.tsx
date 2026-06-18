@@ -9,6 +9,7 @@ export function AgentCard({
   onEdit,
   onDelete,
   onSetDefault,
+  isPending,
 }: {
   agent: AgentInfo;
   isSelected: boolean;
@@ -16,6 +17,7 @@ export function AgentCard({
   onEdit: () => void;
   onDelete: () => void;
   onSetDefault?: () => void;
+  isPending?: boolean;
 }) {
   const toolsLabel =
     agent.toolFilter.mode === "all"
@@ -25,26 +27,23 @@ export function AgentCard({
   return (
     <div
       className={cn(
-        "relative bg-bg-1 border rounded-lg overflow-hidden cursor-pointer transition-colors group",
-        "hover:border-border-2 hover:bg-bg-2",
+        "relative bg-bg-1 border rounded-lg overflow-hidden transition-colors group",
         isSelected
           ? "border-accent bg-accent-subtle"
-          : "border-border",
+          : "border-border hover:border-border-2 hover:bg-bg-2",
       )}
-      onClick={onSelect}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
     >
       <div className="px-5 pt-5 pb-4 flex flex-col gap-4">
-        {/* Top row: avatar + name + actions */}
+        {/* Top row: selectable info + action buttons as siblings */}
         <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-3 min-w-0 flex-1">
+          {/* Selectable area — only the avatar+name block is interactive */}
+          <button
+            type="button"
+            className="flex items-center gap-3 min-w-0 flex-1 text-left bg-transparent border-none p-0 cursor-pointer"
+            onClick={onSelect}
+            aria-pressed={isSelected}
+            aria-label={`Select agent ${agent.name}`}
+          >
             <div className="w-9 h-9 rounded-lg bg-bg-3 border border-border flex items-center justify-center font-mono font-semibold text-xs text-muted shrink-0 uppercase tracking-wide">
               {getInitials(agent.name)}
             </div>
@@ -69,7 +68,7 @@ export function AgentCard({
                   </span>
                 )}
                 {agent.source === "ecc" && (
-                  <span className="text-[0.65rem] font-semibold text-purple bg-[rgba(192,132,252,0.1)] px-2 py-0.5 rounded uppercase tracking-wide shrink-0">
+                  <span className="text-[0.65rem] font-semibold text-purple bg-purple/10 px-2 py-0.5 rounded uppercase tracking-wide shrink-0">
                     ecc
                   </span>
                 )}
@@ -78,44 +77,42 @@ export function AgentCard({
                 {agent.id}
               </div>
             </div>
-          </div>
+          </button>
 
-          {/* Hover actions */}
-          <div
-            className="flex gap-1 opacity-0 group-hover:opacity-100 max-md:opacity-100 transition-opacity duration-150 shrink-0"
-            onClick={(e) => e.stopPropagation()}
-          >
+          {/* Action buttons — siblings of the select button, not nested inside it */}
+          <div className="flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 max-md:opacity-100 transition-opacity duration-150 shrink-0">
             {!agent.isDefault && onSetDefault && (
               <button
-                className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-accent-subtle hover:text-accent hover:border-accent/30"
+                type="button"
+                className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-accent-subtle hover:text-accent hover:border-accent/30 disabled:opacity-50 disabled:cursor-not-allowed"
                 onClick={onSetDefault}
-                title="Set as default"
                 aria-label="Set as default"
+                disabled={isPending}
               >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
                 </svg>
               </button>
             )}
             <button
+              type="button"
               className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-bg-2 hover:text-foreground hover:border-border-2"
               onClick={onEdit}
-              title="Edit agent"
               aria-label="Edit agent"
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
               </svg>
             </button>
             {!agent.isDefault && (
               <button
+                type="button"
                 className="w-8 h-8 border border-border rounded-md bg-bg text-faint cursor-pointer flex items-center justify-center transition-colors hover:bg-danger-subtle hover:text-danger hover:border-danger/30"
                 onClick={onDelete}
-                title="Delete agent"
                 aria-label="Delete agent"
               >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M3 6h18" />
                   <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
                   <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
@@ -135,14 +132,17 @@ export function AgentCard({
         {/* Metadata row */}
         <div className="flex items-center gap-3 text-xs text-faint pt-0.5 border-t border-border">
           <span className="flex items-center gap-1.5 pt-2.5">
-            <span className={cn(
-              "w-1.5 h-1.5 rounded-full",
-              agent.provider === "agent-sdk"
-                ? "bg-success"
-                : agent.provider === "alibaba"
-                  ? "bg-orange-400"
-                  : "bg-accent",
-            )} />
+            <span
+              aria-hidden="true"
+              className={cn(
+                "w-1.5 h-1.5 rounded-full",
+                agent.provider === "agent-sdk"
+                  ? "bg-success"
+                  : agent.provider === "alibaba"
+                    ? "bg-orange-400"
+                    : "bg-accent",
+              )}
+            />
             {providerLabel(agent.provider)}
           </span>
           <span className="font-mono pt-2.5">{shortModel(agent.model)}</span>

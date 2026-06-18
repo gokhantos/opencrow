@@ -50,6 +50,8 @@ export function StepOutputPreview({ step, nodeId, onClose }: StepOutputPreviewPr
             <span className="text-xs text-muted font-mono truncate max-w-[200px]">{nodeId}</span>
           </div>
           <button
+            type="button"
+            aria-label="Close step preview"
             onClick={onClose}
             className={cn(
               "w-6 h-6 flex items-center justify-center rounded text-muted",

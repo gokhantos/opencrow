@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId } from "react";
 import { apiFetch } from "../api";
 import { LoadingState, PageHeader, Toggle, Button } from "../components";
 import { useToast } from "../components/Toast";
@@ -165,17 +165,20 @@ function ConfigField({
   readonly max: number;
   readonly onChange: (v: number) => void;
 }) {
+  const baseId = useId();
   return (
     <div className="flex items-center justify-between gap-4">
       <div className="min-w-0">
-        <div className="text-xs font-medium text-foreground">{label}</div>
-        <div className="text-xs text-muted mt-0.5">{description}</div>
+        <div id={`${baseId}-label`} className="text-xs font-medium text-foreground">{label}</div>
+        <div id={`${baseId}-desc`} className="text-xs text-muted mt-0.5">{description}</div>
       </div>
       <input
         type="number"
         min={min}
         max={max}
         value={value}
+        aria-labelledby={`${baseId}-label`}
+        aria-describedby={`${baseId}-desc`}
         onChange={(e) => {
           const n = parseInt(e.target.value, 10);
           if (!isNaN(n)) onChange(n);
@@ -579,8 +582,14 @@ export default function Settings() {
       const scraper = features?.scrapers.available.find((s) => s.id === id);
       success(`${scraper?.name ?? id} ${checked ? "enabled" : "disabled"}.`);
     } catch {
-      // Revert on failure
-      setEnabledScrapers(enabledScrapers);
+      // Revert only this toggle's change via functional updater so concurrent
+      // sibling toggles are not clobbered.
+      setEnabledScrapers((prev) => {
+        const reverted = new Set(prev);
+        if (checked) reverted.delete(id);
+        else reverted.add(id);
+        return reverted;
+      });
       toastError("Failed to save scraper setting.");
     } finally {
       setSavingScrapers((prev) => {

@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { z } from "zod";
 import { apiFetch } from "../../api";
-import { Button, Input, FormField, StatusBadge } from "../../components";
+import { Button, Input, FormField, StatusBadge, ConfirmDelete } from "../../components";
 import { useZodForm } from "../../hooks/useZodForm";
 import type { XAccount, AccountResponse } from "./types";
 
@@ -95,21 +95,17 @@ function CredentialsPanel({
           </div>
         )}
 
-        <FormField error={errors.authToken}>
-          <label className="font-heading text-[0.68rem] font-semibold uppercase tracking-widest text-faint">
-            auth_token
-          </label>
+        <FormField label="auth_token" id="authToken" error={errors.authToken}>
           <Input
+            id="authToken"
             type="password"
             {...register("authToken")}
             placeholder="New auth_token value"
           />
         </FormField>
-        <FormField error={errors.ct0}>
-          <label className="font-heading text-[0.68rem] font-semibold uppercase tracking-widest text-faint">
-            ct0
-          </label>
+        <FormField label="ct0" id="ct0" error={errors.ct0}>
           <Input
+            id="ct0"
             type="password"
             {...register("ct0")}
             placeholder="New ct0 value"
@@ -141,7 +137,6 @@ export function AccountHeader({
   onDelete,
   verifying = false,
 }: AccountHeaderProps) {
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [showCredentials, setShowCredentials] = useState(false);
 
   const displayName = account.display_name ?? account.label;
@@ -192,36 +187,7 @@ export function AccountHeader({
           <Button variant="secondary" size="sm" onClick={onEdit}>
             Edit
           </Button>
-          {confirmDelete ? (
-            <>
-              <span className="text-sm text-danger self-center">Delete?</span>
-              <Button
-                variant="danger"
-                size="sm"
-                onClick={() => {
-                  setConfirmDelete(false);
-                  onDelete();
-                }}
-              >
-                Confirm
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setConfirmDelete(false)}
-              >
-                Cancel
-              </Button>
-            </>
-          ) : (
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => setConfirmDelete(true)}
-            >
-              Delete
-            </Button>
-          )}
+          <ConfirmDelete onConfirm={onDelete} confirmLabel="Delete?" />
         </div>
       </div>
 

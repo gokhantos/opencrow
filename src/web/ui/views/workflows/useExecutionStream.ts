@@ -51,12 +51,15 @@ export function useExecutionStream(
   const [isConnected, setIsConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollAbortRef = useRef<AbortController | null>(null);
 
   const clearPoll = useCallback(() => {
     if (pollRef.current !== null) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    pollAbortRef.current?.abort();
+    pollAbortRef.current = null;
   }, []);
 
   const applyStepEvent = useCallback((event: StepEvent) => {
@@ -75,40 +78,50 @@ export function useExecutionStream(
   const startPolling = useCallback(
     (id: string) => {
       clearPoll();
-      pollRef.current = setInterval(async () => {
-        try {
-          const res = await apiFetch<{
-            success: boolean;
-            data: ExecutionRecord & {
-              steps: ReadonlyArray<{
-                nodeId: string;
-                status: StepInfo["status"];
-                output?: unknown;
-                error?: string;
-              }>;
-            };
-          }>(`/api/workflow-executions/${id}`);
+      pollRef.current = setInterval(() => {
+        // Abort the previous in-flight request (if any) before issuing a new one
+        pollAbortRef.current?.abort();
+        const controller = new AbortController();
+        pollAbortRef.current = controller;
 
-          const data = res.data;
-          setExecutionStatus(data.status);
+        apiFetch<{
+          success: boolean;
+          data: ExecutionRecord & {
+            steps: ReadonlyArray<{
+              nodeId: string;
+              status: StepInfo["status"];
+              output?: unknown;
+              error?: string;
+            }>;
+          };
+        }>(`/api/workflow-executions/${id}`, { signal: controller.signal })
+          .then((res) => {
+            if (controller.signal.aborted) return;
 
-          const next = new Map<string, StepInfo>();
-          for (const step of data.steps ?? []) {
-            next.set(step.nodeId, {
-              nodeId: step.nodeId,
-              status: step.status,
-              output: step.output,
-              error: step.error,
-            });
-          }
-          setStepStatuses(next);
+            const data = res.data;
+            setExecutionStatus(data.status);
 
-          if (TERMINAL_STATUSES.has(data.status)) {
+            const next = new Map<string, StepInfo>();
+            for (const step of data.steps ?? []) {
+              next.set(step.nodeId, {
+                nodeId: step.nodeId,
+                status: step.status,
+                output: step.output,
+                error: step.error,
+              });
+            }
+            setStepStatuses(next);
+
+            if (TERMINAL_STATUSES.has(data.status)) {
+              clearPoll();
+            }
+          })
+          .catch((err: unknown) => {
+            // Ignore intentional aborts — do not cancel the interval on abort
+            if (controller.signal.aborted) return;
+            void err;
             clearPoll();
-          }
-        } catch {
-          clearPoll();
-        }
+          });
       }, POLL_INTERVAL_MS);
     },
     [clearPoll],

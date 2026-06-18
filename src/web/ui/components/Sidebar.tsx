@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { LogOut, Sun, Moon } from "lucide-react";
 import { NAV_SECTIONS, type Tab } from "../navigation";
 import type { Theme } from "../app";
@@ -34,6 +35,16 @@ export default function Sidebar({
 
   const isDark = theme === "dark";
 
+  // Keyboard-dismiss the mobile drawer with Escape
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onMobileClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [mobileOpen, onMobileClose]);
+
   return (
     <>
       {/* Mobile overlay */}
@@ -66,7 +77,7 @@ export default function Sidebar({
             className="text-[15px] font-bold text-strong tracking-tight max-lg:hidden max-md:block"
             style={{ fontFamily: "'Outfit', system-ui, sans-serif" }}
           >
-            Open<span style={{ color: "#a78bfa" }}>Crow</span>
+            Open<span className="text-accent">Crow</span>
           </span>
         </div>
 
@@ -111,6 +122,7 @@ export default function Sidebar({
               className="flex items-center gap-2.5 w-full px-3 py-2.5 border-none rounded-md bg-transparent text-muted font-sans text-sm cursor-pointer text-left transition-colors duration-150 hover:text-danger hover:bg-danger-subtle max-lg:justify-center max-lg:p-2 max-lg:gap-0 max-md:justify-start max-md:px-3 max-md:py-2.5 max-md:gap-2.5"
               onClick={onSignOut}
               title="Sign out"
+              aria-label="Sign out"
             >
               <LogOut size={16} className="shrink-0" />
               <span className="whitespace-nowrap overflow-hidden text-ellipsis max-lg:hidden max-md:block">

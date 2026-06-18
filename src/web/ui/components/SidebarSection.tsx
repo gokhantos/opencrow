@@ -27,29 +27,33 @@ export default function SidebarSection({
   return (
     <div className="mb-2">
       {/* Section header */}
-      <div
-        className={cn(
-          "flex items-center justify-between px-3 py-2 select-none max-lg:hidden max-md:flex",
-          section.collapsible && "cursor-pointer hover:text-muted transition-colors",
-        )}
-        onClick={section.collapsible ? () => setCollapsed((c) => !c) : undefined}
-        role={section.collapsible ? "button" : undefined}
-        tabIndex={section.collapsible ? 0 : undefined}
-        aria-expanded={section.collapsible ? !collapsed : undefined}
-        onKeyDown={section.collapsible ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setCollapsed((c) => !c); } } : undefined}
-      >
-        <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-faint">
-          {section.title}
-        </span>
-        {section.collapsible && (
+      {section.collapsible ? (
+        <button
+          type="button"
+          className={cn(
+            "flex items-center justify-between w-full px-3 py-2 select-none max-lg:hidden max-md:flex",
+            "cursor-pointer hover:text-muted transition-colors bg-transparent border-none font-inherit text-left",
+          )}
+          onClick={() => setCollapsed((c) => !c)}
+          aria-expanded={!collapsed}
+        >
+          <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-faint">
+            {section.title}
+          </span>
           <span className={cn(
             "text-[10px] text-faint transition-transform duration-200",
             collapsed && "-rotate-90",
           )}>
             &#9662;
           </span>
-        )}
-      </div>
+        </button>
+      ) : (
+        <div className="flex items-center justify-between px-3 py-2 select-none max-lg:hidden max-md:flex">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-faint">
+            {section.title}
+          </span>
+        </div>
+      )}
 
       {/* Items */}
       {!collapsed && (

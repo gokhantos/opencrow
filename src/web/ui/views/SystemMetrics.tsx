@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { useChart } from "../lib/useChart";
-import { LoadingState, Button } from "../components";
+import { LoadingState, Button, PageHeader } from "../components";
 
 // ============================================================================
 // Types
@@ -415,15 +415,10 @@ function GlassCard({
   return (
     <div
       className={cn(
-        "relative rounded-xl overflow-hidden border transition-all duration-300",
-        "hover:border-white/[0.12] hover:shadow-[0_0_30px_rgba(0,0,0,0.3)]",
+        "relative rounded-xl overflow-hidden border border-border bg-bg-1 transition-all duration-300",
+        "hover:border-border-hover",
         className,
       )}
-      style={{
-        background: C.cardBg,
-        borderColor: C.border,
-        backdropFilter: "blur(16px)",
-      }}
     >
       {accentColor && (
         <div
@@ -636,43 +631,38 @@ export default function SystemMetrics() {
 
   const health = getHealthStatus();
 
+  const healthBadge = (
+    <div
+      className="inline-flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300"
+      style={{
+        color: health.color,
+        backgroundColor: rgba(health.color, 0.08),
+        border: `1px solid ${rgba(health.color, 0.25)}`,
+        boxShadow: `0 0 20px ${rgba(health.color, 0.1)}`,
+      }}
+    >
+      {/* Animated pulse dot */}
+      <span className="relative flex h-2.5 w-2.5">
+        <span
+          className="absolute inline-flex h-full w-full rounded-full opacity-60 animate-ping"
+          style={{ backgroundColor: health.color }}
+        />
+        <span
+          className="relative inline-flex rounded-full h-2.5 w-2.5"
+          style={{ backgroundColor: health.color }}
+        />
+      </span>
+      System {health.status}
+    </div>
+  );
+
   return (
     <div className="max-w-[1600px] mx-auto">
-      {/* Page Header */}
-      <div className="flex justify-between items-start mb-8 pb-6 border-b border-white/[0.06] max-md:flex-col max-md:gap-4 max-md:items-start">
-        <div className="flex flex-col gap-1.5">
-          <h1 className="m-0 font-bold text-[1.85rem] tracking-tight text-strong leading-[1.2]">
-            System Metrics
-          </h1>
-          <p className="text-faint text-sm m-0">
-            Real-time monitoring and performance analysis
-          </p>
-        </div>
-
-        {/* Health badge with glow */}
-        <div
-          className="inline-flex items-center gap-2.5 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all duration-300"
-          style={{
-            color: health.color,
-            backgroundColor: rgba(health.color, 0.08),
-            border: `1px solid ${rgba(health.color, 0.25)}`,
-            boxShadow: `0 0 20px ${rgba(health.color, 0.1)}`,
-          }}
-        >
-          {/* Animated pulse dot */}
-          <span className="relative flex h-2.5 w-2.5">
-            <span
-              className="absolute inline-flex h-full w-full rounded-full opacity-60 animate-ping"
-              style={{ backgroundColor: health.color }}
-            />
-            <span
-              className="relative inline-flex rounded-full h-2.5 w-2.5"
-              style={{ backgroundColor: health.color }}
-            />
-          </span>
-          System {health.status}
-        </div>
-      </div>
+      <PageHeader
+        title="System Metrics"
+        subtitle="Real-time monitoring and performance analysis"
+        actions={healthBadge}
+      />
 
       {currentMetrics && (
         <>

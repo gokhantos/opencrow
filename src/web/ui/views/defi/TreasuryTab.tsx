@@ -1,8 +1,7 @@
-import { useState, useEffect } from "react";
+import { EmptyState, LoadingState } from "../../components";
+import { usePolledFetch } from "../../hooks/usePolledFetch";
 import { cn } from "../../lib/cn";
-import { apiFetch } from "../../api";
-import { LoadingState, EmptyState } from "../../components";
-import { TH, TD, formatTvl } from "./shared";
+import { ErrorState, formatTvl, TD, TH } from "./shared";
 
 interface TreasuryRow {
   readonly id: string;
@@ -58,35 +57,15 @@ function CompositionBar({ row }: { readonly row: TreasuryRow }) {
 }
 
 export default function TreasuryTab() {
-  const [treasuries, setTreasuries] = useState<TreasuryRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { data, loading, error, refetch } = usePolledFetch<{
+    success: boolean;
+    data: TreasuryRow[];
+  }>("/api/defi/treasury?limit=50", { intervalMs: 60_000 });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  async function fetchData() {
-    try {
-      const res = await apiFetch<{ success: boolean; data: TreasuryRow[] }>(
-        "/api/defi/treasury?limit=50",
-      );
-      if (res.success) setTreasuries(res.data);
-      setError("");
-    } catch {
-      setError("Failed to load treasury data");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const treasuries = data?.success ? data.data : [];
 
   if (loading) return <LoadingState message="Loading treasury..." />;
-  if (error)
-    return (
-      <div className="text-danger text-sm px-4 py-3 rounded-lg bg-danger/5 border border-danger/20">
-        {error}
-      </div>
-    );
+  if (error) return <ErrorState message="Failed to load treasury data" onRetry={refetch} />;
   if (treasuries.length === 0) return <EmptyState description="No treasury data found." />;
 
   return (
@@ -131,19 +110,12 @@ export default function TreasuryTab() {
                 className="border-b border-border/50 hover:bg-bg-1 transition-colors"
                 style={{ animationDelay: `${Math.min(idx * 20, 400)}ms` }}
               >
-                <td
-                  className={cn(
-                    TD,
-                    "text-right text-faint font-mono text-xs w-10",
-                  )}
-                >
+                <td className={cn(TD, "text-right text-faint font-mono text-xs w-10")}>
                   {idx + 1}
                 </td>
                 <td className={cn(TD, "text-left")}>
                   <div className="flex flex-col min-w-[120px]">
-                    <span className="font-semibold text-strong text-[13px]">
-                      {t.name}
-                    </span>
+                    <span className="font-semibold text-strong text-[13px]">{t.name}</span>
                     <CompositionBar row={t} />
                   </div>
                 </td>
@@ -155,20 +127,10 @@ export default function TreasuryTab() {
                 >
                   {formatTvl(t.total)}
                 </td>
-                <td
-                  className={cn(
-                    TD,
-                    "text-right font-mono text-[13px] text-muted tabular-nums",
-                  )}
-                >
+                <td className={cn(TD, "text-right font-mono text-[13px] text-muted tabular-nums")}>
                   {formatTvl(t.stablecoins)}
                 </td>
-                <td
-                  className={cn(
-                    TD,
-                    "text-right font-mono text-[13px] text-muted tabular-nums",
-                  )}
-                >
+                <td className={cn(TD, "text-right font-mono text-[13px] text-muted tabular-nums")}>
                   {formatTvl(t.majors)}
                 </td>
                 <td

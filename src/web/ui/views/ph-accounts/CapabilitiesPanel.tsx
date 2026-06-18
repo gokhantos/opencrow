@@ -27,12 +27,15 @@ function CapSection({
         enabled ? "border-accent" : "border-border",
       )}
     >
-      <div
-        className="flex items-center justify-between px-5 py-3.5 cursor-pointer bg-bg-2 select-none transition-colors hover:bg-bg-3"
-        onClick={() => setOpen((o) => !o)}
-      >
-        <div className="flex items-center gap-2.5">
+      <div className="flex items-center justify-between bg-bg-2 transition-colors hover:bg-bg-3">
+        <button
+          type="button"
+          aria-expanded={open}
+          className="flex items-center gap-2.5 flex-1 px-5 py-3.5 cursor-pointer select-none text-left"
+          onClick={() => setOpen((o) => !o)}
+        >
           <span
+            aria-hidden="true"
             className={cn(
               "text-xs text-faint transition-transform mr-2",
               open && "rotate-90",
@@ -40,12 +43,12 @@ function CapSection({
           >
             {"\u25B6"}
           </span>
-          <span className="text-base w-6 text-center">{icon}</span>
+          <span className="text-base w-6 text-center" aria-hidden="true">{icon}</span>
           <span className="font-heading text-sm font-semibold text-strong tracking-tight">
             {label}
           </span>
-        </div>
-        <div onClick={(e) => e.stopPropagation()}>
+        </button>
+        <div className="px-5 py-3.5">
           <Toggle checked={enabled} onChange={onToggle} />
         </div>
       </div>

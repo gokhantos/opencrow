@@ -53,3 +53,14 @@ test("FeedRow omits meta container when not provided", () => {
   const html = renderHTML(React.createElement(FeedRow, { title: "T" }));
   expect(html).not.toContain("mt-1.5");
 });
+
+test("FeedRow uses 3-column grid when rank is provided", () => {
+  const html = renderHTML(React.createElement(FeedRow, { title: "T", rank: 1 }));
+  expect(html).toContain("grid-cols-[3rem_1fr_auto]");
+});
+
+test("FeedRow uses 2-column grid when rank is absent", () => {
+  const html = renderHTML(React.createElement(FeedRow, { title: "T" }));
+  expect(html).toContain("grid-cols-[1fr_auto]");
+  expect(html).not.toContain("grid-cols-[3rem_1fr_auto]");
+});

@@ -4,13 +4,11 @@ import {
   Archive,
   RotateCcw,
   Check,
-  Search,
-  X,
 } from "lucide-react";
 import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
-import { PageHeader, LoadingState, EmptyState } from "../components";
+import { PageHeader, LoadingState, EmptyState, SearchBar } from "../components";
 import { useToast } from "../components/Toast";
 import { useLocalStorage } from "../lib/useLocalStorage";
 
@@ -52,7 +50,7 @@ const STAGE_STYLES: Record<string, string> = {
 const CATEGORY_STYLES: Record<string, string> = {
   mobile_app: "bg-accent-subtle text-accent border border-accent/20",
   crypto_project: "bg-warning-subtle text-warning border border-warning/20",
-  ai_app: "bg-[#7928ca18] text-[#7928ca] border border-[#7928ca33]",
+  ai_app: "bg-purple-subtle text-purple border border-purple/20",
   open_source: "bg-success-subtle text-success border border-success/20",
   general: "bg-bg-3 text-muted border border-border",
 };
@@ -489,26 +487,12 @@ export default function PipelineIdeas() {
       {/* Filters row */}
       <div className="flex gap-3 mb-5 flex-wrap">
         {/* Search */}
-        <div className="relative flex-1 min-w-[200px]">
-          <Search
-            size={14}
-            className="absolute left-3.5 top-1/2 -translate-y-1/2 text-faint pointer-events-none"
-          />
-          <input
-            type="text"
-            className="w-full py-2.5 px-4 pl-9 rounded-lg border border-border bg-bg-1 text-strong font-sans text-sm outline-none transition-colors focus:border-accent placeholder:text-faint"
-            placeholder="Search ideas..."
+        <div className="flex-1 min-w-[200px]">
+          <SearchBar
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={setSearchQuery}
+            placeholder="Search ideas..."
           />
-          {searchQuery && (
-            <button
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full border-none bg-bg-3 text-faint text-xs cursor-pointer flex items-center justify-center transition-colors p-0 hover:bg-bg-2 hover:text-strong"
-              onClick={() => setSearchQuery("")}
-            >
-              <X size={10} />
-            </button>
-          )}
         </div>
 
         {/* Category filter */}

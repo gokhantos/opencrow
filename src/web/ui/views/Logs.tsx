@@ -4,6 +4,7 @@ import { apiFetch } from "../api";
 import { formatLogTimestamp } from "../lib/format";
 import { cn } from "../lib/cn";
 import { useDebounce } from "../lib/use-debounce";
+import { usePolledFetch } from "../hooks/usePolledFetch";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -122,6 +123,19 @@ function LogEntryRow({
     <div
       className={cn("lg-entry", entry.level, hasData && "clickable")}
       onClick={hasData ? onToggle : undefined}
+      {...(hasData
+        ? {
+            role: "button",
+            tabIndex: 0,
+            "aria-expanded": isExpanded,
+            onKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onToggle();
+              }
+            },
+          }
+        : {})}
     >
       <span className="lg-time">{formatLogTimestamp(entry.timestamp)}</span>
 
@@ -145,11 +159,11 @@ function LogEntryRow({
         <span className="lg-message-text">
           {entry.message}
           {hasData && !isExpanded && (
-            <span className="lg-expand-hint">{"\u25B8"} data</span>
+            <span className="lg-expand-hint">{"▸"} data</span>
           )}
           {hasData && isExpanded && (
             <span className="lg-expand-hint lg-collapse-hint">
-              {"\u25BE"} hide
+              {"▾"} hide
             </span>
           )}
         </span>
@@ -167,18 +181,30 @@ function LogEntryRow({
 const selectClass =
   "px-3 py-2 bg-bg-1 border border-border-2 rounded-lg text-foreground text-xs font-mono outline-none transition-colors duration-150 focus:border-accent cursor-pointer min-w-0";
 
+/**
+ * Derive a stable string id for a log entry so React keys and expanded-row
+ * state are tied to the entry itself rather than its positional index.
+ * An occurrence counter suffix is appended to handle true duplicates within
+ * the same batch.
+ */
+function buildLogId(entry: LogEntry, occurrenceIdx: number): string {
+  return `${entry.timestamp}|${entry.context}|${entry.processName ?? ""}|${entry.message}|${occurrenceIdx}`;
+}
+
 export default function Logs() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useLocalStorage<LogLevel>("logs:level", "info");
   const [search, setSearch] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
-  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+  const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(new Set());
   const [isPaused, setIsPaused] = useState(false);
   const [processes, setProcesses] = useState<string[]>([]);
   const [selectedProcess, setSelectedProcess] = useLocalStorage<string>("logs:process", "");
   const [contexts, setContexts] = useState<string[]>([]);
-  const [selectedContext, setSelectedContext] = useLocalStorage<string>("logs:context", "");
+  // selectedContext is tracked in a ref so it can be read synchronously in
+  // the process-change handler before React flushes the state update.
+  const [selectedContext, setSelectedContextState] = useLocalStorage<string>("logs:context", "");
+  const selectedContextRef = useRef(selectedContext);
   const [newLogCount, setNewLogCount] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -186,22 +212,41 @@ export default function Logs() {
 
   const debouncedSearch = useDebounce(search, 400);
 
+  function setSelectedContext(value: string) {
+    selectedContextRef.current = value;
+    setSelectedContextState(value);
+  }
+
+  // Build the polling URL from current filters so usePolledFetch re-fetches
+  // whenever any filter changes (path dependency triggers the hook).
+  const logsParams = new URLSearchParams({ limit: "500" });
+  if (selectedProcess) logsParams.set("process", selectedProcess);
+  if (selectedContext) logsParams.set("context", selectedContext);
+  if (debouncedSearch) logsParams.set("search", debouncedSearch);
+  const logsPath = `/api/logs?${logsParams}`;
+
+  const { data: logsData, loading } = usePolledFetch<LogsResponse>(logsPath, {
+    intervalMs: 3000,
+    enabled: !isPaused,
+  });
+
+  // Drive local logs state from the hook result so autoscroll/newLogCount
+  // effects keep working unchanged.
+  useEffect(() => {
+    if (logsData?.success) setLogs(logsData.data);
+  }, [logsData]);
+
   useEffect(() => {
     fetchProcesses();
   }, []);
 
+  // When selectedProcess changes: reset context to "" first (synchronously via
+  // ref so the next fetch uses the correct value), then load new contexts.
   useEffect(() => {
     setSelectedContext("");
     fetchContexts(selectedProcess);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProcess]);
-
-  useEffect(() => {
-    fetchLogs().finally(() => setLoading(false));
-    const interval = setInterval(() => {
-      if (!isPaused) fetchLogs();
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [isPaused, selectedProcess, selectedContext, debouncedSearch]);
 
   useEffect(() => {
     if (autoScroll && listRef.current) {
@@ -256,24 +301,23 @@ export default function Logs() {
     }
   }
 
-  async function fetchLogs() {
-    try {
-      const params = new URLSearchParams({ limit: "500" });
-      if (selectedProcess) params.set("process", selectedProcess);
-      if (selectedContext) params.set("context", selectedContext);
-      if (debouncedSearch) params.set("search", debouncedSearch);
-      const data = await apiFetch<LogsResponse>(`/api/logs?${params}`);
-      if (data.success) setLogs(data.data);
-    } catch {
-      /* ignore */
-    }
-  }
+  // Build stable ids for the current log batch, counting occurrences so
+  // duplicate entries still get unique keys.
+  const logsWithIds = (() => {
+    const seen = new Map<string, number>();
+    return logs.map((entry) => {
+      const base = `${entry.timestamp}|${entry.context}|${entry.processName ?? ""}|${entry.message}`;
+      const count = seen.get(base) ?? 0;
+      seen.set(base, count + 1);
+      return { entry, id: buildLogId(entry, count) };
+    });
+  })();
 
-  const toggleExpand = useCallback((idx: number) => {
+  const toggleExpand = useCallback((id: string) => {
     setExpandedRows((prev) => {
       const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }, []);
@@ -306,11 +350,11 @@ export default function Logs() {
   };
   for (const l of logs) counts[l.level]++;
 
-  const filtered = logs.filter(
-    (l) => LEVEL_NUM[l.level] >= LEVEL_NUM[filter],
+  const filteredWithIds = logsWithIds.filter(
+    ({ entry }) => LEVEL_NUM[entry.level] >= LEVEL_NUM[filter],
   );
 
-  if (loading) {
+  if (loading && logs.length === 0) {
     return (
       <div className="lg-page">
         <div className="lg-loading">
@@ -331,7 +375,7 @@ export default function Logs() {
           <h1 className="lg-title">Logs</h1>
         </div>
         <div className="flex items-center gap-2">
-          <span className="lg-count">{filtered.length} rows</span>
+          <span className="lg-count">{filteredWithIds.length} rows</span>
           <button
             className={cn("lg-live-badge", isPaused ? "paused" : "live")}
             onClick={() => setIsPaused((p) => !p)}
@@ -362,7 +406,7 @@ export default function Logs() {
         <div
           className={cn("lg-search", debouncedSearch && "lg-search-active")}
         >
-          <span className="lg-search-icon">{"\u2315"}</span>
+          <span className="lg-search-icon">{"⌕"}</span>
           <input
             ref={searchRef}
             type="text"
@@ -375,7 +419,7 @@ export default function Logs() {
               className="lg-search-clear"
               onClick={() => setSearch("")}
             >
-              {"\u2715"}
+              {"✕"}
             </button>
           )}
         </div>
@@ -424,10 +468,10 @@ export default function Logs() {
       </div>
 
       {/* Log entries */}
-      {filtered.length === 0 ? (
+      {filteredWithIds.length === 0 ? (
         <div className="lg-container">
           <div className="lg-empty">
-            <div className="lg-empty-icon">{"\u2699"}</div>
+            <div className="lg-empty-icon">{"⚙"}</div>
             <div className="lg-empty-text">
               {debouncedSearch
                 ? `No logs matching "${debouncedSearch}"`
@@ -447,19 +491,19 @@ export default function Logs() {
             ref={listRef}
             onScroll={handleScroll}
           >
-            {filtered.map((entry, i) => (
+            {filteredWithIds.map(({ entry, id }) => (
               <LogEntryRow
-                key={i}
+                key={id}
                 entry={entry}
-                isExpanded={expandedRows.has(i)}
-                onToggle={() => toggleExpand(i)}
+                isExpanded={expandedRows.has(id)}
+                onToggle={() => toggleExpand(id)}
               />
             ))}
           </div>
 
           {newLogCount > 0 && !autoScroll && (
             <button className="lg-new-logs" onClick={jumpToBottom}>
-              {"\u2193"} {newLogCount} new log{newLogCount > 1 ? "s" : ""}
+              {"↓"} {newLogCount} new log{newLogCount > 1 ? "s" : ""}
             </button>
           )}
         </div>

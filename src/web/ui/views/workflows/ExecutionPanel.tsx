@@ -146,6 +146,7 @@ function StepRow({
         >
           <Icon
             size={13}
+            aria-hidden="true"
             className={cn(step.status === "running" && "animate-spin")}
           />
         </div>
@@ -352,6 +353,8 @@ export function ExecutionPanel({
         <div className="flex items-center gap-2.5 flex-1 min-w-0">
           {statusInfo && (
             <span
+              role="status"
+              aria-live="polite"
               className={cn(
                 "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold tracking-wide",
                 statusInfo.bg,
@@ -359,7 +362,7 @@ export function ExecutionPanel({
               )}
             >
               {executionStatus === "running" && (
-                <Circle size={6} className="fill-current animate-pulse" />
+                <Circle size={6} className="fill-current animate-pulse" aria-hidden="true" />
               )}
               {statusInfo.label}
             </span>

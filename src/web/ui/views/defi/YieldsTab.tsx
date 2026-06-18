@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { EmptyState, FilterTabs, LoadingState } from "../../components";
+import { usePolledFetch } from "../../hooks/usePolledFetch";
 import { cn } from "../../lib/cn";
-import { apiFetch } from "../../api";
-import { LoadingState, EmptyState } from "../../components";
-import { TH, TD, formatTvl, ChainBadge } from "./shared";
+import { ChainBadge, ErrorState, formatTvl, TD, TH } from "./shared";
 
 interface YieldPool {
   readonly pool_id: string;
@@ -35,62 +35,30 @@ function formatApy(value: number | null | undefined): {
 }
 
 export default function YieldsTab() {
-  const [pools, setPools] = useState<YieldPool[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
   const [activeChain, setActiveChain] = useState("All");
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  const { data, loading, error, refetch } = usePolledFetch<{
+    success: boolean;
+    data: YieldPool[];
+  }>("/api/defi/yields?limit=100", { intervalMs: 60_000 });
 
-  async function fetchData() {
-    try {
-      const res = await apiFetch<{ success: boolean; data: YieldPool[] }>(
-        "/api/defi/yields?limit=100",
-      );
-      if (res.success) setPools(res.data);
-      setError("");
-    } catch {
-      setError("Failed to load yield pools");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const pools = data?.success ? data.data : [];
 
   const chains = ["All", ...Array.from(new Set(pools.map((p) => p.chain))).sort()];
-  const filtered =
-    activeChain === "All" ? pools : pools.filter((p) => p.chain === activeChain);
+  const filtered = activeChain === "All" ? pools : pools.filter((p) => p.chain === activeChain);
 
   if (loading) return <LoadingState message="Loading yield pools..." />;
-  if (error)
-    return (
-      <div className="text-danger text-sm px-4 py-3 rounded-lg bg-danger/5 border border-danger/20">
-        {error}
-      </div>
-    );
+  if (error) return <ErrorState message="Failed to load yield pools" onRetry={refetch} />;
 
   return (
     <div>
       {/* Chain filter */}
       {chains.length > 2 && (
-        <div className="flex gap-1.5 flex-wrap mb-5">
-          {chains.map((chain) => (
-            <button
-              key={chain}
-              type="button"
-              onClick={() => setActiveChain(chain)}
-              className={cn(
-                "px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors duration-150 border",
-                activeChain === chain
-                  ? "bg-bg-2 border-border-hover text-strong"
-                  : "bg-transparent border-border text-muted hover:bg-bg-1 hover:text-foreground",
-              )}
-            >
-              {chain}
-            </button>
-          ))}
-        </div>
+        <FilterTabs
+          tabs={chains.map((c) => ({ id: c, label: c }))}
+          active={activeChain}
+          onChange={setActiveChain}
+        />
       )}
 
       {filtered.length === 0 ? (
@@ -121,19 +89,12 @@ export default function YieldsTab() {
                     className="border-b border-border/50 hover:bg-bg-1 transition-colors"
                     style={{ animationDelay: `${Math.min(idx * 20, 400)}ms` }}
                   >
-                    <td
-                      className={cn(
-                        TD,
-                        "text-right text-faint font-mono text-xs w-10",
-                      )}
-                    >
+                    <td className={cn(TD, "text-right text-faint font-mono text-xs w-10")}>
                       {idx + 1}
                     </td>
                     <td className={cn(TD, "text-left")}>
                       <div className="flex flex-col gap-0.5">
-                        <span className="font-semibold text-strong text-[13px]">
-                          {pool.symbol}
-                        </span>
+                        <span className="font-semibold text-strong text-[13px]">{pool.symbol}</span>
                         <span className="text-[11px] text-muted">
                           {pool.project}
                           {pool.pool_meta ? ` · ${pool.pool_meta}` : ""}
@@ -144,28 +105,17 @@ export default function YieldsTab() {
                       <ChainBadge chain={pool.chain} />
                     </td>
                     <td className={cn(TD, "text-right")}>
-                      <span
-                        className={cn(
-                          "font-mono text-[13px] tabular-nums",
-                          apy.className,
-                        )}
-                      >
+                      <span className={cn("font-mono text-[13px] tabular-nums", apy.className)}>
                         {apy.text}
                       </span>
                     </td>
                     <td
-                      className={cn(
-                        TD,
-                        "text-right font-mono text-[13px] text-muted tabular-nums",
-                      )}
+                      className={cn(TD, "text-right font-mono text-[13px] text-muted tabular-nums")}
                     >
                       {apyBase.text}
                     </td>
                     <td
-                      className={cn(
-                        TD,
-                        "text-right font-mono text-[13px] text-muted tabular-nums",
-                      )}
+                      className={cn(TD, "text-right font-mono text-[13px] text-muted tabular-nums")}
                     >
                       {apyReward.text}
                     </td>

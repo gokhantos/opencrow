@@ -144,11 +144,21 @@ export function ReportTab({ sessionId, initialReport }: ReportTabProps) {
       setLoading(false);
       return;
     }
+    let cancelled = false;
     setLoading(true);
     fetchSessionReport(sessionId)
-      .then(setReport)
-      .catch(() => setError("Failed to load report."))
-      .finally(() => setLoading(false));
+      .then((r) => {
+        if (!cancelled) setReport(r);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Failed to load report.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [sessionId, initialReport]);
 
   if (loading) return <LoadingState message="Loading report..." />;

@@ -1,13 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
-  apiFetch,
   enableChannel,
   disableChannel,
   restartChannel,
 } from "../api";
 import ChannelSetupForm from "./ChannelSetupForm";
-import { LoadingState, Button, StatusBadge, Toggle } from "../components";
+import { LoadingState, EmptyState, Button, StatusBadge, Toggle } from "../components";
 import { cn } from "../lib/cn";
+import { usePolledFetch } from "../hooks/usePolledFetch";
 
 interface ChannelMeta {
   id: string;
@@ -172,30 +172,23 @@ function ChannelCard({
 }
 
 export default function Channels() {
-  const [channels, setChannels] = useState<ChannelEntry[] | null>(null);
-  const [error, setError] = useState("");
+  const { data, error, loading, refetch } = usePolledFetch<ChannelsResponse>(
+    "/api/channels",
+    { intervalMs: 5000 },
+  );
 
-  useEffect(() => {
-    fetchChannels();
-    const interval = setInterval(fetchChannels, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  const channels = data?.data ?? null;
 
-  async function fetchChannels() {
-    try {
-      const res = await apiFetch<ChannelsResponse>("/api/channels");
-      setChannels(res.data);
-      setError("");
-    } catch {
-      setError("Failed to load channel data");
-    }
+  if (error && !channels) {
+    return (
+      <EmptyState
+        title="Failed to load channels"
+        description={error}
+      />
+    );
   }
 
-  if (error) {
-    return <p className="text-danger">{error}</p>;
-  }
-
-  if (!channels) {
+  if (loading && !channels) {
     return <LoadingState />;
   }
 
@@ -205,8 +198,8 @@ export default function Channels() {
         Channel Status
       </div>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4">
-        {channels.map((entry) => (
-          <ChannelCard key={entry.id} entry={entry} onRefresh={fetchChannels} />
+        {(channels ?? []).map((entry) => (
+          <ChannelCard key={entry.id} entry={entry} onRefresh={refetch} />
         ))}
       </div>
     </div>

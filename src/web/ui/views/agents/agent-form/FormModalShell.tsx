@@ -25,6 +25,9 @@ export function FormModalShell({
   const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Capture the trigger element before focusing into the dialog (WCAG 2.4.3)
+    const prior = document.activeElement as HTMLElement | null;
+
     const el = dialogRef.current;
     if (el) {
       const first = el.querySelectorAll<HTMLElement>(FOCUSABLE)[0];
@@ -55,7 +58,11 @@ export function FormModalShell({
     }
 
     document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      // Restore focus to the element that opened the dialog (WCAG 2.4.3)
+      if (prior && prior.isConnected) prior.focus();
+    };
   }, [onClose]);
 
   return (

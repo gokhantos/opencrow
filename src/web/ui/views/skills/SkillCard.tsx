@@ -11,7 +11,7 @@ export function SkillCard({ skill, index, onClick }: SkillCardProps) {
   return (
     <button
       type="button"
-      className="group relative bg-bg-1 border rounded-lg overflow-hidden text-left cursor-pointer transition-all duration-200 hover:border-border-hover hover:bg-bg-1/80"
+      className="group relative bg-bg-1 border border-border rounded-lg overflow-hidden text-left cursor-pointer transition-all duration-200 hover:border-border-hover hover:bg-bg-1/80"
       style={{
         animation: `agCardIn 0.3s ease-out ${index * 20}ms both`,
       }}

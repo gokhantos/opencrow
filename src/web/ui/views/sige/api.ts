@@ -103,7 +103,13 @@ interface GraphResponse {
   readonly data: GraphView;
 }
 
-export async function fetchSessionGraph(sessionId: string): Promise<GraphView> {
-  const res = await apiFetch<GraphResponse>(`/api/sige/sessions/${sessionId}/graph`);
+export async function fetchSessionGraph(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<GraphView> {
+  const res = await apiFetch<GraphResponse>(
+    `/api/sige/sessions/${sessionId}/graph`,
+    signal ? { signal } : undefined,
+  );
   return res.data;
 }

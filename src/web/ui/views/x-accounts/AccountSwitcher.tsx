@@ -47,7 +47,12 @@ function AccountTab({ account, selected, onSelect }: AccountTabProps) {
       <span className="font-mono text-sm truncate max-w-[120px]">
         {account.username ? `@${account.username}` : account.label}
       </span>
-      <span className={cn("w-2 h-2 rounded-full shrink-0", dotClass)} />
+      <span
+        className={cn("w-2 h-2 rounded-full shrink-0", dotClass)}
+        title={account.status}
+        aria-hidden="true"
+      />
+      <span className="sr-only">{account.status}</span>
     </button>
   );
 }

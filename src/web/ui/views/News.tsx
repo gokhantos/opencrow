@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
-import { PageHeader, LoadingState, Button } from "../components";
+import { PageHeader, LoadingState, EmptyState, Button } from "../components";
 import { Settings2 } from "lucide-react";
 
 interface NewsArticle {
@@ -115,10 +115,8 @@ function parseCurrencies(json: string): readonly string[] {
 
 /* ── Inline config panel for a source ── */
 function SourceConfigPanel({ scraperId }: { readonly scraperId: string }) {
-  const fields = SOURCE_CONFIG_FIELDS[scraperId];
-  if (!fields) return null;
-
-  const [config, setConfig] = useState<Record<string, number>>(getDefaults(scraperId));
+  // All hooks MUST run before any conditional return (Rules of Hooks).
+  const [config, setConfig] = useState<Record<string, number>>(() => getDefaults(scraperId));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -156,7 +154,9 @@ function SourceConfigPanel({ scraperId }: { readonly scraperId: string }) {
     }
   }
 
-  if (loading) return null;
+  // Guard after all hooks — safe to conditionally return here.
+  const fields = SOURCE_CONFIG_FIELDS[scraperId];
+  if (!fields || loading) return null;
 
   return (
     <div className="flex items-center gap-4 px-4 py-2.5 bg-bg-1 rounded-lg border border-border mb-4">
@@ -366,12 +366,15 @@ export default function News() {
       />
 
       {/* Source Filter Tabs — only enabled sources */}
-      <div className="flex gap-1.5 flex-wrap mb-5">
+      <div className="flex gap-1.5 flex-wrap mb-5" role="tablist" aria-label="News sources">
         {visibleTabs.map((t) => {
           const isActive = sourceFilter === t.id;
           return (
             <button
               key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
               className={cn(
                 "px-4 py-2 rounded-full font-sans text-sm font-medium cursor-pointer transition-colors border",
                 isActive
@@ -438,9 +441,7 @@ export default function News() {
       {/* Calendar View */}
       {isCalendar ? (
         calendarEvents.length === 0 ? (
-          <div className="text-center text-faint p-12 text-base">
-            No calendar events yet. Click "Scrape" to fetch.
-          </div>
+          <EmptyState description='No calendar events yet. Click "Scrape" to fetch.' />
         ) : (
           <table
             className="w-full border-separate"
@@ -514,9 +515,7 @@ export default function News() {
         /* Article List */
         <>
           {articles.length === 0 ? (
-            <div className="text-center text-faint p-12 text-base">
-              No articles yet. Click a source tab and "Scrape" to fetch.
-            </div>
+            <EmptyState description='No articles yet. Click a source tab and "Scrape" to fetch.' />
           ) : (
             <div className="flex flex-col gap-0.5">
               {articles.map((a) => {

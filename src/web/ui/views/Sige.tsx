@@ -1,34 +1,35 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { PageHeader, LoadingState, EmptyState } from "../components";
 import { useToast } from "../components/Toast";
+import { usePolledFetch } from "../hooks/usePolledFetch";
 import { NewSessionForm } from "./sige/NewSessionForm";
 import { SessionsTable } from "./sige/SessionsTable";
 import { SessionDetail } from "./sige/SessionDetail";
-import { fetchSessions, createSession } from "./sige/api";
+import { createSession } from "./sige/api";
 import type { SigeCreateConfig } from "./sige/api";
 import type { SigeSession } from "./sige/types";
 
+interface ListSessionsResponse {
+  readonly success: boolean;
+  readonly data: {
+    readonly sessions: readonly SigeSession[];
+  };
+}
+
 export default function Sige() {
   const toast = useToast();
-  const [sessions, setSessions] = useState<readonly SigeSession[]>([]);
-  const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const loadSessions = useCallback(async () => {
-    try {
-      const data = await fetchSessions();
-      setSessions(data);
-    } catch {
-      toast.error("Failed to load SIGE sessions.");
-    } finally {
-      setLoading(false);
-    }
-  }, [toast]);
+  const {
+    data,
+    loading,
+    refetch,
+  } = usePolledFetch<ListSessionsResponse>("/api/sige/sessions", {
+    intervalMs: 30000,
+  });
 
-  useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+  const sessions = data?.data.sessions ?? [];
 
   async function handleCreateSession(
     seedInput: string,
@@ -38,8 +39,7 @@ export default function Sige() {
     try {
       const result = await createSession(seedInput, config);
       toast.success("Session started successfully.");
-      // Reload list then navigate to the new session
-      await loadSessions();
+      refetch();
       setSelectedId(result.id);
     } catch {
       toast.error("Failed to start session. Please try again.");
@@ -54,8 +54,8 @@ export default function Sige() {
 
   function handleBack() {
     setSelectedId(null);
-    // Reload sessions when returning from detail (status may have changed)
-    loadSessions();
+    // Refresh list when returning from detail (status may have changed)
+    refetch();
   }
 
   // --- Detail view ---
@@ -72,7 +72,7 @@ export default function Sige() {
   }
 
   // --- List view ---
-  if (loading) {
+  if (loading && sessions.length === 0) {
     return <LoadingState message="Loading sessions..." />;
   }
 

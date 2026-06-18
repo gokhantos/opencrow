@@ -16,6 +16,9 @@ const EXPECTED_EXPORTS = [
   "Button",
   "Input",
   "FormField",
+  "IconButton",
+  "Tabs",
+  "IntervalConfigPanel",
 ];
 
 test("barrel export has all expected components", () => {

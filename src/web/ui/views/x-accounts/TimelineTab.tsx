@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../../api";
 import { cn } from "../../lib/cn";
+import { LoadingState, EmptyState } from "../../components";
 import { useJobPoller, useAutoRefresh } from "./hooks/useJobPoller";
 import { useJobActions } from "./hooks/useJobActions";
 import { JobStatusHero } from "./JobStatusHero";
@@ -72,16 +73,19 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
 
   const isRunning = job?.status === "running";
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
     try {
       const [statusRes, tweetsRes] = await Promise.all([
         apiFetch<{ success: boolean; data: TimelineJob | null }>(
           `/api/x/timeline/status?account_id=${accountId}`,
+          { signal },
         ),
         apiFetch<{ success: boolean; data: TimelineTweet[] }>(
           `/api/x/timeline/tweets?account_id=${accountId}&limit=200`,
+          { signal },
         ),
       ]);
+      if (signal?.aborted) return;
       if (statusRes.success && statusRes.data) {
         const j = statusRes.data;
         setJob(j);
@@ -94,14 +98,19 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
       if (tweetsRes.success) {
         setTweets(tweetsRes.data);
       }
+    } catch (err) {
+      if (signal?.aborted) return;
+      throw err;
     } finally {
-      setLoading(false);
+      if (!signal?.aborted) setLoading(false);
     }
   }, [accountId]);
 
   useEffect(() => {
     setLoading(true);
-    loadData();
+    const controller = new AbortController();
+    loadData(controller.signal);
+    return () => controller.abort();
   }, [loadData]);
 
   const { countdown } = useJobPoller(job);
@@ -125,15 +134,11 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
       runNowUrl: "/api/x/timeline/run-now",
       accountId,
       startBody: { interval_minutes: intervalMinutes, ...buildSources() },
-      onSuccess: loadData,
+      onSuccess: () => loadData(),
     });
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <span className="w-5 h-5 border-2 border-border-2 border-t-accent rounded-full animate-spin inline-block" />
-      </div>
-    );
+    return <LoadingState />;
   }
 
   const homeTweets = tweets.filter((t) => t.source === "home");
@@ -241,42 +246,44 @@ export function TimelineTab({ accountId }: TimelineTabProps) {
       </JobControls>
 
       {/* Source filter tabs */}
-      <div className="flex gap-0 border-b border-border mb-4">
+      <div role="tablist" aria-label="Tweet source filter" className="flex gap-0 border-b border-border mb-4">
         {(
           [
             { id: "all" as const, label: "All", count: tweets.length },
             { id: "home" as const, label: "Home", count: homeTweets.length },
             { id: "top_posts" as const, label: "Top Posts", count: topTweets.length },
           ] as const
-        ).map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className={cn(
-              "px-5 py-3 bg-transparent border-b-2 text-faint font-sans text-xs font-semibold uppercase tracking-wide cursor-pointer transition-colors flex items-center gap-2",
-              "hover:text-muted",
-              sourceFilter === tab.id
-                ? "border-accent text-accent"
-                : "border-transparent",
-            )}
-            onClick={() => setSourceFilter(tab.id)}
-          >
-            {tab.label}
-            {tab.count > 0 && (
-              <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-full bg-accent-subtle font-mono text-xs font-semibold text-accent">
-                {tab.count}
-              </span>
-            )}
-          </button>
-        ))}
+        ).map((tab) => {
+          const isActive = sourceFilter === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              tabIndex={isActive ? 0 : -1}
+              className={cn(
+                "px-5 py-3 bg-transparent border-b-2 text-faint font-sans text-xs font-semibold uppercase tracking-wide cursor-pointer transition-colors flex items-center gap-2",
+                "hover:text-muted",
+                isActive ? "border-accent text-accent" : "border-transparent",
+              )}
+              onClick={() => setSourceFilter(tab.id)}
+            >
+              {tab.label}
+              {tab.count > 0 && (
+                <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-full bg-accent-subtle font-mono text-xs font-semibold text-accent">
+                  {tab.count}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* Tweet list */}
       <div className="flex flex-col gap-1">
         {visibleTweets.length === 0 ? (
-          <div className="text-center text-faint py-8 text-sm font-sans">
-            No tweets scraped yet
-          </div>
+          <EmptyState title="No tweets scraped yet" />
         ) : (
           visibleTweets.map((t) => (
             <TweetRow

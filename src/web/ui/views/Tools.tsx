@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { apiFetch } from "../api";
 import { cn } from "../lib/cn";
-import { LoadingState, EmptyState, PageHeader, SearchBar, FilterTabs } from "../components";
+import { LoadingState, EmptyState, PageHeader, SearchBar, FilterTabs, Toggle } from "../components";
 
 interface ToolInfo {
   name: string;
@@ -103,21 +103,15 @@ function DetailPanel({
           {tool.name}
         </h3>
         <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            className={cn(
-              "flex items-center w-9 h-5 rounded-full transition-colors cursor-pointer border-0 p-0.5",
-              tool.enabled ? "bg-accent justify-end" : "bg-bg-3 justify-start",
-            )}
-            onClick={onToggle}
-            title={tool.enabled ? "Disable tool" : "Enable tool"}
-          >
-            <span className="block w-4 h-4 rounded-full bg-white shadow-sm" />
-          </button>
+          <Toggle
+            checked={tool.enabled}
+            onChange={() => onToggle()}
+          />
           <button
             type="button"
             className="w-7 h-7 rounded-md border border-border bg-transparent text-muted cursor-pointer flex items-center justify-center hover:bg-bg-2 hover:text-strong transition-colors"
             onClick={onClose}
+            aria-label="Close panel"
           >
             &times;
           </button>

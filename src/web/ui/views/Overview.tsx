@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { apiFetch, getToken, setToken, clearToken } from "../api";
-import { formatUptime, formatNumber, formatCountdown } from "../lib/format";
+import { formatUptime, formatNumber, formatCountdown, formatCost } from "../lib/format";
 import { cn } from "../lib/cn";
 import { Button, Input } from "../components";
 import {
@@ -86,11 +86,6 @@ function uptimePercent(uptimeSeconds: number): number {
   return Math.min((uptimeSeconds / maxDisplay) * 100, 100);
 }
 
-function formatCost(usd: number): string {
-  if (usd >= 1) return `$${usd.toFixed(2)}`;
-  if (usd >= 0.01) return `$${usd.toFixed(3)}`;
-  return `$${usd.toFixed(4)}`;
-}
 
 /* ─── Component ─── */
 
@@ -128,15 +123,16 @@ export default function Overview() {
     }
   }, []);
 
-  const fetchExtras = useCallback(async () => {
+  const fetchExtras = useCallback(async (signal: AbortSignal) => {
     const results = await Promise.allSettled([
-      apiFetch<{ success: boolean; data: UsageSummary }>("/api/usage/summary"),
-      apiFetch<{ success: boolean; data: readonly AgentItem[] }>("/api/agents"),
-      apiFetch<{ data: readonly ProcessHealth[] }>("/api/processes"),
-      apiFetch<{ success: boolean; data: CronStatus }>("/api/cron/status"),
-      apiFetch<{ success: boolean; data: MemoryStats }>("/api/memory/debug/stats"),
+      apiFetch<{ success: boolean; data: UsageSummary }>("/api/usage/summary", { signal }),
+      apiFetch<{ success: boolean; data: readonly AgentItem[] }>("/api/agents", { signal }),
+      apiFetch<{ data: readonly ProcessHealth[] }>("/api/processes", { signal }),
+      apiFetch<{ success: boolean; data: CronStatus }>("/api/cron/status", { signal }),
+      apiFetch<{ success: boolean; data: MemoryStats }>("/api/memory/debug/stats", { signal }),
     ]);
 
+    if (signal.aborted) return;
     if (results[0].status === "fulfilled") setUsage(results[0].value.data);
     if (results[1].status === "fulfilled") setAgents(results[1].value.data);
     if (results[2].status === "fulfilled") setProcesses(results[2].value.data);
@@ -145,12 +141,17 @@ export default function Overview() {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
     fetchStatus();
-    fetchExtras();
+    void fetchExtras(controller.signal);
     if (!wsConnected) {
       const interval = setInterval(fetchStatus, 10000);
-      return () => clearInterval(interval);
+      return () => {
+        clearInterval(interval);
+        controller.abort();
+      };
     }
+    return () => controller.abort();
   }, [wsConnected, fetchStatus, fetchExtras]);
 
   async function handleTokenSave(e: React.FormEvent) {
@@ -161,7 +162,9 @@ export default function Overview() {
       await apiFetch<StatusData>("/api/status");
       setTokenMsg("Token saved.");
       setTokenInput("");
-      fetchExtras();
+      // fetchExtras is fire-and-forget here; the component is still mounted
+      // so abort-on-unmount is handled by the main effect above.
+      void fetchExtras(new AbortController().signal);
     } catch {
       clearToken();
       setTokenMsg("Invalid token.");

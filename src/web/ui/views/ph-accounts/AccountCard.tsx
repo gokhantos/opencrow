@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { cn } from "../../lib/cn";
 import { apiFetch } from "../../api";
-import { Button, Input, StatusBadge } from "../../components";
+import { Button, Input, StatusBadge, ConfirmDelete } from "../../components";
 import type { PHAccount, AccountResponse } from "./types";
 
 const statusColorMap: Record<string, string> = {
@@ -242,7 +242,6 @@ export function AccountCard({
   onDelete: () => void;
   verifying: boolean;
 }) {
-  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const displayName = account.display_name || account.label;
   const initials = displayName
@@ -351,36 +350,7 @@ export function AccountCard({
         <Button variant="secondary" size="sm" onClick={onEdit}>
           Edit
         </Button>
-        {confirmDelete ? (
-          <>
-            <span className="text-sm text-danger self-center">Delete?</span>
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => {
-                onDelete();
-                setConfirmDelete(false);
-              }}
-            >
-              Confirm
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setConfirmDelete(false)}
-            >
-              Cancel
-            </Button>
-          </>
-        ) : (
-          <Button
-            variant="danger"
-            size="sm"
-            onClick={() => setConfirmDelete(true)}
-          >
-            Delete
-          </Button>
-        )}
+        <ConfirmDelete onConfirm={onDelete} confirmLabel="Delete?" />
       </div>
     </div>
   );

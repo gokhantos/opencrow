@@ -37,6 +37,7 @@
   --color-warning-subtle: rgba(251, 191, 36, 0.10);
   --color-info: #94a3b8;
   --color-purple: #c084fc;
+  --color-purple-subtle: rgba(192, 132, 252, 0.10);
 
   --color-border: #1e1e24;
   --color-border-2: #2a2a32;
@@ -76,6 +77,8 @@ html[data-theme="light"] {
   --color-danger-subtle: rgba(220, 38, 38, 0.06);
   --color-warning: #d97706;
   --color-warning-subtle: rgba(217, 119, 6, 0.06);
+  --color-purple: #7c3aed;
+  --color-purple-subtle: rgba(124, 58, 237, 0.06);
 
   --color-border: #e0e0e0;
   --color-border-2: #cccccc;

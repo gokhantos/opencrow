@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { z } from "zod";
 import { Controller } from "react-hook-form";
 import { apiFetch } from "../api";
@@ -10,9 +10,11 @@ import {
   Input,
   Toggle,
   FormField,
+  ConfirmDelete,
 } from "../components";
 import { formatDuration } from "../lib/format";
 import { useZodForm } from "../hooks/useZodForm";
+import { usePolledFetch } from "../hooks/usePolledFetch";
 
 interface CronJob {
   id: string;
@@ -125,12 +127,12 @@ function formatProgressTime(ts: number): string {
 }
 
 const PROGRESS_ICON: Record<string, string> = {
-  thinking: "\u2022",
-  tool_start: "\u25B6",
-  tool_done: "\u2713",
-  iteration: "\u2192",
-  subagent_start: "\u25C6",
-  subagent_done: "\u2714",
+  thinking: "•",
+  tool_start: "▶",
+  tool_done: "✓",
+  iteration: "→",
+  subagent_start: "◆",
+  subagent_done: "✔",
 };
 
 const PROGRESS_LABEL: Record<string, string> = {
@@ -204,9 +206,14 @@ function ProgressPanel({
         type="button"
         onClick={onToggle}
         className="cr-progress-toggle"
+        aria-expanded={expanded}
+        aria-label={expanded ? "Collapse live progress" : "Expand live progress"}
       >
         <span className="cr-progress-toggle-left">
-          <span className="w-3 h-3 border-2 border-faint border-t-accent rounded-full animate-spin inline-block" />
+          <span
+            aria-hidden="true"
+            className="w-3 h-3 border-2 border-faint border-t-accent rounded-full animate-spin inline-block"
+          />
           <span className="cr-progress-label">Live</span>
           <span className="cr-progress-count">{entries.length}</span>
         </span>
@@ -217,8 +224,8 @@ function ProgressPanel({
             {latestEntry.text.length > 60 ? "..." : ""}
           </span>
         )}
-        <span className="cr-progress-chevron" data-expanded={expanded}>
-          {"\u25BE"}
+        <span aria-hidden="true" className="cr-progress-chevron" data-expanded={expanded}>
+          {"▾"}
         </span>
       </button>
       {expanded && (
@@ -232,7 +239,7 @@ function ProgressPanel({
                   {formatProgressTime(entry.ts)}
                 </span>
                 <span className="cr-progress-icon">
-                  {PROGRESS_ICON[entry.type] ?? "\u2022"}
+                  {PROGRESS_ICON[entry.type] ?? "•"}
                 </span>
                 <span className="cr-progress-type">
                   {PROGRESS_LABEL[entry.type] ?? entry.type}
@@ -430,13 +437,10 @@ function JobCard({
             "Run Now"
           )}
         </Button>
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={onDelete}
-        >
-          Delete
-        </Button>
+        <ConfirmDelete
+          confirmLabel="Delete this cron job?"
+          onConfirm={onDelete}
+        />
       </div>
     </div>
   );
@@ -454,6 +458,11 @@ export default function Cron() {
   const [runs, setRuns] = useState<CronRun[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [activeRuns, setActiveRuns] = useState<Record<string, CronRun>>({});
+  // Use a ref for expandedJobId inside the active-runs completion detection
+  // so the effect doesn't need expandedJobId as a dependency (which would
+  // restart polling on every expansion/collapse).
+  const expandedJobIdRef = useRef<string | null>(null);
+  expandedJobIdRef.current = expandedJobId;
   const prevActiveJobIds = useRef<Set<string>>(new Set());
 
   const {
@@ -481,81 +490,103 @@ export default function Cron() {
   const scheduleKind = watch("scheduleKind");
   const everyMsValue = watch("everyMs");
 
-  const loadJobs = useCallback(async () => {
-    try {
-      const [jobsRes, statusRes, activeRes] = await Promise.all([
-        apiFetch<{ success: boolean; data: CronJob[] }>("/api/cron/jobs"),
-        apiFetch<{ success: boolean; data: CronStatus }>("/api/cron/status"),
-        apiFetch<{ success: boolean; data: CronRun[] }>(
-          "/api/cron/active-runs",
-        ),
-      ]);
-      if (jobsRes.success) setJobs(jobsRes.data);
-      if (statusRes.success) setStatus(statusRes.data);
+  /* ─── Polled data ─── */
 
-      if (activeRes.success) {
-        const byJob: Record<string, CronRun> = {};
-        for (const run of activeRes.data) {
-          byJob[run.jobId] = run;
-        }
+  const { data: jobsData, refetch: refetchJobs } = usePolledFetch<{
+    success: boolean;
+    data: CronJob[];
+  }>("/api/cron/jobs", { intervalMs: POLL_INTERVAL_MS });
 
-        const currentActiveJobIds = new Set(Object.keys(byJob));
-        const prevIds = prevActiveJobIds.current;
-        for (const jobId of prevIds) {
-          if (!currentActiveJobIds.has(jobId) && expandedJobId === jobId) {
-            apiFetch<{ success: boolean; data: CronRun[] }>(
-              `/api/cron/jobs/${jobId}/runs`,
-            )
-              .then((res) => {
-                if (res.success) setRuns(res.data);
-              })
-              .catch((err) => console.error("Failed to load cron runs", err));
-          }
-        }
-        prevActiveJobIds.current = currentActiveJobIds;
-        setActiveRuns(byJob);
-      }
-    } catch {
-      // cron might be disabled
-    } finally {
+  const { data: statusData } = usePolledFetch<{
+    success: boolean;
+    data: CronStatus;
+  }>("/api/cron/status", { intervalMs: POLL_INTERVAL_MS });
+
+  const { data: activeRunsData, refetch: refetchActiveRuns } = usePolledFetch<{
+    success: boolean;
+    data: CronRun[];
+  }>("/api/cron/active-runs", { intervalMs: POLL_INTERVAL_MS });
+
+  /* ─── Sync polled data into local state ─── */
+
+  useEffect(() => {
+    if (jobsData?.success) {
+      setJobs(jobsData.data);
       setLoading(false);
     }
-  }, [expandedJobId]);
+  }, [jobsData]);
 
   useEffect(() => {
-    loadJobs();
-    const timer = setInterval(loadJobs, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [loadJobs]);
+    if (statusData?.success) {
+      setStatus(statusData.data);
+      setLoading(false);
+    }
+  }, [statusData]);
 
   useEffect(() => {
+    if (!activeRunsData?.success) return;
+
+    const byJob: Record<string, CronRun> = {};
+    for (const run of activeRunsData.data) {
+      byJob[run.jobId] = run;
+    }
+
+    const currentActiveJobIds = new Set(Object.keys(byJob));
+    const prevIds = prevActiveJobIds.current;
+
+    // When a job finishes (drops from active), refresh runs for the expanded card.
+    for (const jobId of prevIds) {
+      if (!currentActiveJobIds.has(jobId) && expandedJobIdRef.current === jobId) {
+        apiFetch<{ success: boolean; data: CronRun[] }>(
+          `/api/cron/jobs/${jobId}/runs`,
+        )
+          .then((res) => {
+            if (res.success) setRuns(res.data);
+          })
+          .catch(() => {
+            // ignore — the card's run list will remain stale until next manual expand
+          });
+      }
+    }
+    prevActiveJobIds.current = currentActiveJobIds;
+    setActiveRuns(byJob);
+  }, [activeRunsData]);
+
+  /* ─── Load agents (one-shot) ─── */
+
+  useEffect(() => {
+    let cancelled = false;
     apiFetch<{ success: boolean; data: AgentOption[] }>("/api/agents")
       .then((res) => {
-        if (res.success) setAgents(res.data);
+        if (!cancelled && res.success) setAgents(res.data);
       })
-      .catch((err) => console.error("Failed to load agents", err));
+      .catch(() => {
+        // agents list is optional — cron still works without it
+      });
+    return () => { cancelled = true; };
   }, []);
+
+  /* ─── Mutations ─── */
 
   async function toggleJob(id: string) {
     await apiFetch(`/api/cron/jobs/${id}/toggle`, { method: "POST" }).catch(
       () => null,
     );
-    loadJobs();
+    refetchJobs();
   }
 
   async function runNow(id: string) {
     await apiFetch(`/api/cron/jobs/${id}/run`, { method: "POST" }).catch(
       () => null,
     );
-    loadJobs();
+    refetchActiveRuns();
   }
 
   async function deleteJob(id: string) {
-    if (!confirm("Delete this cron job?")) return;
     await apiFetch(`/api/cron/jobs/${id}`, { method: "DELETE" }).catch(
       () => null,
     );
-    loadJobs();
+    refetchJobs();
   }
 
   async function loadRuns(jobId: string) {
@@ -615,7 +646,7 @@ export default function Cron() {
         setShowForm(false);
         reset();
         setFormError("");
-        loadJobs();
+        refetchJobs();
       } else {
         setFormError(
           typeof res.error === "string" ? res.error : JSON.stringify(res.error),
@@ -626,11 +657,11 @@ export default function Cron() {
     }
   }
 
-  if (loading) {
+  if (loading && jobs.length === 0 && status === null) {
     return <LoadingState message="Loading cron..." />;
   }
 
-  if (status === null) {
+  if (!loading && status === null) {
     return (
       <EmptyState
         title="Cron Unavailable"
@@ -647,9 +678,9 @@ export default function Cron() {
         title="Cron Jobs"
         subtitle={
           <>
-            {status.running ? "Running" : "Stopped"} | {status.jobCount} jobs
+            {status?.running ? "Running" : "Stopped"} | {status?.jobCount ?? 0} jobs
             {activeCount > 0 ? ` | ${activeCount} active` : ""}
-            {status.nextDueAt ? ` | Next: ${formatTs(status.nextDueAt)}` : ""}
+            {status?.nextDueAt ? ` | Next: ${formatTs(status.nextDueAt)}` : ""}
           </>
         }
         actions={

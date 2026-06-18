@@ -72,7 +72,23 @@ export default function PHAccounts() {
   }
 
   if (error) {
-    return <p className="text-danger">{error}</p>;
+    return (
+      <div>
+        <div className="bg-danger-subtle border border-danger/20 rounded-lg px-4 py-3 text-danger text-sm mb-5">
+          {error}
+        </div>
+        <Button
+          size="sm"
+          onClick={() => {
+            setError("");
+            setLoading(true);
+            loadAccounts();
+          }}
+        >
+          Retry
+        </Button>
+      </div>
+    );
   }
 
   return (
