@@ -43,6 +43,10 @@ function rowToSession(row: Record<string, unknown>): SigeSession {
   // origin column added by migration 019; default 'human' for pre-migration rows.
   const origin = ((row.origin as string | null) ?? "human") as SigeSessionOrigin;
 
+  // last_activity_at: NULL for pre-migration rows — map to undefined.
+  const lastActivityAt =
+    row.last_activity_at != null ? (row.last_activity_at as number) : undefined;
+
   return {
     id: row.id as string,
     seedInput,
@@ -63,6 +67,7 @@ function rowToSession(row: Record<string, unknown>): SigeSession {
       row.finished_at != null
         ? new Date((row.finished_at as number) * 1000)
         : undefined,
+    lastActivityAt,
     error: row.error as string | undefined,
   }
 }
@@ -574,6 +579,139 @@ export async function getTopIdeas(
     LIMIT ${limit}
   `
   return (rows as Record<string, unknown>[]).map(rowToFusedScore)
+}
+
+// ─── Activity Heartbeat ──────────────────────────────────────────────────────
+
+/**
+ * Bump the `last_activity_at` column to now (epoch seconds) for a session.
+ *
+ * Called at every stage transition and at round/substep completions in
+ * expert-game and social-sim so the progress endpoint can detect stalled runs.
+ * Cheap: a single UPDATE on the primary key, no read. Fire-and-forget safe —
+ * callers may choose to swallow errors (non-fatal to the run itself).
+ */
+export async function touchSessionActivity(sessionId: string): Promise<void> {
+  const db = getDb();
+  const nowSec = Math.floor(Date.now() / 1000);
+  await db`
+    UPDATE sige_sessions
+    SET last_activity_at = ${nowSec}
+    WHERE id = ${sessionId}
+  `;
+}
+
+// ─── Progress Raw Data ────────────────────────────────────────────────────────
+
+export interface SessionProgressRaw {
+  readonly session: {
+    readonly id: string;
+    readonly status: SigeSessionStatus;
+    readonly origin: "human" | "auto";
+    readonly createdAt: number;
+    readonly finishedAt: number | null;
+    readonly lastActivityAt: number | null;
+    readonly error: string | null;
+  };
+  /** Per-round timestamps from sige_agent_actions: round -> {minAt, maxAt, actionCount} */
+  readonly expertRounds: ReadonlyMap<number, { readonly minAt: number; readonly maxAt: number; readonly actionCount: number }>;
+  /** Per-round timestamps from sige_simulation_results for expert layer */
+  readonly expertResultRounds: ReadonlyMap<number, { readonly createdAt: number }>;
+  /** Taste-filter result: present when at least one expert action for round>2 exists (proxy) */
+  readonly tasteFilterAt: number | null;
+  /** Social simulation result created_at (null when not yet done) */
+  readonly socialResultAt: number | null;
+  /** Count of expert agent actions (used for substep detail) */
+  readonly expertActionCount: ReadonlyMap<number, number>;
+}
+
+/**
+ * Gather all raw data needed to derive SessionProgress in a few queries
+ * (never N+1). Returns null when the session does not exist.
+ */
+export async function getSessionProgressRaw(
+  sessionId: string,
+): Promise<SessionProgressRaw | null> {
+  const db = getDb();
+
+  // ── Session row ──────────────────────────────────────────────────────────────
+  const sessionRows = await db`
+    SELECT id, status, origin, created_at, finished_at, last_activity_at, error
+    FROM sige_sessions
+    WHERE id = ${sessionId}
+  `;
+  const sessionRow = (sessionRows as Record<string, unknown>[])[0];
+  if (!sessionRow) return null;
+
+  // ── Expert rounds: min/max created_at and action count per round ─────────────
+  const actionRows = await db`
+    SELECT round,
+           MIN(created_at) AS min_at,
+           MAX(created_at) AS max_at,
+           COUNT(*) AS action_count
+    FROM sige_agent_actions
+    WHERE session_id = ${sessionId}
+    GROUP BY round
+    ORDER BY round ASC
+  `;
+
+  const expertRounds = new Map<number, { readonly minAt: number; readonly maxAt: number; readonly actionCount: number }>();
+  const expertActionCount = new Map<number, number>();
+  for (const row of actionRows as Record<string, unknown>[]) {
+    const r = row.round as number;
+    expertRounds.set(r, {
+      minAt: Number(row.min_at),
+      maxAt: Number(row.max_at),
+      actionCount: Number(row.action_count),
+    });
+    expertActionCount.set(r, Number(row.action_count));
+  }
+
+  // ── Simulation result rows: expert per-round timestamps ──────────────────────
+  const simRows = await db`
+    SELECT layer, round, created_at
+    FROM sige_simulation_results
+    WHERE session_id = ${sessionId}
+    ORDER BY layer ASC, round ASC NULLS FIRST
+  `;
+
+  const expertResultRounds = new Map<number, { readonly createdAt: number }>();
+  let socialResultAt: number | null = null;
+
+  for (const row of simRows as Record<string, unknown>[]) {
+    if (row.layer === "expert" && row.round != null) {
+      expertResultRounds.set(row.round as number, { createdAt: Number(row.created_at) });
+    } else if (row.layer === "social") {
+      // Take the latest social result timestamp
+      const t = Number(row.created_at);
+      if (socialResultAt === null || t > socialResultAt) {
+        socialResultAt = t;
+      }
+    }
+  }
+
+  // Taste filter is applied between rounds 2 and 3 of expert game. We infer it
+  // completed when round 3 expert actions exist — that's the earliest reliable
+  // signal without a dedicated column.
+  const round3 = expertRounds.get(3);
+  const tasteFilterAt = round3 !== undefined ? round3.minAt : null;
+
+  return {
+    session: {
+      id: sessionRow.id as string,
+      status: sessionRow.status as SigeSessionStatus,
+      origin: ((sessionRow.origin as string | null) ?? "human") as "human" | "auto",
+      createdAt: Number(sessionRow.created_at),
+      finishedAt: sessionRow.finished_at != null ? Number(sessionRow.finished_at) : null,
+      lastActivityAt: sessionRow.last_activity_at != null ? Number(sessionRow.last_activity_at) : null,
+      error: (sessionRow.error as string | null) ?? null,
+    },
+    expertRounds,
+    expertResultRounds,
+    tasteFilterAt,
+    socialResultAt,
+    expertActionCount,
+  };
 }
 
 // ─── Population Dynamics Operations ──────────────────────────────────────────

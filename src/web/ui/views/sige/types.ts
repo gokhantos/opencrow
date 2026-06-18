@@ -190,3 +190,54 @@ export interface SseStatusEvent {
   readonly status?: SigeSessionStatus;
   readonly message?: string;
 }
+
+// ─── Step-monitor progress types (GET /api/sige/sessions/:id/progress) ─────────
+
+export type StepKey =
+  | "knowledge_construction"
+  | "game_formulation"
+  | "expert_game"
+  | "social_simulation"
+  | "scoring"
+  | "report_generation";
+
+export type SubstepState = "waiting" | "running" | "done" | "error";
+
+export interface ProgressSubstep {
+  readonly key: string;
+  readonly label: string;
+  readonly state: SubstepState;
+  readonly startedAt: number | null; // epoch seconds
+  readonly endedAt: number | null;
+  readonly elapsedSec: number | null;
+  readonly detail: string | null;
+}
+
+export interface ProgressStep {
+  readonly key: StepKey;
+  readonly label: string;
+  readonly state: SubstepState;
+  readonly startedAt: number | null; // epoch seconds
+  readonly endedAt: number | null;
+  readonly elapsedSec: number | null;
+  readonly substeps: readonly ProgressSubstep[];
+}
+
+export interface SessionProgress {
+  readonly sessionId: string;
+  readonly status: SigeSessionStatus;
+  readonly origin: "human" | "auto";
+  readonly createdAt: number; // epoch seconds
+  readonly finishedAt: number | null;
+  /** Epoch seconds of the most recent heartbeat. */
+  readonly lastActivityAt: number | null;
+  readonly totalElapsedSec: number;
+  /** True when status is non-terminal AND now - lastActivityAt > threshold. */
+  readonly stalled: boolean;
+  readonly stalledForSec: number | null;
+  readonly stalledReason: string | null;
+  readonly currentStep: string | null;
+  readonly currentSubstep: string | null;
+  readonly error: string | null;
+  readonly steps: readonly ProgressStep[];
+}

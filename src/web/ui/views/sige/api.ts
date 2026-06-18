@@ -4,6 +4,7 @@ import type {
   SigeSessionDetail,
   FusedScore,
   PopulationEntry,
+  SessionProgress,
 } from "./types";
 import type { GraphView } from "../../../../sige/knowledge/graph-query";
 
@@ -96,6 +97,20 @@ export async function fetchPopulationDynamics(
 
 export async function cancelSession(id: string): Promise<void> {
   await apiFetch(`/api/sige/sessions/${id}`, { method: "DELETE" });
+}
+
+interface ProgressResponse {
+  readonly success: boolean;
+  readonly data: SessionProgress;
+}
+
+export async function fetchSessionProgress(
+  id: string,
+): Promise<SessionProgress> {
+  const res = await apiFetch<ProgressResponse>(
+    `/api/sige/sessions/${id}/progress`,
+  );
+  return res.data;
 }
 
 interface GraphResponse {

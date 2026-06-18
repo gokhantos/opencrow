@@ -13,7 +13,8 @@ import { PopulationTab } from "./PopulationTab";
 import { TERMINAL_STATUSES } from "./statusConfig";
 import { cancelSession } from "./api";
 import { ProcessTheater } from "./theater/ProcessTheater";
-import type { SigeSessionDetail } from "./types";
+import { ProgressTimeline } from "./theater/ProgressTimeline";
+import type { SigeSessionDetail, SessionProgress } from "./types";
 
 type DetailTab = "report" | "ideas" | "game" | "population";
 
@@ -27,6 +28,11 @@ const DETAIL_TABS: readonly { id: DetailTab; label: string }[] = [
 interface SessionResponse {
   readonly success: boolean;
   readonly data: SigeSessionDetail;
+}
+
+interface ProgressApiResponse {
+  readonly success: boolean;
+  readonly data: SessionProgress;
 }
 
 interface SessionDetailProps {
@@ -51,6 +57,14 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
     intervalMs: 3000,
     enabled: !isTerminal,
   });
+
+  // Progress poll — separate 3s interval, also stops at terminal.
+  const { data: progressData } = usePolledFetch<ProgressApiResponse>(
+    `/api/sige/sessions/${sessionId}/progress`,
+    { intervalMs: 3000, enabled: !isTerminal },
+  );
+
+  const progress: SessionProgress | null = progressData?.data ?? null;
 
   // Keep local session state in sync — allows handleCancel to patch
   // status optimistically without losing polled data.
@@ -154,6 +168,13 @@ export function SessionDetail({ sessionId, onBack }: SessionDetailProps) {
       {session.status === "cancelled" && (
         <div className="bg-bg-1 border border-border rounded-xl px-5 py-3 mb-4 text-center">
           <p className="text-sm text-muted m-0">This session was cancelled.</p>
+        </div>
+      )}
+
+      {/* Step-level progress timeline — live monitor shown when data is available */}
+      {progress != null && (
+        <div className="mb-6">
+          <ProgressTimeline progress={progress} />
         </div>
       )}
 

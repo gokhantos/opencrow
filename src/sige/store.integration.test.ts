@@ -18,6 +18,8 @@ import {
   saveResumeContext,
   loadResumeContext,
   claimInterruptedSession,
+  touchSessionActivity,
+  getSessionProgressRaw,
 } from "./store";
 import type { SigeSessionConfig } from "./types";
 
@@ -437,5 +439,90 @@ describe("updateSessionStatus — cancelled is sticky (clobber guard)", () => {
       finishedAt: Math.floor(Date.now() / 1000),
     });
     expect(await getSessionStatus(id)).toBe("completed");
+  });
+});
+
+describe("touchSessionActivity — heartbeat update", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    await cleanup();
+  });
+  afterEach(async () => {
+    await cleanup();
+    await closeDb();
+  });
+
+  it("sets last_activity_at to approximately now", async () => {
+    const id = await createTestSession({ origin: "human", seedInput: "test", status: "pending" });
+    const before = Math.floor(Date.now() / 1000);
+    await touchSessionActivity(id);
+    const after = Math.floor(Date.now() / 1000);
+
+    const session = await getSession(id);
+    expect(session).not.toBeNull();
+    expect(session!.lastActivityAt).not.toBeUndefined();
+    expect(session!.lastActivityAt!).toBeGreaterThanOrEqual(before);
+    expect(session!.lastActivityAt!).toBeLessThanOrEqual(after + 1);
+  });
+
+  it("updates last_activity_at when called multiple times", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    await touchSessionActivity(id);
+    const first = await getSession(id);
+    // Small sleep to ensure a different second boundary is possible
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await touchSessionActivity(id);
+    const second = await getSession(id);
+
+    expect(second!.lastActivityAt).not.toBeUndefined();
+    expect(second!.lastActivityAt!).toBeGreaterThanOrEqual(first!.lastActivityAt ?? 0);
+  });
+
+  it("does not throw for non-existent session id (no-op UPDATE)", async () => {
+    // UPDATE on a non-existent row is a no-op, not an error.
+    await expect(touchSessionActivity(crypto.randomUUID())).resolves.toBeUndefined();
+  });
+});
+
+describe("getSessionProgressRaw — raw data for progress derivation", () => {
+  beforeEach(async () => {
+    await initDb(process.env.DATABASE_URL);
+    await cleanup();
+  });
+  afterEach(async () => {
+    await cleanup();
+    await closeDb();
+  });
+
+  it("returns null for non-existent session", async () => {
+    const raw = await getSessionProgressRaw(crypto.randomUUID());
+    expect(raw).toBeNull();
+  });
+
+  it("returns session row fields for a fresh session", async () => {
+    const id = await createTestSession({ origin: "human", seedInput: "test", status: "pending" });
+    const raw = await getSessionProgressRaw(id);
+    expect(raw).not.toBeNull();
+    expect(raw!.session.id).toBe(id);
+    expect(raw!.session.status).toBe("pending");
+    expect(raw!.session.origin).toBe("human");
+    expect(raw!.session.error).toBeNull();
+    expect(raw!.session.finishedAt).toBeNull();
+  });
+
+  it("reflects last_activity_at after a touch", async () => {
+    const id = await createTestSession({ origin: "auto", status: "pending" });
+    await touchSessionActivity(id);
+    const raw = await getSessionProgressRaw(id);
+    expect(raw!.session.lastActivityAt).not.toBeNull();
+  });
+
+  it("returns empty expert round maps for a fresh session", async () => {
+    const id = await createTestSession({ origin: "human", seedInput: "test", status: "pending" });
+    const raw = await getSessionProgressRaw(id);
+    expect(raw!.expertRounds.size).toBe(0);
+    expect(raw!.expertResultRounds.size).toBe(0);
+    expect(raw!.tasteFilterAt).toBeNull();
+    expect(raw!.socialResultAt).toBeNull();
   });
 });
