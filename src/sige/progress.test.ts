@@ -392,3 +392,281 @@ describe("deriveSessionProgress — step ordering and labels", () => {
     expect(expertStep?.substeps.length).toBe(5);
   });
 });
+
+// ─── 7. Inferred running substep: 0 rounds done → round_1 running ────────────
+// (b) expert_game running with NO substep data at all → round_1 inferred running.
+
+describe("deriveSessionProgress — inferred running substep (b): 0 rounds done → round_1", () => {
+  const sessionCreatedAt = NOW_SEC - 200;
+  const lastActivityAt = NOW_SEC - 10;
+
+  const raw = makeRaw({
+    session: {
+      id: SESSION_ID,
+      status: "expert_game",
+      origin: "human",
+      createdAt: sessionCreatedAt,
+      finishedAt: null,
+      lastActivityAt,
+      error: null,
+    },
+    // No expertRounds, no expertResultRounds, no tasteFilterAt
+  });
+
+  it("expert_game step is running", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    expect(expertStep?.state).toBe("running");
+  });
+
+  it("round_1 substep is inferred running", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    const r1 = expertStep?.substeps.find((ss) => ss.key === "round_1");
+    expect(r1?.state).toBe("running");
+  });
+
+  it("round_1 inferred running has a positive elapsedSec", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    const r1 = expertStep?.substeps.find((ss) => ss.key === "round_1");
+    expect(r1?.elapsedSec).not.toBeNull();
+    expect(r1?.elapsedSec!).toBeGreaterThan(0);
+  });
+
+  it("round_1 inferred running has startedAt set", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    const r1 = expertStep?.substeps.find((ss) => ss.key === "round_1");
+    expect(r1?.startedAt).not.toBeNull();
+  });
+
+  it("round_1 inferred running has endedAt null", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    const r1 = expertStep?.substeps.find((ss) => ss.key === "round_1");
+    expect(r1?.endedAt).toBeNull();
+  });
+
+  it("substeps round_2 through round_4 and taste_filter are waiting", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    for (const key of ["round_2", "taste_filter", "round_3", "round_4"]) {
+      const ss = expertStep?.substeps.find((s) => s.key === key);
+      expect(ss?.state).toBe("waiting");
+    }
+  });
+
+  it("currentSubstep is round_1", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    expect(p.currentSubstep).toBe("round_1");
+  });
+});
+
+// ─── 8. Inferred running substep (a): 2 rounds done → taste_filter running ───
+// (a) expert_game running, round_1+round_2 done (result rows exist), no taste_filter.
+// The 3rd substep in order is taste_filter — it should be inferred running.
+
+describe("deriveSessionProgress — inferred running substep (a): 2 rounds done → taste_filter", () => {
+  const r1start = NOW_SEC - 400;
+  const r1end = NOW_SEC - 350;
+  const r2start = NOW_SEC - 340;
+  const r2end = NOW_SEC - 280;
+
+  const raw = makeRaw({
+    session: {
+      id: SESSION_ID,
+      status: "expert_game",
+      origin: "human",
+      createdAt: NOW_SEC - 500,
+      finishedAt: null,
+      lastActivityAt: r2end,
+      error: null,
+    },
+    expertRounds: new Map([
+      [1, { minAt: r1start, maxAt: r1end, actionCount: 5 }],
+      [2, { minAt: r2start, maxAt: r2end, actionCount: 6 }],
+    ]),
+    expertResultRounds: new Map([
+      [1, { createdAt: r1end }],
+      [2, { createdAt: r2end }],
+    ]),
+    // tasteFilterAt is null — taste filter not yet recorded
+  });
+
+  it("round_1 substep is done", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    expect(expertStep?.substeps.find((ss) => ss.key === "round_1")?.state).toBe("done");
+  });
+
+  it("round_2 substep is done", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    expect(expertStep?.substeps.find((ss) => ss.key === "round_2")?.state).toBe("done");
+  });
+
+  it("taste_filter substep is inferred running (3rd in order, first non-done)", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    const tf = expertStep?.substeps.find((ss) => ss.key === "taste_filter");
+    expect(tf?.state).toBe("running");
+  });
+
+  it("taste_filter inferred running has a positive elapsedSec", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    const tf = expertStep?.substeps.find((ss) => ss.key === "taste_filter");
+    expect(tf?.elapsedSec).not.toBeNull();
+    expect(tf?.elapsedSec!).toBeGreaterThan(0);
+  });
+
+  it("taste_filter inferred startedAt is r2end (prior done substep's endedAt)", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    const tf = expertStep?.substeps.find((ss) => ss.key === "taste_filter");
+    // startedAt should be r2end (the endedAt of the previous done substep round_2)
+    expect(tf?.startedAt).toBe(r2end);
+  });
+
+  it("round_3 and round_4 are waiting", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    expect(expertStep?.substeps.find((ss) => ss.key === "round_3")?.state).toBe("waiting");
+    expect(expertStep?.substeps.find((ss) => ss.key === "round_4")?.state).toBe("waiting");
+  });
+
+  it("currentSubstep is taste_filter", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    expect(p.currentSubstep).toBe("taste_filter");
+  });
+});
+
+// ─── 9. Inferred running substep (c): round_1+round_2+taste_filter done → round_3 ─
+
+describe("deriveSessionProgress — inferred running substep (c): r1+r2+tf done → round_3", () => {
+  const r1start = NOW_SEC - 600;
+  const r1end = NOW_SEC - 550;
+  const r2start = NOW_SEC - 540;
+  const r2end = NOW_SEC - 480;
+  const tfStart = NOW_SEC - 470;
+  // taste_filter is "done" when round_3 has NOT yet started (tasteFilterAt set, r3 absent)
+  // BUT we still need round_3 absent from expertRounds for the inferred path.
+
+  const raw = makeRaw({
+    session: {
+      id: SESSION_ID,
+      status: "expert_game",
+      origin: "human",
+      createdAt: NOW_SEC - 700,
+      finishedAt: null,
+      lastActivityAt: tfStart,
+      error: null,
+    },
+    expertRounds: new Map([
+      [1, { minAt: r1start, maxAt: r1end, actionCount: 5 }],
+      [2, { minAt: r2start, maxAt: r2end, actionCount: 6 }],
+      // round_3 absent — not yet started
+    ]),
+    expertResultRounds: new Map([
+      [1, { createdAt: r1end }],
+      [2, { createdAt: r2end }],
+    ]),
+    tasteFilterAt: tfStart,
+    // round_3 absent → taste_filter has no endedAt (r3?.minAt is null)
+  });
+
+  it("round_1, round_2, taste_filter are done", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    expect(expertStep?.substeps.find((ss) => ss.key === "round_1")?.state).toBe("done");
+    expect(expertStep?.substeps.find((ss) => ss.key === "round_2")?.state).toBe("done");
+    expect(expertStep?.substeps.find((ss) => ss.key === "taste_filter")?.state).toBe("done");
+  });
+
+  it("round_3 substep is inferred running", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    const r3 = expertStep?.substeps.find((ss) => ss.key === "round_3");
+    expect(r3?.state).toBe("running");
+  });
+
+  it("round_3 inferred running has a positive elapsedSec", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    const r3 = expertStep?.substeps.find((ss) => ss.key === "round_3");
+    expect(r3?.elapsedSec).not.toBeNull();
+    expect(r3?.elapsedSec!).toBeGreaterThan(0);
+  });
+
+  it("round_4 is waiting", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    expect(expertStep?.substeps.find((ss) => ss.key === "round_4")?.state).toBe("waiting");
+  });
+
+  it("currentSubstep is round_3", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    expect(p.currentSubstep).toBe("round_3");
+  });
+});
+
+// ─── 10. Completed session: no inferred running (regression guard) ────────────
+// (d) completed session — all steps done, no substep inferred running.
+
+describe("deriveSessionProgress — inferred running: completed session unchanged (d)", () => {
+  const finishedAt = NOW_SEC - 10;
+
+  const raw = makeRaw({
+    session: {
+      id: SESSION_ID,
+      status: "completed",
+      origin: "human",
+      createdAt: NOW_SEC - 1800,
+      finishedAt,
+      lastActivityAt: finishedAt,
+      error: null,
+    },
+    expertRounds: new Map([
+      [1, { minAt: NOW_SEC - 1600, maxAt: NOW_SEC - 1550, actionCount: 5 }],
+      [2, { minAt: NOW_SEC - 1540, maxAt: NOW_SEC - 1480, actionCount: 6 }],
+      [3, { minAt: NOW_SEC - 1200, maxAt: NOW_SEC - 1100, actionCount: 7 }],
+      [4, { minAt: NOW_SEC - 1090, maxAt: NOW_SEC - 1000, actionCount: 4 }],
+    ]),
+    expertResultRounds: new Map([
+      [1, { createdAt: NOW_SEC - 1550 }],
+      [2, { createdAt: NOW_SEC - 1480 }],
+      [3, { createdAt: NOW_SEC - 1100 }],
+      [4, { createdAt: NOW_SEC - 1000 }],
+    ]),
+    tasteFilterAt: NOW_SEC - 1210,
+    socialResultAt: NOW_SEC - 500,
+  });
+
+  it("all expert substeps are done (no inferred running in terminal session)", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    const expertStep = p.steps.find((s) => s.key === "expert_game");
+    for (const ss of expertStep?.substeps ?? []) {
+      expect(ss.state).toBe("done");
+    }
+  });
+
+  it("no substep is running", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    for (const step of p.steps) {
+      for (const ss of step.substeps) {
+        expect(ss.state).not.toBe("running");
+      }
+    }
+  });
+
+  it("currentSubstep is null", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    expect(p.currentSubstep).toBeNull();
+  });
+
+  it("currentStep is null", () => {
+    const p = deriveSessionProgress(raw, NOW_SEC);
+    expect(p.currentStep).toBeNull();
+  });
+});

@@ -133,6 +133,7 @@ function elapsedSec(startedAt: number | null, endedAt: number | null, nowSec: nu
 function deriveExpertSubsteps(
   raw: SessionProgressRaw,
   expertGameState: StepState,
+  expertStepStartedAt: number | null,
   nowSec: number,
 ): readonly SubstepProgress[] {
   // Expert game has 4 rounds + taste_filter (between rounds 2 and 3).
@@ -158,7 +159,8 @@ function deriveExpertSubsteps(
     }));
   }
 
-  return specs.map((spec): SubstepProgress => {
+  // Build raw substeps first (state based on real DB data only).
+  const rawSubsteps = specs.map((spec): SubstepProgress => {
     if (spec.isTasteFilter === true) {
       const tf = raw.tasteFilterAt;
       if (tf === null) {
@@ -209,6 +211,46 @@ function deriveExpertSubsteps(
       detail,
     };
   });
+
+  // ── Infer running substep when parent stage is running ─────────────────────
+  //
+  // During a live expert_game, rounds only persist when they COMPLETE (via
+  // saveAgentAction). So until a round writes its first DB row the substep is
+  // "waiting" above. When the parent step is running and NO substep is already
+  // "running" (per real data), we infer: the first substep that is NOT "done"
+  // is the active one.
+  if (expertGameState === "running") {
+    const alreadyRunning = rawSubsteps.some((ss) => ss.state === "running");
+    if (!alreadyRunning) {
+      const firstNonDoneIdx = rawSubsteps.findIndex((ss) => ss.state !== "done");
+      if (firstNonDoneIdx !== -1) {
+        // Derive startedAt for the inferred running substep.
+        // Use the endedAt of the previous done substep, falling back to the
+        // expert step's startedAt, then lastActivityAt, then nowSec.
+        const prevDoneSubstep = firstNonDoneIdx > 0 ? rawSubsteps[firstNonDoneIdx - 1] : undefined;
+        const inferredStartedAt =
+          prevDoneSubstep?.endedAt ??
+          expertStepStartedAt ??
+          raw.session.lastActivityAt ??
+          nowSec;
+
+        return rawSubsteps.map((ss, idx): SubstepProgress => {
+          if (idx === firstNonDoneIdx) {
+            return {
+              ...ss,
+              state: "running",
+              startedAt: inferredStartedAt,
+              endedAt: null,
+              elapsedSec: Math.max(0, nowSec - inferredStartedAt),
+            };
+          }
+          return ss;
+        });
+      }
+    }
+  }
+
+  return rawSubsteps;
 }
 
 // ─── Derive Substeps for Social Simulation ───────────────────────────────────
@@ -216,6 +258,7 @@ function deriveExpertSubsteps(
 function deriveSocialSubsteps(
   raw: SessionProgressRaw,
   socialState: StepState,
+  socialStepStartedAt: number | null,
   nowSec: number,
 ): readonly SubstepProgress[] {
   // Social sim runs N rounds (socialRounds from config, typically 3).
@@ -242,15 +285,17 @@ function deriveSocialSubsteps(
       },
     ];
   }
-  // running
+  // running — infer startedAt so the elapsed timer ticks
+  const inferredStartedAt =
+    socialStepStartedAt ?? raw.session.lastActivityAt ?? nowSec;
   return [
     {
       key: "social_round_1",
       label: "Social Rounds",
       state: "running",
-      startedAt: null,
+      startedAt: inferredStartedAt,
       endedAt: null,
-      elapsedSec: elapsedSec(null, null, nowSec),
+      elapsedSec: Math.max(0, nowSec - inferredStartedAt),
       detail: null,
     },
   ];
@@ -263,17 +308,28 @@ function deriveSocialSubsteps(
 // - For terminal states: finishedAt as end of report_generation
 // - Round timestamps from expert game
 // - Social result timestamp
-// For steps with no direct timing signal, we use null.
+// For steps with no direct timing signal, we fall back to the prior step's
+// endedAt or lastActivityAt so that running steps always show a live timer.
 
 function deriveStepTiming(
   stepKey: StepKey,
   stepState: StepState,
   raw: SessionProgressRaw,
   nowSec: number,
+  /**
+   * The endedAt of the immediately preceding step (if known). Used as a
+   * startedAt fallback for running steps that have no direct timing data.
+   */
+  priorStepEndedAt: number | null,
 ): { startedAt: number | null; endedAt: number | null; elapsedSec: number | null } {
   if (stepState === "waiting") {
     return { startedAt: null, endedAt: null, elapsedSec: null };
   }
+
+  // For a running step with no direct start marker, fall back to:
+  // prior step end → lastActivityAt → nowSec (no visible elapsed but timer starts)
+  const runningFallbackStart: number | null =
+    priorStepEndedAt ?? raw.session.lastActivityAt ?? null;
 
   switch (stepKey) {
     case "knowledge_construction": {
@@ -286,13 +342,20 @@ function deriveStepTiming(
       };
     }
     case "game_formulation": {
-      // No direct timing — falls through to null
-      return { startedAt: null, endedAt: null, elapsedSec: null };
+      // No direct timing — use fallback so running shows a live timer.
+      const startedAt = stepState === "running" ? runningFallbackStart : null;
+      return {
+        startedAt,
+        endedAt: null,
+        elapsedSec: stepState === "running" ? elapsedSec(startedAt, null, nowSec) : null,
+      };
     }
     case "expert_game": {
       const r1 = raw.expertRounds.get(1);
       const r4result = raw.expertResultRounds.get(4);
-      const startedAt = r1?.minAt ?? null;
+      // Use real round data if available; fall back to runningFallbackStart
+      // so the timer ticks even before round_1 writes its first DB row.
+      const startedAt = r1?.minAt ?? (stepState === "running" ? runningFallbackStart : null);
       const endedAt = r4result?.createdAt ?? null;
       return {
         startedAt,
@@ -302,13 +365,23 @@ function deriveStepTiming(
     }
     case "social_simulation": {
       const endedAt = raw.socialResultAt;
-      return { startedAt: null, endedAt, elapsedSec: null };
+      const startedAt = stepState === "running" ? runningFallbackStart : null;
+      return {
+        startedAt,
+        endedAt,
+        elapsedSec: stepState === "running" ? elapsedSec(startedAt, null, nowSec) : null,
+      };
     }
     case "scoring":
     case "report_generation": {
       const endedAt =
         stepState === "done" && raw.session.finishedAt !== null ? raw.session.finishedAt : null;
-      return { startedAt: null, endedAt, elapsedSec: null };
+      const startedAt = stepState === "running" ? runningFallbackStart : null;
+      return {
+        startedAt,
+        endedAt,
+        elapsedSec: stepState === "running" ? elapsedSec(startedAt, null, nowSec) : null,
+      };
     }
   }
 }
@@ -369,7 +442,12 @@ export function deriveSessionProgress(
     return "knowledge_construction";
   })();
 
-  const steps: StepProgress[] = STEP_ORDER.map((stepKey): StepProgress => {
+  // Build steps sequentially so each step can receive the prior step's endedAt
+  // as a timing fallback (for running steps with no direct start marker).
+  const steps: StepProgress[] = [];
+  let priorStepEndedAt: number | null = null;
+
+  for (const stepKey of STEP_ORDER) {
     let state: StepState = stepStateFromStatus(stepKey, session.status);
 
     // For failed sessions: use the inferred failed-at step.
@@ -381,16 +459,16 @@ export function deriveSessionProgress(
       else state = "waiting";
     }
 
-    const timing = deriveStepTiming(stepKey, state, raw, nowSec);
+    const timing = deriveStepTiming(stepKey, state, raw, nowSec, priorStepEndedAt);
     let substeps: readonly SubstepProgress[] = [];
 
     if (stepKey === "expert_game") {
-      substeps = deriveExpertSubsteps(raw, state, nowSec);
+      substeps = deriveExpertSubsteps(raw, state, timing.startedAt, nowSec);
     } else if (stepKey === "social_simulation") {
-      substeps = deriveSocialSubsteps(raw, state, nowSec);
+      substeps = deriveSocialSubsteps(raw, state, timing.startedAt, nowSec);
     }
 
-    return {
+    steps.push({
       key: stepKey,
       label: STEP_LABELS[stepKey],
       state,
@@ -398,8 +476,17 @@ export function deriveSessionProgress(
       endedAt: timing.endedAt,
       elapsedSec: timing.elapsedSec,
       substeps,
-    };
-  });
+    });
+
+    // Carry forward endedAt so the next step can use it as a startedAt fallback.
+    // For done steps that have a real endedAt, use it; otherwise keep the prior.
+    if (state === "done" && timing.endedAt !== null) {
+      priorStepEndedAt = timing.endedAt;
+    } else if (state === "done" && timing.startedAt !== null) {
+      // No explicit end marker but step is done — best we can do is keep prior.
+      // Don't overwrite with null.
+    }
+  }
 
   // ── Current step / substep ──────────────────────────────────────────────────
   const runningStep = steps.find((s) => s.state === "running") ?? null;
