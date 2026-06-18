@@ -134,7 +134,30 @@ function applyEnvOverrides(
   const sigeAutoMemoryWriteback = boolEnv("OPENCROW_SMART_SIGE_AUTO_MEMORY_WRITEBACK");
   if (sigeAutoMemoryWriteback !== undefined) sigeAutoEnv.memoryWriteback = sigeAutoMemoryWriteback;
 
-  if (Object.keys(smartEnv).length > 0 || Object.keys(sigeAutoEnv).length > 0) {
+  // OPENCROW_SMART_OUTCOME_MEMORY_* overrides for the outcome-memory feature block.
+  const outcomeMemoryEnv: Record<string, unknown> = {};
+  const outcomeMemoryWriteBack = boolEnv("OPENCROW_SMART_OUTCOME_MEMORY_WRITEBACK");
+  if (outcomeMemoryWriteBack !== undefined) outcomeMemoryEnv.writeBack = outcomeMemoryWriteBack;
+  const outcomeMemoryReadAtSynthesis = boolEnv("OPENCROW_SMART_OUTCOME_MEMORY_READ_AT_SYNTHESIS");
+  if (outcomeMemoryReadAtSynthesis !== undefined) outcomeMemoryEnv.readAtSynthesis = outcomeMemoryReadAtSynthesis;
+  const outcomeMemoryReinforceCap = Number(process.env.OPENCROW_SMART_OUTCOME_MEMORY_REINFORCE_CAP ?? "");
+  if (!Number.isNaN(outcomeMemoryReinforceCap) && process.env.OPENCROW_SMART_OUTCOME_MEMORY_REINFORCE_CAP !== undefined) {
+    outcomeMemoryEnv.reinforceCap = outcomeMemoryReinforceCap;
+  }
+  const outcomeMemoryAvoidCap = Number(process.env.OPENCROW_SMART_OUTCOME_MEMORY_AVOID_CAP ?? "");
+  if (!Number.isNaN(outcomeMemoryAvoidCap) && process.env.OPENCROW_SMART_OUTCOME_MEMORY_AVOID_CAP !== undefined) {
+    outcomeMemoryEnv.avoidCap = outcomeMemoryAvoidCap;
+  }
+  const outcomeMemorySearchLimit = Number(process.env.OPENCROW_SMART_OUTCOME_MEMORY_SEARCH_LIMIT ?? "");
+  if (!Number.isNaN(outcomeMemorySearchLimit) && process.env.OPENCROW_SMART_OUTCOME_MEMORY_SEARCH_LIMIT !== undefined) {
+    outcomeMemoryEnv.searchLimit = outcomeMemorySearchLimit;
+  }
+
+  if (
+    Object.keys(smartEnv).length > 0 ||
+    Object.keys(sigeAutoEnv).length > 0 ||
+    Object.keys(outcomeMemoryEnv).length > 0
+  ) {
     const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
     const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
     const existingSmart = (ideas.smart ?? {}) as Record<string, unknown>;
@@ -142,6 +165,10 @@ function applyEnvOverrides(
     if (Object.keys(sigeAutoEnv).length > 0) {
       const existingSigeAuto = (existingSmart.sigeAuto ?? {}) as Record<string, unknown>;
       smart.sigeAuto = { ...existingSigeAuto, ...sigeAutoEnv };
+    }
+    if (Object.keys(outcomeMemoryEnv).length > 0) {
+      const existingOutcomeMemory = (existingSmart.outcomeMemory ?? {}) as Record<string, unknown>;
+      smart.outcomeMemory = { ...existingOutcomeMemory, ...outcomeMemoryEnv };
     }
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }
