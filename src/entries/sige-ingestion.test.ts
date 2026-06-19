@@ -5,10 +5,11 @@
  *
  * Covers:
  *  - computeCredibility (original suite, unchanged)
- *  - passesQualityGate  (new quality gate)
+ *  - passesQualityGate  (quality gate)
  *  - normaliseForHash   (text normalisation for dedup)
  *  - contentHash        (SHA-256 determinism)
  *  - todayUtc / dailyCountKey (daily budget helpers)
+ *  - parseCursor / serializeCursor (composite cursor format — Bug 2)
  */
 
 import { describe, expect, it } from "bun:test";
@@ -16,12 +17,15 @@ import {
   ALPHA_RATIO_MIN,
   CREDIBILITY_FLOOR,
   MIN_CONTENT_LENGTH,
+  type CompositeCursor,
   type QualityGateResult,
   computeCredibility,
   contentHash,
   dailyCountKey,
   normaliseForHash,
+  parseCursor,
   passesQualityGate,
+  serializeCursor,
   todayUtc,
 } from "./sige-ingestion";
 
@@ -493,5 +497,167 @@ describe("dailyCountKey", () => {
 
   it("produces different keys for different dates", () => {
     expect(dailyCountKey("2026-06-19")).not.toBe(dailyCountKey("2026-06-20"));
+  });
+});
+
+// ─── parseCursor / serializeCursor (Bug 2 — composite cursor) ────────────────
+
+describe("serializeCursor", () => {
+  it("serialises a cursor to a JSON string", () => {
+    const cursor: CompositeCursor = { ts: 1_718_000_000, id: "abc-123" };
+    const serialized = serializeCursor(cursor);
+    expect(typeof serialized).toBe("string");
+    const parsed = JSON.parse(serialized) as unknown;
+    expect(parsed).toEqual({ ts: 1_718_000_000, id: "abc-123" });
+  });
+
+  it("round-trips through JSON.parse", () => {
+    const cursor: CompositeCursor = { ts: 1_234_567, id: "some-uuid-value" };
+    const back = JSON.parse(serializeCursor(cursor)) as CompositeCursor;
+    expect(back.ts).toBe(cursor.ts);
+    expect(back.id).toBe(cursor.id);
+  });
+});
+
+describe("parseCursor — valid composite format", () => {
+  it("parses a correctly-shaped object (config_overrides already JSON.parse'd)", () => {
+    const stored = { ts: 1_718_000_000, id: "some-id" };
+    const result = parseCursor(stored);
+    expect(result).toEqual({ ts: 1_718_000_000, id: "some-id" });
+  });
+
+  it("parses a JSON string containing the composite shape", () => {
+    const stored = JSON.stringify({ ts: 1_500_000_000, id: "row-42" });
+    const result = parseCursor(stored);
+    expect(result).toEqual({ ts: 1_500_000_000, id: "row-42" });
+  });
+
+  it("returns a readonly object with correct types", () => {
+    const result = parseCursor({ ts: 100, id: "x" });
+    expect(typeof result?.ts).toBe("number");
+    expect(typeof result?.id).toBe("string");
+  });
+});
+
+describe("parseCursor — legacy / absent values return null (Bug 2 migration handling)", () => {
+  it("returns null for null (no stored cursor)", () => {
+    expect(parseCursor(null)).toBeNull();
+  });
+
+  it("returns null for undefined", () => {
+    expect(parseCursor(undefined)).toBeNull();
+  });
+
+  it("returns null for a legacy bare string id (old format)", () => {
+    // Old cursor was a plain string like "t5_abc123" (reddit base36) or a UUID
+    expect(parseCursor("t5_abc123")).toBeNull();
+  });
+
+  it("returns null for a bare numeric string (old numeric id cursor)", () => {
+    expect(parseCursor("12345678")).toBeNull();
+  });
+
+  it("returns null for an empty string (initial cursor value)", () => {
+    expect(parseCursor("")).toBeNull();
+  });
+
+  it("returns null for a number (legacy numeric config override)", () => {
+    expect(parseCursor(12345)).toBeNull();
+  });
+
+  it("returns null for an object missing the ts field", () => {
+    expect(parseCursor({ id: "abc" })).toBeNull();
+  });
+
+  it("returns null for an object missing the id field", () => {
+    expect(parseCursor({ ts: 12345 })).toBeNull();
+  });
+
+  it("returns null for an object where ts is a string instead of number", () => {
+    expect(parseCursor({ ts: "12345", id: "abc" })).toBeNull();
+  });
+
+  it("returns null for an object where id is a number instead of string", () => {
+    expect(parseCursor({ ts: 12345, id: 999 })).toBeNull();
+  });
+
+  it("returns null for a JSON string that is not a composite cursor shape", () => {
+    // JSON string of a raw id — would have been the old stored format
+    expect(parseCursor('"some-uuid-here"')).toBeNull();
+  });
+
+  it("returns null for an array (malformed)", () => {
+    expect(parseCursor([1, 2, 3])).toBeNull();
+  });
+});
+
+describe("parseCursor — edge cases", () => {
+  it("accepts ts=0 and id='' (initial high-water for empty table)", () => {
+    const result = parseCursor({ ts: 0, id: "" });
+    expect(result).toEqual({ ts: 0, id: "" });
+  });
+
+  it("accepts a UUID string as id (news_articles / playstore_reviews)", () => {
+    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+    const result = parseCursor({ ts: 1_718_000_000, id: uuid });
+    expect(result?.id).toBe(uuid);
+  });
+
+  it("accepts a package-name string as id (playstore_apps)", () => {
+    const pkg = "com.example.myapp";
+    const result = parseCursor({ ts: 1_718_000_000, id: pkg });
+    expect(result?.id).toBe(pkg);
+  });
+
+  it("accepts a base36 reddit post id", () => {
+    const base36 = "1a2b3c4d";
+    const result = parseCursor({ ts: 1_718_000_000, id: base36 });
+    expect(result?.id).toBe(base36);
+  });
+});
+
+describe("cursor high-water advance logic (pure)", () => {
+  /**
+   * Verifies the ordering logic:
+   * A cursor at (ts=100, id="a") should compare less than (ts=101, id="a") and
+   * equal to (ts=100, id="b") when b > "a" lexicographically.
+   * This mirrors the SQL predicate: indexed_at > $ts OR (indexed_at = $ts AND id > $id)
+   */
+
+  function isCursorAhead(
+    candidate: CompositeCursor,
+    current: CompositeCursor,
+  ): boolean {
+    return (
+      candidate.ts > current.ts ||
+      (candidate.ts === current.ts && candidate.id > current.id)
+    );
+  }
+
+  it("newer ts always beats older ts regardless of id", () => {
+    expect(isCursorAhead({ ts: 101, id: "a" }, { ts: 100, id: "z" })).toBe(true);
+  });
+
+  it("same ts, later id is ahead", () => {
+    expect(isCursorAhead({ ts: 100, id: "b" }, { ts: 100, id: "a" })).toBe(true);
+  });
+
+  it("same ts, earlier id is NOT ahead", () => {
+    expect(isCursorAhead({ ts: 100, id: "a" }, { ts: 100, id: "b" })).toBe(false);
+  });
+
+  it("older ts is NOT ahead even with a later id", () => {
+    expect(isCursorAhead({ ts: 99, id: "z" }, { ts: 100, id: "a" })).toBe(false);
+  });
+
+  it("identical cursor is NOT ahead (no false progress)", () => {
+    expect(isCursorAhead({ ts: 100, id: "x" }, { ts: 100, id: "x" })).toBe(false);
+  });
+
+  it("UUID ids compare lexicographically (no stranding for non-monotonic ids)", () => {
+    // Two UUIDs with the same ts — later lexicographic order is considered ahead
+    const earlier = "00000000-0000-0000-0000-000000000001";
+    const later = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+    expect(isCursorAhead({ ts: 1000, id: later }, { ts: 1000, id: earlier })).toBe(true);
   });
 });

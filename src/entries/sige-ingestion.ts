@@ -16,6 +16,21 @@
  *  - Exact-dup dedup backed by sige_ingest_dedup table (SHA-256 of normalised text)
  *  - Daily budget cap: maxRecordsPerDay (default 3000, tunable via config_overrides)
  *
+ * Cursor design (Bug 2 fix):
+ *  Cursors are composite: { ts: number, id: string } where `ts` is indexed_at
+ *  (Unix epoch seconds) and `id` is the source-table primary key. Rows are
+ *  fetched with a tie-safe predicate:
+ *    WHERE (indexed_at > ts) OR (indexed_at = ts AND id > lastId)
+ *  ordered by indexed_at DESC, id DESC (freshest-first — Bug 3 fix).
+ *  On first run or when the stored cursor is in the old string format, the
+ *  high-water mark is initialised to MAX(indexed_at) for that source (skip
+ *  pre-existing backlog) and the fact is logged.
+ *
+ * Re-entrancy (Bug 1 fix):
+ *  A single boolean guard prevents overlapping cycles. The timer uses
+ *  run-then-reschedule (setTimeout after resolution) so the gap between
+ *  cycles is POLL_INTERVAL_MS regardless of cycle duration.
+ *
  * Usage:
  *   bun src/entries/sige-ingestion.ts
  */
@@ -66,6 +81,7 @@ interface AppStoreReviewRow {
   readonly title: string | null;
   readonly content: string | null;
   readonly rating: number;
+  readonly indexed_at: number | null;
 }
 
 interface PlayStoreReviewRow {
@@ -75,6 +91,7 @@ interface PlayStoreReviewRow {
   readonly content: string | null;
   readonly rating: number;
   readonly thumbs_up: number | null;
+  readonly indexed_at: number | null;
 }
 
 interface RedditPostRow {
@@ -84,6 +101,7 @@ interface RedditPostRow {
   readonly selftext: string | null;
   readonly score: number;
   readonly num_comments: number;
+  readonly indexed_at: number | null;
 }
 
 interface PhProductRow {
@@ -92,6 +110,7 @@ interface PhProductRow {
   readonly tagline: string | null;
   readonly description: string | null;
   readonly votes_count: number;
+  readonly indexed_at: number | null;
 }
 
 interface HnStoryRow {
@@ -100,6 +119,7 @@ interface HnStoryRow {
   readonly points: number;
   readonly comment_count: number;
   readonly description: string | null;
+  readonly indexed_at: number | null;
 }
 
 interface NewsArticleRow {
@@ -108,6 +128,7 @@ interface NewsArticleRow {
   readonly summary: string | null;
   readonly category: string | null;
   readonly source_name: string | null;
+  readonly indexed_at: number | null;
 }
 
 interface AppStoreAppRow {
@@ -115,6 +136,7 @@ interface AppStoreAppRow {
   readonly name: string;
   readonly category: string | null;
   readonly description: string | null;
+  readonly indexed_at: number | null;
 }
 
 interface PlayStoreAppRow {
@@ -124,6 +146,7 @@ interface PlayStoreAppRow {
   readonly description: string | null;
   readonly rating: number | null;
   readonly installs: string | null;
+  readonly indexed_at: number | null;
 }
 
 // ─── Credibility Heuristics ───────────────────────────────────────────────────
@@ -469,36 +492,137 @@ async function writeDailyCount(date: string, count: number): Promise<void> {
   await setOverride(CURSOR_NAMESPACE, dailyCountKey(date), count);
 }
 
+// ─── Composite Cursor ─────────────────────────────────────────────────────────
+
+/**
+ * High-water mark cursor: tracks the newest indexed_at + id processed.
+ *
+ * `ts`  — Unix epoch seconds (indexed_at of the last row processed in
+ *          descending order, i.e. the HIGHEST ts seen so far).
+ * `id`  — primary key of the last row processed within that ts bucket.
+ *
+ * Query predicate (freshest-first, tie-safe):
+ *   WHERE (indexed_at > ts) OR (indexed_at = ts AND id > lastId)
+ *   ORDER BY indexed_at DESC, id DESC
+ *
+ * "Advance" means updating the cursor to the NEWEST row from the current
+ * batch (first row returned, since rows are DESC). After the first batch the
+ * high-water mark equals the batch's highest indexed_at/id, and subsequent
+ * fetches pick up rows NEWER than that — so the cursor strictly advances.
+ */
+export interface CompositeCursor {
+  readonly ts: number;
+  readonly id: string;
+}
+
+/**
+ * Serialise a composite cursor to a JSON string for storage in config_overrides.
+ */
+export function serializeCursor(cursor: CompositeCursor): string {
+  return JSON.stringify({ ts: cursor.ts, id: cursor.id });
+}
+
+/**
+ * Parse a stored cursor value.
+ *
+ * Returns the parsed composite cursor on success, or null when the stored
+ * value is absent, in the legacy string format, or otherwise malformed.
+ * The caller must treat null as "no cursor yet" and initialise from MAX(indexed_at).
+ */
+export function parseCursor(stored: unknown): CompositeCursor | null {
+  if (stored === null || stored === undefined) return null;
+
+  // Stored as a raw string (config_overrides returns the parsed JSON value)
+  if (typeof stored === "string") {
+    // Might be a legacy bare id string — treat as legacy
+    try {
+      const parsed: unknown = JSON.parse(stored);
+      return validateCursorShape(parsed);
+    } catch {
+      // Not JSON — legacy format
+      return null;
+    }
+  }
+
+  // config_overrides JSON.parse already unwrapped the value for us
+  if (typeof stored === "object") {
+    return validateCursorShape(stored);
+  }
+
+  return null;
+}
+
+function validateCursorShape(value: unknown): CompositeCursor | null {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    "ts" in value &&
+    "id" in value &&
+    typeof (value as Record<string, unknown>)["ts"] === "number" &&
+    typeof (value as Record<string, unknown>)["id"] === "string"
+  ) {
+    return {
+      ts: (value as Record<string, unknown>)["ts"] as number,
+      id: (value as Record<string, unknown>)["id"] as string,
+    };
+  }
+  return null;
+}
+
 // ─── Source Definitions ───────────────────────────────────────────────────────
 
-interface SourceDefinition<T extends { readonly id: string }> {
+interface SourceDefinition<T extends { readonly id: string; readonly indexed_at: number | null }> {
   readonly name: string;
   readonly priority: number;
-  fetchBatch(cursorId: string, limit: number): Promise<readonly T[]>;
+  /**
+   * Fetch the next batch of rows NEWER than the composite cursor, ordered
+   * freshest-first (indexed_at DESC, id DESC).
+   * Rows with NULL indexed_at are excluded — they have no placement in the
+   * time-ordered cursor.
+   */
+  fetchBatch(cursor: CompositeCursor, limit: number): Promise<readonly T[]>;
+  /**
+   * Return the maximum indexed_at for this source (used on first-run
+   * high-water initialisation to skip pre-existing backlog).
+   * Returns null if the table is empty or all rows have NULL indexed_at.
+   */
+  maxIndexedAt(): Promise<number | null>;
   toText(row: T): string;
   toMetadata(row: T): Record<string, unknown>;
   getContent(row: T): string;
 }
 
-function makeSource<T extends { readonly id: string }>(
+function makeSource<T extends { readonly id: string; readonly indexed_at: number | null }>(
   def: SourceDefinition<T>,
 ): SourceDefinition<T> {
   return def;
 }
 
-const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
+const SOURCES: ReadonlyArray<
+  SourceDefinition<{ readonly id: string; readonly indexed_at: number | null }>
+> = [
   makeSource<AppStoreReviewRow>({
     name: "appstore_reviews",
     priority: 1,
-    async fetchBatch(cursorId, limit) {
+    async fetchBatch(cursor, limit) {
       const db = getDb();
       return (await db`
-        SELECT id, app_name, title, content, rating
+        SELECT id, app_name, title, content, rating, indexed_at
         FROM appstore_reviews
-        WHERE rating <= 2 AND id > ${cursorId}
-        ORDER BY id ASC
+        WHERE rating <= 2
+          AND indexed_at IS NOT NULL
+          AND (indexed_at > ${cursor.ts} OR (indexed_at = ${cursor.ts} AND id > ${cursor.id}))
+        ORDER BY indexed_at DESC, id DESC
         LIMIT ${limit}
       `) as AppStoreReviewRow[];
+    },
+    async maxIndexedAt() {
+      const db = getDb();
+      const rows = await db`
+        SELECT MAX(indexed_at)::integer AS max_ts FROM appstore_reviews WHERE rating <= 2
+      `;
+      const row = rows[0] as { max_ts: number | null } | undefined;
+      return row?.max_ts ?? null;
     },
     toText(r) {
       return `App Store complaint about "${r.app_name}": "${r.title ?? ""}" — ${r.content ?? ""}. Rating: ${r.rating}/5.`;
@@ -521,15 +645,25 @@ const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
   makeSource<PlayStoreReviewRow>({
     name: "playstore_reviews",
     priority: 1,
-    async fetchBatch(cursorId, limit) {
+    async fetchBatch(cursor, limit) {
       const db = getDb();
       return (await db`
-        SELECT id, app_name, title, content, rating, thumbs_up
+        SELECT id, app_name, title, content, rating, thumbs_up, indexed_at
         FROM playstore_reviews
-        WHERE rating <= 2 AND id > ${cursorId}
-        ORDER BY id ASC
+        WHERE rating <= 2
+          AND indexed_at IS NOT NULL
+          AND (indexed_at > ${cursor.ts} OR (indexed_at = ${cursor.ts} AND id > ${cursor.id}))
+        ORDER BY indexed_at DESC, id DESC
         LIMIT ${limit}
       `) as PlayStoreReviewRow[];
+    },
+    async maxIndexedAt() {
+      const db = getDb();
+      const rows = await db`
+        SELECT MAX(indexed_at)::integer AS max_ts FROM playstore_reviews WHERE rating <= 2
+      `;
+      const row = rows[0] as { max_ts: number | null } | undefined;
+      return row?.max_ts ?? null;
     },
     toText(r) {
       return `Play Store complaint about "${r.app_name}" (${r.thumbs_up ?? 0} upvotes): "${r.title ?? ""}" — ${r.content ?? ""}. Rating: ${r.rating}/5.`;
@@ -556,15 +690,24 @@ const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
   makeSource<RedditPostRow>({
     name: "reddit_posts",
     priority: 2,
-    async fetchBatch(cursorId, limit) {
+    async fetchBatch(cursor, limit) {
       const db = getDb();
       return (await db`
-        SELECT id, subreddit, title, selftext, score, num_comments
+        SELECT id, subreddit, title, selftext, score, num_comments, indexed_at
         FROM reddit_posts
-        WHERE id > ${cursorId}
-        ORDER BY id ASC
+        WHERE indexed_at IS NOT NULL
+          AND (indexed_at > ${cursor.ts} OR (indexed_at = ${cursor.ts} AND id > ${cursor.id}))
+        ORDER BY indexed_at DESC, id DESC
         LIMIT ${limit}
       `) as RedditPostRow[];
+    },
+    async maxIndexedAt() {
+      const db = getDb();
+      const rows = await db`
+        SELECT MAX(indexed_at)::integer AS max_ts FROM reddit_posts
+      `;
+      const row = rows[0] as { max_ts: number | null } | undefined;
+      return row?.max_ts ?? null;
     },
     toText(r) {
       const body = (r.selftext ?? "").slice(0, 500);
@@ -592,15 +735,24 @@ const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
   makeSource<PhProductRow>({
     name: "ph_products",
     priority: 2,
-    async fetchBatch(cursorId, limit) {
+    async fetchBatch(cursor, limit) {
       const db = getDb();
       return (await db`
-        SELECT id, name, tagline, description, votes_count
+        SELECT id, name, tagline, description, votes_count, indexed_at
         FROM ph_products
-        WHERE id > ${cursorId}
-        ORDER BY id ASC
+        WHERE indexed_at IS NOT NULL
+          AND (indexed_at > ${cursor.ts} OR (indexed_at = ${cursor.ts} AND id > ${cursor.id}))
+        ORDER BY indexed_at DESC, id DESC
         LIMIT ${limit}
       `) as PhProductRow[];
+    },
+    async maxIndexedAt() {
+      const db = getDb();
+      const rows = await db`
+        SELECT MAX(indexed_at)::integer AS max_ts FROM ph_products
+      `;
+      const row = rows[0] as { max_ts: number | null } | undefined;
+      return row?.max_ts ?? null;
     },
     toText(r) {
       const desc = (r.description ?? "").slice(0, 300);
@@ -623,15 +775,24 @@ const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
   makeSource<HnStoryRow>({
     name: "hn_stories",
     priority: 2,
-    async fetchBatch(cursorId, limit) {
+    async fetchBatch(cursor, limit) {
       const db = getDb();
       return (await db`
-        SELECT id, title, points, comment_count, description
+        SELECT id, title, points, comment_count, description, indexed_at
         FROM hn_stories
-        WHERE id > ${cursorId}
-        ORDER BY id ASC
+        WHERE indexed_at IS NOT NULL
+          AND (indexed_at > ${cursor.ts} OR (indexed_at = ${cursor.ts} AND id > ${cursor.id}))
+        ORDER BY indexed_at DESC, id DESC
         LIMIT ${limit}
       `) as HnStoryRow[];
+    },
+    async maxIndexedAt() {
+      const db = getDb();
+      const rows = await db`
+        SELECT MAX(indexed_at)::integer AS max_ts FROM hn_stories
+      `;
+      const row = rows[0] as { max_ts: number | null } | undefined;
+      return row?.max_ts ?? null;
     },
     toText(r) {
       const desc = (r.description ?? "").slice(0, 300);
@@ -658,15 +819,24 @@ const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
   makeSource<NewsArticleRow>({
     name: "news_articles",
     priority: 3,
-    async fetchBatch(cursorId, limit) {
+    async fetchBatch(cursor, limit) {
       const db = getDb();
       return (await db`
-        SELECT id, title, summary, category, source_name
+        SELECT id, title, summary, category, source_name, indexed_at
         FROM news_articles
-        WHERE id > ${cursorId}
-        ORDER BY id ASC
+        WHERE indexed_at IS NOT NULL
+          AND (indexed_at > ${cursor.ts} OR (indexed_at = ${cursor.ts} AND id > ${cursor.id}))
+        ORDER BY indexed_at DESC, id DESC
         LIMIT ${limit}
       `) as NewsArticleRow[];
+    },
+    async maxIndexedAt() {
+      const db = getDb();
+      const rows = await db`
+        SELECT MAX(indexed_at)::integer AS max_ts FROM news_articles
+      `;
+      const row = rows[0] as { max_ts: number | null } | undefined;
+      return row?.max_ts ?? null;
     },
     toText(r) {
       const summary = (r.summary ?? "").slice(0, 400);
@@ -689,15 +859,24 @@ const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
   makeSource<AppStoreAppRow>({
     name: "appstore_apps",
     priority: 3,
-    async fetchBatch(cursorId, limit) {
+    async fetchBatch(cursor, limit) {
       const db = getDb();
       return (await db`
-        SELECT id, name, category, description
+        SELECT id, name, category, description, indexed_at
         FROM appstore_apps
-        WHERE id > ${cursorId}
-        ORDER BY id ASC
+        WHERE indexed_at IS NOT NULL
+          AND (indexed_at > ${cursor.ts} OR (indexed_at = ${cursor.ts} AND id > ${cursor.id}))
+        ORDER BY indexed_at DESC, id DESC
         LIMIT ${limit}
       `) as AppStoreAppRow[];
+    },
+    async maxIndexedAt() {
+      const db = getDb();
+      const rows = await db`
+        SELECT MAX(indexed_at)::integer AS max_ts FROM appstore_apps
+      `;
+      const row = rows[0] as { max_ts: number | null } | undefined;
+      return row?.max_ts ?? null;
     },
     toText(r) {
       const desc = (r.description ?? "").slice(0, 400);
@@ -720,15 +899,24 @@ const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
   makeSource<PlayStoreAppRow>({
     name: "playstore_apps",
     priority: 3,
-    async fetchBatch(cursorId, limit) {
+    async fetchBatch(cursor, limit) {
       const db = getDb();
       return (await db`
-        SELECT id, name, category, description, rating, installs
+        SELECT id, name, category, description, rating, installs, indexed_at
         FROM playstore_apps
-        WHERE id > ${cursorId}
-        ORDER BY id ASC
+        WHERE indexed_at IS NOT NULL
+          AND (indexed_at > ${cursor.ts} OR (indexed_at = ${cursor.ts} AND id > ${cursor.id}))
+        ORDER BY indexed_at DESC, id DESC
         LIMIT ${limit}
       `) as PlayStoreAppRow[];
+    },
+    async maxIndexedAt() {
+      const db = getDb();
+      const rows = await db`
+        SELECT MAX(indexed_at)::integer AS max_ts FROM playstore_apps
+      `;
+      const row = rows[0] as { max_ts: number | null } | undefined;
+      return row?.max_ts ?? null;
     },
     toText(r) {
       const desc = (r.description ?? "").slice(0, 400);
@@ -752,7 +940,9 @@ const SOURCES: ReadonlyArray<SourceDefinition<{ readonly id: string }>> = [
       return `${r.name} ${r.description ?? ""}`;
     },
   }),
-] as ReadonlyArray<SourceDefinition<{ readonly id: string }>>;
+] as ReadonlyArray<
+  SourceDefinition<{ readonly id: string; readonly indexed_at: number | null }>
+>;
 
 // ─── Cursor helpers ───────────────────────────────────────────────────────────
 
@@ -760,15 +950,80 @@ function cursorKey(sourceName: string): string {
   return `cursor:${sourceName}`;
 }
 
-async function readCursor(sourceName: string): Promise<string> {
+/**
+ * Read the composite cursor for a source.
+ *
+ * Returns the parsed cursor or null when:
+ *  - No cursor stored yet (first run).
+ *  - Stored value is in the legacy bare-string format.
+ *  - Stored value is malformed JSON.
+ *
+ * The caller is responsible for initialising the cursor from MAX(indexed_at)
+ * when null is returned.
+ */
+export async function readCursor(sourceName: string): Promise<CompositeCursor | null> {
   const stored = await getOverride(CURSOR_NAMESPACE, cursorKey(sourceName));
-  if (typeof stored === "string") return stored;
-  if (typeof stored === "number") return String(stored);
-  return "";
+  return parseCursor(stored);
 }
 
-async function writeCursor(sourceName: string, lastId: string): Promise<void> {
-  await setOverride(CURSOR_NAMESPACE, cursorKey(sourceName), lastId);
+/**
+ * Persist the composite cursor for a source.
+ */
+export async function writeCursor(sourceName: string, cursor: CompositeCursor): Promise<void> {
+  await setOverride(CURSOR_NAMESPACE, cursorKey(sourceName), { ts: cursor.ts, id: cursor.id });
+}
+
+/**
+ * Resolve the effective cursor for a source.
+ *
+ * When no valid cursor exists (first run or legacy format), initialises the
+ * high-water mark to MAX(indexed_at) for that source so the backlog is
+ * skipped and only new inflow is processed. Logs the initialisation clearly.
+ *
+ * Returns the resolved cursor. Also returns a flag indicating whether the
+ * cursor was freshly initialised (used for per-source backlog-skip logging).
+ */
+async function resolveOrInitCursor(
+  source: SourceDefinition<{ readonly id: string; readonly indexed_at: number | null }>,
+): Promise<{ cursor: CompositeCursor; wasInitialised: boolean }> {
+  const existing = await readCursor(source.name);
+  if (existing !== null) {
+    return { cursor: existing, wasInitialised: false };
+  }
+
+  // No valid cursor — initialise high-water from MAX(indexed_at).
+  const maxTs = await source.maxIndexedAt();
+  const initTs = maxTs ?? 0;
+
+  // Count rows that will be skipped (pre-existing backlog).
+  const db = getDb();
+  const countRows = await db`
+    SELECT COUNT(*)::integer AS n
+    FROM ${db.unsafe(source.name)}
+    WHERE indexed_at IS NOT NULL AND indexed_at <= ${initTs}
+  `;
+  const countRow = countRows[0] as { n: number } | undefined;
+  const backlogCount = countRow?.n ?? 0;
+
+  const initCursor: CompositeCursor = { ts: initTs, id: "" };
+
+  log.info("Initialising high-water cursor — pre-existing backlog will be skipped", {
+    source: source.name,
+    high_water_ts: initTs,
+    skipped_backlog_rows: backlogCount,
+    reason: maxTs === null ? "table_empty_or_all_null_indexed_at" : "first_run_skip_backlog",
+  });
+
+  try {
+    await writeCursor(source.name, initCursor);
+  } catch (err) {
+    log.warn("Failed to persist initial cursor — will re-initialise next cycle", {
+      source: source.name,
+      err,
+    });
+  }
+
+  return { cursor: initCursor, wasInitialised: true };
 }
 
 // ─── Single-source ingestion ──────────────────────────────────────────────────
@@ -783,6 +1038,8 @@ interface SourceRunResult {
   readonly caughtUp: boolean;
   /** Number of records where mem0.addMemory threw (content was valid but write failed). */
   readonly mem0Failures: number;
+  /** True when the cursor was freshly initialised from MAX(indexed_at) this cycle. */
+  readonly cursorInitialised: boolean;
 }
 
 interface DailyBudget {
@@ -793,16 +1050,16 @@ interface DailyBudget {
 }
 
 async function ingestSource(
-  source: SourceDefinition<{ readonly id: string }>,
+  source: SourceDefinition<{ readonly id: string; readonly indexed_at: number | null }>,
   mem0: Mem0Client,
   userId: string,
   budget: DailyBudget,
 ): Promise<SourceRunResult> {
-  const cursorId = await readCursor(source.name);
+  const { cursor, wasInitialised } = await resolveOrInitCursor(source);
 
-  let rows: ReadonlyArray<{ readonly id: string }>;
+  let rows: ReadonlyArray<{ readonly id: string; readonly indexed_at: number | null }>;
   try {
-    rows = await source.fetchBatch(cursorId, BATCH_SIZE);
+    rows = await source.fetchBatch(cursor, BATCH_SIZE);
   } catch (err) {
     log.warn("Failed to fetch batch — skipping source this cycle", {
       source: source.name,
@@ -817,6 +1074,7 @@ async function ingestSource(
       cappedRemaining: 0,
       caughtUp: false,
       mem0Failures: 0,
+      cursorInitialised: wasInitialised,
     };
   }
 
@@ -830,6 +1088,7 @@ async function ingestSource(
       cappedRemaining: 0,
       caughtUp: true,
       mem0Failures: 0,
+      cursorInitialised: wasInitialised,
     };
   }
 
@@ -838,7 +1097,13 @@ async function ingestSource(
   let droppedDup = 0;
   let cappedRemaining = 0;
   let mem0Failures = 0;
-  let lastConsumedId = cursorId;
+
+  // The newest high-water we've consumed this batch. We start from the existing
+  // cursor and advance as we process rows. Since rows are ordered DESC, the
+  // FIRST successfully processed row carries the highest indexed_at/id.
+  // We track the cursor after each consumed row so we can persist the progress
+  // even if capping kicks in mid-batch.
+  let latestConsumedCursor: CompositeCursor = cursor;
   let cappedAt: string | null = null;
 
   for (const row of rows) {
@@ -846,13 +1111,14 @@ async function ingestSource(
     const metadata = source.toMetadata(row);
     const sourceType = (metadata["source_type"] as string | undefined) ?? source.name;
     const credibility = (metadata["credibility"] as number | undefined) ?? 0;
+    const rowTs = row.indexed_at ?? cursor.ts;
 
     // ── Quality gate ──────────────────────────────────────────────────────────
     const gate = passesQualityGate(rawContent, sourceType, credibility);
     if (!gate.ok) {
       droppedQuality++;
-      // Advance cursor — this row is consumed, never re-evaluated.
-      lastConsumedId = row.id;
+      // Advance high-water — this row is consumed, never re-evaluated.
+      latestConsumedCursor = { ts: rowTs, id: row.id };
       continue;
     }
 
@@ -872,24 +1138,16 @@ async function ingestSource(
 
     if (dup) {
       droppedDup++;
-      lastConsumedId = row.id;
+      latestConsumedCursor = { ts: rowTs, id: row.id };
       continue;
     }
 
     // ── Daily budget cap ──────────────────────────────────────────────────────
-    if (budget.count >= budget.cap) {
+    if (budget.count >= budget.cap || cappedAt !== null) {
       // Cap reached — stop consuming rows from this source. Cursor is NOT
       // advanced past this row; it will resume next cycle / next day.
       cappedRemaining++;
-      cappedAt = row.id;
-      // Count remaining rows without breaking the loop so we can log accurately.
-      continue;
-    }
-
-    // If we already hit the cap on a prior row in this loop we should not
-    // ingest subsequent rows either (cappedAt is set).
-    if (cappedAt !== null) {
-      cappedRemaining++;
+      if (cappedAt === null) cappedAt = row.id;
       continue;
     }
 
@@ -901,7 +1159,7 @@ async function ingestSource(
       await recordHash(hash, source.name);
       ingested++;
       budget.count++;
-      lastConsumedId = row.id;
+      latestConsumedCursor = { ts: rowTs, id: row.id };
     } catch (err) {
       mem0Failures++;
       log.warn("Failed to ingest record — skipping", {
@@ -910,20 +1168,24 @@ async function ingestSource(
         err,
       });
       // Advance cursor past this row — do not retry forever.
-      lastConsumedId = row.id;
+      latestConsumedCursor = { ts: rowTs, id: row.id };
     }
   }
 
-  // Persist cursor only up to the last CONSUMED row (quality-dropped, dup-dropped,
-  // or successfully ingested). Capped rows do NOT advance lastConsumedId so they
-  // stay in the backlog and resume once the budget resets.
-  if (lastConsumedId > cursorId) {
+  // Persist cursor to the latest consumed position. Capped rows do NOT advance
+  // latestConsumedCursor so they stay in the backlog and resume once the budget resets.
+  // We only persist if we actually made progress.
+  const movedForward =
+    latestConsumedCursor.ts > cursor.ts ||
+    (latestConsumedCursor.ts === cursor.ts && latestConsumedCursor.id > cursor.id);
+
+  if (movedForward) {
     try {
-      await writeCursor(source.name, lastConsumedId);
+      await writeCursor(source.name, latestConsumedCursor);
     } catch (err) {
       log.error("Failed to persist cursor — next run will re-process this batch", {
         source: source.name,
-        lastConsumedId,
+        latestConsumedCursor,
         err,
       });
     }
@@ -940,6 +1202,17 @@ async function ingestSource(
 
   const caughtUp = cappedRemaining === 0 && rows.length < BATCH_SIZE;
 
+  log.info("Source cycle progress", {
+    source: source.name,
+    high_water_ts: latestConsumedCursor.ts,
+    high_water_id: latestConsumedCursor.id,
+    fetched: rows.length,
+    ingested,
+    droppedQuality,
+    droppedDup,
+    cappedRemaining,
+  });
+
   return {
     sourceName: source.name,
     fetched: rows.length,
@@ -949,6 +1222,7 @@ async function ingestSource(
     cappedRemaining,
     caughtUp,
     mem0Failures,
+    cursorInitialised: wasInitialised,
   };
 }
 
@@ -1009,6 +1283,7 @@ async function runIngestionCycle(mem0: Mem0Client, userId: string): Promise<void
       cappedRemaining: r.cappedRemaining,
       caughtUp: r.caughtUp,
       mem0Failures: r.mem0Failures,
+      cursorInitialised: r.cursorInitialised,
     });
   }
 
@@ -1074,18 +1349,40 @@ async function main(): Promise<void> {
     defaultMaxRecordsPerDay: DEFAULT_MAX_RECORDS_PER_DAY,
   });
 
-  // Run an immediate first cycle, then poll
+  // Bug 1 fix: run-then-reschedule with a single in-flight guard.
+  // The gap between cycles is POLL_INTERVAL_MS regardless of cycle duration.
+  // try/finally ensures a crashed cycle still reschedules.
+  let running = false;
+
+  async function scheduleNext(): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    void tick();
+  }
+
+  async function tick(): Promise<void> {
+    if (running) {
+      log.warn("Ingestion cycle still in progress — skipping overlapping tick");
+      void scheduleNext();
+      return;
+    }
+    running = true;
+    try {
+      await runIngestionCycle(mem0, userId);
+    } catch (err) {
+      log.warn("Ingestion cycle failed — will retry next interval", { err });
+    } finally {
+      running = false;
+      void scheduleNext();
+    }
+  }
+
+  // Run an immediate first cycle, then schedule subsequent cycles.
   try {
     await runIngestionCycle(mem0, userId);
   } catch (err) {
     log.warn("First ingestion cycle failed — will retry next interval", { err });
   }
-
-  setInterval(() => {
-    runIngestionCycle(mem0, userId).catch((err) => {
-      log.warn("Ingestion cycle failed — will retry next interval", { err });
-    });
-  }, POLL_INTERVAL_MS);
+  void scheduleNext();
 }
 
 // Import-safe: only register process-level handlers and start the process when
