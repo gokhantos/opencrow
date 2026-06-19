@@ -12,8 +12,10 @@ import {
   getSessionProgressRaw,
   getAgentActionLedger,
   getRoundArtifacts,
+  listRecentSessionsForAggregation,
 } from "../../sige/store";
 import type { RoundLedger } from "../../sige/store";
+import { aggregateIdeas } from "../../sige/aggregate";
 import { deriveSessionProgress } from "../../sige/progress";
 import type { SigeSessionStatus, SigeSessionConfig } from "../../sige/types";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
@@ -650,6 +652,64 @@ export function createSigeRoutes(): Hono {
     } catch (err) {
       log.error("Failed to get SIGE agent action ledger", { err, id });
       return c.json({ success: false, error: "Failed to fetch action ledger" }, 500);
+    }
+  });
+
+  // ─── GET /api/sige/ideas — Cross-run aggregated ideas ───────────────────────
+  //
+  // Flattens EVERY idea SIGE has produced across all runs and rounds (not just
+  // final scored ones). Scans the most recent `limit` sessions in a single DB
+  // query, parses the expert_result_json and fused_scores_json in-process via
+  // aggregateIdeas(), and returns a ranked, filterable list.
+  //
+  // Query params (all optional):
+  //   limit     — number of sessions to scan (1–50, default 25)
+  //   finalOnly — "true"/"false", default false
+  //   runId     — restrict to a single session id
+  //   minScore  — minimum effective score (0–1)
+
+  const aggregatedIdeasQuerySchema = z.object({
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .default(25),
+    finalOnly: z.coerce.boolean().default(false),
+    runId: z.string().optional(),
+    minScore: z.coerce.number().min(0).max(1).optional(),
+  });
+
+  app.get("/sige/ideas", async (c) => {
+    const rawQuery = {
+      limit: c.req.query("limit"),
+      finalOnly: c.req.query("finalOnly"),
+      runId: c.req.query("runId"),
+      minScore: c.req.query("minScore"),
+    };
+
+    // Strip undefined values so Zod defaults kick in correctly
+    const queryInput: Record<string, string> = {};
+    for (const [k, v] of Object.entries(rawQuery)) {
+      if (v !== undefined) queryInput[k] = v;
+    }
+
+    const parsed = aggregatedIdeasQuerySchema.safeParse(queryInput);
+    if (!parsed.success) {
+      const message =
+        parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+
+    const { limit, finalOnly, runId, minScore } = parsed.data;
+
+    try {
+      const rows = await listRecentSessionsForAggregation(limit);
+      const result = aggregateIdeas(rows, { finalOnly, runId, minScore });
+      return c.json({ success: true, data: result });
+    } catch (err) {
+      log.error("Failed to aggregate SIGE ideas", { err });
+      return c.json({ success: false, error: "Failed to fetch ideas" }, 500);
     }
   });
 

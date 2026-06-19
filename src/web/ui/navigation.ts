@@ -26,6 +26,7 @@ import {
   Swords,
   Zap,
   Lightbulb,
+  Sparkles,
 } from "lucide-react";
 
 export type Tab =
@@ -54,6 +55,7 @@ export type Tab =
   | "settings"
   | "workflows"
   | "sige"
+  | "sige-ideas"
   | "pipelines"
   | "pipeline-ideas";
 
@@ -75,7 +77,7 @@ export const VALID_TABS = new Set<Tab>([
   "github", "appstore", "playstore",
   "news", "cron",
   "processes", "system", "tools", "agent-metrics", "routing",
-  "memory", "logs", "settings", "workflows", "sige", "pipelines", "pipeline-ideas",
+  "memory", "logs", "settings", "workflows", "sige", "sige-ideas", "pipelines", "pipeline-ideas",
 ]);
 
 export const TAB_TITLES: Record<Tab, string> = {
@@ -104,6 +106,7 @@ export const TAB_TITLES: Record<Tab, string> = {
   settings: "Settings",
   workflows: "Workflows",
   sige: "SIGE",
+  "sige-ideas": "SIGE Ideas",
   pipelines: "Pipelines",
   "pipeline-ideas": "Pipeline Ideas",
 };
@@ -150,6 +153,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
       { id: "pipelines", label: "Pipelines", Icon: Zap },
       { id: "pipeline-ideas", label: "Pipeline Ideas", Icon: Lightbulb },
       { id: "sige", label: "SIGE", Icon: Swords },
+      { id: "sige-ideas", label: "SIGE Ideas", Icon: Sparkles },
       { id: "memory", label: "Memory", Icon: Brain },
     ],
   },

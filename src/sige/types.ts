@@ -357,3 +357,54 @@ export interface SigeSession {
   readonly lastActivityAt?: number;
   readonly error?: string;
 }
+
+// ─── Ideas Aggregation ────────────────────────────────────────────────────────
+
+/**
+ * A single idea flattened from a SIGE run's expert-game rounds.
+ * One record per unique (runId, ideaId) pair — the highest round the idea
+ * reached is kept. Ideas that received a fused score are marked `isFinal`.
+ */
+export interface AggregatedIdea {
+  readonly ideaId: string;
+  readonly title: string;
+  readonly description: string;
+  readonly proposedBy: string;
+  /** Highest expert-game round this idea appeared in (1–4). */
+  readonly round: number;
+  /** The round type of the highest round this idea appeared in. */
+  readonly roundType: RoundType;
+  readonly expertScore: number;
+  /** Null when no social simulation was run for this run. */
+  readonly socialScore: number | null;
+  /** Null when no fused scoring was run for this run. */
+  readonly fusedScore: number | null;
+  /**
+   * True when this idea has a corresponding FusedScore entry — meaning it
+   * survived all expert-game rounds and received a final blended score.
+   */
+  readonly isFinal: boolean;
+  /** Null for non-final ideas (no fused score was computed). */
+  readonly breakdown: IncentiveBreakdown | null;
+  readonly runId: string;
+  readonly runSeed: string | null;
+  readonly runOrigin: SigeSessionOrigin;
+  readonly runStatus: SigeSessionStatus;
+  readonly runCreatedAt: Date;
+}
+
+/**
+ * Summary of a SIGE run for populating a filter dropdown.
+ * Counts are derived from the aggregated ideas, not from re-querying the DB.
+ */
+export interface RunSummary {
+  readonly runId: string;
+  readonly seed: string | null;
+  readonly origin: SigeSessionOrigin;
+  readonly status: SigeSessionStatus;
+  readonly createdAt: Date;
+  /** Total number of unique ideas extracted from this run. */
+  readonly ideaCount: number;
+  /** Number of those ideas that have a fused score (isFinal). */
+  readonly finalCount: number;
+}
