@@ -109,18 +109,25 @@ services:
       # Graph store: embedded Kùzu (in-process, no server/JVM), persisted to /data.
       MEM0_GRAPH_PROVIDER: kuzu
       MEM0_GRAPH_DB: /data/kuzu
-      # Extraction LLM: LOCAL Ollama (gemma4:e2b) via Ollama's OpenAI-compatible
-      # endpoint (/v1). $0 marginal cost, no external quota. Routed through the
-      # `openai` provider (NOT mem0's native ollama provider) because only the
-      # OpenAI path forwards `tools` — required for graph entity/relation
-      # extraction. gemma4:e2b is a non-reasoning, native-function-calling model:
-      # it follows mem0's nested relation tool-schema and avoids the reasoning
-      # chain-of-thought that stalls qwen3-family models. ~1.7GB resident, ~40s
-      # per record (background-tolerant). API key is a dummy (Ollama ignores it).
+      # Extraction LLM: LOCAL Ollama (gemma4:e2b-it-qat) via Ollama's
+      # OpenAI-compatible endpoint (/v1). $0 marginal cost, no external quota.
+      # Routed through the `openai` provider (NOT mem0's native ollama provider)
+      # because only the OpenAI path forwards `tools` — required for graph
+      # entity/relation extraction. Gemma is non-reasoning with native
+      # function-calling: it follows mem0's nested relation tool-schema and avoids
+      # the reasoning chain-of-thought that stalls qwen3-family models.
+      #
+      # Use the QAT (quantization-aware-trained) 4-bit variant: ~4.3GB resident vs
+      # ~7GB for the default gemma4:e2b. The 7GB default exhausted RAM alongside
+      # the Docker stack on a 24GB host and drove heavy swap thrash; the QAT build
+      # keeps the same tool-calling quality at a footprint that fits. ~40-140s per
+      # record (background-tolerant). API key is a dummy (Ollama ignores it).
       #
       # HOST PREREQUISITE: the host must run Ollama with the model pulled —
-      #   `ollama pull gemma4:e2b`  (host also already serves nomic-embed-text).
-      # Reachable from this container at host.docker.internal (see extra_hosts).
+      #   `ollama pull gemma4:e2b-it-qat`  (host also serves nomic-embed-text).
+      # Recommended host env (LaunchAgent): OLLAMA_NUM_PARALLEL=1 to avoid KV-slot
+      # memory multiplication under concurrent ingestion. Reachable from this
+      # container at host.docker.internal (see extra_hosts).
       #
       # FALLBACK — hosted Zhipu GLM (keeps graph, costs MEM0_LLM_API_KEY quota):
       #   MEM0_LLM_MODEL: glm-5.1
@@ -128,7 +135,7 @@ services:
       #     https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
       #   MEM0_LLM_API_KEY / OPENAI_API_KEY: ${MEM0_LLM_API_KEY}
       MEM0_LLM_PROVIDER: openai
-      MEM0_LLM_MODEL: gemma4:e2b
+      MEM0_LLM_MODEL: gemma4:e2b-it-qat
       MEM0_LLM_BASE_URL: http://host.docker.internal:11434/v1
       MEM0_LLM_API_KEY: ollama
       OPENAI_API_KEY: ollama
