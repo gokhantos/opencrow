@@ -8,9 +8,19 @@
  * Cursor positions are persisted in config_overrides so each run
  * picks up exactly where the previous one stopped.
  *
+ * Quality / cost controls (configured via constants + runtime overrides):
+ *  - MIN_CONTENT_LENGTH: minimum chars after trim (default 40)
+ *  - CREDIBILITY_FLOOR: minimum credibility score (default 0.25)
+ *  - ALPHA_RATIO_MIN: minimum alphabetic-char ratio in non-space chars (default 0.45)
+ *  - Review-sentiment filter: drops short pure-positive reviews with no negative signal
+ *  - Exact-dup dedup backed by sige_ingest_dedup table (SHA-256 of normalised text)
+ *  - Daily budget cap: maxRecordsPerDay (default 3000, tunable via config_overrides)
+ *
  * Usage:
  *   bun src/entries/sige-ingestion.ts
  */
+
+import { createHash } from "node:crypto";
 
 import { loadConfig, loadConfigWithOverrides } from "../config/loader";
 import { bootstrap } from "../process/bootstrap";
@@ -25,8 +35,28 @@ const log = createLogger("sige-ingestion");
 
 const POLL_INTERVAL_MS = 5 * 60 * 1_000; // 5 minutes
 const BATCH_SIZE = 20;
-const MIN_CONTENT_LENGTH = 20;
 const CURSOR_NAMESPACE = "sige-ingestion";
+
+/** Minimum trimmed content length to pass the quality gate. */
+export const MIN_CONTENT_LENGTH = 40;
+
+/**
+ * Minimum credibility score.  Reviews are always ≥0.5 so they are unaffected;
+ * this only drops low-engagement Reddit / HN / PH rows.
+ */
+export const CREDIBILITY_FLOOR = 0.25;
+
+/**
+ * Minimum fraction of characters (out of non-space chars) that must be
+ * alphabetic.  Catches emoji-/punctuation-only strings like "🥰🥰🥰".
+ */
+export const ALPHA_RATIO_MIN = 0.45;
+
+/** Default daily budget — how many records may be ingested per calendar day. */
+const DEFAULT_MAX_RECORDS_PER_DAY = 3_000;
+
+/** config_overrides key for the tunable daily cap. */
+const DAILY_CAP_OVERRIDE_KEY = "maxRecordsPerDay";
 
 // ─── Source Row Types ─────────────────────────────────────────────────────────
 
@@ -264,6 +294,179 @@ export function computeCredibility(inputs: CredibilityInputs): number {
       return 0.4;
     }
   }
+}
+
+// ─── Quality Gate ─────────────────────────────────────────────────────────────
+
+/**
+ * Positive-sentiment lexicon for the review sentiment filter.
+ * Matches whole words (or common emoji) case-insensitively.
+ */
+const POSITIVE_REVIEW_PATTERN =
+  /great|love|excellent|perfect|awesome|amazing|best|wonderful|👍|🥰|❤|😍|good/i;
+
+/**
+ * Negative-token guard: presence of ANY of these overrides the positive
+ * match and lets the review through (real complaint, keep it).
+ *
+ * Uses a word-start boundary (\b prefix) but no word-end boundary so that
+ * inflected forms are caught ("crashing" → "crash", "failing" → "fail", etc.).
+ */
+const NEGATIVE_REVIEW_PATTERN =
+  /\b(?:not|no|never|bad|crash|broken|worst|terrible|hate|bug|error|doesn't|won't|can't|fail|slow|annoying|scam|useless)/i;
+
+/**
+ * Maximum length (chars) at which the short-positive-review filter applies.
+ * Longer positive reviews are let through — they likely contain context.
+ */
+const REVIEW_SENTIMENT_MAX_LEN = 60;
+
+export interface QualityGateResult {
+  readonly ok: boolean;
+  readonly reason?: string;
+}
+
+/**
+ * Pure quality gate — no side effects, no DB.
+ *
+ * Returns `{ ok: false, reason }` when the content should be dropped;
+ * `{ ok: true }` when it should proceed to dedup + mem0.
+ *
+ * Rejection criteria (in order):
+ * 1. Content too short (< MIN_CONTENT_LENGTH).
+ * 2. Alpha-ratio too low (emoji/punctuation spam).
+ * 3. Credibility below floor (zero-engagement community content).
+ * 4. Short positive-only review (sourceType is appstore_review / playstore_review,
+ *    content ≤ REVIEW_SENTIMENT_MAX_LEN, matches positive lexicon, no negative tokens).
+ */
+export function passesQualityGate(
+  content: string,
+  sourceType: string,
+  credibility: number,
+): QualityGateResult {
+  const trimmed = content.trim();
+
+  // 1. Length check
+  if (trimmed.length < MIN_CONTENT_LENGTH) {
+    return { ok: false, reason: "content_too_short" };
+  }
+
+  // 2. Alphabetic-ratio check
+  const nonSpace = trimmed.replace(/\s+/g, "");
+  if (nonSpace.length > 0) {
+    const alphaCount = (nonSpace.match(/[a-zA-Z]/g) ?? []).length;
+    const ratio = alphaCount / nonSpace.length;
+    if (ratio < ALPHA_RATIO_MIN) {
+      return { ok: false, reason: "alpha_ratio_too_low" };
+    }
+  }
+
+  // 3. Credibility floor
+  if (credibility < CREDIBILITY_FLOOR) {
+    return { ok: false, reason: "credibility_below_floor" };
+  }
+
+  // 4. Short positive-only review sentiment filter (review sources only)
+  if (sourceType === "appstore_review" || sourceType === "playstore_review") {
+    if (
+      trimmed.length <= REVIEW_SENTIMENT_MAX_LEN &&
+      POSITIVE_REVIEW_PATTERN.test(trimmed) &&
+      !NEGATIVE_REVIEW_PATTERN.test(trimmed)
+    ) {
+      return { ok: false, reason: "short_positive_review_no_complaint" };
+    }
+  }
+
+  return { ok: true };
+}
+
+// ─── Dedup ────────────────────────────────────────────────────────────────────
+
+/**
+ * Normalise content for dedup hashing:
+ * lowercase → collapse non-alphanumeric runs → trim.
+ * This makes minor whitespace and punctuation variants collide to the same hash.
+ */
+export function normaliseForHash(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Compute a stable SHA-256 hex hash of normalised content.
+ */
+export function contentHash(text: string): string {
+  return createHash("sha256").update(normaliseForHash(text)).digest("hex");
+}
+
+/**
+ * Check whether a content hash already exists in sige_ingest_dedup.
+ * Returns true if this is a duplicate (should be dropped).
+ */
+async function isDuplicate(hash: string): Promise<boolean> {
+  const db = getDb();
+  const rows = await db`
+    SELECT 1 FROM sige_ingest_dedup WHERE content_hash = ${hash} LIMIT 1
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Record a content hash in sige_ingest_dedup.
+ * ON CONFLICT DO NOTHING — safe to call even if somehow inserted twice.
+ */
+async function recordHash(hash: string, source: string): Promise<void> {
+  const db = getDb();
+  await db`
+    INSERT INTO sige_ingest_dedup (content_hash, source)
+    VALUES (${hash}, ${source})
+    ON CONFLICT (content_hash) DO NOTHING
+  `;
+}
+
+// ─── Daily Budget Cap ─────────────────────────────────────────────────────────
+
+/**
+ * Return today's UTC date as "YYYY-MM-DD".
+ */
+export function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * config_overrides key for today's ingested count.
+ */
+export function dailyCountKey(date: string): string {
+  return `ingested:${date}`;
+}
+
+/**
+ * Read the tunable daily cap from config_overrides, falling back to DEFAULT.
+ */
+async function readDailyCap(): Promise<number> {
+  const override = await getOverride(CURSOR_NAMESPACE, DAILY_CAP_OVERRIDE_KEY);
+  if (typeof override === "number" && Number.isFinite(override) && override > 0) {
+    return Math.floor(override);
+  }
+  return DEFAULT_MAX_RECORDS_PER_DAY;
+}
+
+/**
+ * Read today's ingested count from config_overrides.
+ */
+async function readDailyCount(date: string): Promise<number> {
+  const stored = await getOverride(CURSOR_NAMESPACE, dailyCountKey(date));
+  if (typeof stored === "number" && Number.isFinite(stored)) return Math.floor(stored);
+  return 0;
+}
+
+/**
+ * Persist today's running ingested count.
+ */
+async function writeDailyCount(date: string, count: number): Promise<void> {
+  await setOverride(CURSOR_NAMESPACE, dailyCountKey(date), count);
 }
 
 // ─── Source Definitions ───────────────────────────────────────────────────────
@@ -572,17 +775,28 @@ async function writeCursor(sourceName: string, lastId: string): Promise<void> {
 
 interface SourceRunResult {
   readonly sourceName: string;
+  readonly fetched: number;
   readonly ingested: number;
-  readonly skipped: number;
+  readonly droppedQuality: number;
+  readonly droppedDup: number;
+  readonly cappedRemaining: number;
   readonly caughtUp: boolean;
   /** Number of records where mem0.addMemory threw (content was valid but write failed). */
   readonly mem0Failures: number;
+}
+
+interface DailyBudget {
+  readonly date: string;
+  readonly cap: number;
+  /** Mutable running count — incremented in-place within the cycle. */
+  count: number;
 }
 
 async function ingestSource(
   source: SourceDefinition<{ readonly id: string }>,
   mem0: Mem0Client,
   userId: string,
+  budget: DailyBudget,
 ): Promise<SourceRunResult> {
   const cursorId = await readCursor(source.name);
 
@@ -594,34 +808,100 @@ async function ingestSource(
       source: source.name,
       err,
     });
-    return { sourceName: source.name, ingested: 0, skipped: 0, caughtUp: false, mem0Failures: 0 };
+    return {
+      sourceName: source.name,
+      fetched: 0,
+      ingested: 0,
+      droppedQuality: 0,
+      droppedDup: 0,
+      cappedRemaining: 0,
+      caughtUp: false,
+      mem0Failures: 0,
+    };
   }
 
   if (rows.length === 0) {
-    return { sourceName: source.name, ingested: 0, skipped: 0, caughtUp: true, mem0Failures: 0 };
+    return {
+      sourceName: source.name,
+      fetched: 0,
+      ingested: 0,
+      droppedQuality: 0,
+      droppedDup: 0,
+      cappedRemaining: 0,
+      caughtUp: true,
+      mem0Failures: 0,
+    };
   }
 
   let ingested = 0;
-  let skipped = 0;
+  let droppedQuality = 0;
+  let droppedDup = 0;
+  let cappedRemaining = 0;
   let mem0Failures = 0;
-  let lastSuccessfulId = cursorId;
+  let lastConsumedId = cursorId;
+  let cappedAt: string | null = null;
 
   for (const row of rows) {
-    const content = source.getContent(row).trim();
+    const rawContent = source.getContent(row).trim();
+    const metadata = source.toMetadata(row);
+    const sourceType = (metadata["source_type"] as string | undefined) ?? source.name;
+    const credibility = (metadata["credibility"] as number | undefined) ?? 0;
 
-    if (content.length < MIN_CONTENT_LENGTH) {
-      skipped++;
-      lastSuccessfulId = row.id;
+    // ── Quality gate ──────────────────────────────────────────────────────────
+    const gate = passesQualityGate(rawContent, sourceType, credibility);
+    if (!gate.ok) {
+      droppedQuality++;
+      // Advance cursor — this row is consumed, never re-evaluated.
+      lastConsumedId = row.id;
       continue;
     }
 
-    const text = source.toText(row);
-    const metadata = source.toMetadata(row);
+    // ── Exact-dup dedup ───────────────────────────────────────────────────────
+    const hash = contentHash(rawContent);
+    let dup = false;
+    try {
+      dup = await isDuplicate(hash);
+    } catch (err) {
+      // Dedup DB error is non-fatal — let the row through (safe side is to ingest).
+      log.warn("Dedup check failed — treating row as non-duplicate", {
+        source: source.name,
+        id: row.id,
+        err,
+      });
+    }
 
+    if (dup) {
+      droppedDup++;
+      lastConsumedId = row.id;
+      continue;
+    }
+
+    // ── Daily budget cap ──────────────────────────────────────────────────────
+    if (budget.count >= budget.cap) {
+      // Cap reached — stop consuming rows from this source. Cursor is NOT
+      // advanced past this row; it will resume next cycle / next day.
+      cappedRemaining++;
+      cappedAt = row.id;
+      // Count remaining rows without breaking the loop so we can log accurately.
+      continue;
+    }
+
+    // If we already hit the cap on a prior row in this loop we should not
+    // ingest subsequent rows either (cappedAt is set).
+    if (cappedAt !== null) {
+      cappedRemaining++;
+      continue;
+    }
+
+    // ── Ingest ────────────────────────────────────────────────────────────────
+    const text = source.toText(row);
     try {
       await mem0.addMemory({ content: text, userId, metadata });
+      // Record hash so future cycles skip this content.
+      await recordHash(hash, source.name);
       ingested++;
-      lastSuccessfulId = row.id;
+      budget.count++;
+      lastConsumedId = row.id;
     } catch (err) {
       mem0Failures++;
       log.warn("Failed to ingest record — skipping", {
@@ -629,27 +909,47 @@ async function ingestSource(
         id: row.id,
         err,
       });
-      // Advance cursor past this record so we do not retry it forever
-      lastSuccessfulId = row.id;
+      // Advance cursor past this row — do not retry forever.
+      lastConsumedId = row.id;
     }
   }
 
-  // Persist cursor even if some records failed — we advance past them
-  if (lastSuccessfulId > cursorId) {
+  // Persist cursor only up to the last CONSUMED row (quality-dropped, dup-dropped,
+  // or successfully ingested). Capped rows do NOT advance lastConsumedId so they
+  // stay in the backlog and resume once the budget resets.
+  if (lastConsumedId > cursorId) {
     try {
-      await writeCursor(source.name, lastSuccessfulId);
+      await writeCursor(source.name, lastConsumedId);
     } catch (err) {
       log.error("Failed to persist cursor — next run will re-process this batch", {
         source: source.name,
-        lastSuccessfulId,
+        lastConsumedId,
         err,
       });
     }
   }
 
-  const caughtUp = rows.length < BATCH_SIZE;
+  if (cappedAt !== null) {
+    log.info("Daily cap reached — remaining rows held in backlog", {
+      source: source.name,
+      cappedRemaining,
+      budgetUsed: budget.count,
+      budgetCap: budget.cap,
+    });
+  }
 
-  return { sourceName: source.name, ingested, skipped, caughtUp, mem0Failures };
+  const caughtUp = cappedRemaining === 0 && rows.length < BATCH_SIZE;
+
+  return {
+    sourceName: source.name,
+    fetched: rows.length,
+    ingested,
+    droppedQuality,
+    droppedDup,
+    cappedRemaining,
+    caughtUp,
+    mem0Failures,
+  };
 }
 
 // ─── One ingestion cycle ──────────────────────────────────────────────────────
@@ -657,44 +957,82 @@ async function ingestSource(
 async function runIngestionCycle(mem0: Mem0Client, userId: string): Promise<void> {
   log.info("Ingestion cycle started");
 
+  // Read the daily cap and today's running count ONCE per cycle (not per row).
+  const today = todayUtc();
+  const [cap, countAtStart] = await Promise.all([readDailyCap(), readDailyCount(today)]);
+  const budget: DailyBudget = { date: today, cap, count: countAtStart };
+
   // Sort by priority ascending so highest-signal sources are processed first
   const sorted = [...SOURCES].sort((a, b) => a.priority - b.priority);
 
   const results: SourceRunResult[] = [];
 
   for (const source of sorted) {
-    const result = await ingestSource(source, mem0, userId);
+    // Short-circuit: if the budget is already exhausted, skip all remaining sources.
+    if (budget.count >= budget.cap) {
+      log.info("Daily cap exhausted — skipping remaining sources this cycle", {
+        source: source.name,
+        budgetUsed: budget.count,
+        budgetCap: budget.cap,
+      });
+      break;
+    }
+    const result = await ingestSource(source, mem0, userId, budget);
     results.push(result);
   }
 
+  // Persist the updated daily count once at the end of the cycle.
+  if (budget.count !== countAtStart) {
+    try {
+      await writeDailyCount(today, budget.count);
+    } catch (err) {
+      log.warn("Failed to persist daily count — next cycle may re-count", { err });
+    }
+  }
+
   // Aggregate totals across all sources for quick at-a-glance observability
+  const totalFetched = results.reduce((sum, r) => sum + r.fetched, 0);
   const totalIngested = results.reduce((sum, r) => sum + r.ingested, 0);
-  const totalSkipped = results.reduce((sum, r) => sum + r.skipped, 0);
+  const totalDroppedQuality = results.reduce((sum, r) => sum + r.droppedQuality, 0);
+  const totalDroppedDup = results.reduce((sum, r) => sum + r.droppedDup, 0);
+  const totalCappedRemaining = results.reduce((sum, r) => sum + r.cappedRemaining, 0);
   const totalMem0Failures = results.reduce((sum, r) => sum + r.mem0Failures, 0);
 
-  // Build per-source summary line
-  const summary = results
-    .map((r) => {
-      if (r.caughtUp && r.ingested === 0) return `${r.sourceName}: all caught up`;
-      const failSuffix = r.mem0Failures > 0 ? ` ${r.mem0Failures} write-err` : "";
-      return `${r.sourceName}: +${r.ingested}${r.skipped > 0 ? ` (${r.skipped} skipped)` : ""}${failSuffix}`;
-    })
-    .join(", ");
+  // Per-source structured log — operators can grep by source name.
+  for (const r of results) {
+    log.info("Source cycle result", {
+      source: r.sourceName,
+      fetched: r.fetched,
+      droppedQuality: r.droppedQuality,
+      droppedDup: r.droppedDup,
+      ingested: r.ingested,
+      cappedRemaining: r.cappedRemaining,
+      caughtUp: r.caughtUp,
+      mem0Failures: r.mem0Failures,
+    });
+  }
 
   if (totalIngested === 0) {
-    // Explicit "nothing happened" log so operators can tell idle from stuck
     log.info("Ingestion cycle complete — nothing new this cycle", {
-      summary,
+      totalFetched,
       totalIngested,
-      totalSkipped,
+      totalDroppedQuality,
+      totalDroppedDup,
+      totalCappedRemaining,
       totalMem0Failures,
+      dailyCount: budget.count,
+      dailyCap: budget.cap,
     });
   } else {
     log.info("Ingestion cycle complete", {
-      summary,
+      totalFetched,
       totalIngested,
-      totalSkipped,
+      totalDroppedQuality,
+      totalDroppedDup,
+      totalCappedRemaining,
       totalMem0Failures,
+      dailyCount: budget.count,
+      dailyCap: budget.cap,
     });
   }
 }
@@ -730,6 +1068,10 @@ async function main(): Promise<void> {
     userId,
     batchSize: BATCH_SIZE,
     intervalMs: POLL_INTERVAL_MS,
+    minContentLength: MIN_CONTENT_LENGTH,
+    credibilityFloor: CREDIBILITY_FLOOR,
+    alphaRatioMin: ALPHA_RATIO_MIN,
+    defaultMaxRecordsPerDay: DEFAULT_MAX_RECORDS_PER_DAY,
   });
 
   // Run an immediate first cycle, then poll

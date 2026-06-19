@@ -1,13 +1,31 @@
 /**
- * Unit tests for the computeCredibility heuristic exported from sige-ingestion.
+ * Unit tests for pure functions exported from sige-ingestion.
  *
- * These are pure-function tests — no DB, no network, no side effects.
+ * No DB, no network, no side effects — runs in the `test:unit` lane.
+ *
+ * Covers:
+ *  - computeCredibility (original suite, unchanged)
+ *  - passesQualityGate  (new quality gate)
+ *  - normaliseForHash   (text normalisation for dedup)
+ *  - contentHash        (SHA-256 determinism)
+ *  - todayUtc / dailyCountKey (daily budget helpers)
  */
 
 import { describe, expect, it } from "bun:test";
-import { computeCredibility } from "./sige-ingestion";
+import {
+  ALPHA_RATIO_MIN,
+  CREDIBILITY_FLOOR,
+  MIN_CONTENT_LENGTH,
+  type QualityGateResult,
+  computeCredibility,
+  contentHash,
+  dailyCountKey,
+  normaliseForHash,
+  passesQualityGate,
+  todayUtc,
+} from "./sige-ingestion";
 
-// ─── appstore_review ──────────────────────────────────────────────────────────
+// ─── computeCredibility — appstore_review ────────────────────────────────────
 
 describe("computeCredibility — appstore_review", () => {
   it("returns 1.0 for a 1-star review (maximum signal)", () => {
@@ -27,7 +45,7 @@ describe("computeCredibility — appstore_review", () => {
   });
 });
 
-// ─── playstore_review ─────────────────────────────────────────────────────────
+// ─── computeCredibility — playstore_review ───────────────────────────────────
 
 describe("computeCredibility — playstore_review", () => {
   it("returns 1.0 for a 1-star review with no thumbs-up", () => {
@@ -55,7 +73,7 @@ describe("computeCredibility — playstore_review", () => {
   });
 });
 
-// ─── reddit_post ──────────────────────────────────────────────────────────────
+// ─── computeCredibility — reddit_post ────────────────────────────────────────
 
 describe("computeCredibility — reddit_post", () => {
   it("returns the floor 0.15 for a zero-score, zero-comment post", () => {
@@ -85,7 +103,7 @@ describe("computeCredibility — reddit_post", () => {
   });
 });
 
-// ─── producthunt ─────────────────────────────────────────────────────────────
+// ─── computeCredibility — producthunt ────────────────────────────────────────
 
 describe("computeCredibility — producthunt", () => {
   it("returns the floor 0.2 for a zero-vote product", () => {
@@ -101,7 +119,7 @@ describe("computeCredibility — producthunt", () => {
   });
 });
 
-// ─── hackernews ───────────────────────────────────────────────────────────────
+// ─── computeCredibility — hackernews ─────────────────────────────────────────
 
 describe("computeCredibility — hackernews", () => {
   it("returns the floor 0.2 for a new story with no points", () => {
@@ -118,7 +136,7 @@ describe("computeCredibility — hackernews", () => {
   });
 });
 
-// ─── news_article ─────────────────────────────────────────────────────────────
+// ─── computeCredibility — news_article ───────────────────────────────────────
 
 describe("computeCredibility — news_article", () => {
   it("always returns the fixed 0.6 regardless of inputs", () => {
@@ -126,7 +144,7 @@ describe("computeCredibility — news_article", () => {
   });
 });
 
-// ─── appstore_app ─────────────────────────────────────────────────────────────
+// ─── computeCredibility — appstore_app ───────────────────────────────────────
 
 describe("computeCredibility — appstore_app", () => {
   it("always returns 0.5", () => {
@@ -134,7 +152,7 @@ describe("computeCredibility — appstore_app", () => {
   });
 });
 
-// ─── playstore_app ────────────────────────────────────────────────────────────
+// ─── computeCredibility — playstore_app ──────────────────────────────────────
 
 describe("computeCredibility — playstore_app", () => {
   it("returns the floor 0.3 for an app with no install data", () => {
@@ -168,7 +186,7 @@ describe("computeCredibility — playstore_app", () => {
   });
 });
 
-// ─── unknown source ───────────────────────────────────────────────────────────
+// ─── computeCredibility — unknown source ─────────────────────────────────────
 
 describe("computeCredibility — unknown source type", () => {
   it("returns the conservative default 0.4", () => {
@@ -176,7 +194,7 @@ describe("computeCredibility — unknown source type", () => {
   });
 });
 
-// ─── output is always in [0, 1] ───────────────────────────────────────────────
+// ─── computeCredibility — output is always in [0, 1] ─────────────────────────
 
 describe("computeCredibility — output range invariant", () => {
   const edgeCases: Array<Parameters<typeof computeCredibility>[0]> = [
@@ -195,4 +213,285 @@ describe("computeCredibility — output range invariant", () => {
       expect(score).toBeLessThanOrEqual(1);
     });
   }
+});
+
+// ─── passesQualityGate ────────────────────────────────────────────────────────
+
+describe("passesQualityGate — length check", () => {
+  it("rejects content shorter than MIN_CONTENT_LENGTH", () => {
+    const short = "x".repeat(MIN_CONTENT_LENGTH - 1);
+    const result = passesQualityGate(short, "reddit_post", 0.8);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("content_too_short");
+  });
+
+  it("rejects content that is exactly one char below MIN_CONTENT_LENGTH after trimming", () => {
+    const padded = "  " + "a".repeat(MIN_CONTENT_LENGTH - 1) + "  ";
+    const result = passesQualityGate(padded, "news_article", 0.8);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("content_too_short");
+  });
+
+  it("passes content exactly at MIN_CONTENT_LENGTH", () => {
+    const exact = "a".repeat(MIN_CONTENT_LENGTH);
+    const result = passesQualityGate(exact, "news_article", 0.8);
+    // May still be rejected by alpha ratio, but not by length.
+    expect(result.reason).not.toBe("content_too_short");
+  });
+
+  it("passes a long article excerpt", () => {
+    const text = "This is a long enough article with plenty of real words and content to pass.";
+    const result = passesQualityGate(text, "news_article", 0.8);
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("passesQualityGate — alpha ratio", () => {
+  it("rejects pure emoji content", () => {
+    const emoji = "🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰🥰";
+    const result = passesQualityGate(emoji, "appstore_review", 0.8);
+    expect(result.ok).toBe(false);
+    // Could be content_too_short or alpha_ratio_too_low depending on byte-vs-char length.
+    // Either rejection reason is correct — just confirm it is rejected.
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects punctuation/emoji-heavy string that is long enough in bytes but has low alpha ratio", () => {
+    // 10 emoji chars repeated — very long in bytes but zero latin letters
+    const spam = "❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️❤️";
+    const result = passesQualityGate(spam, "reddit_post", 0.8);
+    expect(result.ok).toBe(false);
+  });
+
+  it("passes a sentence with mostly letters even if some punctuation is present", () => {
+    const text = "This app crashes every time I open it — really annoying and frustrating!";
+    const result = passesQualityGate(text, "appstore_review", 0.8);
+    expect(result.ok).toBe(true);
+  });
+
+  it(`rejects when alpha ratio is just below ${ALPHA_RATIO_MIN}`, () => {
+    // Build a string with < ALPHA_RATIO_MIN alpha ratio
+    // 44% letters, 56% digits/symbols → below 0.45 threshold
+    const letters = "a".repeat(44);
+    const digits = "1".repeat(56);
+    const text = (letters + digits).repeat(2); // 200 chars total, well above MIN_CONTENT_LENGTH
+    const result = passesQualityGate(text, "reddit_post", 0.8);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("alpha_ratio_too_low");
+  });
+});
+
+describe("passesQualityGate — credibility floor", () => {
+  it("rejects when credibility is below CREDIBILITY_FLOOR", () => {
+    const text = "This is a detailed reddit post with enough text content to pass other checks.";
+    const result = passesQualityGate(text, "reddit_post", CREDIBILITY_FLOOR - 0.01);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("credibility_below_floor");
+  });
+
+  it("passes when credibility is exactly at CREDIBILITY_FLOOR", () => {
+    const text = "This is a detailed reddit post with enough text content to pass other checks.";
+    const result = passesQualityGate(text, "reddit_post", CREDIBILITY_FLOOR);
+    expect(result.ok).toBe(true);
+  });
+
+  it("passes a reddit post with zero engagement (credibility = 0.15) — below floor", () => {
+    const text = "Short post about nothing in particular with barely any upvotes from anyone.";
+    // computeCredibility gives 0.15 for zero-score reddit posts — below CREDIBILITY_FLOOR (0.25)
+    const result = passesQualityGate(text, "reddit_post", 0.15);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("credibility_below_floor");
+  });
+
+  it("reviews always have credibility ≥ 0.5 so CREDIBILITY_FLOOR never drops them", () => {
+    // The spec states reviews are always ≥0.75 — verify the floor does not interfere.
+    const text = "This app keeps crashing and losing my data every single day.";
+    const reviewCredibility = computeCredibility({ source_type: "appstore_review", rating: 1 });
+    expect(reviewCredibility).toBeGreaterThanOrEqual(CREDIBILITY_FLOOR);
+    const result = passesQualityGate(text, "appstore_review", reviewCredibility);
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("passesQualityGate — review sentiment filter", () => {
+  // NOTE: the sentiment filter only fires when the trimmed content is
+  // between MIN_CONTENT_LENGTH (40) and REVIEW_SENTIMENT_MAX_LEN (60) chars.
+  // Strings shorter than 40 chars never reach this gate — they fail the
+  // length check first.  All test strings below are exactly in the 40-60
+  // char window unless the test intentionally goes longer.
+
+  it("rejects a purely-positive app store review in the 40-60 char window", () => {
+    // 47 chars: ≥40 (passes length), ≤60 (sentiment filter applies), no negative tokens
+    const text = "Great app! Love it so much, truly wonderful."; // 44 chars
+    expect(text.trim().length).toBeGreaterThanOrEqual(MIN_CONTENT_LENGTH);
+    expect(text.trim().length).toBeLessThanOrEqual(60);
+    const result = passesQualityGate(text, "appstore_review", 0.75);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("short_positive_review_no_complaint");
+  });
+
+  it("rejects a purely-positive play store review in the 40-60 char window", () => {
+    const text = "Amazing app! Best productivity tool ever made."; // 46 chars
+    expect(text.trim().length).toBeGreaterThanOrEqual(MIN_CONTENT_LENGTH);
+    expect(text.trim().length).toBeLessThanOrEqual(60);
+    const result = passesQualityGate(text, "playstore_review", 1.0);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("short_positive_review_no_complaint");
+  });
+
+  it("passes a review in the 40-60 char window that also contains a negative token", () => {
+    // "great" is positive, but "crash" is negative → must NOT be dropped
+    const text = "Great app but it keeps crashing every single day."; // 49 chars
+    expect(text.trim().length).toBeGreaterThanOrEqual(MIN_CONTENT_LENGTH);
+    expect(text.trim().length).toBeLessThanOrEqual(60);
+    const result = passesQualityGate(text, "appstore_review", 0.75);
+    expect(result.ok).toBe(true);
+  });
+
+  it("passes a review in the 40-60 char window with 'not' — negative token present", () => {
+    const text = "Good looking app but not working at all correctly."; // 50 chars
+    expect(text.trim().length).toBeGreaterThanOrEqual(MIN_CONTENT_LENGTH);
+    expect(text.trim().length).toBeLessThanOrEqual(60);
+    const result = passesQualityGate(text, "playstore_review", 1.0);
+    expect(result.ok).toBe(true);
+  });
+
+  it("passes a long positive review (> 60 chars) — sentiment filter does not apply", () => {
+    // Over 60 chars so sentiment filter does not apply regardless of tokens
+    const long =
+      "This is a wonderful and amazing app that I absolutely love using every single day without fail.";
+    expect(long.trim().length).toBeGreaterThan(60);
+    const result = passesQualityGate(long, "appstore_review", 0.75);
+    expect(result.ok).toBe(true);
+  });
+
+  it("does NOT apply the sentiment filter to non-review sources", () => {
+    // Same positive text in the sentiment window — should not be filtered for news
+    const text = "Great news! Love this amazing product announcement."; // 51 chars
+    expect(text.trim().length).toBeGreaterThanOrEqual(MIN_CONTENT_LENGTH);
+    expect(text.trim().length).toBeLessThanOrEqual(60);
+    const result = passesQualityGate(text, "news_article", 0.6);
+    expect(result.ok).toBe(true);
+  });
+
+  it("passes a genuine complaint that starts with a positive word", () => {
+    // "good" is positive but "slow" + "terrible" are negative → must survive
+    const text = "Good concept but extremely slow and terrible UI design."; // 55 chars
+    expect(text.trim().length).toBeGreaterThanOrEqual(MIN_CONTENT_LENGTH);
+    expect(text.trim().length).toBeLessThanOrEqual(60);
+    const result = passesQualityGate(text, "appstore_review", 0.75);
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects emoji-positive review in the 40-60 char window with no negative tokens", () => {
+    // 🥰 is in the positive lexicon; no negative tokens
+    const text = "🥰 love this app so much, truly absolutely perfect!"; // ~51 chars
+    // This may be rejected by alpha ratio first (emoji reduces alpha fraction) —
+    // either reason is valid, just confirm it is rejected.
+    const result = passesQualityGate(text, "appstore_review", 0.75);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("passesQualityGate — combined scenarios", () => {
+  it("a long, high-credibility, alpha-rich complaint passes all gates", () => {
+    const text =
+      "The app crashes every single time I try to export a file. I have lost hours of work because of this bug. Please fix it as soon as possible.";
+    const result = passesQualityGate(text, "appstore_review", 1.0);
+    expect(result.ok).toBe(true);
+  });
+
+  it("returns ok:true with no reason field when passing", () => {
+    const text = "I cannot open the app at all. It just crashes immediately on startup.";
+    const result: QualityGateResult = passesQualityGate(text, "appstore_review", 0.75);
+    expect(result.ok).toBe(true);
+    expect(result.reason).toBeUndefined();
+  });
+});
+
+// ─── normaliseForHash ─────────────────────────────────────────────────────────
+
+describe("normaliseForHash", () => {
+  it("lowercases the text", () => {
+    expect(normaliseForHash("HELLO WORLD")).toBe("hello world");
+  });
+
+  it("collapses non-alphanumeric runs to a single space", () => {
+    expect(normaliseForHash("hello---world!!!")).toBe("hello world");
+  });
+
+  it("trims leading and trailing spaces", () => {
+    expect(normaliseForHash("  hello world  ")).toBe("hello world");
+  });
+
+  it("makes minor punctuation variants hash to the same value", () => {
+    const a = normaliseForHash("App crashes every time!");
+    const b = normaliseForHash("App crashes every time.");
+    expect(a).toBe(b);
+  });
+
+  it("makes whitespace variants collide", () => {
+    const a = normaliseForHash("hello   world");
+    const b = normaliseForHash("hello world");
+    expect(a).toBe(b);
+  });
+
+  it("preserves digits as alphanumeric", () => {
+    expect(normaliseForHash("version 2.0 released")).toBe("version 2 0 released");
+  });
+});
+
+// ─── contentHash ─────────────────────────────────────────────────────────────
+
+describe("contentHash", () => {
+  it("returns a 64-char hex string (SHA-256)", () => {
+    const h = contentHash("hello world");
+    expect(h).toHaveLength(64);
+    expect(/^[0-9a-f]{64}$/.test(h)).toBe(true);
+  });
+
+  it("is deterministic — same input always produces the same hash", () => {
+    const text = "The app keeps crashing on iOS 17.";
+    expect(contentHash(text)).toBe(contentHash(text));
+  });
+
+  it("produces the same hash for minor punctuation variants (via normalisation)", () => {
+    const h1 = contentHash("App crashes every time!");
+    const h2 = contentHash("App crashes every time.");
+    expect(h1).toBe(h2);
+  });
+
+  it("produces different hashes for semantically different content", () => {
+    const h1 = contentHash("App crashes on startup");
+    const h2 = contentHash("App works perfectly fine");
+    expect(h1).not.toBe(h2);
+  });
+
+  it("is case-insensitive", () => {
+    expect(contentHash("HELLO WORLD")).toBe(contentHash("hello world"));
+  });
+});
+
+// ─── todayUtc / dailyCountKey ─────────────────────────────────────────────────
+
+describe("todayUtc", () => {
+  it("returns a string matching YYYY-MM-DD", () => {
+    const today = todayUtc();
+    expect(/^\d{4}-\d{2}-\d{2}$/.test(today)).toBe(true);
+  });
+
+  it("matches the current UTC date", () => {
+    const expected = new Date().toISOString().slice(0, 10);
+    expect(todayUtc()).toBe(expected);
+  });
+});
+
+describe("dailyCountKey", () => {
+  it("formats the key as ingested:YYYY-MM-DD", () => {
+    expect(dailyCountKey("2026-06-19")).toBe("ingested:2026-06-19");
+  });
+
+  it("produces different keys for different dates", () => {
+    expect(dailyCountKey("2026-06-19")).not.toBe(dailyCountKey("2026-06-20"));
+  });
 });
