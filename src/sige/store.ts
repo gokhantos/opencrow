@@ -922,3 +922,56 @@ export async function getPopulationDynamics(
     generation: row.generation as number,
   }))
 }
+
+// ─── Ideas Aggregation Query ──────────────────────────────────────────────────
+
+/**
+ * Lightweight row shape for the cross-run ideas aggregation query.
+ * JSON columns are returned as raw strings and parsed defensively in
+ * `aggregate.ts` — this layer never throws on malformed JSON.
+ */
+export interface AggregationSessionRow {
+  readonly id: string;
+  readonly seedInput: string | null;
+  readonly origin: string;
+  readonly status: string;
+  readonly createdAt: Date;
+  /** Raw JSON string for ExpertGameResult; may be null when not yet computed. */
+  readonly expertResultJson: string | null;
+  /** Raw JSON string for FusedScore[]; may be null when not yet computed. */
+  readonly fusedScoresJson: string | null;
+}
+
+/**
+ * Fetch the most recent `limit` sessions (by created_at DESC) selecting only
+ * the columns needed for cross-run idea aggregation. A SINGLE query — no N+1
+ * per-session hydration. JSON columns are returned raw; callers parse them.
+ *
+ * The `limit` is the number of *sessions* to scan, not the number of ideas.
+ * The caller (aggregateIdeas) applies per-idea filters after the fact.
+ */
+export async function listRecentSessionsForAggregation(
+  limit: number,
+): Promise<readonly AggregationSessionRow[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT id, seed_input, origin, status, created_at,
+           expert_result_json, fused_scores_json
+    FROM sige_sessions
+    ORDER BY created_at DESC
+    LIMIT ${limit}
+  `;
+  return (rows as Record<string, unknown>[]).map(
+    (row): AggregationSessionRow => ({
+      id: row.id as string,
+      seedInput: (row.seed_input as string | null) ?? null,
+      origin: ((row.origin as string | null) ?? "human"),
+      status: row.status as string,
+      // created_at is stored as BIGINT (epoch seconds); Bun.sql returns BIGINT
+      // as a string — convert to Date via epoch-ms arithmetic.
+      createdAt: new Date(Number(row.created_at) * 1000),
+      expertResultJson: (row.expert_result_json as string | null) ?? null,
+      fusedScoresJson: (row.fused_scores_json as string | null) ?? null,
+    }),
+  );
+}

@@ -41,6 +41,7 @@ import Workflows from "./views/Workflows";
 import PlayStore from "./views/PlayStore";
 import Settings from "./views/Settings";
 import Sige from "./views/Sige";
+import SigeIdeas from "./views/SigeIdeas";
 import Pipelines from "./views/Pipelines";
 import PipelineIdeas from "./views/PipelineIdeas";
 
@@ -327,6 +328,7 @@ function App() {
             {tab === "settings" && <Settings />}
             {tab === "workflows" && <Workflows />}
             {tab === "sige" && <Sige />}
+            {tab === "sige-ideas" && <SigeIdeas navigateTo={navigateTo} />}
           </div>
         </ErrorBoundary>
       </main>

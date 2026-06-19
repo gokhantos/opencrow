@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { PageHeader, LoadingState, EmptyState } from "../components";
 import { useToast } from "../components/Toast";
 import { usePolledFetch } from "../hooks/usePolledFetch";
@@ -20,6 +20,16 @@ export default function Sige() {
   const toast = useToast();
   const [submitting, setSubmitting] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Deep-link handoff from SIGE Ideas page: if sessionStorage carries a pending
+  // run ID (set by IdeaCard's "Open run" button), auto-select that session.
+  useEffect(() => {
+    const pending = sessionStorage.getItem("sige:pendingRunId");
+    if (pending) {
+      sessionStorage.removeItem("sige:pendingRunId");
+      setSelectedId(pending);
+    }
+  }, []);
 
   const {
     data,
