@@ -189,18 +189,45 @@ def _normalize_relation(r: dict) -> dict:
     }
 
 
+def _flatten_relations(relations: object) -> list[dict]:
+    """
+    Coerce mem0's two relation shapes to a flat list of relation dicts.
+
+    - search / get_all return a flat list: [{source, relationship, ...}, ...].
+    - add returns the graph *write summary* instead: a dict
+      {"added_entities": [...], "deleted_entities": [...]}, where added_entities
+      is a list of Kùzu row groups (each itself a list of
+      {source, relationship, target} dicts). Earlier code treated that dict as
+      "not a list" and dropped every relation, so the add response always
+      reported [] even when relations were written. Flatten added_entities here.
+    """
+    if isinstance(relations, dict):
+        rows: object = relations.get("added_entities") or []
+    elif isinstance(relations, list):
+        rows = relations
+    else:
+        return []
+    flat: list[dict] = []
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict):
+            flat.append(row)
+        elif isinstance(row, list):
+            flat.extend(r for r in row if isinstance(r, dict))
+    return flat
+
+
 def _normalize(result: object) -> dict:
-    # mem0 returns either {"results": [...], "relations": [...]} or a bare list.
+    # mem0 returns either {"results": [...], "relations": <flat list | add-path
+    # write-summary dict>} or a bare list. Normalize relations from any shape.
     if isinstance(result, dict):
         results = result.get("results", []) or []
-        relations = result.get("relations", []) or []
+        relations: object = result.get("relations", []) or []
     else:
         results = result or []
         relations = []
-    rel_list = relations if isinstance(relations, list) else []
     return {
         "results": results,
-        "relations": [_normalize_relation(r) for r in rel_list if isinstance(r, dict)],
+        "relations": [_normalize_relation(r) for r in _flatten_relations(relations)],
     }
 
 
