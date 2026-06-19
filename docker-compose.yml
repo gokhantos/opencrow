@@ -109,16 +109,20 @@ services:
       # Graph store: embedded Kùzu (in-process, no server/JVM), persisted to /data.
       MEM0_GRAPH_PROVIDER: kuzu
       MEM0_GRAPH_DB: /data/kuzu
-      # Extraction LLM: routed through the OpenCrow app's internal OpenAI-compatible
-      # endpoint, which uses the Claude Agent SDK (Claude Code OAuth token) — no
-      # separate hosted key, no local model. The OpenAI client reads OPENAI_* too.
+      # Extraction LLM: Zhipu GLM (glm-5.1) via Alibaba Model Studio's
+      # OpenAI-compatible endpoint. Uses a dedicated MEM0_LLM_API_KEY (.env),
+      # independent of the app's Anthropic credential — mem0 calls it directly,
+      # not the internal proxy. GLM is a non-reasoning text model: it supports
+      # the tool-calling mem0's graph extraction needs without the runaway
+      # chain-of-thought that makes reasoning models (e.g. qwen3.6-flash) stall.
+      # The underlying OpenAI client reads OPENAI_* too.
       MEM0_LLM_PROVIDER: openai
-      MEM0_LLM_MODEL: claude-haiku-4-5-20251001
-      MEM0_LLM_BASE_URL: http://app:48080/internal/v1
-      MEM0_LLM_API_KEY: ${OPENCROW_INTERNAL_TOKEN}
-      OPENAI_API_KEY: ${OPENCROW_INTERNAL_TOKEN}
-      OPENAI_BASE_URL: http://app:48080/internal/v1
-      OPENAI_API_BASE: http://app:48080/internal/v1
+      MEM0_LLM_MODEL: glm-5.1
+      MEM0_LLM_BASE_URL: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      MEM0_LLM_API_KEY: ${MEM0_LLM_API_KEY}
+      OPENAI_API_KEY: ${MEM0_LLM_API_KEY}
+      OPENAI_BASE_URL: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      OPENAI_API_BASE: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
       # Embeddings stay on host-native Ollama (nomic-embed-text, 768-dim).
       MEM0_OLLAMA_URL: http://host.docker.internal:11434
       MEM0_EMBED_MODEL: nomic-embed-text:latest

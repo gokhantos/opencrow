@@ -100,7 +100,8 @@ def _build_llm_config() -> dict:
     """
     Extraction LLM. Defaults to local Ollama (no external key, fully self-hosted).
     Set MEM0_LLM_PROVIDER=openai + MEM0_LLM_API_KEY/MEM0_LLM_BASE_URL to route to a
-    hosted OpenAI-compatible endpoint (e.g. OpenRouter → Claude) instead.
+    hosted OpenAI-compatible endpoint (e.g. Alibaba Model Studio → GLM) instead.
+    Use a non-reasoning model: reasoning models stall the always-on graph phase.
     """
     provider = os.environ.get("MEM0_LLM_PROVIDER", "ollama")
     if provider == "openai":
