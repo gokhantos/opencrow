@@ -109,20 +109,31 @@ services:
       # Graph store: embedded Kùzu (in-process, no server/JVM), persisted to /data.
       MEM0_GRAPH_PROVIDER: kuzu
       MEM0_GRAPH_DB: /data/kuzu
-      # Extraction LLM: Zhipu GLM (glm-5.1) via Alibaba Model Studio's
-      # OpenAI-compatible endpoint. Uses a dedicated MEM0_LLM_API_KEY (.env),
-      # independent of the app's Anthropic credential — mem0 calls it directly,
-      # not the internal proxy. GLM is a non-reasoning text model: it supports
-      # the tool-calling mem0's graph extraction needs without the runaway
-      # chain-of-thought that makes reasoning models (e.g. qwen3.6-flash) stall.
-      # The underlying OpenAI client reads OPENAI_* too.
+      # Extraction LLM: LOCAL Ollama (gemma4:e2b) via Ollama's OpenAI-compatible
+      # endpoint (/v1). $0 marginal cost, no external quota. Routed through the
+      # `openai` provider (NOT mem0's native ollama provider) because only the
+      # OpenAI path forwards `tools` — required for graph entity/relation
+      # extraction. gemma4:e2b is a non-reasoning, native-function-calling model:
+      # it follows mem0's nested relation tool-schema and avoids the reasoning
+      # chain-of-thought that stalls qwen3-family models. ~1.7GB resident, ~40s
+      # per record (background-tolerant). API key is a dummy (Ollama ignores it).
+      #
+      # HOST PREREQUISITE: the host must run Ollama with the model pulled —
+      #   `ollama pull gemma4:e2b`  (host also already serves nomic-embed-text).
+      # Reachable from this container at host.docker.internal (see extra_hosts).
+      #
+      # FALLBACK — hosted Zhipu GLM (keeps graph, costs MEM0_LLM_API_KEY quota):
+      #   MEM0_LLM_MODEL: glm-5.1
+      #   MEM0_LLM_BASE_URL / OPENAI_BASE_URL / OPENAI_API_BASE:
+      #     https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      #   MEM0_LLM_API_KEY / OPENAI_API_KEY: ${MEM0_LLM_API_KEY}
       MEM0_LLM_PROVIDER: openai
-      MEM0_LLM_MODEL: glm-5.1
-      MEM0_LLM_BASE_URL: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
-      MEM0_LLM_API_KEY: ${MEM0_LLM_API_KEY}
-      OPENAI_API_KEY: ${MEM0_LLM_API_KEY}
-      OPENAI_BASE_URL: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
-      OPENAI_API_BASE: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      MEM0_LLM_MODEL: gemma4:e2b
+      MEM0_LLM_BASE_URL: http://host.docker.internal:11434/v1
+      MEM0_LLM_API_KEY: ollama
+      OPENAI_API_KEY: ollama
+      OPENAI_BASE_URL: http://host.docker.internal:11434/v1
+      OPENAI_API_BASE: http://host.docker.internal:11434/v1
       # Embeddings stay on host-native Ollama (nomic-embed-text, 768-dim).
       MEM0_OLLAMA_URL: http://host.docker.internal:11434
       MEM0_EMBED_MODEL: nomic-embed-text:latest
