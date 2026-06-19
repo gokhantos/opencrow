@@ -207,7 +207,11 @@ export class Mem0Client {
     }
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120_000); // 2 min timeout
+    // 5 min timeout. A full graph-enabled add() makes ~10 sequential extraction
+    // LLM calls; on the local Ollama backend (gemma4:e2b) under concurrent
+    // ingestion load a single record can take ~140s, which the old 2 min ceiling
+    // aborted mid-flight (wasting the work and tripping the circuit breaker).
+    const timeoutId = setTimeout(() => controller.abort(), 300_000);
 
     const init: RequestInit = {
       method,
