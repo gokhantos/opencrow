@@ -72,21 +72,32 @@ export interface OpportunityPathsParams {
  * signal. Every relationship on a returned path MUST be in this whitelist — the
  * sige-global graph is hub/noise-heavy, and unconstrained traversal routes junk
  * through artifact edges. Bound into the query as `$relWhitelist`.
+ *
+ * These are the UPPERCASE CANONICAL relationship types the graph carries after
+ * canonicalization (see `scripts/canonicalize-neo4j-graph.py`). The graph's
+ * ~4785 raw relationship types were collapsed to ~30 canonical ones; the prior
+ * lowercase vocabulary maps in as:
+ *   complained_about / complaint_about / complains_about → COMPLAINED_ABOUT
+ *   has_issue                                            → HAS_ISSUE
+ *   lacks                                                → LACKS
+ *   has_feature                                          → HAS_FEATURE
+ *   provides / offers / includes / supports              → PROVIDES
+ *   uses                                                 → USES
+ *   category                                             → IN_CATEGORY
+ *   available_on                                         → AVAILABLE_ON
+ * Each canonicalized edge also keeps an `orig_type` property (reversible). The
+ * graph is periodically re-canonicalized — there is no write-side prevention, so
+ * un-canonicalized edges can transiently reappear before the next cleanup run.
  */
 export const REL_WHITELIST: readonly string[] = [
-  "complained_about",
-  "complaint_about",
-  "complains_about",
-  "has_issue",
-  "lacks",
-  "has_feature",
-  "provides",
-  "offers",
-  "includes",
-  "supports",
-  "uses",
-  "category",
-  "available_on",
+  "COMPLAINED_ABOUT",
+  "HAS_ISSUE",
+  "LACKS",
+  "HAS_FEATURE",
+  "PROVIDES",
+  "USES",
+  "IN_CATEGORY",
+  "AVAILABLE_ON",
 ];
 
 /**
@@ -100,7 +111,11 @@ export const REL_WHITELIST: readonly string[] = [
  *     (deg-408 et al).
  *   - a "digits optional-decimal optional-star" anchor — "4", "4.5 stars"
  *     rating nodes.
- * See {@link STOPLIST} below for the exact regex source.
+ * See {@link STOPLIST} below for the exact regex source. These match on node
+ * NAME values (not labels/types) and stay valid across canonicalization: the
+ * store-hub nodes were relabeled, not deleted, and the user_id:/rating-fraction
+ * parts remain a harmless-but-resilient guard against un-canonicalized writes
+ * the graph is periodically re-canonicalized, with no write-side prevention.
  */
 export const STOPLIST: string =
   "^(app_store|play_store|sige-global)$" +
