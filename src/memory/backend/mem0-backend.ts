@@ -232,10 +232,22 @@ export function createMem0Backend(config: Mem0BackendConfig): MemoryBackend {
 }
 
 /**
- * mem0 hybrid retrieval. Encodes `agent_id` (skipped in shared mode, exactly
- * like the Qdrant search path) plus `source_type ∈ kinds` into server-side
- * `filters`, then ALWAYS re-applies kinds/channel/minScore client-side as the
- * net (server-side filter support is version-dependent — see Mem0Client.search).
+ * mem0 hybrid retrieval.
+ *
+ * Per-agent isolation is enforced by `user_id` scoping (`resolveUserId`): the
+ * server only returns memories written under that exact `user_id`, so an agent
+ * can never read another agent's memories. We deliberately do NOT add a
+ * server-side `agent_id` filter: the self-hosted server PROMOTES the `agent_id`
+ * we wrote out of metadata into a dedicated top-level column, so a `filters`
+ * match is evaluated against that promoted field — its semantics are
+ * version-dependent and, since `user_id` already isolates per agent, the
+ * `agent_id` filter is pure redundancy. Dropping it removes a fragile,
+ * version-coupled filter while preserving the isolation guarantee in full.
+ *
+ * Only `source_type` (a single-kind equality the server reliably honours, and a
+ * metadata field the server does NOT promote) is sent as a server-side filter;
+ * kinds/channel/minScore are ALWAYS re-applied client-side as the net (see
+ * Mem0Client.search — server filter support is best-effort / version-dependent).
  */
 async function searchMem0(
   config: Mem0BackendConfig,
@@ -250,12 +262,11 @@ async function searchMem0(
   const channel = opts?.channel;
   const userId = resolveUserId(config, agentId);
 
+  // Per-agent isolation comes from `user_id` scoping above — NOT from an
+  // `agent_id` filter (the server promotes agent_id out of metadata; see the
+  // doc comment). Only the metadata `source_type` (single-kind equality, not
+  // promoted) is sent server-side; everything else is the client-side net.
   const filters: Record<string, unknown> = {};
-  if (!config.shared) {
-    filters.agent_id = agentId;
-  }
-  // Single-kind equality is the only shape the OSS server reliably honours;
-  // multi-kind / channel are handled by the client-side net below.
   if (kinds && kinds.length === 1) {
     filters.source_type = kinds[0];
   }

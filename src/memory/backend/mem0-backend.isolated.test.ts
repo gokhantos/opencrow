@@ -260,6 +260,10 @@ describe("createMem0Backend — writes", () => {
 });
 
 describe("createMem0Backend — search", () => {
+  // Shape hits like the REAL self-hosted mem0 server: it PROMOTES `agent_id`
+  // (and `created_at`, as an ISO string) to TOP-LEVEL fields and STRIPS them
+  // from `metadata`. Only source_type/source_id/chunk_index/channel survive in
+  // metadata. This is the exact shape that exposed the Phase 2 mapping bug.
   function hit(
     id: string,
     overrides: Partial<Mem0Memory> & {
@@ -270,18 +274,22 @@ describe("createMem0Backend — search", () => {
       id,
       memory: overrides.memory ?? "some content",
       score: overrides.score ?? 0.9,
+      // Server-promoted top-level fields (NOT in metadata).
+      agentId: "agentId" in overrides ? overrides.agentId : "agent-1",
+      createdAt:
+        "createdAt" in overrides
+          ? overrides.createdAt
+          : "2023-11-14T22:13:20.000Z", // == epoch 1_700_000_000
       metadata: {
         source_type: "note",
         source_id: "src-1",
-        agent_id: "agent-1",
         chunk_index: 0,
-        created_at: 1_700_000_000,
         ...overrides.metadata,
       },
     };
   }
 
-  test("maps a mem0 hit to a SearchResult", async () => {
+  test("maps a server-shaped mem0 hit (agent_id + created_at TOP-LEVEL) to a SearchResult", async () => {
     const { client } = makeFakeClient({
       searchHits: [hit("mem-a", { memory: "hello world", score: 0.8 })],
     });
@@ -292,11 +300,80 @@ describe("createMem0Backend — search", () => {
     });
 
     const results = await backend.search("agent-1", "hello", { minScore: 0.3 });
+    // Regression: pre-fix, the hit was DROPPED (mapper required agent_id INSIDE
+    // metadata) → search returned []. It must now map and return non-empty.
     expect(results.length).toBe(1);
     expect(results[0]!.chunk.content).toBe("hello world");
     expect(results[0]!.source.kind).toBe("note");
     expect(results[0]!.source.id).toBe("src-1");
     expect(results[0]!.score).toBe(0.8);
+    // agent_id reconstructed from the promoted TOP-LEVEL field.
+    expect(results[0]!.source.agentId).toBe("agent-1");
+    // created_at reconstructed from the promoted ISO string → epoch seconds.
+    expect(results[0]!.source.createdAt).toBe(1_700_000_000);
+    expect(results[0]!.chunk.createdAt).toBe(1_700_000_000);
+  });
+
+  test("maps a hit whose agent_id is ONLY top-level (not in metadata)", async () => {
+    const { client } = makeFakeClient({
+      searchHits: [
+        // No agent_id anywhere in metadata — only the promoted top-level field.
+        hit("only-top", { memory: "top-level only", score: 0.7 }),
+      ],
+    });
+    const backend = createMem0Backend({
+      mem0Client: client,
+      sharedUserId: SHARED_USER,
+      shared: true,
+    });
+
+    const results = await backend.search("agent-1", "q", { minScore: 0.3 });
+    expect(results.length).toBe(1);
+    expect(results[0]!.source.agentId).toBe("agent-1");
+  });
+
+  test("falls back to metadata agent_id when top-level is absent (forward-compat)", async () => {
+    const { client } = makeFakeClient({
+      searchHits: [
+        // Older server shape: agent_id kept in metadata, no top-level promotion.
+        hit("meta-only", {
+          memory: "metadata agent_id",
+          score: 0.7,
+          agentId: undefined,
+          metadata: { agent_id: "agent-1" },
+        }),
+      ],
+    });
+    const backend = createMem0Backend({
+      mem0Client: client,
+      sharedUserId: SHARED_USER,
+      shared: true,
+    });
+
+    const results = await backend.search("agent-1", "q", { minScore: 0.3 });
+    expect(results.length).toBe(1);
+    expect(results[0]!.source.agentId).toBe("agent-1");
+  });
+
+  test("drops a hit whose agent_id is absent in BOTH top-level and metadata", async () => {
+    const { client } = makeFakeClient({
+      searchHits: [
+        hit("no-agent", {
+          memory: "no agent id anywhere",
+          score: 0.9,
+          agentId: undefined, // no top-level
+          // and no metadata.agent_id
+        }),
+      ],
+    });
+    const backend = createMem0Backend({
+      mem0Client: client,
+      sharedUserId: SHARED_USER,
+      shared: true,
+    });
+
+    const results = await backend.search("agent-1", "q", { minScore: 0.3 });
+    expect(results).toEqual([]);
   });
 
   test("applies kinds, minScore, and conversation channel filtering client-side", async () => {
@@ -343,6 +420,31 @@ describe("createMem0Backend — search", () => {
     // wrong-kind (idea), low-score (<0.3), and other-channel (telegram≠whatsapp)
     // are all filtered; only the "keep" note survives.
     expect(results.map((r) => r.chunk.id)).toEqual(["keep"]);
+  });
+
+  test("per-agent search scopes by user_id and does NOT send a redundant agent_id filter", async () => {
+    const { client, searchCalls } = makeFakeClient({
+      searchHits: [hit("mem-a", { memory: "scoped hit", score: 0.8 })],
+    });
+    const backend = createMem0Backend({
+      mem0Client: client,
+      sharedUserId: SHARED_USER,
+      shared: false, // per-agent mode
+    });
+
+    const results = await backend.search("agent-1", "q", { minScore: 0.3 });
+    expect(results.length).toBe(1);
+
+    // Isolation is via user_id (== agentId in per-agent mode), NOT a metadata
+    // agent_id filter — the server promotes agent_id out of metadata, so that
+    // filter is version-fragile and redundant. It must not be sent.
+    expect(searchCalls.length).toBe(1);
+    const call = searchCalls[0] as {
+      userId: string;
+      filters?: Record<string, unknown>;
+    };
+    expect(call.userId).toBe("agent-1");
+    expect(call.filters?.agent_id).toBeUndefined();
   });
 
   test("degrades to no results when the client search throws", async () => {
