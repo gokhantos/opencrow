@@ -962,7 +962,7 @@ export async function scanCapabilities(
                makers_json, topics_json, first_seen_at
         FROM ph_products
         ORDER BY (votes_count + comments_count * 3) DESC
-        LIMIT 50
+        LIMIT ${strat.fetchLimit}
         OFFSET floor(random() * 10)::int
       `) as Array<Record<string, unknown>>;
     }
@@ -1105,7 +1105,7 @@ export async function scanCapabilities(
         SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
         FROM github_repos
         ORDER BY stars DESC
-        LIMIT 50
+        LIMIT ${strat.fetchLimit}
         OFFSET floor(random() * 10)::int
       `) as Array<Record<string, unknown>>;
     }
@@ -1231,7 +1231,7 @@ export async function scanCapabilities(
     const articlesRaw = (await db`
       SELECT id, title, url, source_name, summary, scraped_at
       FROM news_articles WHERE scraped_at >= ${cutoff72h}
-      ORDER BY scraped_at DESC LIMIT 50
+      ORDER BY scraped_at DESC LIMIT ${strat.fetchLimit}
     `) as Array<Record<string, unknown>>;
 
     pools.push({

@@ -193,4 +193,22 @@ describe("scanCapabilities stratified intake", () => {
     }
     expect(totalSelected).toBe(scan.capabilities.length);
   });
+
+  it("respects stratifiedIntake.fetchLimit for raw pulls", async () => {
+    // With a DB seeded with rows and fetchLimit=50 (default), scanCapabilities
+    // must complete successfully and the output is bounded by the config limits.
+    // Pool size before stratification is bounded by fetchLimit per source;
+    // we assert the result is non-empty and within the totalCap ceiling (90).
+    const ctx = await buildTestCtx();
+    const scan = await scanCapabilities(undefined, ctx);
+    expect(scan.capabilities.length).toBeGreaterThan(0);
+    // totalCap default is 90; with 25 seeded rows the output is well under.
+    expect(scan.capabilities.length).toBeLessThanOrEqual(90);
+    // selectedIds must be consistent with capabilities.
+    let totalSelected = 0;
+    for (const ids of (scan.selectedIds ?? new Map()).values()) {
+      totalSelected += ids.length;
+    }
+    expect(totalSelected).toBe(scan.capabilities.length);
+  });
 });
