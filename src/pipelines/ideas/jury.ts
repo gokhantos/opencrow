@@ -578,7 +578,7 @@ export const DEFAULT_JURY_PANEL: readonly JudgeModel[] = [
   {
     label: "alibaba-qwen",
     provider: "alibaba",
-    model: "qwen-max",
+    model: "qwen3.7-plus",
     requiredSecret: "ALIBABA_API_KEY",
   },
 ];

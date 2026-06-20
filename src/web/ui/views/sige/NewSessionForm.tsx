@@ -8,8 +8,8 @@ const DEFAULT_MODELS = [
   "claude-sonnet-4-6",
   "claude-haiku-4-5",
   "claude-opus-4-5",
-  "qwen3.5-plus",
-  "qwen-plus",
+  "qwen3.7-plus",
+  "qwen3.6-flash",
 ] as const;
 
 interface NewSessionFormProps {

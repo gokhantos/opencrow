@@ -59,7 +59,7 @@ describe("smartConfigSchema", () => {
         judgeModels: [
           { provider: "anthropic", model: "claude-haiku-4-5" },
           { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
-          { provider: "alibaba", model: "qwen3.5-plus" },
+          { provider: "alibaba", model: "qwen3.7-plus" },
         ],
         dissentWeight: 0.15,
         convergenceVetoThreshold: 0.85,
@@ -301,7 +301,7 @@ describe("sigeHardeningConfigSchema", () => {
     expect(parsed.judgeModels).toEqual([
       { provider: "anthropic", model: "claude-haiku-4-5" },
       { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
-      { provider: "alibaba", model: "qwen3.5-plus" },
+      { provider: "alibaba", model: "qwen3.7-plus" },
     ]);
   });
 

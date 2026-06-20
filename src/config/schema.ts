@@ -645,7 +645,7 @@ export const SIGE_DEFAULT_JUDGE_MODELS: readonly { provider: string; model: stri
   [
     { provider: "anthropic", model: "claude-haiku-4-5" },
     { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
-    { provider: "alibaba", model: "qwen3.5-plus" },
+    { provider: "alibaba", model: "qwen3.7-plus" },
   ];
 
 // Phase-3 SIGE hardening: an independent, anonymized, multi-family judge with

@@ -8,7 +8,7 @@ export const SELECT_CLS =
 /** Default model applied when the provider changes. */
 export const PROVIDER_MODEL_DEFAULTS: Record<AiProvider, string> = {
   "agent-sdk": "claude-sonnet-4-6",
-  alibaba: "qwen3.5-plus",
+  alibaba: "qwen3.7-plus",
   anthropic: "claude-sonnet-4-6",
   openrouter: "",
 };
