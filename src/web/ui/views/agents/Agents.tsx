@@ -150,6 +150,7 @@ export default function Agents() {
     anthropic: agents.filter((a) => a.provider === "anthropic").length,
     openrouter: agents.filter((a) => a.provider === "openrouter").length,
     alibaba: agents.filter((a) => a.provider === "alibaba").length,
+    opencode: agents.filter((a) => a.provider === "opencode").length,
   };
 
   const selectedAgent = selectedId
