@@ -176,6 +176,118 @@ def _maybe_disable_thinking() -> None:
 _maybe_disable_thinking()
 
 
+# ─── Write-time relationship-type normalization (UPPERCASE canonical) ──────────
+# mem0 0.1.118's graph write path LOWERCASES every extracted relationship before
+# the Neo4j MERGE. In `mem0/memory/graph_memory.py`,
+# `MemoryGraph._remove_spaces_from_entities` does (≈ line 612):
+#
+#     item["relationship"] = sanitize_relationship_for_cypher(
+#         item["relationship"].lower().replace(" ", "_"))
+#
+# so every fresh graph edge lands lowercase (e.g. `complained_about`, `uses`,
+# `available_on`). But the mem0↔Neo4j graph is meant to be canonicalized to
+# UPPERCASE rel types: SIGE's REL_WHITELIST (src/sige/knowledge/neo4j-client.ts)
+# is UPPERCASE-only. Canonicalization currently runs ONLY as a weekly launchd
+# backfill (`ai.opencrow.canonicalize`, Sun 04:00, scripts/canonicalize-neo4j-
+# graph.py) with NO write-time enforcement, so the graph re-drifts to lowercase
+# within hours of each run.
+#
+# This patch enforces UPPERCASE AT WRITE so the graph is stored canonical at
+# rest, the weekly --refine has a near-zero rel-type tail, and other graph
+# consumers see canonical types. It complements (does not replace) the read-side
+# case-insensitive fix in neo4j-client.ts (`toUpper(type(r)) IN $relWhitelist`,
+# PR #247) — the two are defense-in-depth.
+#
+# Mechanism: wrap `sanitize_relationship_for_cypher` so its return value is
+# upper-cased. Because line 612 calls it as the OUTERMOST transform building the
+# final `item["relationship"]`, upper-casing its output guarantees every written
+# rel type is UPPERCASE canonical:
+#   "complained about" → .lower() → "complained_about"
+#                      → sanitize → "complained_about"
+#                      → .upper() → "COMPLAINED_ABOUT".
+# Deterministic, NO LLM call, fail-safe.
+#
+# SCOPE: relationship TYPES only. Node/entity labels (e.g. `function`,
+# `source_file`) are a SEPARATE axis — SIGE reads rels, not labels — and are left
+# to the weekly canonicalizer; we do NOT touch them, nor the vector/embedder/LLM/
+# Qdrant paths, the dual graph-on/graph-less design, or the response-shape
+# helpers (`_normalize_relation`/`_flatten_relations`).
+def _canonicalize_rel_type(s: str) -> str:
+    """Canonical rel-type form written to Neo4j: UPPERCASE.
+
+    Pure string transform, no mem0 dependency — independently unit-testable.
+    """
+    return str(s).upper()
+
+
+def _uppercase_relationship(orig):  # type: ignore[no-untyped-def]
+    """Wrap a `sanitize_relationship_for_cypher`-shaped fn to UPPERCASE its output."""
+
+    def wrapped(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return _canonicalize_rel_type(orig(*args, **kwargs))
+
+    # Tag so a re-import of this module never double-wraps (idempotent).
+    wrapped._reltype_upper_wrapped = True  # type: ignore[attr-defined]
+    return wrapped
+
+
+def _enable_reltype_write_normalization() -> None:
+    """Rebind `sanitize_relationship_for_cypher` to UPPERCASE its result.
+
+    `mem0/memory/graph_memory.py` does `from mem0.memory.utils import
+    sanitize_relationship_for_cypher` at import, so the name is bound INTO the
+    `graph_memory` module namespace. Line 612 resolves the call against THAT
+    module global — so rebinding `mem0.memory.graph_memory.sanitize_relationship_
+    for_cypher` is what actually takes effect at write time. We also rebind the
+    original home (`mem0.memory.utils`) for completeness. We explicitly import
+    `graph_memory` here because `from mem0 import Memory` does not eagerly load it
+    (it's imported lazily when a graph-enabled Memory is built); importing it now
+    forces the binding to exist before we patch it.
+
+    Fail-safe: if a future mem0 lays this out differently and the symbol is
+    missing, we WARN and continue — the read-side toUpper fix still covers
+    correctness if this no-ops. Never crash sidecar startup over it.
+    """
+    try:
+        import mem0.memory.graph_memory as _gm
+        import mem0.memory.utils as _utils
+    except Exception as err:  # noqa: BLE001 — best-effort; never block startup
+        log.warning(
+            "could not load mem0 graph modules for rel-type write normalization: %s",
+            err,
+        )
+        return
+
+    patched_any = False
+    for _mod in (_gm, _utils):
+        fn = getattr(_mod, "sanitize_relationship_for_cypher", None)
+        if fn is None:
+            log.warning(
+                "rel-type write normalization: sanitize_relationship_for_cypher "
+                "missing on %s (mem0 internals changed?) — skipping",
+                getattr(_mod, "__name__", _mod),
+            )
+            continue
+        if getattr(fn, "_reltype_upper_wrapped", False):
+            # Already wrapped (module re-imported) — idempotent no-op.
+            patched_any = True
+            continue
+        _mod.sanitize_relationship_for_cypher = _uppercase_relationship(fn)
+        patched_any = True
+
+    if patched_any:
+        # Distinctive string for deploy verification (greppable in startup logs).
+        log.info("graph rel-type write normalization active (UPPERCASE at write)")
+    else:
+        log.warning(
+            "graph rel-type write normalization NOT applied "
+            "(symbol missing on both modules) — relying on read-side toUpper fix"
+        )
+
+
+_enable_reltype_write_normalization()
+
+
 # ─── Inbound auth ───────────────────────────────────────────────────────────
 # mem0ai (0.1.118) ships no auth on its memory API (GHSA-jfv9-68m5-gjjr). We add
 # a shared bearer-token check at the application layer as defense-in-depth on the

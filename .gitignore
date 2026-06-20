@@ -59,3 +59,8 @@ src/news/scraper/.venv/
 # Playwright e2e artifacts
 playwright-report/
 test-results/
+
+# Python (mem0 sidecar) build artifacts
+__pycache__/
+*.pyc
+.venv/
