@@ -16,7 +16,7 @@ import {
   AgentConflictError,
 } from "../../config/agent-mutations";
 
-import { TEMPLATES } from "../../tools/agent-templates";
+import { getAgentTemplates } from "../../tools/agent-templates";
 
 const log = createLogger("agents-api");
 
@@ -134,8 +134,8 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
     });
   });
 
-  app.get("/agents/templates", (c) => {
-    return c.json({ success: true, data: TEMPLATES });
+  app.get("/agents/templates", async (c) => {
+    return c.json({ success: true, data: await getAgentTemplates() });
   });
 
   app.get("/agents/subagents", (c) => {
