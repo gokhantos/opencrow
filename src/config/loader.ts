@@ -403,6 +403,39 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     independentJuryEnv.penaltyWeight = independentJuryWeight;
   }
 
+  // OPENCROW_SMART_SHALLOW_IDEATION_* — Stage 2 broad-shallow ideation block.
+  const shallowIdeationEnv: Record<string, unknown> = {};
+  const shallowEnabled = boolEnv("OPENCROW_SMART_SHALLOW_IDEATION_ENABLED");
+  if (shallowEnabled !== undefined) shallowIdeationEnv.enabled = shallowEnabled;
+  const shallowCandidateCount = Number(
+    process.env.OPENCROW_SMART_SHALLOW_IDEATION_CANDIDATE_COUNT ?? "",
+  );
+  if (
+    !Number.isNaN(shallowCandidateCount) &&
+    process.env.OPENCROW_SMART_SHALLOW_IDEATION_CANDIDATE_COUNT !== undefined
+  ) {
+    shallowIdeationEnv.candidateCount = shallowCandidateCount;
+  }
+  const shallowBatchSize = Number(process.env.OPENCROW_SMART_SHALLOW_IDEATION_BATCH_SIZE ?? "");
+  if (
+    !Number.isNaN(shallowBatchSize) &&
+    process.env.OPENCROW_SMART_SHALLOW_IDEATION_BATCH_SIZE !== undefined
+  ) {
+    shallowIdeationEnv.batchSize = shallowBatchSize;
+  }
+  if (process.env.OPENCROW_SMART_SHALLOW_IDEATION_MODEL) {
+    shallowIdeationEnv.model = process.env.OPENCROW_SMART_SHALLOW_IDEATION_MODEL;
+  }
+
+  // OPENCROW_SMART_DEEP_DEVELOP_COUNT — Stage 3 deep-develop count (top-level).
+  const deepDevelopCount = Number(process.env.OPENCROW_SMART_DEEP_DEVELOP_COUNT ?? "");
+  if (
+    !Number.isNaN(deepDevelopCount) &&
+    process.env.OPENCROW_SMART_DEEP_DEVELOP_COUNT !== undefined
+  ) {
+    smartEnv.deepDevelopCount = deepDevelopCount;
+  }
+
   if (
     Object.keys(smartEnv).length > 0 ||
     Object.keys(sigeAutoEnv).length > 0 ||
@@ -412,7 +445,8 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     Object.keys(competabilityEnv).length > 0 ||
     Object.keys(diversityGuardEnv).length > 0 ||
     Object.keys(seedDiversityEnv).length > 0 ||
-    Object.keys(independentJuryEnv).length > 0
+    Object.keys(independentJuryEnv).length > 0 ||
+    Object.keys(shallowIdeationEnv).length > 0
   ) {
     const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
     const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
@@ -460,6 +494,10 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     if (Object.keys(independentJuryEnv).length > 0) {
       const existing = (existingSmart.independentJury ?? {}) as Record<string, unknown>;
       smart.independentJury = { ...existing, ...independentJuryEnv };
+    }
+    if (Object.keys(shallowIdeationEnv).length > 0) {
+      const existing = (existingSmart.shallowIdeation ?? {}) as Record<string, unknown>;
+      smart.shallowIdeation = { ...existing, ...shallowIdeationEnv };
     }
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }
