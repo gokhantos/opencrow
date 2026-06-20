@@ -576,9 +576,25 @@ def run_refine(args: argparse.Namespace) -> int:
         print(f"{kind}: {len(tail)} tail terms to LLM-classify")
         refined: dict[str, str] = {}
         for i in range(0, len(tail), 70):
-            refined.update(
-                _llm_classify(tail[i : i + 70], canon, guide, kind)
-            )
+            batch = tail[i : i + 70]
+            try:
+                refined.update(_llm_classify(batch, canon, guide, kind))
+            except Exception as exc:
+                # One malformed LLM response must not kill the whole refine.
+                # Split into small sub-batches and retry; anything still failing
+                # falls back to the generic bucket (lossless — --apply keeps
+                # orig_type/orig_label, so a fallback edge is still recoverable).
+                for j in range(0, len(batch), 10):
+                    sub = batch[j : j + 10]
+                    try:
+                        refined.update(_llm_classify(sub, canon, guide, kind))
+                    except Exception:
+                        for t in sub:
+                            refined[t] = fallback
+                print(
+                    f"{kind}: batch {i // 70 + 1} recovered via split-retry "
+                    f"({type(exc).__name__})"
+                )
         merged = {}
         for name, _ in inv:
             if name == _USER_LABEL:
