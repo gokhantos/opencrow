@@ -21,10 +21,16 @@ export interface PipelineConfig {
   readonly maxIdeas: number;
   readonly minQualityScore: number;
   readonly sourcesToInclude: readonly string[];
+  /**
+   * Optional operator override for the generator MODEL. Only honored when
+   * `provider` is ALSO set (the two must travel together — a model is only valid
+   * for its own provider). When either is absent the `pipeline.generator` route
+   * supplies BOTH. Left unset by default so the dashboard route is authoritative.
+   */
   readonly model?: string;
   /**
-   * Optional operator override for the generator PROVIDER. When set it wins over
-   * the `pipeline.generator` model route; absent → the route's provider is used.
+   * Optional operator override for the generator PROVIDER. Only honored when
+   * `model` is ALSO set; otherwise the route's provider (and model) are used.
    */
   readonly provider?: ModelProvider;
 }
@@ -43,7 +49,9 @@ export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
     "news",
     "x",
   ],
-  model: "claude-sonnet-4-6",
+  // No hardcoded model/provider: the `pipeline.generator` model route
+  // (dashboard-controlled) is the source of truth. Setting only `model` here
+  // would mismatch the route's provider and break non-Anthropic routes.
 };
 
 export interface PipelineRun {

@@ -43,6 +43,7 @@ import { fetchGraphReasoningDirective } from "./graph-reasoning";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import { getDb } from "../../store/db";
 import { getModelRoute } from "../../store/model-routing";
+import { resolveGeneratorRoute } from "./generator-route";
 import { annotateOriginality, checkForDuplicates, verifyEvidence } from "./validate";
 import { buildValidatedExemplars, deepSearch, synthesizeFromTrends } from "./synthesizer";
 
@@ -215,14 +216,21 @@ export async function runIdeasPipeline(
 
   try {
     // Model-routing is the source of truth for the idea generator's provider AND
-    // model. Explicit `config.model` / `config.provider` (operator overrides)
-    // still win; otherwise the `pipeline.generator` route (DB-backed, hot
-    // reloaded) supplies both. The provider is threaded through the synthesizer
-    // generation passes into buildChatOptions so a non-Anthropic route actually
-    // dispatches to that provider (not just sets the model).
-    const generatorRoute = await getModelRoute("pipeline.generator");
-    const model = config.model ?? generatorRoute.model;
-    const provider = config.provider ?? generatorRoute.provider;
+    // model. CRITICAL: model and provider must be resolved as a COUPLED PAIR
+    // from the SAME source — a model id is only valid for its own provider
+    // (e.g. `claude-sonnet-4-6` only on `anthropic`, `glm-5.2` only on
+    // `alibaba`). Resolving them independently (config.model ?? route.model with
+    // config.provider ?? route.provider) can mix a config model with the route's
+    // provider and send the model to the wrong API → "Model not exist". So an
+    // explicit operator override only applies when BOTH model and provider are
+    // set together; otherwise the `pipeline.generator` route (DB-backed, hot
+    // reloaded, dashboard-controlled) supplies BOTH. The provider is threaded
+    // through the synthesizer generation passes into buildChatOptions so a
+    // non-Anthropic route actually dispatches to that provider.
+    const { model, provider } = resolveGeneratorRoute(
+      config,
+      await getModelRoute("pipeline.generator"),
+    );
     const smart = loadConfig().pipelines.ideas.smart;
     const sigeConfig = loadConfig().sige;
     const taste = smart.taste;
