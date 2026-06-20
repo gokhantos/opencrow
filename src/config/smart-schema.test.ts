@@ -142,6 +142,13 @@ describe("smartConfigSchema", () => {
         enabled: true,
         penaltyWeight: 0.7,
       },
+      shallowIdeation: {
+        enabled: false,
+        candidateCount: 30,
+        batchSize: 10,
+        model: "",
+      },
+      deepDevelopCount: 6,
     });
   });
 
@@ -164,6 +171,34 @@ describe("smartConfigSchema", () => {
     expect(parsed.seedDiversity.enabled).toBe(false);
     expect(parsed.seedDiversity.focusRotation).toBe(false);
     expect(parsed.seedDiversity.echoChamberFactor).toBe(0.25);
+  });
+
+  test("Stage 2 shallowIdeation defaults OFF (reversible) with conservative knobs", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.shallowIdeation.enabled).toBe(false);
+    expect(parsed.shallowIdeation.candidateCount).toBe(30);
+    expect(parsed.shallowIdeation.batchSize).toBe(10);
+    expect(parsed.shallowIdeation.model).toBe("");
+    expect(parsed.deepDevelopCount).toBe(6);
+  });
+
+  test("Stage 2 bounds are enforced + overrides honored", () => {
+    expect(() => smartConfigSchema.parse({ shallowIdeation: { candidateCount: 3 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ shallowIdeation: { candidateCount: 121 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ shallowIdeation: { batchSize: 0 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ deepDevelopCount: 0 })).toThrow();
+    expect(() => smartConfigSchema.parse({ deepDevelopCount: 21 })).toThrow();
+    const parsed = smartConfigSchema.parse({
+      shallowIdeation: { enabled: true, candidateCount: 24, batchSize: 8, model: "cheap-x" },
+      deepDevelopCount: 5,
+    });
+    expect(parsed.shallowIdeation).toEqual({
+      enabled: true,
+      candidateCount: 24,
+      batchSize: 8,
+      model: "cheap-x",
+    });
+    expect(parsed.deepDevelopCount).toBe(5);
   });
 
   test("Layer C incumbent exclusion defaults ON (pure-logic safe)", () => {

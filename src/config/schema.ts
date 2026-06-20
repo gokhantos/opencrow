@@ -660,6 +660,33 @@ export const generateWideConfigSchema = z
     sigeDivergent: false,
   });
 
+// Stage 2 "broad-shallow ideation" (Funnel Breadth Redesign). Ideate cheaply over
+// MANY candidate themes (one one-line sketch each, batched on a small/cheap model)
+// then diversity-select a few for deep-development. FULLY REVERSIBLE: `enabled`
+// false → the synthesizer keeps today's narrow top-10 neck. Defaults are
+// conservative so cost stays bounded (candidateCount × one cheap line, batched).
+export const shallowIdeationConfigSchema = z
+  .object({
+    // Master switch. Default OFF for a first ship — flip to broaden the funnel
+    // without a code change. See the design doc §4 (reversibility is the hard
+    // requirement; default-on is the judgment call, left OFF here).
+    enabled: z.boolean().default(false),
+    // How many candidate themes to ideate over (raises the ≤10 neck). ~30.
+    candidateCount: z.number().int().min(4).max(120).default(30),
+    // Candidates per cheap-model sketch call (batching keeps the call count low).
+    batchSize: z.number().int().min(1).max(50).default(10),
+    // Optional cheap-model id override. Empty → resolve via model-routing
+    // (`sige.fast-agent`, Haiku-class). NEVER the deep `pipeline.generator`.
+    model: z.string().default(""),
+  })
+  .default({
+    enabled: false,
+    candidateCount: 30,
+    batchSize: 10,
+    model: "",
+  });
+export type ShallowIdeationConfig = z.infer<typeof shallowIdeationConfigSchema>;
+
 // Phase 2 "demand-side grounding": give every idea an external truth source so
 // the GIANT demand / why-now axes score on CITED buyer-intent extracted
 // deterministically from EXISTING scraped tables (reddit_posts / news_articles)
@@ -1167,6 +1194,13 @@ export const smartConfigSchema = z.object({
   // self-grade. Default ON; gracefully no-ops without a judge key. Fully
   // defaulted -> backward-compatible.
   independentJury: independentJuryConfigSchema,
+  // Stage 2 "broad-shallow ideation": cheap one-line sketch over many candidate
+  // themes → diversity-select a few. Default OFF (reversible). Fully defaulted ->
+  // backward-compatible: when off, the synthesizer keeps today's narrow neck.
+  shallowIdeation: shallowIdeationConfigSchema,
+  // Stage 3 deep-develop count: how many DIVERSE sketches the synthesizer
+  // deep-develops when shallowIdeation is on (the new neck width). ~5-6.
+  deepDevelopCount: z.number().int().min(1).max(20).default(6),
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -1284,6 +1318,13 @@ const SMART_IDEAS_DEFAULTS = {
     enabled: true,
     penaltyWeight: 0.7,
   },
+  shallowIdeation: {
+    enabled: false,
+    candidateCount: 30,
+    batchSize: 10,
+    model: "",
+  },
+  deepDevelopCount: 6,
 } as const;
 
 export const ideasPipelineConfigSchema = z

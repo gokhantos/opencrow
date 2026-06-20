@@ -33,6 +33,13 @@ import type {
 import { applyMmr } from "../../memory/mmr";
 import { getDb } from "../../store/db";
 import type { ModelProvider } from "../../store/model-routing";
+import { selectDiverseBy } from "./idea-diversity";
+import {
+  type ScoredSketch,
+  type ThemeCandidate,
+  defaultShallowIdeationDeps,
+  runShallowIdeation,
+} from "./shallow-ideation";
 import { loadIncumbentNames } from "./incumbents";
 import type { IdeaCategory } from "../types";
 import { selectWithNoveltyReserve } from "./generate-wide";
@@ -387,14 +394,38 @@ export async function synthesizeFromTrends(input: {
     after: dedupedIntersections.length,
   });
 
-  // Take top 10 by signal strength from deduped set
-  const topIntersections = [...dedupedIntersections]
-    .sort((a, b) => b.signalStrength - a.signalStrength)
-    .slice(0, Math.min(maxIdeas * 2, 10));
+  // ── STAGE 2 neck — gated broad-shallow ideation ─────────────────────────
+  // When shallowIdeation is ON: ideate cheaply over many candidates, then
+  // diversity-select `deepDevelopCount` to deep-develop (the broadened funnel).
+  // When OFF: keep today's narrow top-10-by-signal neck byte-for-byte. The new
+  // path is one config flag away from the old behavior, and degrades to the old
+  // selection on any Stage-2 failure (selectViaShallowIdeation never throws).
+  // Optional access: the real schema always populates `shallowIdeation` +
+  // `deepDevelopCount`, but a partial/mocked config may omit them — default to
+  // the OFF (legacy-neck) behavior so a missing block never throws.
+  const shallow = smart.shallowIdeation;
+  let topIntersections: readonly IntersectionHypothesis[];
+  if (shallow?.enabled) {
+    topIntersections = await selectViaShallowIdeation({
+      intersections: dedupedIntersections,
+      candidateCount: shallow.candidateCount,
+      deepDevelopCount: smart.deepDevelopCount ?? shallow.candidateCount,
+      batchSize: shallow.batchSize,
+      cheapModel: shallow.model,
+      saturatedThemes,
+      maxBucketShare: smart.diversityGuard?.maxBucketShare ?? 0.5,
+    });
+  } else {
+    // Legacy narrow neck: top 10 by signal strength from the deduped set.
+    topIntersections = [...dedupedIntersections]
+      .sort((a, b) => b.signalStrength - a.signalStrength)
+      .slice(0, Math.min(maxIdeas * 2, 10));
+  }
 
   log.info("Pass 1 complete — proceeding to Pass 2", {
     totalIntersections: intersections.length,
     selectedForDevelopment: topIntersections.length,
+    shallowIdeation: shallow?.enabled ?? false,
   });
 
   // ── Pass 2: Develop ideas from intersections ─────────────────────────
@@ -641,4 +672,97 @@ function sortAndDiversify(
     log.warn("sort+MMR diversity pass failed, using quality sort", { err });
     return mmrInput.slice(0, maxIdeas);
   }
+}
+
+/** Bucket label for a sketch whose candidate has no signalCategory. */
+const UNKNOWN_SHALLOW_BUCKET = "unknown";
+
+/**
+ * STAGE 2 — broad-shallow ideation over the deduped intersection pool.
+ *
+ * Instead of the legacy narrow neck (`slice(0, min(maxIdeas*2, 10))`), ideate a
+ * cheap one-line sketch over up to `candidateCount` intersections, score each
+ * (signal + novelty-vs-saturation + market-gap), then DIVERSITY-select
+ * `deepDevelopCount` of them via the existing `selectDiverseBy` machinery
+ * (bucketing on the carried-through signalCategory). Returns the SAME
+ * `IntersectionHypothesis` objects (a subset), so Pass 2 is byte-for-byte
+ * unchanged per-theme.
+ *
+ * Resilient: if Stage 2 yields no scored sketches (model down / all junk), falls
+ * back to the legacy top-`deepDevelopCount` by signalStrength so the pipeline
+ * never starves. Never throws.
+ */
+async function selectViaShallowIdeation(input: {
+  readonly intersections: readonly IntersectionHypothesis[];
+  readonly candidateCount: number;
+  readonly deepDevelopCount: number;
+  readonly batchSize: number;
+  readonly cheapModel: string;
+  readonly saturatedThemes: string;
+  readonly maxBucketShare: number;
+}): Promise<readonly IntersectionHypothesis[]> {
+  const ranked = [...input.intersections].sort((a, b) => b.signalStrength - a.signalStrength);
+  const pool = ranked.slice(0, Math.max(1, input.candidateCount));
+
+  // Map each intersection → a provider-agnostic ThemeCandidate. The index-based
+  // id binds the scored sketch back to the exact IntersectionHypothesis.
+  const byId = new Map<string, IntersectionHypothesis>();
+  const candidates: ThemeCandidate[] = pool.map((h, i) => {
+    const id = `int_${i}`;
+    byId.set(id, h);
+    return {
+      id,
+      title: h.title,
+      signalStrength: h.signalStrength,
+      // The pipeline's intersections have no facet category; bucket on the
+      // capability signal so diversity selection still spreads across themes.
+      signalCategory: h.capabilitySignal.toLowerCase().trim() || undefined,
+      kind: "intersection",
+      source: "pipeline",
+      context: `${h.painSignal}\n${h.capabilitySignal}\n${h.marketSignal}\n${h.hypothesis}`,
+    };
+  });
+
+  let scored: readonly ScoredSketch[] = [];
+  try {
+    const deps = await defaultShallowIdeationDeps({
+      batchSize: input.batchSize,
+      lookupSaturation: async () => input.saturatedThemes,
+      model: input.cheapModel,
+    });
+    scored = await runShallowIdeation(candidates, deps);
+  } catch (err) {
+    log.warn("Stage 2 shallow ideation failed; falling back to top-by-signal", { err });
+  }
+
+  if (scored.length === 0) {
+    return pool.slice(0, input.deepDevelopCount);
+  }
+
+  // Diversity-select the deep-develop set across signalCategory buckets, then map
+  // each kept sketch back to its originating intersection (order preserved).
+  const selected = selectDiverseBy(scored, {
+    maxIdeas: input.deepDevelopCount,
+    maxBucketShare: input.maxBucketShare,
+    resolveBucket: (s) => s.candidate.signalCategory ?? UNKNOWN_SHALLOW_BUCKET,
+  });
+
+  const out: IntersectionHypothesis[] = [];
+  const seen = new Set<string>();
+  for (const s of selected) {
+    const h = byId.get(s.candidate.id);
+    if (h && !seen.has(s.candidate.id)) {
+      seen.add(s.candidate.id);
+      out.push(h);
+    }
+  }
+
+  log.info("Stage 2 shallow ideation selected diverse intersections", {
+    pool: pool.length,
+    scored: scored.length,
+    selected: out.length,
+    deepDevelopCount: input.deepDevelopCount,
+  });
+
+  return out.length > 0 ? out : pool.slice(0, input.deepDevelopCount);
 }
