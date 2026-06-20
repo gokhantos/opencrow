@@ -324,43 +324,84 @@ describe("self-restart tool (process_manage)", () => {
     });
 
     it("should trigger restart for known process", async () => {
-      // First call: listProcesses
-      const processes = [
-        {
-          name: "web",
-          status: "running",
-          syncStatus: "synced",
-          pid: 1,
-          restartCount: 0,
-          uptimeSeconds: 100,
-        },
-      ];
+      // Self-only: act as the owning agent so the target is self (web is now a
+      // protected shared process and may NOT be self-restarted — see the
+      // restart-loop regression test below).
+      const prev = process.env.OPENCROW_AGENT_ID;
+      process.env.OPENCROW_AGENT_ID = "restart-ok";
+      try {
+        const processes = [
+          {
+            name: "agent:restart-ok",
+            status: "running",
+            syncStatus: "synced",
+            pid: 1,
+            restartCount: 0,
+            uptimeSeconds: 100,
+          },
+        ];
 
-      // First fetch: list processes for validation
-      mockFetchFn
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ data: processes }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        )
-        // Second fetch: the actual restart action
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ ok: true }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
+        // First fetch: list processes for validation
+        mockFetchFn
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ data: processes }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          )
+          // Second fetch: the actual restart action
+          .mockResolvedValueOnce(
+            new Response(JSON.stringify({ ok: true }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
 
+        const tool = createSelfRestartTool();
+        const result = await tool.execute({
+          action: "restart",
+          target: "agent:restart-ok",
+          reason: "deploying update",
+        });
+
+        expect(result.isError).toBe(false);
+        expect(result.output).toContain("restart triggered for 'agent:restart-ok'");
+      } finally {
+        if (prev === undefined) delete process.env.OPENCROW_AGENT_ID;
+        else process.env.OPENCROW_AGENT_ID = prev;
+      }
+    });
+
+    it("should reject restarting the shared web process (restart-loop guard)", async () => {
+      // Owner is "web" (no agent/scraper env). A dashboard-triggered SIGE/
+      // pipeline run executes in-process under `web`; self-restarting it kills
+      // the run, which resumes and re-issues — an unbreakable loop. Must refuse
+      // WITHOUT issuing any control-plane call.
       const tool = createSelfRestartTool();
       const result = await tool.execute({
         action: "restart",
         target: "web",
-        reason: "deploying update",
+        reason: "trying to self-restart web",
       });
 
-      expect(result.isError).toBe(false);
-      expect(result.output).toContain("restart triggered for 'web'");
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("shared infrastructure process");
+      expect(result.output).toContain("operator");
+      // No control-plane fetch should have been issued.
+      expect(mockFetchFn).not.toHaveBeenCalled();
+    });
+
+    it("should reject restarting web even with no explicit target (default = web)", async () => {
+      // Default target is the calling process; in the web process that is "web".
+      const tool = createSelfRestartTool();
+      const result = await tool.execute({
+        action: "restart",
+        reason: "implicit self-restart from a web-hosted run",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("shared infrastructure process");
+      expect(mockFetchFn).not.toHaveBeenCalled();
     });
 
     it("should handle restart failure from orchestrator", async () => {
@@ -519,13 +560,22 @@ describe("self-restart tool (process_manage)", () => {
     it("should default to restart and fail closed if the process list is unavailable", async () => {
       // Action defaults to "restart", target defaults to own process (self, so
       // the self-only guard passes). If the process list cannot be fetched, the
-      // tool fails CLOSED rather than acting on an unverified target.
-      mockFetchFn.mockRejectedValueOnce(new Error("list failed"));
+      // tool fails CLOSED rather than acting on an unverified target. Run as an
+      // agent: the default web target is now blocked by the protected-process
+      // guard before the list fetch, so this path requires a non-protected self.
+      const prev = process.env.OPENCROW_AGENT_ID;
+      process.env.OPENCROW_AGENT_ID = "default-action-test";
+      try {
+        mockFetchFn.mockRejectedValueOnce(new Error("list failed"));
 
-      const tool = createSelfRestartTool();
-      const result = await tool.execute({ reason: "default action test" });
-      expect(result.isError).toBe(true);
-      expect(result.output).toContain("Refusing to restart");
+        const tool = createSelfRestartTool();
+        const result = await tool.execute({ reason: "default action test" });
+        expect(result.isError).toBe(true);
+        expect(result.output).toContain("Refusing to restart");
+      } finally {
+        if (prev === undefined) delete process.env.OPENCROW_AGENT_ID;
+        else process.env.OPENCROW_AGENT_ID = prev;
+      }
     });
   });
 });
