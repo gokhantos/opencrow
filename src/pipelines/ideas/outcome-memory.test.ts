@@ -12,6 +12,7 @@
 import { describe, test, expect } from "bun:test";
 import {
   buildOutcomeMemoryBlock,
+  competabilityFromCandidate,
   outcomeMemorySchema,
   toOutcomeMemory,
   renderOutcomeSentence,
@@ -23,6 +24,8 @@ import {
   type OutcomeContext,
   type RetrievedOutcome,
 } from "./outcome-memory";
+import { MIN_CORRELATION_SAMPLES } from "./outcome-competability-correlation";
+import type { CandidateCompetabilityFields } from "./competability";
 import type { GiantAggregate } from "./giant";
 import type { DemandArtifact } from "./demand";
 
@@ -643,5 +646,154 @@ describe("buildOutcomeMemoryBlock", () => {
     expect(block).toContain("dupe A");
     expect(block).not.toContain("dupe B (same ideaId)");
     expect(block).toContain("distinct");
+  });
+});
+
+// ── competability enrichment (write side) ─────────────────────────────────────
+
+describe("competabilityFromCandidate", () => {
+  function fields(over: Partial<CandidateCompetabilityFields> = {}): CandidateCompetabilityFields {
+    return {
+      competability: { capital: 2, networkEffect: 1, logistics: 4, regulated: 1 },
+      competabilityOverall: 2.5,
+      competabilityGated: false,
+      competabilityReason: "soft band",
+      ...over,
+    };
+  }
+
+  test("returns null when the candidate was never scored (no dims)", () => {
+    expect(competabilityFromCandidate({})).toBeNull();
+    expect(competabilityFromCandidate({ competabilityOverall: 3 })).toBeNull();
+  });
+
+  test("folds the loose fields into the slice (effective + raw + matched domain)", () => {
+    const slice = competabilityFromCandidate(
+      fields({
+        competabilityRaw: { capital: 5, networkEffect: 1, logistics: 5, regulated: 1 },
+        competabilityRawOverall: 1.5,
+        competabilityMatchedExpertiseDomain: "logistics-ops",
+      }),
+    );
+    expect(slice).not.toBeNull();
+    expect(slice?.dimensions).toEqual({
+      capital: 2,
+      networkEffect: 1,
+      logistics: 4,
+      regulated: 1,
+    });
+    expect(slice?.overall).toBe(2.5);
+    expect(slice?.rawOverall).toBe(1.5);
+    expect(slice?.gated).toBe(false);
+    expect(slice?.matchedExpertiseDomain).toBe("logistics-ops");
+  });
+
+  test("rawOverall and matchedExpertiseDomain default to null when absent", () => {
+    const slice = competabilityFromCandidate(fields());
+    expect(slice?.rawOverall).toBeNull();
+    expect(slice?.matchedExpertiseDomain).toBeNull();
+  });
+});
+
+describe("toOutcomeMemory + renderOutcomeSentence — competability", () => {
+  test("toOutcomeMemory carries the competability slice when the candidate is scored", () => {
+    const memory = toOutcomeMemory(
+      {
+        ...baseCandidate(),
+        competability: { capital: 1, networkEffect: 5, logistics: 1, regulated: 1 },
+        competabilityOverall: 1.5,
+        competabilityGated: true,
+      },
+      verdictFor("archived"),
+      { gate: null, sigeDissent: null, convergenceVeto: null, demand: null },
+      baseContext(),
+    );
+    expect(memory.competability).not.toBeNull();
+    expect(memory.competability?.dimensions.networkEffect).toBe(5);
+    expect(memory.competability?.gated).toBe(true);
+    // Round-trips through the schema (mem0 metadata).
+    expect(outcomeMemorySchema.safeParse(memory).success).toBe(true);
+  });
+
+  test("toOutcomeMemory leaves competability undefined when un-scored (absent-data path)", () => {
+    const memory = toOutcomeMemory(
+      baseCandidate(),
+      verdictFor("validated"),
+      { gate: null, sigeDissent: null, convergenceVeto: null, demand: null },
+      baseContext(),
+    );
+    expect(memory.competability ?? null).toBeNull();
+    expect(outcomeMemorySchema.safeParse(memory).success).toBe(true);
+  });
+
+  test("renderOutcomeSentence appends a moat clause naming high moats", () => {
+    const memory = toOutcomeMemory(
+      {
+        ...baseCandidate(),
+        competability: { capital: 1, networkEffect: 5, logistics: 1, regulated: 1 },
+        competabilityOverall: 1.5,
+        competabilityMatchedExpertiseDomain: "marketplaces",
+      },
+      verdictFor("archived"),
+      { gate: null, sigeDissent: null, convergenceVeto: null, demand: null },
+      baseContext(),
+    );
+    const sentence = renderOutcomeSentence(memory, "Some marketplace idea");
+    expect(sentence).toContain("Competability can-win 1.5/5");
+    expect(sentence).toContain("high moats: network");
+    expect(sentence).toContain("builder-fit domain: marketplaces");
+  });
+
+  test("renderOutcomeSentence omits the moat clause when un-scored (byte-identical to legacy)", () => {
+    const memory = toOutcomeMemory(
+      baseCandidate(),
+      verdictFor("validated"),
+      { gate: null, sigeDissent: null, convergenceVeto: null, demand: null },
+      baseContext(),
+    );
+    const sentence = renderOutcomeSentence(memory, "A plain idea");
+    expect(sentence).not.toContain("Competability");
+  });
+});
+
+describe("buildOutcomeMemoryBlock — moat-learnings directive", () => {
+  function archivedHighMoat(id: string): RetrievedOutcome {
+    return {
+      memory: `archived ${id}`,
+      metadata: fullMemory({
+        ideaId: id,
+        verdict: "archived",
+        verdictSource: "human",
+        competability: {
+          dimensions: { capital: 2, networkEffect: 1, logistics: 5, regulated: 1 },
+          overall: 1.5,
+          rawOverall: null,
+          gated: true,
+          matchedExpertiseDomain: null,
+        },
+      }),
+    };
+  }
+
+  test("appends MOAT LEARNINGS when correlation evidence is present", () => {
+    const items = Array.from({ length: MIN_CORRELATION_SAMPLES }, (_, i) =>
+      archivedHighMoat(`a-${i}`),
+    );
+    const block = buildOutcomeMemoryBlock(items, 5, 5);
+    expect(block).toContain("MOAT LEARNINGS");
+    expect(block).toContain("high-moat ideas were ARCHIVED");
+    // The per-idea AVOID bullets still render.
+    expect(block).toContain("AVOID");
+  });
+
+  test("no MOAT LEARNINGS when memories carry no competability slice", () => {
+    const items: readonly RetrievedOutcome[] = [
+      {
+        memory: "archived plain",
+        metadata: fullMemory({ ideaId: "p1", verdict: "archived", verdictSource: "human" }),
+      },
+    ];
+    const block = buildOutcomeMemoryBlock(items, 5, 5);
+    expect(block).not.toContain("MOAT LEARNINGS");
   });
 });

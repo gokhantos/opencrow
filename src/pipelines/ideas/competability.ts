@@ -417,6 +417,47 @@ export function candidateCompetabilityPersisted(
   );
 }
 
+/**
+ * Lift a persisted competability scorecard (the `competability_json` column shape)
+ * back into the loose per-candidate competability fields. The inverse of
+ * {@link candidateCompetabilityPersisted}: lets a consumer that only has the stored
+ * scorecard (e.g. the human stage-update route reading a generated_ideas row) feed
+ * the SAME moat slice into the outcome-memory write-back as a run-time candidate
+ * would. Returns an empty object when there is no scorecard, so an un-scored idea
+ * carries no competability fields. PURE — clamps defensively, never throws.
+ */
+export function persistedToCandidateCompetability(
+  persisted: CompetabilityPersisted | null | undefined,
+): CandidateCompetabilityFields {
+  if (!persisted) return {};
+  const dimensions = {} as Record<CompetabilityDimension, number>;
+  for (const key of COMPETABILITY_DIMENSIONS) {
+    dimensions[key] = clampScore(persisted.dimensions[key]);
+  }
+
+  const raw = persisted.raw;
+  const rawDims = raw
+    ? (() => {
+        const out = {} as Record<CompetabilityDimension, number>;
+        for (const key of COMPETABILITY_DIMENSIONS) out[key] = clampScore(raw.dimensions[key]);
+        return out;
+      })()
+    : undefined;
+
+  return {
+    competability: dimensions,
+    competabilityOverall: clampScore(persisted.overall),
+    competabilityGated: persisted.gated,
+    competabilityReason: persisted.reason,
+    ...(rawDims
+      ? { competabilityRaw: rawDims, competabilityRawOverall: clampScore(raw?.overall ?? 0) }
+      : {}),
+    ...(persisted.matchedExpertiseDomain !== undefined
+      ? { competabilityMatchedExpertiseDomain: persisted.matchedExpertiseDomain }
+      : {}),
+  };
+}
+
 // ── Cheap heuristic pre-filter (PURE, no LLM) ─────────────────────────────────
 
 /** Result of {@link heuristicMoatFlags}. */
