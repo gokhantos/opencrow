@@ -14,13 +14,8 @@
  * GIANT vector so existing aggregation/drift math keeps working unchanged.
  */
 
-import { chat } from "../../../agent/chat";
-import type { ConversationMessage } from "../../../agent/types";
-import { createLogger } from "../../../logger";
 import {
   AXIS_MAX,
-  GIANT_AXES,
-  GIANT_AXIS_KEYS,
   evaluateGiant,
   type Archetype,
   type GiantAxisKey,
@@ -28,8 +23,6 @@ import {
   type WhyNow,
 } from "../giant";
 import type { CritiqueSubscores } from "./aggregate";
-
-const log = createLogger("ideas:eval:judge");
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -80,100 +73,8 @@ export interface JudgeOptions {
   readonly hasDemandEvidence?: boolean;
 }
 
-const DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6";
-const DEFAULT_MAX_IDEAS = 25;
-
-const SYSTEM_PROMPT =
-  "You are a rigorous, calibrated evaluator of product ideas using the GIANT rubric. You assign honest, well-separated scores and never inflate. Respond with ONLY valid JSON.";
-
-// ── Prompt ─────────────────────────────────────────────────────────────────────
-
-/** Render the GIANT axis anchors straight from the shared rubric table. */
-function renderAxisAnchors(): string {
-  return GIANT_AXIS_KEYS.map((key) => {
-    const spec = GIANT_AXES[key];
-    const tags = [
-      spec.hardGate ? "HARD GATE (<=1 rejects)" : null,
-      spec.evidenceGated ? "EVIDENCE-GATED (<=2 without a cited artifact)" : null,
-    ]
-      .filter((t): t is string => t !== null)
-      .join(", ");
-    const suffix = tags ? ` [${tags}]` : "";
-    return `- ${key} (weight ${spec.weight}): ${spec.description}${suffix}`;
-  }).join("\n");
-}
-
-function buildPrompt(ideas: readonly JudgeIdeaInput[]): string {
-  const list = ideas
-    .map(
-      (idea, i) =>
-        `${i + 1}. id: ${idea.id}\n   title: ${idea.title}\n   summary: ${idea.summary}`,
-    )
-    .join("\n\n");
-
-  return `Score each product idea against the GIANT rubric. Every axis is 0..5 (0 = absent/worst, 5 = exceptional). Be non-compensatory: a near-zero axis must NOT be propped up by strong axes.
-
-## GIANT axes (0..5)
-${renderAxisAnchors()}
-
-## Archetype (pick one)
-- hair-on-fire: an acute, screaming-now pain.
-- hard-fact: an inevitable shift makes this true regardless of taste.
-- future-vision: a non-obvious bet on where the world is going.
-
-## Ideas
-${list}
-
-Return ONLY valid JSON:
-{
-  "verdicts": [
-    {
-      "id": "<id>",
-      "scores": {
-        "acuteProblem": 0, "whyNow": 0, "demand": 0, "nonObviousness": 0,
-        "defensibility": 0, "marketShape": 0, "founderFit": 0
-      },
-      "archetype": "hair-on-fire",
-      "whyNow": [
-        { "axis": "technological", "claim": "<dated enabling shift>", "date": "2025-01", "strength": 0.0 }
-      ],
-      "evidence": { "acuteProblem": "<one-line citation>", "demand": "<demand artifact or empty>" },
-      "rationale": "one sentence"
-    }
-  ]
-}`;
-}
-
-// ── JSON extraction (mirrors taste-filter for robustness) ──────────────────────
-
 interface RawJudgeResponse {
   verdicts?: unknown;
-}
-
-function extractJson(text: string): RawJudgeResponse {
-  const trimmed = text.trim();
-  try {
-    return JSON.parse(trimmed) as RawJudgeResponse;
-  } catch {
-    // fall through
-  }
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced?.[1]) {
-    try {
-      return JSON.parse(fenced[1].trim()) as RawJudgeResponse;
-    } catch {
-      // fall through
-    }
-  }
-  const obj = trimmed.match(/\{[\s\S]*\}/);
-  if (obj) {
-    try {
-      return JSON.parse(obj[0]) as RawJudgeResponse;
-    } catch {
-      // fall through
-    }
-  }
-  throw new Error(`Unable to extract JSON from judge response. Preview: ${trimmed.slice(0, 200)}`);
 }
 
 /**
@@ -247,55 +148,3 @@ export function verdictToSubscores(verdict: JudgeVerdict): CritiqueSubscores {
   };
 }
 
-// ── Entry point ────────────────────────────────────────────────────────────────
-
-/**
- * Re-score ideas with an LLM judge against the GIANT rubric. Returns a map
- * id → JudgeVerdict.
- *
- * Gated: returns an empty map immediately when `opts.enabled` is not true.
- * Graceful: returns an empty map (never throws) on LLM/parse failure so the
- * surrounding eval run continues with persisted scores only.
- */
-export async function judgeIdeas(
-  ideas: readonly JudgeIdeaInput[],
-  opts?: JudgeOptions,
-): Promise<ReadonlyMap<string, JudgeVerdict>> {
-  if (!opts?.enabled) return new Map();
-  if (ideas.length === 0) return new Map();
-
-  const model = opts.model ?? DEFAULT_JUDGE_MODEL;
-  const provider = opts.provider ?? "anthropic";
-  const capped = ideas.slice(0, opts.maxIdeas ?? DEFAULT_MAX_IDEAS);
-
-  const messages: readonly ConversationMessage[] = [
-    { role: "user", content: buildPrompt(capped), timestamp: Date.now() },
-  ];
-
-  try {
-    const response = await chat(messages, {
-      systemPrompt: SYSTEM_PROMPT,
-      model,
-      provider,
-    });
-    if (!response.text.trim()) {
-      log.warn("LLM judge returned empty response");
-      return new Map();
-    }
-    const raw = extractJson(response.text);
-    const verdicts = parseJudgeVerdicts(raw, {
-      hasDemandEvidence: opts.hasDemandEvidence === true,
-    });
-    const map = new Map<string, JudgeVerdict>();
-    for (const v of verdicts) map.set(v.id, v);
-    log.info("LLM judge complete", {
-      requested: capped.length,
-      scored: map.size,
-      gated: verdicts.filter((v) => v.gated).length,
-    });
-    return map;
-  } catch (err) {
-    log.warn("LLM judge failed; returning empty verdict map", { err });
-    return new Map();
-  }
-}

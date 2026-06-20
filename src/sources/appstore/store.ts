@@ -281,12 +281,6 @@ export async function getUnindexedRankings(limit = 200): Promise<AppRow[]> {
   return rows as AppRow[];
 }
 
-export async function getAllKnownAppIds(): Promise<Set<string>> {
-  const db = getDb();
-  const rows = await db`SELECT DISTINCT id FROM appstore_apps`;
-  return new Set((rows as Array<{ id: string }>).map((r) => r.id));
-}
-
 export async function getDiscoveredAppIds(): Promise<Set<string>> {
   const db = getDb();
   const rows = await db`

@@ -1,13 +1,5 @@
 import { getDb } from "../../store/db";
 
-export interface PHAccount {
-  id: string;
-  label: string;
-  username: string | null;
-  cookies_json: string;
-  status: string;
-}
-
 export interface PHProductRow {
   id: string;
   slug: string;
@@ -30,16 +22,6 @@ export interface PHProductRow {
   account_id: string | null;
   first_seen_at: number;
   updated_at: number;
-}
-
-export async function getActiveAccounts(): Promise<PHAccount[]> {
-  const db = getDb();
-  const rows = await db`
-    SELECT id, label, username, cookies_json, status
-    FROM ph_accounts
-    WHERE status = 'active'
-  `;
-  return rows as PHAccount[];
 }
 
 export async function upsertProducts(
@@ -129,17 +111,3 @@ export async function getProducts(
   return rows as PHProductRow[];
 }
 
-export async function updateLastScrape(
-  accountId: string,
-  count: number,
-): Promise<void> {
-  const db = getDb();
-  const now = Math.floor(Date.now() / 1000);
-  await db`
-    UPDATE ph_accounts
-    SET last_scraped_at = ${now},
-        last_scrape_count = ${count},
-        updated_at = ${now}
-    WHERE id = ${accountId}
-  `;
-}

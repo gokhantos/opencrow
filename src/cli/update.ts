@@ -52,10 +52,9 @@ function runDoctorSubprocess(): boolean {
 }
 
 /**
- * Append a RollbackEvent in the line-delimited JSON shape that
- * health/rollback-notifier.ts#consumeRollbackEvents reads, so the guardian
- * surfaces the rollback to operators. Best-effort: a logging failure must not
- * mask the rollback itself.
+ * Append a rollback record to an on-disk, line-delimited JSON audit log so
+ * operators have a forensic trail of auto-rollbacks. Best-effort: a logging
+ * failure must not mask the rollback itself.
  */
 function emitRollbackEvent(from: string, to: string, reason: string): void {
   try {

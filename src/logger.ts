@@ -138,7 +138,6 @@ interface PendingLog {
 let dbRef: { unsafe: (sql: string, params?: unknown[]) => Promise<unknown> } | null = null;
 const pendingBatch: PendingLog[] = [];
 let flushTimer: ReturnType<typeof setInterval> | null = null;
-let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
  * How often accumulated log entries are batch-inserted into process_logs.
@@ -253,27 +252,11 @@ export function startLogPersistence(
       process.stderr.write(`${new Date().toISOString()} [error] [logger] Unexpected flush error: ${getErrorMessage(err)}\n`);
     });
   }, FLUSH_INTERVAL_MS);
-  cleanupTimer = setInterval(() => {
+  setInterval(() => {
     cleanupOldLogs().catch((err) => {
       process.stderr.write(`${new Date().toISOString()} [error] [logger] Unexpected cleanup error: ${getErrorMessage(err)}\n`);
     });
   }, CLEANUP_INTERVAL_MS);
-}
-
-export function stopLogPersistence(): void {
-  if (flushTimer) {
-    clearInterval(flushTimer);
-    flushTimer = null;
-  }
-  if (cleanupTimer) {
-    clearInterval(cleanupTimer);
-    cleanupTimer = null;
-  }
-  // Final flush attempt with error logging
-  flushLogs().catch((err) => {
-    process.stderr.write(`${new Date().toISOString()} [error] [logger] Final flush failed: ${getErrorMessage(err)}\n`);
-  });
-  dbRef = null;
 }
 
 // --- Logger factory ---
