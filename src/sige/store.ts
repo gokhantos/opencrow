@@ -1,6 +1,7 @@
 import { getDb } from "../store/db"
 import type {
   SigeSession,
+  SigeSessionSummary,
   SigeSessionOrigin,
   SigeSessionStatus,
   SigeSessionConfig,
@@ -256,6 +257,94 @@ export async function updateSessionStatus(
       finished_at            = COALESCE(${finishedAt ?? null}, finished_at)
     WHERE id = ${id}
   `
+}
+
+// ─── Session Summary (light-weight list projection) ───────────────────────────
+
+/**
+ * Private row shape for the summary SELECT — only the light columns.
+ * The heavy JSON artifact columns are intentionally absent.
+ */
+interface SigeSessionSummaryRow {
+  readonly id: unknown;
+  readonly origin: unknown;
+  readonly status: unknown;
+  readonly seed_input: unknown;
+  readonly config_json: unknown;
+  readonly created_at: unknown;
+  readonly finished_at: unknown;
+  readonly last_activity_at: unknown;
+  readonly error: unknown;
+}
+
+/**
+ * Maps a DB summary row to the `SigeSessionSummary` domain type.
+ * Heavy artifact columns are NOT present — never pass a full `*` row here.
+ */
+export function rowToSessionSummary(row: SigeSessionSummaryRow): SigeSessionSummary {
+  const config: SigeSessionConfig = JSON.parse(row.config_json as string)
+
+  const seedInput = (row.seed_input as string | null) ?? undefined
+  const origin = ((row.origin as string | null) ?? "human") as SigeSessionOrigin
+
+  const lastActivityAt =
+    row.last_activity_at != null ? Number(row.last_activity_at) : undefined
+
+  return {
+    id: row.id as string,
+    seedInput,
+    origin,
+    status: row.status as SigeSessionStatus,
+    config,
+    createdAt: new Date((row.created_at as number) * 1000),
+    finishedAt:
+      row.finished_at != null
+        ? new Date((row.finished_at as number) * 1000)
+        : undefined,
+    lastActivityAt,
+    error: (row.error as string | null) ?? undefined,
+  }
+}
+
+/**
+ * List sessions returning only the light columns — omits the heavy artifact
+ * JSON columns (`game_formulation_json`, `expert_result_json`,
+ * `social_result_json`, `fused_scores_json`, `report`) that can push a
+ * full list response into the tens of megabytes.
+ *
+ * Use `getSession` when the full hydrated session (including artifacts) is needed.
+ */
+export async function listSessionSummaries(options?: {
+  readonly status?: SigeSessionStatus
+  readonly limit?: number
+  readonly offset?: number
+}): Promise<readonly SigeSessionSummary[]> {
+  const db = getDb()
+  const limit = options?.limit ?? 50
+  const offset = options?.offset ?? 0
+
+  let rows: unknown[]
+
+  if (options?.status) {
+    rows = await db`
+      SELECT id, origin, status, seed_input, config_json,
+             created_at, finished_at, last_activity_at, error
+      FROM sige_sessions
+      WHERE status = ${options.status}
+      ORDER BY created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `
+  } else {
+    rows = await db`
+      SELECT id, origin, status, seed_input, config_json,
+             created_at, finished_at, last_activity_at, error
+      FROM sige_sessions
+      ORDER BY created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `
+  }
+
+  return (rows as SigeSessionSummaryRow[]).map(rowToSessionSummary)
 }
 
 export async function listSessions(options?: {

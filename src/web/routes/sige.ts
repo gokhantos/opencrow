@@ -4,7 +4,7 @@ import { createLogger } from "../../logger";
 import {
   createSession,
   getSession,
-  listSessions,
+  listSessionSummaries,
   updateSessionStatus,
   getIdeaScores,
   getPopulationDynamics,
@@ -245,7 +245,7 @@ export function createSigeRoutes(): Hono {
     }
 
     try {
-      const sessions = await listSessions({
+      const sessions = await listSessionSummaries({
         status: statusParam as SigeSessionStatus | undefined,
         limit,
       });
