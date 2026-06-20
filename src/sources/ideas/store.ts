@@ -21,6 +21,31 @@ export interface GeneratedIdea {
   readonly quality_score: number | null;
   readonly model_references: string;
   readonly created_at: number;
+  /** Layer B competability: 0..5 "a small builder can win v1" (migration 027). */
+  readonly competability_overall: number | null;
+  /**
+   * Layer B competability scorecard JSON (migration 027): the 4 moat dimensions,
+   * the rationale, the gate decision reason, and the gated flag. Null when the
+   * competability gate did not run for this idea.
+   */
+  readonly competability_json: CompetabilityPersistedJson | null;
+}
+
+/**
+ * Shape persisted into generated_ideas.competability_json. Mirrors the in-memory
+ * candidate competability fields so both idea paths (pipeline + SIGE) round-trip
+ * the same structure.
+ */
+export interface CompetabilityPersistedJson {
+  readonly dimensions: {
+    readonly capital: number;
+    readonly networkEffect: number;
+    readonly logistics: number;
+    readonly regulated: number;
+  };
+  readonly overall: number;
+  readonly reason: string;
+  readonly gated: boolean;
 }
 
 export interface InsertIdeaInput {
@@ -33,6 +58,68 @@ export interface InsertIdeaInput {
   readonly quality_score: number | null;
   readonly pipeline_run_id?: string;
   readonly source_ids_json?: string;
+  /** Layer B competability overall score (0..5), null when not scored. */
+  readonly competability_overall?: number | null;
+  /** Layer B competability scorecard, null when not scored. */
+  readonly competability_json?: CompetabilityPersistedJson | null;
+}
+
+/**
+ * Raw DB row for generated_ideas as it comes back from Bun.sql. `competability_json`
+ * is JSONB: depending on the driver it surfaces either as an already-parsed object
+ * or a JSON string, so the mapper normalizes both. All other columns map 1:1 onto
+ * the readonly {@link GeneratedIdea} domain type.
+ */
+export interface GeneratedIdeaRow {
+  readonly id: string;
+  readonly agent_id: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly reasoning: string;
+  readonly sources_used: string;
+  readonly category: string;
+  readonly rating: number | null;
+  readonly pipeline_stage: string;
+  readonly quality_score: number | null;
+  readonly model_references: string;
+  readonly created_at: number;
+  readonly competability_overall: number | null;
+  readonly competability_json: CompetabilityPersistedJson | string | null;
+}
+
+/** Tolerantly parse the competability_json column (object | string | null). */
+function parseCompetabilityJson(
+  value: CompetabilityPersistedJson | string | null | undefined,
+): CompetabilityPersistedJson | null {
+  if (value == null) return null;
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value) as CompetabilityPersistedJson;
+    } catch {
+      return null;
+    }
+  }
+  return value;
+}
+
+/** Map a raw generated_ideas row onto the readonly {@link GeneratedIdea} domain type. */
+export function rowToGeneratedIdea(row: GeneratedIdeaRow): GeneratedIdea {
+  return {
+    id: row.id,
+    agent_id: row.agent_id,
+    title: row.title,
+    summary: row.summary,
+    reasoning: row.reasoning,
+    sources_used: row.sources_used,
+    category: row.category,
+    rating: row.rating,
+    pipeline_stage: row.pipeline_stage,
+    quality_score: row.quality_score,
+    model_references: row.model_references,
+    created_at: row.created_at,
+    competability_overall: row.competability_overall,
+    competability_json: parseCompetabilityJson(row.competability_json),
+  };
 }
 
 export interface GetIdeasOptions {
@@ -55,13 +142,17 @@ export async function insertIdea(
   const db = getDb();
   const id = crypto.randomUUID();
 
+  // Pass the object directly: Bun.sql serializes a JS object into JSONB. A
+  // pre-stringified value would be double-encoded into a JSONB string scalar.
+  const competabilityJson = input.competability_json ?? null;
+
   const rows = await db`
-    INSERT INTO generated_ideas (id, agent_id, title, summary, reasoning, sources_used, category, quality_score, pipeline_run_id, source_ids_json)
-    VALUES (${id}, ${input.agent_id}, ${input.title}, ${input.summary}, ${input.reasoning}, ${input.sources_used}, ${input.category}, ${input.quality_score}, ${input.pipeline_run_id ?? null}, ${input.source_ids_json ?? "[]"})
+    INSERT INTO generated_ideas (id, agent_id, title, summary, reasoning, sources_used, category, quality_score, pipeline_run_id, source_ids_json, competability_overall, competability_json)
+    VALUES (${id}, ${input.agent_id}, ${input.title}, ${input.summary}, ${input.reasoning}, ${input.sources_used}, ${input.category}, ${input.quality_score}, ${input.pipeline_run_id ?? null}, ${input.source_ids_json ?? "[]"}, ${input.competability_overall ?? null}, ${competabilityJson})
     RETURNING *
   `;
 
-  return rows[0] as GeneratedIdea;
+  return rowToGeneratedIdea(rows[0] as GeneratedIdeaRow);
 }
 
 export async function getIdeas(
@@ -137,7 +228,8 @@ export async function getIdeaById(id: string): Promise<GeneratedIdea | null> {
   const rows = await db`
     SELECT * FROM generated_ideas WHERE id = ${id}
   `;
-  return (rows[0] as GeneratedIdea) ?? null;
+  const row = rows[0] as GeneratedIdeaRow | undefined;
+  return row ? rowToGeneratedIdea(row) : null;
 }
 
 export async function getIdeaStats(): Promise<readonly IdeaStat[]> {

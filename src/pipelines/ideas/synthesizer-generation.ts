@@ -664,6 +664,12 @@ Return ONLY a JSON array with one entry per idea (in the same order):
   const enforceGates = giant.enforceGates === true;
   const survived: GeneratedIdeaCandidate[] = [];
 
+  // Competability observability counters — emitted as a single summary EVERY run
+  // (mirrors the GIANT shadow gate summary) so an all-pass run is still visible.
+  let competabilityEvaluated = 0;
+  let competabilityWouldKill = 0;
+  let competabilityDropped = 0;
+
   for (let idx = 0; idx < candidates.length; idx++) {
     const candidate = candidates[idx]!;
     const critique =
@@ -700,6 +706,7 @@ Return ONLY a JSON array with one entry per idea (in the same order):
     let competabilityReason = "";
 
     if (competabilityOn) {
+      competabilityEvaluated += 1;
       const heuristic = heuristicMoatFlags(
         `${candidate.title}. ${candidate.summary} ${candidate.targetAudience}`,
         incumbentSet,
@@ -766,7 +773,9 @@ Return ONLY a JSON array with one entry per idea (in the same order):
 
     // Layer B competability gate (independent of the GIANT gate above).
     if (competabilityGated) {
+      competabilityWouldKill += 1;
       if (enforceCompetability) {
+        competabilityDropped += 1;
         log.info("Idea KILLED by competability gate (enforced)", {
           title: candidate.title,
           overall: competabilityScore?.overall,
@@ -782,6 +791,17 @@ Return ONLY a JSON array with one entry per idea (in the same order):
     }
 
     survived.push(scored);
+  }
+
+  // Competability gate summary — emitted EVERY run regardless of kills (mirrors
+  // the GIANT shadow gate summary) so an all-pass run is still observable.
+  if (competabilityOn) {
+    log.info("Competability gate summary", {
+      evaluated: competabilityEvaluated,
+      killed: competabilityWouldKill,
+      enforced: competability?.enforceGate === true,
+      dropped: competabilityDropped,
+    });
   }
 
   log.info("Pass 3 (GIANT) complete", {

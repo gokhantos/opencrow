@@ -268,6 +268,71 @@ export function decideCompetability(
   return { pass: true, soft: false, reason: `overall ${overall} >= ${soft}` };
 }
 
+// ── Persisted scorecard shape (PURE builder) ──────────────────────────────────
+
+/**
+ * The competability scorecard as it is persisted on a generated_ideas row
+ * (`competability_json`): the four moat dimensions, the overall score, the gate
+ * decision reason, and whether the gate would/did reject the idea. Both idea
+ * paths (the trend-intersection pipeline and the SIGE cross-write) round-trip
+ * this exact shape so the column is uniform regardless of which path wrote it.
+ */
+export interface CompetabilityPersisted {
+  readonly dimensions: Readonly<Record<CompetabilityDimension, number>>;
+  readonly overall: number;
+  readonly reason: string;
+  readonly gated: boolean;
+}
+
+/**
+ * Build the persisted competability scorecard from a normalized score, the gate
+ * reason, and the gated flag. Returns null when there is no score to persist (so
+ * an un-scored idea stores SQL NULL rather than a hollow object). PURE.
+ */
+export function buildCompetabilityPersisted(
+  score: CompetabilityScore | null | undefined,
+  reason: string,
+  gated: boolean,
+): CompetabilityPersisted | null {
+  if (!score) return null;
+  return {
+    dimensions: score.dimensions,
+    overall: clampScore(score.overall),
+    reason,
+    gated,
+  };
+}
+
+/** The loose per-candidate competability fields carried through the pipeline. */
+export interface CandidateCompetabilityFields {
+  readonly competability?: Readonly<Record<CompetabilityDimension, number>>;
+  readonly competabilityOverall?: number;
+  readonly competabilityGated?: boolean;
+  readonly competabilityReason?: string;
+}
+
+/**
+ * Reconstruct the persisted competability scorecard from the loose per-candidate
+ * fields (`competability` dims + `competabilityOverall` + reason + gated). Returns
+ * null when the candidate carries no competability dims (un-scored). PURE — clamps
+ * defensively and never throws.
+ */
+export function candidateCompetabilityPersisted(
+  candidate: CandidateCompetabilityFields,
+): CompetabilityPersisted | null {
+  if (!candidate.competability) return null;
+  const dimensions = {} as Record<CompetabilityDimension, number>;
+  for (const key of COMPETABILITY_DIMENSIONS) {
+    dimensions[key] = clampScore(candidate.competability[key]);
+  }
+  return {
+    dimensions,
+    overall: clampScore(candidate.competabilityOverall ?? COMPETABILITY_MAX / 2),
+    reason: candidate.competabilityReason ?? "",
+    gated: candidate.competabilityGated === true,
+  };
+}
+
 // ── Cheap heuristic pre-filter (PURE, no LLM) ─────────────────────────────────
 
 /** Result of {@link heuristicMoatFlags}. */

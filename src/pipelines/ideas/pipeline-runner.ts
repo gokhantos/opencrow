@@ -24,6 +24,7 @@ import { DEFAULT_SIGE_SESSION_CONFIG, generateDivergentIdeas } from "../../sige/
 import type { CandidateEvaluation, CandidateIdea } from "../../sige/simulation/expert-game";
 import { evaluateCandidates } from "../../sige/simulation/expert-game";
 import { insertIdea, insertIdeaFeedback } from "../../sources/ideas/store";
+import { candidateCompetabilityPersisted } from "./competability";
 import { aggregateGiant } from "./giant";
 import type { GiantAxisScores } from "./giant";
 import { anonymizeCandidates, fuseJury, type JuryVerdict, judgeWithJury } from "./jury";
@@ -559,6 +560,8 @@ export async function runStorePhase(params: {
         ...demandProvenance.filter((e) => !provenanceSeen.has(`${e.table}:${e.id}`)),
       ];
 
+      const competabilityPersisted = candidateCompetabilityPersisted(candidate);
+
       const idea = await insertIdea({
         agent_id: AGENT_ID,
         title: candidate.title,
@@ -569,6 +572,8 @@ export async function runStorePhase(params: {
         quality_score: Math.min(Math.max(candidate.qualityScore, 1), 5),
         pipeline_run_id: runId,
         source_ids_json: JSON.stringify(ideaProvenance),
+        competability_overall: competabilityPersisted?.overall ?? null,
+        competability_json: competabilityPersisted,
       });
 
       const giantGateForIdea =
