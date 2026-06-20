@@ -5,3 +5,8 @@ mem0ai[graph]==0.1.118
 ollama==0.4.5
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+# Pinned: app.py's MEM0_LLM_DISABLE_THINKING patch rebinds
+# openai.resources.chat.completions.Completions.create. A floating openai could
+# move that path and silently no-op the patch, re-introducing the graph-phase
+# stall. Keep in sync with the version validated end-to-end.
+openai==1.109.1

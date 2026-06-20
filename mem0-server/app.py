@@ -27,6 +27,47 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("mem0-sidecar")
 
 
+# ─── Optional: disable hosted "reasoning"/thinking on the extraction LLM ───────
+# Some hosted OpenAI-compatible models (e.g. the Alibaba token-plan DeepSeek/Qwen
+# family) are *reasoning* models: they emit a hidden chain-of-thought and make
+# mem0's always-on graph-extraction phase stall — it issues sequential
+# tool-calling completions that never return. Those endpoints honour a top-level
+# `enable_thinking: false` flag to turn thinking off, but mem0's OpenAI LLM config
+# exposes no passthrough for it. When MEM0_LLM_DISABLE_THINKING is truthy we wrap
+# the OpenAI client so every chat.completions.create injects
+# `extra_body={"enable_thinking": False}`. This covers both the main extraction
+# LLM and the graph LLM (same client class). Embeddings use the Ollama provider
+# (a different client) and are unaffected; the local-gemma path leaves the flag
+# unset, so its requests are untouched.
+def _maybe_disable_thinking() -> None:
+    flag = (os.environ.get("MEM0_LLM_DISABLE_THINKING") or "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return
+    try:
+        from openai.resources.chat import completions as _completions
+    except Exception as err:  # noqa: BLE001 — best-effort; never block startup
+        log.warning("could not patch OpenAI client to disable thinking: %s", err)
+        return
+    original = _completions.Completions.create
+    if getattr(original, "_nothink_wrapped", False):
+        return
+
+    def create(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        extra_body = dict(kwargs.get("extra_body") or {})
+        extra_body.setdefault("enable_thinking", False)
+        kwargs["extra_body"] = extra_body
+        return original(self, *args, **kwargs)
+
+    create._nothink_wrapped = True  # type: ignore[attr-defined]
+    _completions.Completions.create = create
+    log.info(
+        "extraction LLM: reasoning disabled (injecting enable_thinking=false)"
+    )
+
+
+_maybe_disable_thinking()
+
+
 # ─── Inbound auth ───────────────────────────────────────────────────────────
 # mem0ai (0.1.118) ships no auth on its memory API (GHSA-jfv9-68m5-gjjr). We add
 # a shared bearer-token check at the application layer as defense-in-depth on the
