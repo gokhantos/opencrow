@@ -796,6 +796,56 @@ export const outcomeMemoryConfigSchema = z
   });
 export type OutcomeMemoryConfig = z.infer<typeof outcomeMemoryConfigSchema>;
 
+// Layer C "incumbent exclusion": drop / down-rank collector signals that
+// prominently name a top-N charted (or high-review-count) app. PURE-logic + safe,
+// so it defaults ON (matching adaptiveCollection). Disabling it reverts the
+// collectors to the prior raw-popularity behavior.
+export const incumbentExclusionConfigSchema = z
+  .object({
+    // Master switch. Default ON — pure de-bias, no external calls.
+    enabled: z.boolean().default(true),
+    // How many top-charted apps to treat as incumbents.
+    topN: z.number().int().min(1).max(1000).default(100),
+  })
+  .default({
+    enabled: true,
+    topN: 100,
+  });
+export type IncumbentExclusionConfig = z.infer<
+  typeof incumbentExclusionConfigSchema
+>;
+
+// Layer B "competability / moat gate": penalize ideas whose market sits behind a
+// moat a small/solo builder cannot overcome (the inverse of GIANT defensibility).
+// Computed in the same Pass-3 critique LLM call. SHADOW mode by default
+// (enforceGate=false) — mirrors giant.enforceGates so it ships safely and only
+// LOGS would-reject decisions until explicitly enforced.
+export const competabilityConfigSchema = z
+  .object({
+    // Compute + store the competability scorecard for every idea. Default ON.
+    enabled: z.boolean().default(true),
+    // SHADOW mode by default: log would-reject decisions but do NOT drop ideas.
+    // Set true to actually enforce the competability gate. Mirrors
+    // giant.enforceGates discipline so deploys don't silently start rejecting.
+    enforceGate: z.boolean().default(false),
+    // Overall "small builder can win" score (0..5) below which an idea is
+    // hard-rejected when enforcing.
+    rejectThreshold: z.number().min(0).max(5).default(2),
+    // Soft-penalty band ceiling: overall in [rejectThreshold, this] is logged /
+    // lightly penalized but not rejected.
+    softPenaltyThreshold: z.number().min(0).max(5).default(2.5),
+    // Top-N incumbents the cheap heuristic pre-filter checks idea text against.
+    topNIncumbents: z.number().int().min(1).max(1000).default(100),
+  })
+  .default({
+    enabled: true,
+    enforceGate: false,
+    rejectThreshold: 2,
+    softPenaltyThreshold: 2.5,
+    topNIncumbents: 100,
+  });
+export type CompetabilityConfig = z.infer<typeof competabilityConfigSchema>;
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -845,6 +895,14 @@ export const smartConfigSchema = z.object({
   // Phase 6 "outcome memory": verdict write-back + synthesis-time guidance via
   // mem0. Both flags now default ON — the REINFORCE/AVOID learning loop is live.
   outcomeMemory: outcomeMemoryConfigSchema,
+  // Layer C "incumbent exclusion": drop/down-rank collector signals that name a
+  // top-N incumbent. Pure-logic + safe — default ON. Fully defaulted ->
+  // backward-compatible.
+  incumbentExclusion: incumbentExclusionConfigSchema,
+  // Layer B "competability gate": penalize ideas behind a small-builder-fatal
+  // moat. SHADOW mode by default (enforceGate=false). Fully defaulted ->
+  // backward-compatible.
+  competability: competabilityConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -909,6 +967,17 @@ const SMART_IDEAS_DEFAULTS = {
     reinforceCap: 5,
     avoidCap: 5,
     searchLimit: 12,
+  },
+  incumbentExclusion: {
+    enabled: true,
+    topN: 100,
+  },
+  competability: {
+    enabled: true,
+    enforceGate: false,
+    rejectThreshold: 2,
+    softPenaltyThreshold: 2.5,
+    topNIncumbents: 100,
   },
 } as const;
 

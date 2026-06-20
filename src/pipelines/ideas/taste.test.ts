@@ -407,3 +407,56 @@ describe("renderGoldenBlock / renderAntiBlock", () => {
     expect(block).not.toContain("<system>");
   });
 });
+
+// ── Uncompetable-market detector ─────────────────────────────────────────────
+
+import { isUncompetableMarket } from "./taste";
+
+describe("isUncompetableMarket", () => {
+  function row(overrides: Partial<ScoredIdeaRow> = {}): ScoredIdeaRow {
+    return {
+      id: "u1",
+      title: "An idea",
+      summary: "Some summary",
+      ...overrides,
+    };
+  }
+
+  test("flags a physical-delivery / logistics market", () => {
+    const v = isUncompetableMarket(
+      row({ title: "Local food delivery for college towns", summary: "last-mile courier network" }),
+    );
+    expect(v.uncompetable).toBe(true);
+    expect(v.reason).toContain("logistics");
+  });
+
+  test("flags a two-sided marketplace network effect", () => {
+    const v = isUncompetableMarket(
+      row({ summary: "A two-sided marketplace connecting tutors and students" }),
+    );
+    expect(v.uncompetable).toBe(true);
+  });
+
+  test("flags a regulated / licensed market", () => {
+    const v = isUncompetableMarket(row({ title: "A neobank for gig workers" }));
+    expect(v.uncompetable).toBe(true);
+  });
+
+  test("a sharp niche dev tool is NOT flagged", () => {
+    const v = isUncompetableMarket(
+      row({ title: "A CLI that diffs OpenAPI specs", summary: "spots breaking API changes in CI" }),
+    );
+    expect(v.uncompetable).toBe(false);
+  });
+
+  test("a high own-defensibility idea is NOT flagged even in a moated keyword space", () => {
+    const v = isUncompetableMarket(
+      row({
+        title: "A logistics optimizer with a proprietary routing model",
+        summary: "last-mile route planning",
+        giantScores: giant({ defensibility: 5 }),
+      }),
+    );
+    expect(v.uncompetable).toBe(false);
+  });
+});

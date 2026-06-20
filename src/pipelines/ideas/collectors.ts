@@ -33,12 +33,18 @@ import {
   normalizeVelocities,
   recencyFactor,
   computeRankScore,
+  obscurityFromEngagement,
   selectRanked,
   lookupLearnedCredibility,
   parseMakers,
   parseTopics,
   parseTopComments,
 } from "./collector-ranking";
+import {
+  loadIncumbentNames,
+  mentionsIncumbent,
+  INCUMBENT_DOWNRANK_FACTOR,
+} from "./incumbents";
 import type {
   TrendData,
   CategoryTrend,
@@ -73,6 +79,22 @@ export {
 const log = createLogger("pipeline:collectors");
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
+
+// ── Layer A — long-tail fetch window ─────────────────────────────────────────
+//
+// Instead of fetching ONLY the top-50-by-engagement (which biases the pool
+// toward viral / incumbent signals), each capability source now fetches a TOP
+// slice (by velocity/engagement) PLUS a MID-TIER fresh window (lower-ranked but
+// recently-fresh rows) so an underserved long-tail signal can surface. The niche
+// bonus in computeRankScore then lets a sharp low-engagement signal out-rank a
+// viral one. Sizes are named constants; the total fetched is bounded.
+
+/** Top-by-engagement/velocity slice fetched per capability source. */
+export const COLLECTOR_TOP_SLICE = 30;
+/** Mid-tier fresh-window slice fetched per source (lower-ranked, recent rows). */
+export const COLLECTOR_MIDTIER_SLICE = 70;
+/** Total rows fetched per source (top slice + mid-tier window). */
+export const COLLECTOR_FETCH_LIMIT = COLLECTOR_TOP_SLICE + COLLECTOR_MIDTIER_SLICE;
 
 // ── Collector context for consumed-signal tracking ───────────────────────────
 
@@ -480,6 +502,16 @@ export async function clusterReviews(
   const resolvedModel = model ?? DEFAULT_MODEL;
   const clusters: PainCluster[] = [];
 
+  // Layer C: load the incumbent set so complaints ABOUT a top-N giant (which a
+  // small builder cannot out-execute) are HARD-DROPPED from the pain clusters.
+  const incumbentCfg = loadConfig().pipelines.ideas.smart.incumbentExclusion;
+  const incumbentSet = incumbentCfg.enabled
+    ? await loadIncumbentNames(db, incumbentCfg.topN)
+    : new Set<string>();
+  const isIncumbentReview = (r: Record<string, unknown>): boolean =>
+    incumbentSet.size > 0 &&
+    mentionsIncumbent((r.app_name as string | undefined) ?? null, incumbentSet);
+
   // B7 — accumulate selected IDs locally; return in result instead of
   // mutating the shared ctx.selected Map. _ctx is kept in the signature for
   // API stability; clusterReviews does not use ctx.consumed (reviews are not
@@ -553,10 +585,22 @@ export async function clusterReviews(
       table: string,
     ): Array<Record<string, unknown>> => rows.map((r) => ({ ...r, __table: table }));
 
+    // Layer C: HARD-DROP reviews about a top-N incumbent (complaints about giants
+    // a small builder cannot out-execute) before they cluster into pain themes.
+    let droppedIncumbentReviews = 0;
+    const keepReview = (r: Record<string, unknown>): boolean => {
+      if (isIncumbentReview(r)) {
+        droppedIncumbentReviews++;
+        return false;
+      }
+      return true;
+    };
+
     for (const r of [
       ...tag(sampleRandom(negativeReviews, 150), "appstore_reviews"),
       ...tag(sampleRandom(playNegative, 150), "playstore_reviews"),
     ]) {
+      if (!keepReview(r)) continue;
       const cat = r.category as string;
       if (!cat) continue;
       const entry = byCat.get(cat) ?? { negative: [], positive: [] };
@@ -567,11 +611,18 @@ export async function clusterReviews(
       ...tag(sampleRandom(positiveReviews, 80), "appstore_reviews"),
       ...tag(sampleRandom(playPositive, 80), "playstore_reviews"),
     ]) {
+      if (!keepReview(r)) continue;
       const cat = r.category as string;
       if (!cat) continue;
       const entry = byCat.get(cat) ?? { negative: [], positive: [] };
       entry.positive.push(r);
       byCat.set(cat, entry);
+    }
+
+    if (droppedIncumbentReviews > 0) {
+      log.info("Layer C: dropped incumbent-named reviews from pain clusters", {
+        dropped: droppedIncumbentReviews,
+      });
     }
 
     // Collect review ids that survive into prompt-feeding clusters, per table.
@@ -763,7 +814,15 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
   const resolvedModel = model ?? DEFAULT_MODEL;
   const smart = loadConfig().pipelines.ideas.smart;
   const adaptive = smart.adaptiveCollection;
+  const incumbentCfg = smart.incumbentExclusion;
   const nowSec = Math.floor(Date.now() / 1000);
+
+  // Layer C: load the top-N incumbent name set once (empty / no-op when the
+  // feature is off or the load fails). Capability signals naming an incumbent are
+  // STRONG-down-ranked below so they can't seed the head of the pool.
+  const incumbentSet = incumbentCfg.enabled
+    ? await loadIncumbentNames(db, incumbentCfg.topN)
+    : new Set<string>();
 
   const capabilities: Capability[] = [];
 
@@ -788,13 +847,25 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
     // ── Product Hunt ──────────────────────────────────────────────────────────
     // Fetch 50 rows so we have enough fresh ones after filtering consumed.
     const cutoff30d = nowSec - 30 * 24 * 3600;
+    // Layer A: TOP slice by engagement UNION a MID-TIER fresh window (rows ranked
+    // below the top slice, ordered by recency) so the long-tail surfaces. One
+    // parameterized query via window functions — no value interpolation into SQL.
     let phRaw = (await db`
-      SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
-             makers_json, topics_json, first_seen_at
-      FROM ph_products
-      WHERE first_seen_at >= ${cutoff30d}
-      ORDER BY (votes_count + comments_count * 3) DESC
-      LIMIT 50
+      WITH ranked AS (
+        SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
+               makers_json, topics_json, first_seen_at,
+               ROW_NUMBER() OVER (ORDER BY (votes_count + comments_count * 3) DESC) AS eng_rank
+        FROM ph_products
+        WHERE first_seen_at >= ${cutoff30d}
+      )
+      (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
+              makers_json, topics_json, first_seen_at
+       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+      UNION
+      (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
+              makers_json, topics_json, first_seen_at
+       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
+       ORDER BY first_seen_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset to ensure variation across runs
@@ -854,12 +925,23 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
 
     // ── Hacker News ───────────────────────────────────────────────────────────
     const hnRaw = (await db`
-      SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
-             points_velocity, updated_at, feed_type
-      FROM hn_stories
-      WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
-      ORDER BY COALESCE(points_velocity, 0) DESC, updated_at DESC, (points + comment_count * 2) DESC
-      LIMIT 50
+      WITH ranked AS (
+        SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
+               points_velocity, updated_at, feed_type,
+               ROW_NUMBER() OVER (
+                 ORDER BY COALESCE(points_velocity, 0) DESC, updated_at DESC, (points + comment_count * 2) DESC
+               ) AS eng_rank
+        FROM hn_stories
+        WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
+      )
+      (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
+              points_velocity, updated_at, feed_type
+       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+      UNION
+      (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
+              points_velocity, updated_at, feed_type
+       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
+       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -909,11 +991,20 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
 
     // ── GitHub ────────────────────────────────────────────────────────────────
     let reposRaw = (await db`
-      SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
-      FROM github_repos
-      WHERE stars_today > 0
-      ORDER BY COALESCE(stars_velocity, 0) DESC, stars_today DESC, stars DESC
-      LIMIT 50
+      WITH ranked AS (
+        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at,
+               ROW_NUMBER() OVER (
+                 ORDER BY COALESCE(stars_velocity, 0) DESC, stars_today DESC, stars DESC
+               ) AS eng_rank
+        FROM github_repos
+        WHERE stars_today > 0
+      )
+      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
+       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+      UNION
+      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
+       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
+       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset if no active trending data
@@ -971,12 +1062,23 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
 
     // ── Reddit ────────────────────────────────────────────────────────────────
     const postsRaw = (await db`
-      SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
-             top_comments_json, flair, score_velocity, updated_at
-      FROM reddit_posts
-      WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
-      ORDER BY COALESCE(score_velocity, 0) DESC, updated_at DESC, (score + num_comments * 3) DESC
-      LIMIT 50
+      WITH ranked AS (
+        SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
+               top_comments_json, flair, score_velocity, updated_at,
+               ROW_NUMBER() OVER (
+                 ORDER BY COALESCE(score_velocity, 0) DESC, updated_at DESC, (score + num_comments * 3) DESC
+               ) AS eng_rank
+        FROM reddit_posts
+        WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
+      )
+      (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
+              top_comments_json, flair, score_velocity, updated_at
+       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+      UNION
+      (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
+              top_comments_json, flair, score_velocity, updated_at
+       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
+       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1075,11 +1177,23 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
 
     // ── X / Twitter ───────────────────────────────────────────────────────────
     const tweetsRaw = (await db`
-      SELECT id, author_username, author_verified, text, likes, retweets, views,
-             likes_velocity, scraped_at
-      FROM x_scraped_tweets
-      WHERE scraped_at >= ${nowSec - 7 * 24 * 3600}
-      ORDER BY COALESCE(likes_velocity, 0) DESC, scraped_at DESC LIMIT 50
+      WITH ranked AS (
+        SELECT id, author_username, author_verified, text, likes, retweets, views,
+               likes_velocity, scraped_at,
+               ROW_NUMBER() OVER (
+                 ORDER BY COALESCE(likes_velocity, 0) DESC, scraped_at DESC
+               ) AS eng_rank
+        FROM x_scraped_tweets
+        WHERE scraped_at >= ${nowSec - 7 * 24 * 3600}
+      )
+      (SELECT id, author_username, author_verified, text, likes, retweets, views,
+              likes_velocity, scraped_at
+       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+      UNION
+      (SELECT id, author_username, author_verified, text, likes, retweets, views,
+              likes_velocity, scraped_at
+       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
+       ORDER BY scraped_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1152,16 +1266,25 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
           c.signalType,
           c.category,
         );
-        scoreByRow.set(
-          c.id,
-          computeRankScore({
-            credibility: c.credibility,
-            velocityNorm: velNormByRow.get(c.id) ?? 0,
-            corroborationCount: corroborationByRowId.get(c.id) ?? 1,
-            recency: c.recency,
-            learnedCredibility,
-          }),
-        );
+        let score = computeRankScore({
+          credibility: c.credibility,
+          velocityNorm: velNormByRow.get(c.id) ?? 0,
+          corroborationCount: corroborationByRowId.get(c.id) ?? 1,
+          recency: c.recency,
+          // Layer A: inverse-popularity niche bonus from raw engagement.
+          obscurity: obscurityFromEngagement(c.engagement),
+          learnedCredibility,
+        });
+        // Layer C: a capability signal whose entity name prominently matches a
+        // top-N incumbent is strong-down-ranked (not dropped) so it cannot seed
+        // the head of the pool but can still corroborate further down.
+        if (
+          incumbentSet.size > 0 &&
+          mentionsIncumbent(c.entity.name ?? null, incumbentSet)
+        ) {
+          score *= INCUMBENT_DOWNRANK_FACTOR;
+        }
+        scoreByRow.set(c.id, score);
       }
 
       const { selected, selectedIds } = selectRanked(

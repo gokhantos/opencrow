@@ -153,10 +153,40 @@ function applyEnvOverrides(
     outcomeMemoryEnv.searchLimit = outcomeMemorySearchLimit;
   }
 
+  // OPENCROW_SMART_INCUMBENT_EXCLUSION_* overrides for the Layer-C feature block.
+  const incumbentExclusionEnv: Record<string, unknown> = {};
+  const incumbentEnabled = boolEnv("OPENCROW_SMART_INCUMBENT_EXCLUSION_ENABLED");
+  if (incumbentEnabled !== undefined) incumbentExclusionEnv.enabled = incumbentEnabled;
+  const incumbentTopN = Number(process.env.OPENCROW_SMART_INCUMBENT_EXCLUSION_TOP_N ?? "");
+  if (!Number.isNaN(incumbentTopN) && process.env.OPENCROW_SMART_INCUMBENT_EXCLUSION_TOP_N !== undefined) {
+    incumbentExclusionEnv.topN = incumbentTopN;
+  }
+
+  // OPENCROW_SMART_COMPETABILITY_* overrides for the Layer-B feature block.
+  const competabilityEnv: Record<string, unknown> = {};
+  const competabilityEnabled = boolEnv("OPENCROW_SMART_COMPETABILITY_ENABLED");
+  if (competabilityEnabled !== undefined) competabilityEnv.enabled = competabilityEnabled;
+  const competabilityEnforce = boolEnv("OPENCROW_SMART_COMPETABILITY_ENFORCE_GATE");
+  if (competabilityEnforce !== undefined) competabilityEnv.enforceGate = competabilityEnforce;
+  const competabilityReject = Number(process.env.OPENCROW_SMART_COMPETABILITY_REJECT_THRESHOLD ?? "");
+  if (!Number.isNaN(competabilityReject) && process.env.OPENCROW_SMART_COMPETABILITY_REJECT_THRESHOLD !== undefined) {
+    competabilityEnv.rejectThreshold = competabilityReject;
+  }
+  const competabilitySoft = Number(process.env.OPENCROW_SMART_COMPETABILITY_SOFT_PENALTY_THRESHOLD ?? "");
+  if (!Number.isNaN(competabilitySoft) && process.env.OPENCROW_SMART_COMPETABILITY_SOFT_PENALTY_THRESHOLD !== undefined) {
+    competabilityEnv.softPenaltyThreshold = competabilitySoft;
+  }
+  const competabilityTopN = Number(process.env.OPENCROW_SMART_COMPETABILITY_TOP_N_INCUMBENTS ?? "");
+  if (!Number.isNaN(competabilityTopN) && process.env.OPENCROW_SMART_COMPETABILITY_TOP_N_INCUMBENTS !== undefined) {
+    competabilityEnv.topNIncumbents = competabilityTopN;
+  }
+
   if (
     Object.keys(smartEnv).length > 0 ||
     Object.keys(sigeAutoEnv).length > 0 ||
-    Object.keys(outcomeMemoryEnv).length > 0
+    Object.keys(outcomeMemoryEnv).length > 0 ||
+    Object.keys(incumbentExclusionEnv).length > 0 ||
+    Object.keys(competabilityEnv).length > 0
   ) {
     const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
     const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
@@ -169,6 +199,14 @@ function applyEnvOverrides(
     if (Object.keys(outcomeMemoryEnv).length > 0) {
       const existingOutcomeMemory = (existingSmart.outcomeMemory ?? {}) as Record<string, unknown>;
       smart.outcomeMemory = { ...existingOutcomeMemory, ...outcomeMemoryEnv };
+    }
+    if (Object.keys(incumbentExclusionEnv).length > 0) {
+      const existing = (existingSmart.incumbentExclusion ?? {}) as Record<string, unknown>;
+      smart.incumbentExclusion = { ...existing, ...incumbentExclusionEnv };
+    }
+    if (Object.keys(competabilityEnv).length > 0) {
+      const existing = (existingSmart.competability ?? {}) as Record<string, unknown>;
+      smart.competability = { ...existing, ...competabilityEnv };
     }
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }

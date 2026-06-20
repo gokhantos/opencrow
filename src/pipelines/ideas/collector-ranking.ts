@@ -70,12 +70,63 @@ export function recencyFactor(
 }
 
 /**
+ * Default engagement scale (the raw-engagement value that maps to roughly the
+ * midpoint of the obscurity curve). Tuned so that small-community signals (tens
+ * of upvotes/stars) score HIGH obscurity and viral ones (thousands) score ~0.
+ */
+export const OBSCURITY_ENGAGEMENT_SCALE = 200;
+
+/**
+ * Map a raw absolute engagement metric (upvotes / stars / likes) to an
+ * inverse-popularity "obscurity" factor in [0, 1] via a log curve: 0 engagement
+ * → 1.0 (maximally underserved), and engagement grows the popularity term so a
+ * viral row trends toward 0. PURE — deterministic.
+ *
+ *   obscurity = 1 - log1p(engagement) / log1p(engagement + scale)
+ *
+ * The denominator grows with engagement so the curve is smooth and bounded; a
+ * larger `scale` makes more rows count as "niche". Negative/NaN engagement → 1.
+ */
+export function obscurityFromEngagement(
+  engagement: number | null | undefined,
+  scale = OBSCURITY_ENGAGEMENT_SCALE,
+): number {
+  const e = Math.max(0, toNumber(engagement));
+  const s = Math.max(1, scale);
+  const popularity = Math.log1p(e) / Math.log1p(e + s);
+  return clamp01(1 - popularity);
+}
+
+/**
  * Neutral learned-credibility posterior mean. A Beta(1,1) cold-start source
  * sits at 0.5, so treating 0.5 (or an absent posterior) as neutral makes the
  * learned-credibility multiplier a no-op until real feedback moves a source
  * above/below the midpoint. Keeps the default path identical to before #157.
  */
 export const NEUTRAL_LEARNED_CREDIBILITY = 0.5;
+
+/**
+ * Layer A — DE-BIAS RANK WEIGHTS.
+ *
+ * The base rank blend is rebalanced AWAY from raw popularity (credibility +
+ * velocity) and TOWARD recency + an inverse-popularity "niche bonus" so a sharp
+ * pain in a small community can out-rank a viral post. All weights are exported,
+ * named, and sum to 1.0 before the bounded learned-credibility multiplier.
+ *
+ *   old: 0.45*credibility + 0.25*velocityNorm + 0.20*corroBoost + 0.10*recency
+ *   new: 0.30*credibility + 0.15*velocityNorm + 0.15*corroBoost + 0.20*recency
+ *        + 0.20*nicheBonus
+ *
+ * The niche bonus is the inverse of absolute engagement: a row with little raw
+ * engagement (an underserved long-tail signal) gets a high bonus; a viral row
+ * gets ~0. It is derived from an optional `obscurity` input (1 = maximally
+ * obscure / underserved) which callers compute from raw engagement.
+ */
+export const RANK_WEIGHT_CREDIBILITY = 0.3;
+export const RANK_WEIGHT_VELOCITY = 0.15;
+export const RANK_WEIGHT_CORRO = 0.15;
+export const RANK_WEIGHT_RECENCY = 0.2;
+export const RANK_WEIGHT_NICHE = 0.2;
 
 /** Inputs to the combined per-row rank score. */
 export interface RankInputs {
@@ -87,6 +138,14 @@ export interface RankInputs {
   readonly corroborationCount?: number;
   /** Recency factor in [0, 1]. Defaults to 0.5 when absent. */
   readonly recency?: number;
+  /**
+   * Inverse-popularity / "underserved" factor in [0, 1] (1 = maximally obscure,
+   * low absolute engagement; 0 = viral). Rewards sharp pains in small
+   * communities. Optional — defaults to a NEUTRAL 0.5 so existing callers/tests
+   * that don't pass it are unchanged in RELATIVE ordering. Compute via
+   * {@link obscurityFromEngagement} at the call site.
+   */
+  readonly obscurity?: number;
   /**
    * Learned Beta-Bernoulli posterior mean in [0, 1] for this row's
    * (source_table, signal_type, category) tuple, from downstream idea fate.
@@ -151,10 +210,12 @@ export function lookupLearnedCredibility(
  * additive rank score, then fold in a small exploration jitter so the top-K is
  * not perfectly deterministic (exploration/exploitation). Pure given `rng`.
  *
- * Weighting (documented intentionally): credibility dominates (authority +
- * engagement), momentum and corroboration are meaningful boosts, recency is a
- * mild tie-breaker. Corroboration is log-scaled so a 3rd source matters less
- * than the 2nd. The result is in roughly [0, 1] before jitter.
+ * Weighting (Layer A de-bias, documented intentionally): the blend is rebalanced
+ * AWAY from raw popularity and TOWARD recency + an inverse-popularity niche bonus
+ * (credibility 0.30, velocity 0.15, corroboration 0.15, recency 0.20, niche
+ * 0.20 — summing to 1.0) so a sharp pain in a small community can out-rank a
+ * viral post. Corroboration is log-scaled so a 3rd source matters less than the
+ * 2nd. The result is in roughly [0, 1] before jitter.
  *
  * Learned credibility (optional): the additive base is scaled by a bounded
  * multiplier derived from the row's posterior mean (0.5 ⇒ ×1.0 no-op), then the
@@ -170,15 +231,19 @@ export function computeRankScore(
   const credibility = clamp01(inputs.credibility ?? 0.5);
   const velocityNorm = clamp01(inputs.velocityNorm ?? 0);
   const recency = clamp01(inputs.recency ?? 0.5);
+  // Neutral 0.5 default so callers that don't supply obscurity keep their
+  // relative ordering (the term is the same constant for every row).
+  const obscurity = clamp01(inputs.obscurity ?? 0.5);
   const corro = Math.max(1, toNumber(inputs.corroborationCount, 1));
   // log2(corro): 1→0, 2→1, 4→2 … scaled into [0, ~0.6].
   const corroBoost = clamp01(Math.log2(corro) / 3);
 
   const base =
-    0.45 * credibility +
-    0.25 * velocityNorm +
-    0.2 * corroBoost +
-    0.1 * recency;
+    RANK_WEIGHT_CREDIBILITY * credibility +
+    RANK_WEIGHT_VELOCITY * velocityNorm +
+    RANK_WEIGHT_CORRO * corroBoost +
+    RANK_WEIGHT_RECENCY * recency +
+    RANK_WEIGHT_NICHE * obscurity;
 
   // Fold in the learned posterior as a bounded, re-clamped multiplier.
   const learned = clamp01(base * learnedCredibilityMultiplier(inputs.learnedCredibility));

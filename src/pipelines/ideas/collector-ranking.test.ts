@@ -109,3 +109,79 @@ describe("lookupLearnedCredibility", () => {
     expect(lookupLearnedCredibility(map, "x_scraped_tweets", "verified", "unknown")).toBeUndefined();
   });
 });
+
+// ── Layer A: obscurity / niche-bonus rebalance ──────────────────────────────
+
+import {
+  obscurityFromEngagement,
+  RANK_WEIGHT_CREDIBILITY,
+  RANK_WEIGHT_VELOCITY,
+  RANK_WEIGHT_CORRO,
+  RANK_WEIGHT_RECENCY,
+  RANK_WEIGHT_NICHE,
+} from "./collector-ranking";
+
+describe("obscurityFromEngagement", () => {
+  test("zero engagement is maximally obscure (1.0)", () => {
+    expect(obscurityFromEngagement(0)).toBe(1);
+  });
+
+  test("monotonically decreases as engagement grows", () => {
+    const low = obscurityFromEngagement(10);
+    const mid = obscurityFromEngagement(200);
+    const high = obscurityFromEngagement(10000);
+    expect(low).toBeGreaterThan(mid);
+    expect(mid).toBeGreaterThan(high);
+  });
+
+  test("a viral row trends toward low obscurity", () => {
+    expect(obscurityFromEngagement(100000)).toBeLessThan(0.3);
+  });
+
+  test("negative / NaN engagement is treated as maximally obscure", () => {
+    expect(obscurityFromEngagement(-5)).toBe(1);
+    expect(obscurityFromEngagement(Number.NaN)).toBe(1);
+  });
+});
+
+describe("computeRankScore — niche-bonus de-bias", () => {
+  test("the five weights sum to 1.0", () => {
+    const sum =
+      RANK_WEIGHT_CREDIBILITY +
+      RANK_WEIGHT_VELOCITY +
+      RANK_WEIGHT_CORRO +
+      RANK_WEIGHT_RECENCY +
+      RANK_WEIGHT_NICHE;
+    expect(sum).toBeCloseTo(1, 10);
+  });
+
+  test("a sharp low-engagement signal out-ranks a viral one", () => {
+    // Viral post: high engagement (low obscurity), modest credibility/recency.
+    const viral = computeRankScore(
+      {
+        credibility: 0.6,
+        velocityNorm: 0.9,
+        recency: 0.5,
+        obscurity: obscurityFromEngagement(50000),
+      },
+      noJitter,
+    );
+    // Sharp niche pain: tiny community engagement (high obscurity), fresh + credible.
+    const niche = computeRankScore(
+      {
+        credibility: 0.6,
+        velocityNorm: 0.2,
+        recency: 0.9,
+        obscurity: obscurityFromEngagement(15),
+      },
+      noJitter,
+    );
+    expect(niche).toBeGreaterThan(viral);
+  });
+
+  test("absent obscurity defaults to neutral 0.5 and stays bounded", () => {
+    const s = computeRankScore({ credibility: 1, velocityNorm: 1, recency: 1, corroborationCount: 8 }, noJitter);
+    expect(s).toBeGreaterThanOrEqual(0);
+    expect(s).toBeLessThanOrEqual(1);
+  });
+});
