@@ -112,8 +112,8 @@ function directive(): string {
     {
       seed: "clunky export",
       steps: [
-        { rel: "lacks", node: "bulk export" },
-        { rel: "has_feature", node: "csv export" },
+        { rel: "LACKS", node: "bulk export" },
+        { rel: "HAS_FEATURE", node: "csv export" },
       ],
     },
   ];

@@ -152,7 +152,7 @@ beforeEach(() => {
 
 describe("Neo4jReadClient.opportunityPaths — success path", () => {
   test("uses a READ-mode session and never a write transaction", async () => {
-    okRecords = [{ seed: "slow sync", steps: [{ rel: "lacks", node: "offline mode" }] }];
+    okRecords = [{ seed: "slow sync", steps: [{ rel: "LACKS", node: "offline mode" }] }];
     const client = freshClient();
     await client.opportunityPaths(PARAMS);
 
@@ -162,7 +162,7 @@ describe("Neo4jReadClient.opportunityPaths — success path", () => {
   });
 
   test("binds every caller value as a $param — none interpolated into Cypher", async () => {
-    okRecords = [{ seed: "p", steps: [{ rel: "lacks", node: "f" }] }];
+    okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
     const client = freshClient();
     await client.opportunityPaths(PARAMS);
 
@@ -190,7 +190,7 @@ describe("Neo4jReadClient.opportunityPaths — success path", () => {
   });
 
   test("forwards the per-query { timeout } transaction config", async () => {
-    okRecords = [{ seed: "p", steps: [{ rel: "lacks", node: "f" }] }];
+    okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
     const client = freshClient(1234);
     await client.opportunityPaths(PARAMS);
 
@@ -204,16 +204,16 @@ describe("Neo4jReadClient.opportunityPaths — success path", () => {
       {
         seed: "clunky export",
         steps: [
-          { rel: "lacks", node: "bulk export" },
-          { rel: "has_feature", node: "csv export" },
+          { rel: "LACKS", node: "bulk export" },
+          { rel: "HAS_FEATURE", node: "csv export" },
         ],
       },
       // cyclic: the seed name reappears as a node → dropped by the mapper
       {
         seed: "loop",
         steps: [
-          { rel: "lacks", node: "mid" },
-          { rel: "uses", node: "loop" },
+          { rel: "LACKS", node: "mid" },
+          { rel: "USES", node: "loop" },
         ],
       },
     ];
@@ -223,8 +223,8 @@ describe("Neo4jReadClient.opportunityPaths — success path", () => {
     expect(paths.length).toBe(1);
     expect(paths[0]!.seed).toBe("clunky export");
     expect(paths[0]!.steps).toEqual([
-      { rel: "lacks", node: "bulk export" },
-      { rel: "has_feature", node: "csv export" },
+      { rel: "LACKS", node: "bulk export" },
+      { rel: "HAS_FEATURE", node: "csv export" },
     ]);
     await client.close();
   });

@@ -45,6 +45,10 @@ opencrow.db
 opencrow.db-wal
 opencrow.db-shm
 data/
+# Exception: committed canonical-mapping data for the Neo4j graph maintenance
+# script (scripts/canonicalize-neo4j-graph.py needs these at --apply time).
+!scripts/data/
+!scripts/data/**
 src/news/scraper/.venv/
 
 # Playwright MCP
