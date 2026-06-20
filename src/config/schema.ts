@@ -820,6 +820,34 @@ export type IncumbentExclusionConfig = z.infer<
 // Computed in the same Pass-3 critique LLM call. SHADOW mode by default
 // (enforceGate=false) — mirrors giant.enforceGates so it ships safely and only
 // LOGS would-reject decisions until explicitly enforced.
+// The BUILDER PROFILE the competability gate is evaluated FOR. The LLM still
+// scores RAW, profile-independent moats; this profile is applied as a pure,
+// deterministic discount at decision time. The DEFAULT (solo bootstrapper) is the
+// IDENTITY transform — zero discount — so the gate behaves exactly as before.
+export const builderProfileConfigSchema = z
+  .object({
+    // Sustained capital the builder can deploy. "bootstrap" is the baseline.
+    capital: z.enum(["none", "bootstrap", "seed", "funded"]).default("bootstrap"),
+    // Team headcount; heads above 1 discount the logistics moat (capped).
+    teamSize: z.number().int().min(1).max(1000).default(1),
+    // Domains the builder has expertise in; a text match discounts the dominant
+    // moat for that idea. Empty (default) never matches. Bounded (count + length)
+    // so a pathological config can't bloat the scoring prompt.
+    expertiseDomains: z.array(z.string().max(80)).max(50).default([]),
+    // Appetite for entering a regulated market; "high" discounts the regulated moat.
+    regulatoryAppetite: z.enum(["none", "low", "high"]).default("low"),
+    // Appetite for running physical ops; "high" discounts the logistics moat.
+    opsAppetite: z.enum(["none", "low", "high"]).default("low"),
+  })
+  .default({
+    capital: "bootstrap",
+    teamSize: 1,
+    expertiseDomains: [],
+    regulatoryAppetite: "low",
+    opsAppetite: "low",
+  });
+export type BuilderProfileConfig = z.infer<typeof builderProfileConfigSchema>;
+
 export const competabilityConfigSchema = z
   .object({
     // Compute + store the competability scorecard for every idea. Default ON.
@@ -836,6 +864,9 @@ export const competabilityConfigSchema = z
     softPenaltyThreshold: z.number().min(0).max(5).default(2.5),
     // Top-N incumbents the cheap heuristic pre-filter checks idea text against.
     topNIncumbents: z.number().int().min(1).max(1000).default(100),
+    // The builder the gate is evaluated for. Default = solo bootstrapper =
+    // identity transform, so the gate behaves exactly as before.
+    builderProfile: builderProfileConfigSchema,
   })
   .default({
     enabled: true,
@@ -843,6 +874,13 @@ export const competabilityConfigSchema = z
     rejectThreshold: 2,
     softPenaltyThreshold: 2.5,
     topNIncumbents: 100,
+    builderProfile: {
+      capital: "bootstrap",
+      teamSize: 1,
+      expertiseDomains: [],
+      regulatoryAppetite: "low",
+      opsAppetite: "low",
+    },
   });
 export type CompetabilityConfig = z.infer<typeof competabilityConfigSchema>;
 
@@ -978,6 +1016,13 @@ const SMART_IDEAS_DEFAULTS = {
     rejectThreshold: 2,
     softPenaltyThreshold: 2.5,
     topNIncumbents: 100,
+    builderProfile: {
+      capital: "bootstrap",
+      teamSize: 1,
+      expertiseDomains: [] as string[],
+      regulatoryAppetite: "low",
+      opsAppetite: "low",
+    },
   },
 } as const;
 

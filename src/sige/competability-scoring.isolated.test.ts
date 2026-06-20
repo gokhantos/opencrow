@@ -67,6 +67,15 @@ function config(overrides: Partial<CompetabilityConfig> = {}): CompetabilityConf
     rejectThreshold: 2,
     softPenaltyThreshold: 2.5,
     topNIncumbents: 100,
+    // Default = solo bootstrapper = identity transform, so these SIGE gate tests
+    // assert the same behavior as before builder profiles existed.
+    builderProfile: {
+      capital: "bootstrap",
+      teamSize: 1,
+      expertiseDomains: [],
+      regulatoryAppetite: "low",
+      opsAppetite: "low",
+    },
     ...overrides,
   };
 }

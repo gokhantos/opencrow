@@ -401,3 +401,103 @@ describe("loadConfig — outcomeMemory env toggles", () => {
     expect(om.searchLimit).toBe(30);
   });
 });
+
+describe("competability builder-profile env overrides", () => {
+  const VARS = [
+    "OPENCROW_SMART_COMPETABILITY_BUILDER_CAPITAL",
+    "OPENCROW_SMART_COMPETABILITY_BUILDER_TEAM_SIZE",
+    "OPENCROW_SMART_COMPETABILITY_BUILDER_REGULATORY_APPETITE",
+    "OPENCROW_SMART_COMPETABILITY_BUILDER_OPS_APPETITE",
+    "OPENCROW_SMART_COMPETABILITY_BUILDER_EXPERTISE_DOMAINS",
+    "OPENCROW_SMART_COMPETABILITY_REJECT_THRESHOLD",
+  ];
+  afterEach(() => {
+    for (const v of VARS) delete process.env[v];
+  });
+
+  test("default builder profile is the solo bootstrapper (identity)", () => {
+    for (const v of VARS) delete process.env[v];
+    const bp = loadConfig().pipelines.ideas.smart.competability.builderProfile;
+    expect(bp.capital).toBe("bootstrap");
+    expect(bp.teamSize).toBe(1);
+    expect(bp.expertiseDomains).toEqual([]);
+    expect(bp.regulatoryAppetite).toBe("low");
+    expect(bp.opsAppetite).toBe("low");
+  });
+
+  test("env sets builder profile fields (capital, team, appetites, domains)", () => {
+    process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_CAPITAL = "funded";
+    process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_TEAM_SIZE = "5";
+    process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_REGULATORY_APPETITE = "high";
+    process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_OPS_APPETITE = "high";
+    process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_EXPERTISE_DOMAINS =
+      "fintech, healthcare";
+    const bp = loadConfig().pipelines.ideas.smart.competability.builderProfile;
+    expect(bp.capital).toBe("funded");
+    expect(bp.teamSize).toBe(5);
+    expect(bp.regulatoryAppetite).toBe("high");
+    expect(bp.opsAppetite).toBe("high");
+    expect(bp.expertiseDomains).toEqual(["fintech", "healthcare"]);
+  });
+
+  test("a PARTIAL builder-profile env override keeps sibling profile fields at default", () => {
+    // Only capital is overridden — teamSize/appetites/domains must survive.
+    process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_CAPITAL = "seed";
+    const comp = loadConfig().pipelines.ideas.smart.competability;
+    expect(comp.builderProfile.capital).toBe("seed");
+    expect(comp.builderProfile.teamSize).toBe(1);
+    expect(comp.builderProfile.regulatoryAppetite).toBe("low");
+    expect(comp.builderProfile.opsAppetite).toBe("low");
+    expect(comp.builderProfile.expertiseDomains).toEqual([]);
+    // Sibling competability fields untouched.
+    expect(comp.enabled).toBe(true);
+    expect(comp.rejectThreshold).toBe(2);
+  });
+
+  test("a builder-profile env override coexists with a sibling competability env override", () => {
+    process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_CAPITAL = "funded";
+    process.env.OPENCROW_SMART_COMPETABILITY_REJECT_THRESHOLD = "1.5";
+    const comp = loadConfig().pipelines.ideas.smart.competability;
+    expect(comp.builderProfile.capital).toBe("funded");
+    expect(comp.rejectThreshold).toBe(1.5);
+    // builderProfile siblings still defaulted.
+    expect(comp.builderProfile.teamSize).toBe(1);
+  });
+});
+
+describe("deepMergeSigeOverride — competability builderProfile no-clobber", () => {
+  // The DB config/competability override path reuses deepMergeSigeOverride. Its
+  // one-level-deep merge is EXACTLY deep enough because builderProfile sits
+  // exactly one level below competability: a partial builderProfile override has
+  // its nested keys shallow-merged onto base.builderProfile, so siblings survive.
+  test("partial builderProfile override keeps sibling profile + competability fields", () => {
+    const base: Record<string, unknown> = {
+      enabled: true,
+      enforceGate: false,
+      rejectThreshold: 2,
+      builderProfile: {
+        capital: "bootstrap",
+        teamSize: 1,
+        expertiseDomains: [],
+        regulatoryAppetite: "low",
+        opsAppetite: "low",
+      },
+    };
+    const override: Record<string, unknown> = {
+      builderProfile: { capital: "funded" },
+    };
+
+    const result = deepMergeSigeOverride(base, override);
+
+    const bp = result.builderProfile as Record<string, unknown>;
+    expect(bp.capital).toBe("funded");
+    // Sibling builderProfile fields survive the one-level merge.
+    expect(bp.teamSize).toBe(1);
+    expect(bp.regulatoryAppetite).toBe("low");
+    expect(bp.opsAppetite).toBe("low");
+    expect(bp.expertiseDomains).toEqual([]);
+    // Sibling competability fields survive.
+    expect(result.enabled).toBe(true);
+    expect(result.rejectThreshold).toBe(2);
+  });
+});

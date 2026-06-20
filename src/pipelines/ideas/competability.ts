@@ -158,6 +158,16 @@ function clampScore(value: unknown): number {
 }
 
 /**
+ * Clamp a numeric score into the [{@link COMPETABILITY_MIN},
+ * {@link COMPETABILITY_MAX}] range. Exported so the builder-profile transform
+ * shares the EXACT same bounds as the gate instead of duplicating clamp logic.
+ * Non-finite input collapses to the minimum. PURE.
+ */
+export function clampToScoreRange(value: number): number {
+  return clamp(value, COMPETABILITY_MIN, COMPETABILITY_MAX);
+}
+
+/**
  * Tolerantly parse a raw LLM competability blob into a normalized, clamped
  * {@link CompetabilityScore}. Missing dimensions default to a NEUTRAL midpoint
  * (so a malformed output doesn't spuriously reject); the `overall` defaults to
@@ -282,38 +292,88 @@ export interface CompetabilityPersisted {
   readonly overall: number;
   readonly reason: string;
   readonly gated: boolean;
+  /**
+   * The RAW, profile-INDEPENDENT moat score the LLM produced, BEFORE the builder
+   * profile discount. `dimensions`/`overall` above are the EFFECTIVE (decided)
+   * values; `raw` preserves the objective barriers for audit / re-scoring under a
+   * different profile. Optional — absent on pre-builder-profile rows.
+   */
+  readonly raw?: {
+    readonly dimensions: Readonly<Record<CompetabilityDimension, number>>;
+    readonly overall: number;
+  };
+  /**
+   * The builder expertise domain that matched this idea's text (and therefore
+   * discounted its dominant moat), or null when none matched. Optional — absent on
+   * pre-builder-profile rows.
+   */
+  readonly matchedExpertiseDomain?: string | null;
+}
+
+/** The RAW moat slice persisted alongside the effective score. */
+export interface CompetabilityRaw {
+  readonly dimensions: Readonly<Record<CompetabilityDimension, number>>;
+  readonly overall: number;
 }
 
 /**
- * Build the persisted competability scorecard from a normalized score, the gate
- * reason, and the gated flag. Returns null when there is no score to persist (so
- * an un-scored idea stores SQL NULL rather than a hollow object). PURE.
+ * Build the persisted competability scorecard from the EFFECTIVE score, the gate
+ * reason, and the gated flag — optionally carrying the RAW (pre-profile) score
+ * and the matched expertise domain. `dimensions`/`overall` are the EFFECTIVE
+ * (decided) values; the `competability_overall` column mirrors `overall`. Returns
+ * null when there is no score to persist (so an un-scored idea stores SQL NULL
+ * rather than a hollow object). PURE.
  */
 export function buildCompetabilityPersisted(
   score: CompetabilityScore | null | undefined,
   reason: string,
   gated: boolean,
+  extra?: {
+    readonly raw?: CompetabilityRaw | null;
+    readonly matchedExpertiseDomain?: string | null;
+  },
 ): CompetabilityPersisted | null {
   if (!score) return null;
+  const raw = extra?.raw;
   return {
     dimensions: score.dimensions,
     overall: clampScore(score.overall),
     reason,
     gated,
+    ...(raw
+      ? {
+          raw: {
+            dimensions: raw.dimensions,
+            overall: clampScore(raw.overall),
+          },
+        }
+      : {}),
+    ...(extra && "matchedExpertiseDomain" in extra
+      ? { matchedExpertiseDomain: extra.matchedExpertiseDomain ?? null }
+      : {}),
   };
 }
 
 /** The loose per-candidate competability fields carried through the pipeline. */
 export interface CandidateCompetabilityFields {
+  /** EFFECTIVE (profile-adjusted, decided) moat dimensions. */
   readonly competability?: Readonly<Record<CompetabilityDimension, number>>;
+  /** EFFECTIVE overall "can win" score. */
   readonly competabilityOverall?: number;
   readonly competabilityGated?: boolean;
   readonly competabilityReason?: string;
+  /** RAW (pre-profile) moat dimensions, when a builder profile was applied. */
+  readonly competabilityRaw?: Readonly<Record<CompetabilityDimension, number>>;
+  /** RAW (pre-profile) overall, when a builder profile was applied. */
+  readonly competabilityRawOverall?: number;
+  /** Builder expertise domain that matched this idea (or null). */
+  readonly competabilityMatchedExpertiseDomain?: string | null;
 }
 
 /**
  * Reconstruct the persisted competability scorecard from the loose per-candidate
- * fields (`competability` dims + `competabilityOverall` + reason + gated). Returns
+ * fields. `competability`/`competabilityOverall` are the EFFECTIVE values;
+ * `competabilityRaw*` (when present) preserve the pre-profile barriers. Returns
  * null when the candidate carries no competability dims (un-scored). PURE — clamps
  * defensively and never throws.
  */
@@ -325,12 +385,36 @@ export function candidateCompetabilityPersisted(
   for (const key of COMPETABILITY_DIMENSIONS) {
     dimensions[key] = clampScore(candidate.competability[key]);
   }
-  return {
-    dimensions,
-    overall: clampScore(candidate.competabilityOverall ?? COMPETABILITY_MAX / 2),
-    reason: candidate.competabilityReason ?? "",
-    gated: candidate.competabilityGated === true,
-  };
+
+  let raw: CompetabilityRaw | null = null;
+  if (candidate.competabilityRaw) {
+    const rawDims = {} as Record<CompetabilityDimension, number>;
+    for (const key of COMPETABILITY_DIMENSIONS) {
+      rawDims[key] = clampScore(candidate.competabilityRaw[key]);
+    }
+    raw = {
+      dimensions: rawDims,
+      overall: clampScore(
+        candidate.competabilityRawOverall ?? COMPETABILITY_MAX / 2,
+      ),
+    };
+  }
+
+  return buildCompetabilityPersisted(
+    {
+      dimensions,
+      overall: clampScore(candidate.competabilityOverall ?? COMPETABILITY_MAX / 2),
+      rationale: "",
+    },
+    candidate.competabilityReason ?? "",
+    candidate.competabilityGated === true,
+    {
+      raw,
+      ...(candidate.competabilityMatchedExpertiseDomain !== undefined
+        ? { matchedExpertiseDomain: candidate.competabilityMatchedExpertiseDomain }
+        : {}),
+    },
+  );
 }
 
 // ── Cheap heuristic pre-filter (PURE, no LLM) ─────────────────────────────────

@@ -316,6 +316,22 @@ export interface GeneratedIdeaCandidate {
   /** Human-readable reason for the competability decision. */
   readonly competabilityReason?: string;
   /**
+   * Layer B builder-profile: the RAW (pre-profile-discount) moat dimensions the
+   * LLM scored. The `competability` field above holds the EFFECTIVE (decided)
+   * dims after the builder profile is applied; this preserves the objective
+   * barriers. Optional — populated only when a profile transform ran.
+   */
+  readonly competabilityRaw?: {
+    readonly capital: number;
+    readonly networkEffect: number;
+    readonly logistics: number;
+    readonly regulated: number;
+  };
+  /** RAW (pre-profile) overall "can win" score. */
+  readonly competabilityRawOverall?: number;
+  /** Builder expertise domain that matched this idea (discounting its dominant moat), or null. */
+  readonly competabilityMatchedExpertiseDomain?: string | null;
+  /**
    * Phase 1 "generate-wide": the opportunity SEGMENT this candidate was tagged
    * into (consumer/b2b_saas/devtools/...). Optional — populated when
    * smart.generateWide.multiSegment is on (the model emits it and/or it is

@@ -100,6 +100,13 @@ describe("smartConfigSchema", () => {
         rejectThreshold: 2,
         softPenaltyThreshold: 2.5,
         topNIncumbents: 100,
+        builderProfile: {
+          capital: "bootstrap",
+          teamSize: 1,
+          expertiseDomains: [],
+          regulatoryAppetite: "low",
+          opsAppetite: "low",
+        },
       },
     });
   });
