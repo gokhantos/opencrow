@@ -153,7 +153,7 @@ describe("smartConfigSchema", () => {
         enabled: true,
         perBucketCap: 8,
         totalCap: 90,
-        fetchLimit: 50,
+        fetchLimit: 100,
       },
     });
   });

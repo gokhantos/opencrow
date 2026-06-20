@@ -1102,10 +1102,11 @@ export const stratifiedIntakeConfigSchema = z
     perBucketCap: z.number().int().min(1).max(100).default(8),
     // Hard ceiling on the stratified pool size returned to the funnel.
     totalCap: z.number().int().min(1).max(500).default(90),
-    // Per-source fetch window (rows pulled before ranking/stratifying).
-    fetchLimit: z.number().int().min(10).max(500).default(50),
+    // Per-source raw fetch window (total rows pulled before ranking/stratifying);
+    // split ~30/70 top/midtier for windowed sources.
+    fetchLimit: z.number().int().min(10).max(500).default(100),
   })
-  .default({ enabled: true, perBucketCap: 8, totalCap: 90, fetchLimit: 50 });
+  .default({ enabled: true, perBucketCap: 8, totalCap: 90, fetchLimit: 100 });
 export type StratifiedIntakeConfig = z.infer<typeof stratifiedIntakeConfigSchema>;
 
 // MAIN-pipeline independent jury. `quality_score` is otherwise a pure
@@ -1388,7 +1389,7 @@ const SMART_IDEAS_DEFAULTS = {
     model: "",
   },
   deepDevelopCount: 6,
-  stratifiedIntake: { enabled: true, perBucketCap: 8, totalCap: 90, fetchLimit: 50 },
+  stratifiedIntake: { enabled: true, perBucketCap: 8, totalCap: 90, fetchLimit: 100 },
 } as const;
 
 export const ideasPipelineConfigSchema = z

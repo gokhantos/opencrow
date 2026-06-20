@@ -23,7 +23,7 @@ describe("stratifiedIntake config", () => {
     expect(s.enabled).toBe(true);
     expect(s.perBucketCap).toBe(8);
     expect(s.totalCap).toBe(90);
-    expect(s.fetchLimit).toBe(50);
+    expect(s.fetchLimit).toBe(100);
   });
 
   test("is reversible via config", () => {

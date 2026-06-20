@@ -901,6 +901,11 @@ export async function scanCapabilities(
   const smart = loadConfig().pipelines.ideas.smart;
   const adaptive = smart.adaptiveCollection;
   const strat = smart.stratifiedIntake;
+  // Derive windowed top/midtier slice sizes from fetchLimit so the config value
+  // is the uniform per-source window across ALL source types. Default fetchLimit=100
+  // yields topSlice=30, midtierSlice=70 — identical to the previous hard-coded values.
+  const topSlice = Math.max(1, Math.round(strat.fetchLimit * (COLLECTOR_TOP_SLICE / COLLECTOR_FETCH_LIMIT)));
+  const midtierSlice = Math.max(1, strat.fetchLimit - topSlice);
   const incumbentCfg = smart.incumbentExclusion;
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -932,7 +937,7 @@ export async function scanCapabilities(
 
   try {
     // ── Product Hunt ──────────────────────────────────────────────────────────
-    // Fetch 50 rows so we have enough fresh ones after filtering consumed.
+    // Fetch fetchLimit rows so we have enough fresh ones after filtering consumed.
     const cutoff30d = nowSec - 30 * 24 * 3600;
     // Layer A: TOP slice by engagement UNION a MID-TIER fresh window (rows ranked
     // below the top slice, ordered by recency) so the long-tail surfaces. One
@@ -947,12 +952,12 @@ export async function scanCapabilities(
       )
       (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
               makers_json, topics_json, first_seen_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
               makers_json, topics_json, first_seen_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY first_seen_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY first_seen_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset to ensure variation across runs
@@ -1027,12 +1032,12 @@ export async function scanCapabilities(
       )
       (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
               points_velocity, updated_at, feed_type
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
               points_velocity, updated_at, feed_type
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1092,11 +1097,11 @@ export async function scanCapabilities(
         WHERE stars_today > 0
       )
       (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset if no active trending data
@@ -1169,12 +1174,12 @@ export async function scanCapabilities(
       )
       (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
               top_comments_json, flair, score_velocity, updated_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
               top_comments_json, flair, score_velocity, updated_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1288,12 +1293,12 @@ export async function scanCapabilities(
       )
       (SELECT id, author_username, author_verified, text, likes, retweets, views,
               likes_velocity, scraped_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, author_username, author_verified, text, likes, retweets, views,
               likes_velocity, scraped_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY scraped_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY scraped_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     pools.push({

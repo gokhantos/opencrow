@@ -195,9 +195,10 @@ describe("scanCapabilities stratified intake", () => {
   });
 
   it("respects stratifiedIntake.fetchLimit for raw pulls", async () => {
-    // With a DB seeded with rows and fetchLimit=50 (default), scanCapabilities
+    // With a DB seeded with rows and fetchLimit=100 (default), scanCapabilities
     // must complete successfully and the output is bounded by the config limits.
-    // Pool size before stratification is bounded by fetchLimit per source;
+    // Pool size before stratification is bounded by fetchLimit per source (split
+    // ~30/70 top/midtier for windowed sources, or the full limit for flat queries);
     // we assert the result is non-empty and within the totalCap ceiling (90).
     const ctx = await buildTestCtx();
     const scan = await scanCapabilities(undefined, ctx);
