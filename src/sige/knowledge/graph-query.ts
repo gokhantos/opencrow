@@ -285,47 +285,84 @@ function buildSummary(nodes: readonly GraphNode[], edges: readonly GraphEdge[]):
 
 // ─── Truncation ───────────────────────────────────────────────────────────────
 
+/**
+ * Truncates a graph to (maxNodes, maxEdges) **connectivity-first**.
+ *
+ * The graph view's value is connected structure, so we admit *edges* before
+ * standalone nodes. The previous node-first approach took `nodes.slice(0,
+ * maxNodes)` as a primary slice and then tried to backfill endpoints — but when
+ * the input saturated maxNodes with high-relevance fact nodes (production:
+ * `limit == maxNodes == 100`), the synthesized entity endpoint nodes were sorted
+ * to the tail, fell outside the slice, and the backfill guard
+ * (`finalNodes.length + missing.length > maxNodes`) rejected every edge because
+ * the slice was already full. Result: edgeCount always 0 at saturation.
+ *
+ * Two phases, both bounded:
+ *
+ *  1. **Admit edges (reserve their endpoints).** Walk edges in caller order
+ *     (already relevance/relationship-ranked) up to `maxEdges`. An edge is
+ *     admitted only if both endpoints resolve to real nodes AND adding its
+ *     not-yet-present endpoints would not push the node count past `maxNodes`.
+ *     Admitting both endpoints first guarantees every retained edge connects two
+ *     present nodes — no dangling endpoints — and that connected structure
+ *     survives even when fact nodes would otherwise crowd it out.
+ *  2. **Fill remaining node budget.** Add the top-ranked input nodes (in caller
+ *     order, so high-relevance fact nodes still surface) until `maxNodes` is hit,
+ *     skipping any already admitted as endpoints.
+ *
+ * Caps are strict: `result.nodes.length <= maxNodes`, `result.edges.length <=
+ * maxEdges`. Empty inputs short-circuit to an empty result.
+ */
 function truncateGraph(
   nodes: readonly GraphNode[],
   edges: readonly GraphEdge[],
   maxNodes: number,
   maxEdges: number,
 ): { readonly nodes: readonly GraphNode[]; readonly edges: readonly GraphEdge[] } {
-  // Take the top-ranked nodes up to the cap.
-  const primaryNodes = nodes.slice(0, maxNodes);
-  const retainedUuids = new Set(primaryNodes.map((n) => n.uuid));
+  if (nodes.length === 0 || maxNodes <= 0) {
+    return { nodes: [], edges: [] };
+  }
 
-  // Keep only edges whose endpoints are both retained, then cap edge count.
-  // Endpoint nodes can fall outside the primary slice (entity nodes are appended
-  // after relevance-ranked memory nodes), so pull those endpoint nodes back into
-  // the node set — still bounded by maxNodes — rather than dropping the edge.
-  // This preserves the "no dangling endpoints" invariant (every edge endpoint is
-  // a node present in the result) while ensuring real relations survive truncation.
   const byUuid = new Map(nodes.map((n) => [n.uuid, n]));
-  const finalNodes: GraphNode[] = [...primaryNodes];
+  const retainedUuids = new Set<string>();
+  const finalNodes: GraphNode[] = [];
   const finalEdges: GraphEdge[] = [];
 
+  const admitNode = (id: string): boolean => {
+    if (retainedUuids.has(id)) return true;
+    if (finalNodes.length >= maxNodes) return false;
+    const node = byUuid.get(id);
+    if (node === undefined) return false;
+    finalNodes.push(node);
+    retainedUuids.add(id);
+    return true;
+  };
+
+  // Phase 1 — admit edges, reserving both endpoint nodes first so connected
+  // structure survives a saturated node budget.
   for (const edge of edges) {
     if (finalEdges.length >= maxEdges) break;
 
     const endpointUuids = [edge.sourceNodeUuid, edge.targetNodeUuid];
-    const missing = endpointUuids.filter((id) => !retainedUuids.has(id));
 
-    // Adding both endpoints must not exceed the node cap; if it would, skip this
-    // edge rather than overflow or admit a dangling endpoint.
+    // Both endpoints must resolve to real nodes we know about.
+    if (!endpointUuids.every((id) => byUuid.has(id))) continue;
+
+    // Adding the not-yet-present endpoints must fit within the node cap.
+    const missing = endpointUuids.filter((id) => !retainedUuids.has(id));
     if (finalNodes.length + missing.length > maxNodes) continue;
 
-    // Every endpoint must resolve to a real node we know about.
-    const resolved = endpointUuids.every((id) => retainedUuids.has(id) || byUuid.has(id));
-    if (!resolved) continue;
-
-    for (const id of missing) {
-      const node = byUuid.get(id);
-      if (node === undefined) continue;
-      finalNodes.push(node);
-      retainedUuids.add(id);
-    }
+    // Reserve both endpoints (guaranteed to fit by the check above), then admit
+    // the edge — every retained edge connects two present nodes.
+    for (const id of endpointUuids) admitNode(id);
     finalEdges.push(edge);
+  }
+
+  // Phase 2 — fill the remaining node budget with the top-ranked standalone
+  // nodes, preserving caller order so high-relevance fact nodes still surface.
+  for (const node of nodes) {
+    if (finalNodes.length >= maxNodes) break;
+    admitNode(node.uuid);
   }
 
   return { nodes: finalNodes, edges: finalEdges };
