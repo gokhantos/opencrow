@@ -289,6 +289,17 @@ export async function synthesizeFromTrends(input: {
    * is on AND the caller supplies it. Empty/absent → today's behavior.
    */
   readonly segmentDirective?: string;
+  /**
+   * SEED multi-hop graph-reasoning directive (built by the Pipeline phase via
+   * fetchGraphReasoningDirective → buildGraphReasoningDirective from a bounded
+   * Neo4j traversal). Injected ONLY at Pass 1 (discoverIntersections), right
+   * after the segment-diversity directive, to widen WHICH intersections the seed
+   * surfaces via non-obvious graph adjacencies. Already sanitized +
+   * untrusted-fenced. Optional — backward-compatible; injected only when
+   * smart.graphReasoning.enabled is on AND the caller supplies it. Empty/absent
+   * → today's seed prompt (byte-identical).
+   */
+  readonly graphDirective?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
 
@@ -309,6 +320,10 @@ export async function synthesizeFromTrends(input: {
   // boundary on the SAME flag as outcomeMemory so the path is defended
   // end-to-end. "" → today's seed prompt.
   const segmentDirective = smart.outcomeMemory.readAtSynthesis ? input.segmentDirective ?? "" : "";
+  // SEED graph-reasoning directive (Pass 1 only): re-gate at the synthesis
+  // boundary on smart.graphReasoning.enabled so the path is defended end-to-end.
+  // "" → today's seed prompt.
+  const graphDirective = smart.graphReasoning.enabled ? input.graphDirective ?? "" : "";
 
   // ── Pass 1: Discover intersections ──────────────────────────────────
   let intersections: readonly IntersectionHypothesis[];
@@ -321,6 +336,7 @@ export async function synthesizeFromTrends(input: {
       model,
       chainOfEvidence,
       segmentDirective,
+      graphDirective,
     );
   } catch (err) {
     log.error("Pass 1 failed, falling back to single-pass synthesis", { err });

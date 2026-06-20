@@ -480,6 +480,24 @@ export const sigeConfigSchema = z.object({
     userId: "sige-global",
     ideasUserId: "sige-ideas",
   }),
+  // Read-only Bolt connection to the SAME Neo4j instance mem0 writes its graph
+  // store to (no ETL). Powers the multi-hop "opportunity paths" graph-reasoning
+  // directive. Default OFF — no driver is loaded and no connection is dialed
+  // until enabled. The password is NOT here: it is resolved via
+  // getSecret("NEO4J_PASSWORD") so it never lands in config/logs.
+  neo4j: z
+    .object({
+      enabled: z.boolean().default(false),
+      boltUrl: z.string().default("bolt://127.0.0.1:7687"),
+      user: z.string().default("neo4j"),
+      queryTimeoutMs: z.number().int().min(100).max(60_000).default(5_000),
+    })
+    .default({
+      enabled: false,
+      boltUrl: "bolt://127.0.0.1:7687",
+      user: "neo4j",
+      queryTimeoutMs: 5_000,
+    }),
   simulation: z
     .object({
       expertRounds: z.number().int().min(1).max(10).default(4),
@@ -796,6 +814,43 @@ export const outcomeMemoryConfigSchema = z
   });
 export type OutcomeMemoryConfig = z.infer<typeof outcomeMemoryConfigSchema>;
 
+// Multi-hop graph reasoning: a bounded "opportunity paths" directive traversed
+// from the live Neo4j graph (the mem0 graph store) and injected at Pass-1 seed
+// discovery as GUIDANCE. Default OFF — gated together with sige.neo4j.enabled so
+// neither flag alone constructs a client; degrades to "" on any failure, leaving
+// the default seed prompt byte-identical. The traversal caps below are bound as
+// $params into the read-only Cypher (no code change to tune).
+export const graphReasoningConfigSchema = z
+  .object({
+    // Master switch for the feature. Read-only + degrade-to-empty, but kept OFF
+    // by default until the live graph is validated.
+    enabled: z.boolean().default(false),
+    // Max hops (path length) in a returned opportunity path. Default 2: on the
+    // current (undirected, hub-heavy) graph, 3-hop traversal is too slow and
+    // times out; bump only with an index + perf validation.
+    maxHops: z.number().int().min(2).max(6).default(2),
+    // Max paths rendered into the directive (also the query LIMIT).
+    maxPaths: z.number().int().min(1).max(20).default(8),
+    // How many seed (pain) nodes to expand from.
+    searchLimit: z.number().int().min(1).max(100).default(25),
+    // Lower degree bound on the seed node (skips one-off leaf noise).
+    minDegree: z.number().int().min(1).max(1000).default(3),
+    // Upper degree bound on EVERY path node. Default 200: excludes the mega-hubs
+    // (app_store 750 / play_store 565 / sige-global 1163 — also stoplisted) while
+    // keeping legitimate popular-app nodes (facebook ~120, roblox ~154). 60 was
+    // too low and filtered out all real paths.
+    maxDegree: z.number().int().min(1).max(5000).default(200),
+  })
+  .default({
+    enabled: false,
+    maxHops: 2,
+    maxPaths: 8,
+    searchLimit: 25,
+    minDegree: 3,
+    maxDegree: 200,
+  });
+export type GraphReasoningConfig = z.infer<typeof graphReasoningConfigSchema>;
+
 // Layer C "incumbent exclusion": drop / down-rank collector signals that
 // prominently name a top-N charted (or high-review-count) app. PURE-logic + safe,
 // so it defaults ON (matching adaptiveCollection). Disabling it reverts the
@@ -957,6 +1012,10 @@ export const smartConfigSchema = z.object({
   // Phase 6 "outcome memory": verdict write-back + synthesis-time guidance via
   // mem0. Both flags now default ON — the REINFORCE/AVOID learning loop is live.
   outcomeMemory: outcomeMemoryConfigSchema,
+  // Multi-hop graph reasoning: bounded "opportunity paths" directive at Pass-1.
+  // Default OFF (gated together with sige.neo4j.enabled). Fully defaulted ->
+  // backward-compatible.
+  graphReasoning: graphReasoningConfigSchema,
   // Layer C "incumbent exclusion": drop/down-rank collector signals that name a
   // top-N incumbent. Pure-logic + safe — default ON. Fully defaulted ->
   // backward-compatible.
@@ -1033,6 +1092,14 @@ const SMART_IDEAS_DEFAULTS = {
     reinforceCap: 5,
     avoidCap: 5,
     searchLimit: 12,
+  },
+  graphReasoning: {
+    enabled: false,
+    maxHops: 2,
+    maxPaths: 8,
+    searchLimit: 25,
+    minDegree: 3,
+    maxDegree: 200,
   },
   incumbentExclusion: {
     enabled: true,

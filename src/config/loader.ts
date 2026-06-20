@@ -153,6 +153,33 @@ function applyEnvOverrides(
     outcomeMemoryEnv.searchLimit = outcomeMemorySearchLimit;
   }
 
+  // OPENCROW_SMART_GRAPH_REASONING_* overrides for the graph-reasoning block.
+  // An EXPLICIT block (like outcomeMemoryEnv): the generic deep-merge above does
+  // NOT reach nested smart sub-blocks, so each field is read and merged by hand.
+  const graphReasoningEnv: Record<string, unknown> = {};
+  const graphReasoningEnabled = boolEnv("OPENCROW_SMART_GRAPH_REASONING_ENABLED");
+  if (graphReasoningEnabled !== undefined) graphReasoningEnv.enabled = graphReasoningEnabled;
+  const graphReasoningMaxHops = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_HOPS ?? "");
+  if (!Number.isNaN(graphReasoningMaxHops) && process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_HOPS !== undefined) {
+    graphReasoningEnv.maxHops = graphReasoningMaxHops;
+  }
+  const graphReasoningMaxPaths = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_PATHS ?? "");
+  if (!Number.isNaN(graphReasoningMaxPaths) && process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_PATHS !== undefined) {
+    graphReasoningEnv.maxPaths = graphReasoningMaxPaths;
+  }
+  const graphReasoningSearchLimit = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_SEARCH_LIMIT ?? "");
+  if (!Number.isNaN(graphReasoningSearchLimit) && process.env.OPENCROW_SMART_GRAPH_REASONING_SEARCH_LIMIT !== undefined) {
+    graphReasoningEnv.searchLimit = graphReasoningSearchLimit;
+  }
+  const graphReasoningMinDegree = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_MIN_DEGREE ?? "");
+  if (!Number.isNaN(graphReasoningMinDegree) && process.env.OPENCROW_SMART_GRAPH_REASONING_MIN_DEGREE !== undefined) {
+    graphReasoningEnv.minDegree = graphReasoningMinDegree;
+  }
+  const graphReasoningMaxDegree = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_DEGREE ?? "");
+  if (!Number.isNaN(graphReasoningMaxDegree) && process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_DEGREE !== undefined) {
+    graphReasoningEnv.maxDegree = graphReasoningMaxDegree;
+  }
+
   // OPENCROW_SMART_INCUMBENT_EXCLUSION_* overrides for the Layer-C feature block.
   const incumbentExclusionEnv: Record<string, unknown> = {};
   const incumbentEnabled = boolEnv("OPENCROW_SMART_INCUMBENT_EXCLUSION_ENABLED");
@@ -226,6 +253,7 @@ function applyEnvOverrides(
     Object.keys(smartEnv).length > 0 ||
     Object.keys(sigeAutoEnv).length > 0 ||
     Object.keys(outcomeMemoryEnv).length > 0 ||
+    Object.keys(graphReasoningEnv).length > 0 ||
     Object.keys(incumbentExclusionEnv).length > 0 ||
     Object.keys(competabilityEnv).length > 0 ||
     Object.keys(diversityGuardEnv).length > 0
@@ -241,6 +269,10 @@ function applyEnvOverrides(
     if (Object.keys(outcomeMemoryEnv).length > 0) {
       const existingOutcomeMemory = (existingSmart.outcomeMemory ?? {}) as Record<string, unknown>;
       smart.outcomeMemory = { ...existingOutcomeMemory, ...outcomeMemoryEnv };
+    }
+    if (Object.keys(graphReasoningEnv).length > 0) {
+      const existing = (existingSmart.graphReasoning ?? {}) as Record<string, unknown>;
+      smart.graphReasoning = { ...existing, ...graphReasoningEnv };
     }
     if (Object.keys(incumbentExclusionEnv).length > 0) {
       const existing = (existingSmart.incumbentExclusion ?? {}) as Record<string, unknown>;
@@ -279,7 +311,20 @@ function applyEnvOverrides(
   // sidecar agree without introducing a 4th secret. Empty string is treated as
   // unset so a blank env var doesn't send "Bearer ".
   const sigeMem0Token = process.env.OPENCROW_INTERNAL_TOKEN || undefined;
-  if (sigeEnabled !== undefined || sigeMem0Url || sigeMem0Token) {
+  // Read-only Neo4j Bolt connection (graph reasoning). Password is intentionally
+  // NOT read here — it is resolved via getSecret("NEO4J_PASSWORD") so it never
+  // lands in the config object or logs.
+  const sigeNeo4jEnabled = boolEnv("OPENCROW_SIGE_NEO4J_ENABLED");
+  const sigeNeo4jUrl = process.env.OPENCROW_SIGE_NEO4J_URL;
+  const sigeNeo4jUser = process.env.OPENCROW_SIGE_NEO4J_USER;
+  if (
+    sigeEnabled !== undefined ||
+    sigeMem0Url ||
+    sigeMem0Token ||
+    sigeNeo4jEnabled !== undefined ||
+    sigeNeo4jUrl ||
+    sigeNeo4jUser
+  ) {
     const sige = { ...((result.sige ?? {}) as Record<string, unknown>) };
     if (sigeEnabled !== undefined) sige.enabled = sigeEnabled;
     if (sigeMem0Url || sigeMem0Token) {
@@ -287,6 +332,13 @@ function applyEnvOverrides(
       if (sigeMem0Url) mem0.baseUrl = sigeMem0Url;
       if (sigeMem0Token) mem0.apiToken = sigeMem0Token;
       sige.mem0 = mem0;
+    }
+    if (sigeNeo4jEnabled !== undefined || sigeNeo4jUrl || sigeNeo4jUser) {
+      const neo4j = { ...((sige.neo4j ?? {}) as Record<string, unknown>) };
+      if (sigeNeo4jEnabled !== undefined) neo4j.enabled = sigeNeo4jEnabled;
+      if (sigeNeo4jUrl) neo4j.boltUrl = sigeNeo4jUrl;
+      if (sigeNeo4jUser) neo4j.user = sigeNeo4jUser;
+      sige.neo4j = neo4j;
     }
     result.sige = sige;
   }

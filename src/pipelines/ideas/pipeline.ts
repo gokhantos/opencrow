@@ -22,6 +22,7 @@ import type { MemoryManager } from "../../memory/types";
 import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
+import { Neo4jReadClient } from "../../sige/knowledge/neo4j-client";
 import {
   findCompletedStep,
   getPipelineRun,
@@ -38,6 +39,7 @@ import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
 import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
 import { fetchOutcomeMemoryGuidance } from "./outcome-memory";
+import { fetchGraphReasoningDirective } from "./graph-reasoning";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import { getDb } from "../../store/db";
 import { annotateOriginality, checkForDuplicates, verifyEvidence } from "./validate";
@@ -206,6 +208,10 @@ export async function runIdeasPipeline(
     startedAt: now(),
   });
 
+  // Hoisted so the `finally` can release the shared Neo4j driver regardless of
+  // where the run exits. Stays null unless graph reasoning is enabled (default).
+  let graphClient: Neo4jReadClient | null = null;
+
   try {
     const model = config.model ?? "claude-sonnet-4-6";
     const smart = loadConfig().pipelines.ideas.smart;
@@ -222,6 +228,19 @@ export async function runIdeasPipeline(
         ? new Mem0Client({
             baseUrl: sigeConfig?.mem0.baseUrl ?? "http://127.0.0.1:8050",
             apiToken: sigeConfig?.mem0.apiToken,
+          })
+        : null;
+
+    // ── Graph reasoning: build a read-only Neo4j client ONCE, gated on BOTH the
+    //    feature flag AND the connection flag so neither alone constructs a
+    //    client (and the neo4j-driver import never loads when off — default).
+    const graphReasoningCfg = smart.graphReasoning;
+    graphClient =
+      graphReasoningCfg.enabled && sigeConfig?.neo4j.enabled
+        ? new Neo4jReadClient({
+            boltUrl: sigeConfig.neo4j.boltUrl,
+            user: sigeConfig.neo4j.user,
+            queryTimeoutMs: sigeConfig.neo4j.queryTimeoutMs,
           })
         : null;
 
@@ -431,6 +450,24 @@ export async function runIdeasPipeline(
     const outcomeMemory: string = guidance.block;
     const segmentDirective: string = guidance.segmentDirective;
 
+    // ── Graph-reasoning READ hook (gated on BOTH flags, default OFF) ──────────
+    // A single bounded Neo4j traversal → the Pass-1 OPPORTUNITY PATHS directive.
+    // Guarded on graphClient !== null and returns "" on any failure / empty
+    // graph / timeout (fetchGraphReasoningDirective never throws), so a default
+    // run is byte-identical to the pre-feature path.
+    const graphDirective: string =
+      graphReasoningCfg.enabled && graphClient !== null
+        ? await fetchGraphReasoningDirective({
+            client: graphClient,
+            userId: sigeConfig?.mem0.userId ?? "sige-global",
+            maxHops: graphReasoningCfg.maxHops,
+            maxPaths: graphReasoningCfg.maxPaths,
+            searchLimit: graphReasoningCfg.searchLimit,
+            minDegree: graphReasoningCfg.minDegree,
+            maxDegree: graphReasoningCfg.maxDegree,
+          })
+        : "";
+
     const synthesis = await runStep(
       runId,
       "synthesis",
@@ -449,6 +486,7 @@ export async function runIdeasPipeline(
           extraCandidates,
           outcomeMemory,
           segmentDirective,
+          graphDirective,
           // Audit the Pass-3 competability gate against this run, stamped with the
           // shared epoch-seconds `now()` helper (keeps synthesizer clock-free).
           pipelineRunId: runId,
@@ -806,6 +844,8 @@ export async function runIdeasPipeline(
     });
     throw err;
   } finally {
+    // Release the shared Neo4j driver (best-effort, no-op when never connected).
+    await graphClient?.close();
     endRun(runId);
   }
 }

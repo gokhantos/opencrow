@@ -73,6 +73,14 @@ function smartConfig() {
       avoidCap: 3,
       searchLimit: 10,
     },
+    graphReasoning: {
+      enabled: false,
+      maxHops: 3,
+      maxPaths: 8,
+      searchLimit: 25,
+      minDegree: 3,
+      maxDegree: 60,
+    },
     sigeValuation: false,
     sigeAuto: { broadPoolSize: 20, maxDeepFrontiers: 1, memoryWriteback: false },
   };
