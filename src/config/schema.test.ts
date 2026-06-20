@@ -14,6 +14,26 @@ import {
   DEFAULT_BLOCKED_COMMANDS,
 } from "./schema";
 
+// ── stratifiedIntake config ───────────────────────────────────────────────────
+
+describe("stratifiedIntake config", () => {
+  test("defaults to the broadened behavior", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    const s = cfg.pipelines.ideas.smart.stratifiedIntake;
+    expect(s.enabled).toBe(true);
+    expect(s.perBucketCap).toBe(8);
+    expect(s.totalCap).toBe(90);
+    expect(s.fetchLimit).toBe(50);
+  });
+
+  test("is reversible via config", () => {
+    const cfg = opencrowConfigSchema.parse({
+      pipelines: { ideas: { smart: { stratifiedIntake: { enabled: false } } } },
+    });
+    expect(cfg.pipelines.ideas.smart.stratifiedIntake.enabled).toBe(false);
+  });
+});
+
 describe("retryConfigSchema", () => {
   test("valid full input parses correctly", () => {
     const result = retryConfigSchema.parse({
