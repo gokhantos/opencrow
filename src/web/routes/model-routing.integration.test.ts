@@ -14,8 +14,9 @@
  * Requires: postgres running (native: `opencrow native up postgres`, or compose)
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { initDb, closeDb, getDb } from "../../store/db";
+import { initDb, closeDb } from "../../store/db";
 import { createModelRoutingRoutes } from "./model-routing";
+import { MODEL_ROUTING_DEFAULTS, setModelRoute } from "../../store/model-routing";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -56,11 +57,10 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  // Restore any routes we mutated during tests so subsequent runs start clean
-  const db = getDb();
-  await db.unsafe(
-    `DELETE FROM config_overrides WHERE namespace = 'model-routing' AND key = 'signal.facets'`,
-  );
+  // Restore the routes we mutated to their seeded defaults so subsequent runs
+  // (and the shared dev DB) start clean. Must RESTORE — not DELETE — because the
+  // seed row is the source of truth that production reads back.
+  await setModelRoute("signal.facets", MODEL_ROUTING_DEFAULTS["signal.facets"]);
   await closeDb();
 });
 
