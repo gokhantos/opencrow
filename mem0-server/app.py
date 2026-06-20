@@ -28,17 +28,22 @@ log = logging.getLogger("mem0-sidecar")
 
 
 # ─── Optional: disable hosted "reasoning"/thinking on the extraction LLM ───────
-# Some hosted OpenAI-compatible models (e.g. the Alibaba token-plan DeepSeek/Qwen
-# family) are *reasoning* models: they emit a hidden chain-of-thought and make
-# mem0's always-on graph-extraction phase stall — it issues sequential
-# tool-calling completions that never return. Those endpoints honour a top-level
-# `enable_thinking: false` flag to turn thinking off, but mem0's OpenAI LLM config
-# exposes no passthrough for it. When MEM0_LLM_DISABLE_THINKING is truthy we wrap
-# the OpenAI client so every chat.completions.create injects
-# `extra_body={"enable_thinking": False}`. This covers both the main extraction
+# Some hosted OpenAI-compatible models (e.g. Alibaba token-plan DeepSeek/Qwen and
+# the OpenCode Go gateway) are *reasoning* models: they emit a hidden
+# chain-of-thought that breaks mem0's always-on graph phase — the residual
+# reasoning corrupts the nested relation tool-schema (relations come back empty)
+# or, worse, the sequential tool-calling completions never return. Different
+# gateways honour DIFFERENT disable flags, and an unknown flag is silently
+# ignored, so we inject BOTH spellings:
+#   - `enable_thinking: false`        (DashScope / Alibaba token-plan)
+#   - `thinking: {"type": "disabled"}` (OpenCode Go gateway — verified the only
+#                                       one it honours; enable_thinking is ignored)
+# mem0's OpenAI LLM config exposes no passthrough, so when
+# MEM0_LLM_DISABLE_THINKING is truthy we wrap the OpenAI client and add them to
+# extra_body on every chat.completions.create. Covers both the main extraction
 # LLM and the graph LLM (same client class). Embeddings use the Ollama provider
-# (a different client) and are unaffected; the local-gemma path leaves the flag
-# unset, so its requests are untouched.
+# (a different client) and are unaffected; leaving the flag unset (e.g. for a
+# non-reasoning model like GLM or local gemma) leaves requests untouched.
 def _maybe_disable_thinking() -> None:
     flag = (os.environ.get("MEM0_LLM_DISABLE_THINKING") or "").strip().lower()
     if flag not in ("1", "true", "yes", "on"):
@@ -55,13 +60,15 @@ def _maybe_disable_thinking() -> None:
     def create(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         extra_body = dict(kwargs.get("extra_body") or {})
         extra_body.setdefault("enable_thinking", False)
+        extra_body.setdefault("thinking", {"type": "disabled"})
         kwargs["extra_body"] = extra_body
         return original(self, *args, **kwargs)
 
     create._nothink_wrapped = True  # type: ignore[attr-defined]
     _completions.Completions.create = create
     log.info(
-        "extraction LLM: reasoning disabled (injecting enable_thinking=false)"
+        "extraction LLM: reasoning disabled "
+        "(injecting enable_thinking=false + thinking.type=disabled)"
     )
 
 
