@@ -189,6 +189,46 @@ describe("getFilteredGraphView edge survival", () => {
     }
   });
 
+  test("edges survive when maxNodes is saturated by scored fact nodes (production repro)", async () => {
+    // Reproduces production: mem0 is fetched with `limit: maxNodes`, so the
+    // memory facts saturate maxNodes. Each fact carries a relevanceScore, so it
+    // wins the `relevanceScore ?? -Infinity` tiebreak over the unscored, synthesized
+    // entity endpoint nodes — pushing those entity nodes to the tail, outside the
+    // old primary slice. The old truncateGraph then skipped every edge (no room to
+    // backfill endpoints) → edgeCount 0. The connectivity-first truncation must
+    // keep the edges by admitting their endpoints before filling with fact nodes.
+    const maxNodes = 100;
+    const saturatingFacts: Mem0Memory[] = Array.from({ length: maxNodes }, (_, i) =>
+      // Distinct fact text that does NOT match any entity endpoint name below.
+      mem(`f${i}`, `standalone onboarding fact number ${i}`, { score: 0.5 + i / 10000 }),
+    );
+
+    const client = fakeClient({
+      memories: saturatingFacts,
+      relations: [
+        rel("app_store", "PROVIDES", "chatgpt"),
+        rel("chatgpt", "PROVIDES", "content_filters"),
+      ],
+    });
+
+    const filter = getDefaultKnowledgeFilter("rational_player");
+    const view = await getFilteredGraphView(client, "user-1", "rational_player", filter, {
+      maxNodes,
+    });
+
+    // Edges must survive the saturated node budget.
+    expect(view.edges.length).toBeGreaterThan(0);
+    // Caps respected.
+    expect(view.nodes.length).toBeLessThanOrEqual(maxNodes);
+    expect(view.edges.length).toBeLessThanOrEqual(200);
+    // No dangling endpoints: every edge connects two nodes present in the result.
+    const nodeUuids = new Set(view.nodes.map((n) => n.uuid));
+    for (const edge of view.edges) {
+      expect(nodeUuids.has(edge.sourceNodeUuid)).toBe(true);
+      expect(nodeUuids.has(edge.targetNodeUuid)).toBe(true);
+    }
+  });
+
   test("tight maxNodes still keeps edges by pulling endpoint nodes within the cap", async () => {
     const client = fakeClient({
       // Many high-score memory facts would otherwise crowd out entity nodes.
