@@ -884,6 +884,30 @@ export const competabilityConfigSchema = z
   });
 export type CompetabilityConfig = z.infer<typeof competabilityConfigSchema>;
 
+// WITHIN-RUN diversity / monoculture guard. The de-bias layers + competability
+// gate can over-correct and collapse a run's kept set into ONE archetype (e.g.
+// only B2B dev/vertical SaaS). This soft guard caps any single bucket's share of
+// the kept set so one archetype/category cannot dominate. Default ON, pure-logic
+// (no external calls) — COMPLEMENTS the across-run saturatedThemes dedup. Fully
+// defaulted -> backward-compatible.
+export const diversityGuardConfigSchema = z
+  .object({
+    // Master switch. Default ON — pure de-bias, no external calls.
+    enabled: z.boolean().default(true),
+    // Share ceiling (0..1) any single bucket may occupy in the kept set when
+    // diverse alternatives exist. ~0.5 => no archetype exceeds half the set.
+    maxBucketShare: z.number().min(0).max(1).default(0.5),
+    // Which candidate field defines a bucket. Archetype is the canonical
+    // monoculture axis; category is the free-text fallback.
+    bucketBy: z.enum(["archetype", "category"]).default("archetype"),
+  })
+  .default({
+    enabled: true,
+    maxBucketShare: 0.5,
+    bucketBy: "archetype",
+  });
+export type DiversityGuardConfig = z.infer<typeof diversityGuardConfigSchema>;
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -941,6 +965,10 @@ export const smartConfigSchema = z.object({
   // moat. SHADOW mode by default (enforceGate=false). Fully defaulted ->
   // backward-compatible.
   competability: competabilityConfigSchema,
+  // WITHIN-RUN diversity guard: cap any single archetype/category's share of the
+  // kept set so the funnel can't collapse into one monoculture. Default ON,
+  // pure-logic. Fully defaulted -> backward-compatible.
+  diversityGuard: diversityGuardConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -1023,6 +1051,11 @@ const SMART_IDEAS_DEFAULTS = {
       regulatoryAppetite: "low",
       opsAppetite: "low",
     },
+  },
+  diversityGuard: {
+    enabled: true,
+    maxBucketShare: 0.5,
+    bucketBy: "archetype",
   },
 } as const;
 

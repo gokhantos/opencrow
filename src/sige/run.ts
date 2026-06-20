@@ -606,6 +606,7 @@ async function runSeededSteps(
             model: session.config.model,
             provider: session.config.provider,
           },
+          appConfig.pipelines.ideas.smart.diversityGuard,
         );
         log.info("SIGE cross-write into generated_ideas", {
           sessionId,

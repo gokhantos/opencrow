@@ -113,6 +113,7 @@ import {
   buildSignalsContext,
   type SigeSignals,
 } from "./pipeline-sige-math";
+import { computeDiversityReport, selectDiverse } from "./idea-diversity";
 import {
   applySigeValuation,
   fetchDivergentCandidates,
@@ -639,6 +640,30 @@ export async function runIdeasPipeline(
       }
     }
 
+    // ── WITHIN-RUN diversity guard: cap any single archetype/category's share of
+    // the kept set so the funnel can't collapse into one monoculture. Soft +
+    // anti-starvation: re-orders the already-sized set, never shrinks it. ────────
+    const diversityGuard = smart.diversityGuard;
+    if (diversityGuard.enabled) {
+      finalSelected = selectDiverse(finalSelected, {
+        maxIdeas: config.maxIdeas,
+        maxBucketShare: diversityGuard.maxBucketShare,
+        bucketBy: diversityGuard.bucketBy,
+      });
+    }
+    const diversityReport = computeDiversityReport(finalSelected, {
+      bucketBy: diversityGuard.bucketBy,
+    });
+    log.info("Diversity summary", {
+      kept: diversityReport.total,
+      bucketBy: diversityReport.bucketBy,
+      distinctArchetypes: diversityReport.distinctArchetypes,
+      distinctCategories: diversityReport.distinctCategories,
+      dominantArchetype: diversityReport.dominantArchetype,
+      dominantShare: Number(diversityReport.dominantArchetypeShare.toFixed(2)),
+      archetypeEntropy: Number(diversityReport.archetypeEntropy.toFixed(2)),
+    });
+
     const spread = summarizeSegmentSpread(finalSelected);
     log.info("generate-wide: final selection spread", {
       poolAfterGiant: qualityFiltered.length,
@@ -753,6 +778,9 @@ export async function runIdeasPipeline(
       topThemes: trends.trendingCategories.slice(0, 10).map((c) => c.category),
       ideaIds,
       durationMs: nowMs() - startTime,
+      dominantArchetype: diversityReport.dominantArchetype,
+      dominantArchetypeShare: diversityReport.dominantArchetypeShare,
+      archetypeEntropy: diversityReport.archetypeEntropy,
     };
 
     await updatePipelineRun(runId, { status: "completed", resultSummary: summary, finishedAt: now() });

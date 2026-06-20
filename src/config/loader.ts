@@ -207,12 +207,28 @@ function applyEnvOverrides(
     competabilityEnv.builderProfile = builderProfileEnv;
   }
 
+  // OPENCROW_SMART_DIVERSITY_GUARD_* overrides for the within-run diversity guard.
+  const diversityGuardEnv: Record<string, unknown> = {};
+  const diversityGuardEnabled = boolEnv("OPENCROW_SMART_DIVERSITY_GUARD_ENABLED");
+  if (diversityGuardEnabled !== undefined) diversityGuardEnv.enabled = diversityGuardEnabled;
+  const diversityGuardShare = Number(process.env.OPENCROW_SMART_DIVERSITY_GUARD_MAX_BUCKET_SHARE ?? "");
+  if (
+    !Number.isNaN(diversityGuardShare) &&
+    process.env.OPENCROW_SMART_DIVERSITY_GUARD_MAX_BUCKET_SHARE !== undefined
+  ) {
+    diversityGuardEnv.maxBucketShare = diversityGuardShare;
+  }
+  if (process.env.OPENCROW_SMART_DIVERSITY_GUARD_BUCKET_BY) {
+    diversityGuardEnv.bucketBy = process.env.OPENCROW_SMART_DIVERSITY_GUARD_BUCKET_BY;
+  }
+
   if (
     Object.keys(smartEnv).length > 0 ||
     Object.keys(sigeAutoEnv).length > 0 ||
     Object.keys(outcomeMemoryEnv).length > 0 ||
     Object.keys(incumbentExclusionEnv).length > 0 ||
-    Object.keys(competabilityEnv).length > 0
+    Object.keys(competabilityEnv).length > 0 ||
+    Object.keys(diversityGuardEnv).length > 0
   ) {
     const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
     const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
@@ -244,6 +260,10 @@ function applyEnvOverrides(
         };
       }
       smart.competability = mergedComp;
+    }
+    if (Object.keys(diversityGuardEnv).length > 0) {
+      const existing = (existingSmart.diversityGuard ?? {}) as Record<string, unknown>;
+      smart.diversityGuard = { ...existing, ...diversityGuardEnv };
     }
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }

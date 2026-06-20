@@ -76,6 +76,14 @@ export interface PipelineResultSummary {
   readonly topThemes: readonly string[];
   readonly ideaIds: readonly string[];
   readonly durationMs: number;
+  // ── Within-run diversity (optional; populated when the diversity guard runs).
+  // Backward-compatible JSONB additions — querying monoculture per run. ─────────
+  /** Largest archetype bucket in the kept set. */
+  readonly dominantArchetype?: string;
+  /** Fraction (0..1) of kept ideas in the dominant archetype. */
+  readonly dominantArchetypeShare?: number;
+  /** Shannon entropy (BITS) over the kept set's archetype distribution. */
+  readonly archetypeEntropy?: number;
 }
 
 export interface PipelineDefinition {

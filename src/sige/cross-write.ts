@@ -30,7 +30,9 @@ import { checkForDuplicates } from "../pipelines/ideas/validate";
 import type { GeneratedIdeaCandidate } from "../pipelines/ideas/types";
 import type { CompetabilityPersisted } from "../pipelines/ideas/competability";
 import { gateSigeIdeasOnCompetability } from "./competability-scoring";
-import type { CompetabilityConfig } from "../config/schema";
+import { computeDiversityReport, selectDiverseBy } from "../pipelines/ideas/idea-diversity";
+import { inferSegment } from "../pipelines/ideas/segments";
+import type { CompetabilityConfig, DiversityGuardConfig } from "../config/schema";
 import type { AiProvider } from "../agent/types";
 import type { MemoryManager } from "../memory/types";
 import type { ScoredIdea } from "./types";
@@ -153,6 +155,10 @@ export interface SigeCompetabilityOpts {
  * @param memoryManager Optional — enables the semantic dedup layer.
  * @param limit        Max ideas to promote (default 5, top-N by fusedScore).
  * @param competability Optional Layer B competability gating (shadow/enforce).
+ * @param diversityGuard Optional within-run diversity guard. ScoredIdea carries
+ *   no archetype/category, so buckets are derived from idea TEXT via inferSegment
+ *   so the promoted set can't collapse into one segment. Anti-starvation: never
+ *   promotes fewer than min(limit, rankedIdeas.length).
  */
 export async function crossWriteSigeIdeas(
   rankedIdeas: readonly ScoredIdea[],
@@ -160,6 +166,7 @@ export async function crossWriteSigeIdeas(
   memoryManager: MemoryManager | null | undefined,
   limit: number = DEFAULT_SIGE_CROSS_WRITE_LIMIT,
   competability?: SigeCompetabilityOpts,
+  diversityGuard?: DiversityGuardConfig,
 ): Promise<SigeCrossWriteResult> {
   try {
     if (rankedIdeas.length === 0) {
@@ -173,6 +180,36 @@ export async function crossWriteSigeIdeas(
           (b.fusedScore ?? b.expertScore) - (a.fusedScore ?? a.expertScore),
       )
       .slice(0, Math.max(0, limit));
+
+    // ── WITHIN-RUN diversity guard ───────────────────────────────────────────
+    // Re-order the top-N so no single segment dominates the promoted set. SIGE
+    // ideas have no archetype/category field, so bucket by the inferred segment
+    // of the idea's title+description. Applied BEFORE the competability gate.
+    if (diversityGuard?.enabled === true && topIdeas.length > 0) {
+      const resolveSegment = (idea: ScoredIdea): string =>
+        inferSegment(`${idea.title} ${idea.description}`);
+      topIdeas = [
+        ...selectDiverseBy(topIdeas, {
+          maxIdeas: Math.max(0, limit),
+          maxBucketShare: diversityGuard.maxBucketShare,
+          resolveBucket: resolveSegment,
+        }),
+      ];
+      // Bucket the metric by the SAME inferred segments (title+summary both
+      // survive scoredIdeaToCandidate, so the candidate resolver agrees).
+      const report = computeDiversityReport(topIdeas.map(scoredIdeaToCandidate), {
+        bucketBy: "category",
+        resolveBucket: (c) => inferSegment(`${c.title} ${c.summary}`),
+      });
+      log.info("Diversity summary", {
+        sessionId,
+        kept: report.total,
+        distinctBuckets: report.distinctBuckets,
+        dominantBucket: report.dominantBucket,
+        dominantShare: Number(report.dominantShare.toFixed(2)),
+        entropy: Number(report.entropy.toFixed(2)),
+      });
+    }
 
     // ── Layer B competability gate ──────────────────────────────────────────
     // Score + gate the finalized ideas BEFORE dedup/insert. In ENFORCE mode,

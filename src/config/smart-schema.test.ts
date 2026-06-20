@@ -108,6 +108,11 @@ describe("smartConfigSchema", () => {
           opsAppetite: "low",
         },
       },
+      diversityGuard: {
+        enabled: true,
+        maxBucketShare: 0.5,
+        bucketBy: "archetype",
+      },
     });
   });
 
@@ -124,6 +129,27 @@ describe("smartConfigSchema", () => {
     expect(parsed.competability.enforceGate).toBe(false);
     expect(parsed.competability.rejectThreshold).toBe(2);
     expect(parsed.competability.softPenaltyThreshold).toBe(2.5);
+  });
+
+  test("within-run diversity guard defaults ON (archetype, 0.5 share)", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.diversityGuard.enabled).toBe(true);
+    expect(parsed.diversityGuard.maxBucketShare).toBe(0.5);
+    expect(parsed.diversityGuard.bucketBy).toBe("archetype");
+  });
+
+  test("diversity guard bounds + enum are enforced", () => {
+    expect(() => smartConfigSchema.parse({ diversityGuard: { maxBucketShare: -0.1 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ diversityGuard: { maxBucketShare: 1.1 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ diversityGuard: { bucketBy: "segment" } })).toThrow();
+    const parsed = smartConfigSchema.parse({
+      diversityGuard: { enabled: false, maxBucketShare: 0.3, bucketBy: "category" },
+    });
+    expect(parsed.diversityGuard).toEqual({
+      enabled: false,
+      maxBucketShare: 0.3,
+      bucketBy: "category",
+    });
   });
 
   test("external-service and expensive gates default OFF", () => {
