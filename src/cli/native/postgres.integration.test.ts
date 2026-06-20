@@ -2,9 +2,11 @@ import { test, expect } from "bun:test";
 import { SQL } from "bun";
 import { ensureOpencrowDb } from "./postgres.ts";
 
-// Requires a running native Postgres 17 (brew services start postgresql@17).
-// Admin URL connects to the default superuser db (current OS user).
-const ADMIN_URL = process.env.PG_ADMIN_URL ?? `postgres://${process.env.USER}@127.0.0.1:5432/postgres`;
+// Admin/bootstrap connection. CI provides a Postgres container with the opencrow
+// superuser; on a native brew Postgres (no opencrow role yet) override with
+// PG_ADMIN_URL=postgres://<localuser>@127.0.0.1:5432/postgres (peer/trust auth).
+const ADMIN_URL =
+  process.env.PG_ADMIN_URL ?? "postgres://opencrow:opencrow@127.0.0.1:5432/postgres";
 
 test("ensureOpencrowDb creates role + db idempotently", async () => {
   await ensureOpencrowDb(ADMIN_URL);
