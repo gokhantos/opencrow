@@ -62,16 +62,18 @@ export function resolveManifest(
     });
   }
 
-  // SIGE INGESTION — the continuous mem0 entity/relation extraction loop that
-  // keeps the signal/knowledge corpus fresh. INDEPENDENT of the idea engine: it
-  // only needs the sige.mem0 connection (present whenever the sige section
-  // exists), NOT sige.enabled — so the corpus can stay current whether or not the
-  // (expensive, manual-only) idea engine is running. Default ON; set
-  // sige.ingestion.enabled = false to stop this autonomous loop entirely.
-  if (config.sige !== undefined && config.sige.ingestion?.enabled !== false) {
+  // DATA INGESTION — the continuous mem0 entity/relation extraction loop that
+  // keeps the shared knowledge corpus fresh. A first-class DOMAIN, fully
+  // INDEPENDENT of the `sige` section: the mem0 knowledge it populates is read by
+  // BOTH the generation pipeline (graph-reasoning) AND SIGE, so it runs whether or
+  // not the (expensive, manual-only) SIGE idea engine is enabled — and even when
+  // the `sige` section is absent entirely. It carries its own mem0 connection
+  // (config.ingestion.mem0). Default ON; set config.ingestion.enabled = false to
+  // stop this autonomous loop.
+  if (config.ingestion?.enabled !== false) {
     builtins.push({
-      name: "sige-ingestion",
-      entry: "src/entries/sige-ingestion.ts",
+      name: "ingestion",
+      entry: "src/entries/ingestion.ts",
       restartPolicy: "always",
       maxRestarts: 10,
       restartWindowSec: 300,

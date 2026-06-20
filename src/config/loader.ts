@@ -469,10 +469,6 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   // loadConfig() (no DB) and loadConfigWithOverrides() (DB), instead of
   // relying solely on a DB override that only the override-aware loader sees.
   const sigeEnabled = boolEnv("OPENCROW_SIGE_ENABLED");
-  // Autonomous mem0-extraction (`sige-ingestion`) on/off. Set false for
-  // "manual only" SIGE: the `sige` process still runs manual sessions, but the
-  // unsupervised extraction loop is not spawned.
-  const sigeIngestionEnabled = boolEnv("OPENCROW_SIGE_INGESTION_ENABLED");
   const sigeMem0Url = process.env.OPENCROW_SIGE_MEM0_URL;
   // Bearer token for the mem0 sidecar. Reuse the already-shared internal token
   // (the same value compose hands to mem0 as MEM0_API_TOKEN) so the app and the
@@ -487,7 +483,6 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   const sigeNeo4jUser = process.env.OPENCROW_SIGE_NEO4J_USER;
   if (
     sigeEnabled !== undefined ||
-    sigeIngestionEnabled !== undefined ||
     sigeMem0Url ||
     sigeMem0Token ||
     sigeNeo4jEnabled !== undefined ||
@@ -496,11 +491,6 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   ) {
     const sige = { ...((result.sige ?? {}) as Record<string, unknown>) };
     if (sigeEnabled !== undefined) sige.enabled = sigeEnabled;
-    if (sigeIngestionEnabled !== undefined) {
-      const ingestion = { ...((sige.ingestion ?? {}) as Record<string, unknown>) };
-      ingestion.enabled = sigeIngestionEnabled;
-      sige.ingestion = ingestion;
-    }
     if (sigeMem0Url || sigeMem0Token) {
       const mem0 = { ...((sige.mem0 ?? {}) as Record<string, unknown>) };
       if (sigeMem0Url) mem0.baseUrl = sigeMem0Url;
@@ -515,6 +505,25 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
       sige.neo4j = neo4j;
     }
     result.sige = sige;
+  }
+
+  // --- ingestion (data ingestion → mem0; shared infra, independent of sige) ---
+  // Autonomous mem0-extraction on/off. Set false for "manual only" operation:
+  // SIGE and the pipeline keep running and read whatever corpus already exists,
+  // but the unsupervised extraction loop is not spawned.
+  const ingestionEnabled = boolEnv("OPENCROW_INGESTION_ENABLED");
+  // Ingestion shares the same mem0 instance as sige — reuse the same env so the
+  // connection config stays in parity, while remaining its OWN config domain.
+  if (ingestionEnabled !== undefined || sigeMem0Url || sigeMem0Token) {
+    const ingestion = { ...((result.ingestion ?? {}) as Record<string, unknown>) };
+    if (ingestionEnabled !== undefined) ingestion.enabled = ingestionEnabled;
+    if (sigeMem0Url || sigeMem0Token) {
+      const mem0 = { ...((ingestion.mem0 ?? {}) as Record<string, unknown>) };
+      if (sigeMem0Url) mem0.baseUrl = sigeMem0Url;
+      if (sigeMem0Token) mem0.apiToken = sigeMem0Token;
+      ingestion.mem0 = mem0;
+    }
+    result.ingestion = ingestion;
   }
 
   // --- tools (OS sandbox mode + dev-tool network egress) ---

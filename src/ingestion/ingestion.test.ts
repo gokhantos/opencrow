@@ -1,5 +1,5 @@
 /**
- * Unit tests for pure functions exported from sige-ingestion.
+ * Unit tests for pure functions exported from the ingestion domain.
  *
  * No DB, no network, no side effects — runs in the `test:unit` lane.
  *
@@ -27,7 +27,7 @@ import {
   passesQualityGate,
   serializeCursor,
   todayUtc,
-} from "./sige-ingestion";
+} from "./index";
 
 // ─── computeCredibility — appstore_review ────────────────────────────────────
 
