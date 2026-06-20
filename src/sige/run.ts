@@ -48,7 +48,7 @@ import { runSocialSimulation } from "./simulation/social-sim";
 import { startCancelWatcher } from "./cancel-watcher";
 import { loadResumeContext, saveIdeaScore, saveResumeContext, touchSessionActivity, updateSessionStatus } from "./store";
 import type { ResumeContext } from "./store";
-import type { FusedScore, ScoredIdea, SigeReport, SigeSession, SigeSessionConfig } from "./types";
+import type { FusedScore, ScoredIdea, SigeReport, SigeSession } from "./types";
 
 const log = createLogger("sige:run");
 
@@ -137,45 +137,10 @@ async function buildSigeMemoryManager(): Promise<MemoryManager | null> {
 
 // ─── Default Session Config ─────────────────────────────────────────────────
 //
-// Mirrors the DEFAULT_CONFIG used by the web route (src/web/routes/sige.ts) so
-// that headless callers that do not have a persisted SigeSession (e.g. the
-// ideas pipeline calling evaluateCandidates) can construct a valid
-// SigeSessionConfig without duplicating magic numbers throughout the codebase.
-
-export const DEFAULT_SIGE_SESSION_CONFIG: SigeSessionConfig = {
-  expertRounds: 4,
-  socialAgentCount: 20,
-  socialRounds: 3,
-  maxConcurrentAgents: 4,
-  alpha: 0.5,
-  incentiveWeights: {
-    diversity: 0.25,
-    building: 0.2,
-    surprise: 0.15,
-    accuracyPenalty: 0.1,
-    socialViability: 0.3,
-  },
-  provider: "anthropic",
-  model: "claude-sonnet-4-6",
-  agentModel: "claude-sonnet-4-6",
-};
-
-/**
- * Merge a partial override onto the default session config.
- *
- * Handy for headless callers that only want to tweak a couple of fields
- * (e.g. provider/model) without restating the whole config object.
- */
-export function buildSessionConfig(partial?: Partial<SigeSessionConfig>): SigeSessionConfig {
-  if (!partial) return DEFAULT_SIGE_SESSION_CONFIG;
-  return {
-    ...DEFAULT_SIGE_SESSION_CONFIG,
-    ...partial,
-    incentiveWeights: partial.incentiveWeights
-      ? { ...DEFAULT_SIGE_SESSION_CONFIG.incentiveWeights, ...partial.incentiveWeights }
-      : DEFAULT_SIGE_SESSION_CONFIG.incentiveWeights,
-  };
-}
+// The canonical default + merge helper now live in the leaf module
+// `./config` (so the low-level store can reuse them without a circular import).
+// Re-exported here for backward compatibility with existing importers.
+export { DEFAULT_SIGE_SESSION_CONFIG, buildSessionConfig } from "./config";
 
 // ─── Session Pipeline ─────────────────────────────────────────────────────────
 

@@ -9,7 +9,8 @@
  * Lane: unit (*.test.ts) — no DB, fast.
  */
 import { describe, test, expect } from "bun:test";
-import { rowToSessionSummary } from "./store";
+import { DEFAULT_SIGE_SESSION_CONFIG } from "./config";
+import { rowToSession, rowToSessionSummary } from "./store";
 
 // ─── Fixture helpers ──────────────────────────────────────────────────────────
 
@@ -180,5 +181,69 @@ describe("rowToSessionSummary — immutability", () => {
     (row as Record<string, unknown>)["status"] = "completed";
     // summary must be unaffected (primitive — copied by value)
     expect(summary.status).toBe("pending");
+  });
+});
+
+// ─── rowToSession — config hydration (defense-at-source) ──────────────────────
+//
+// Regression guard for the SIGE crash where a session persisted by an older
+// `buildFastProfile` (before it spread DEFAULT_SIGE_SESSION_CONFIG) stored a
+// `config_json` missing `model`. The hydrated `config.model` was `undefined`
+// and threaded into the Anthropic provider (`undefined.toLowerCase()`).
+
+describe("rowToSession — config hydration", () => {
+  test("fills `model` and other missing fields from defaults when config_json omits them", () => {
+    // Stale row: only a couple of fields persisted, no model/agentModel/provider.
+    const stale = JSON.stringify({ expertRounds: 2, socialAgentCount: 5 });
+    const session = rowToSession(makeRow({ config_json: stale }));
+
+    expect(session.config.model).toBe(DEFAULT_SIGE_SESSION_CONFIG.model);
+    expect(session.config.model).not.toBeUndefined();
+    expect(session.config.agentModel).toBe(DEFAULT_SIGE_SESSION_CONFIG.agentModel);
+    expect(session.config.provider).toBe(DEFAULT_SIGE_SESSION_CONFIG.provider);
+    // Persisted overrides are preserved.
+    expect(session.config.expertRounds).toBe(2);
+    expect(session.config.socialAgentCount).toBe(5);
+    // Untouched fields fall back to defaults.
+    expect(session.config.socialRounds).toBe(DEFAULT_SIGE_SESSION_CONFIG.socialRounds);
+  });
+
+  test("deep-merges incentiveWeights so a partial weight override keeps other defaults", () => {
+    const partial = JSON.stringify({ incentiveWeights: { diversity: 0.9 } });
+    const session = rowToSession(makeRow({ config_json: partial }));
+
+    expect(session.config.incentiveWeights.diversity).toBe(0.9);
+    expect(session.config.incentiveWeights.building).toBe(
+      DEFAULT_SIGE_SESSION_CONFIG.incentiveWeights.building,
+    );
+    expect(session.config.incentiveWeights.socialViability).toBe(
+      DEFAULT_SIGE_SESSION_CONFIG.incentiveWeights.socialViability,
+    );
+  });
+
+  test("falls back to defaults (without throwing) on malformed config_json", () => {
+    const session = rowToSession(makeRow({ config_json: "{ not valid json" }));
+    expect(session.config).toEqual(DEFAULT_SIGE_SESSION_CONFIG);
+    expect(session.config.model).toBe(DEFAULT_SIGE_SESSION_CONFIG.model);
+  });
+
+  test("falls back to defaults on empty config_json", () => {
+    const session = rowToSession(makeRow({ config_json: "" }));
+    expect(session.config).toEqual(DEFAULT_SIGE_SESSION_CONFIG);
+  });
+
+  test("falls back to defaults when config_json is missing/non-string", () => {
+    const session = rowToSession(makeRow({ config_json: undefined }));
+    expect(session.config).toEqual(DEFAULT_SIGE_SESSION_CONFIG);
+  });
+
+  test("falls back to defaults when config_json parses to a non-object (JSON null)", () => {
+    const session = rowToSession(makeRow({ config_json: "null" }));
+    expect(session.config).toEqual(DEFAULT_SIGE_SESSION_CONFIG);
+  });
+
+  test("preserves a fully-specified config_json unchanged", () => {
+    const session = rowToSession(makeRow());
+    expect(session.config).toEqual(DEFAULT_SIGE_SESSION_CONFIG);
   });
 });
