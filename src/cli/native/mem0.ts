@@ -81,6 +81,15 @@ exec "${venvUvicorn}" app:app --host 127.0.0.1 --port 8050
     workingDirectory: appDir,
     stdoutPath: path.join(p.logDir, "mem0.log"),
     stderrPath: path.join(p.logDir, "mem0.err.log"),
+    // Defense-in-depth thread cap. Steady-state is ~20-30 threads under a
+    // sustained backfill (app.py removes the mem0 per-write PostHog thread leak —
+    // the real fix). This bound is ~25x that headroom so it never trips normally,
+    // but if a future mem0/driver regression starts leaking threads again, it caps
+    // the blast radius to this service (launchd restarts it) instead of exhausting
+    // the host-wide maxproc (default 4000) and wedging Postgres/Qdrant/Neo4j too.
+    // NOT a substitute for the source fix — a raised limit alone would only delay
+    // a true leak hitting the wall.
+    processLimit: 768,
   });
   const dest = plistPath(MEM0_LABEL);
   await fs.mkdir(path.dirname(dest), { recursive: true });

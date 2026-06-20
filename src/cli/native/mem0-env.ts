@@ -34,6 +34,14 @@ export function renderMem0Env(
     MEM0_EMBED_MODEL: "nomic-embed-text:latest",
     MEM0_EMBED_DIMS: "768",
     MEM0_COLLECTION: "sige_mem0",
+    // Defense-in-depth only. mem0 0.1.118 constructs a fresh PostHog client (which
+    // starts a daemon thread) on EVERY add/search and never shuts it down, so each
+    // write permanently leaks a thread until ulimit -u is hit. app.py neutralizes
+    // this at the source by patching capture_event to a no-op (the real fix);
+    // MEM0_TELEMETRY=false alone does NOT stop the thread (the flag only gates
+    // *sending*, the Consumer thread still starts), but we set it to document
+    // intent and suppress the analytics side-channel on this self-hosted deploy.
+    MEM0_TELEMETRY: "false",
   };
   return `${Object.entries(vars)
     .map(([k, v]) => `${k}=${v}`)

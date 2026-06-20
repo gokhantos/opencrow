@@ -6,6 +6,13 @@ export type InfraPlistOptions = {
   readonly stdoutPath: string;
   readonly stderrPath: string;
   readonly throttleInterval?: number;
+  // Optional per-service cap on the process/thread count (launchd
+  // NumberOfProcesses, both Soft and Hard ResourceLimits). Defense-in-depth: it
+  // bounds a runaway thread/fork regression to this service's own slice instead
+  // of letting it exhaust the host-wide `maxproc` and wedge unrelated daemons.
+  // Set well above the steady-state footprint so it never trips in normal
+  // operation. Omitted → no limit dict is rendered (unchanged for other services).
+  readonly processLimit?: number;
 };
 
 function xmlEscape(s: string): string {
@@ -36,6 +43,21 @@ ${envEntries
   .join("\n")}
   </dict>`;
 
+  const limitBlock =
+    opts.processLimit === undefined
+      ? ""
+      : `
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfProcesses</key>
+    <integer>${opts.processLimit}</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfProcesses</key>
+    <integer>${opts.processLimit}</integer>
+  </dict>`;
+
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -57,7 +79,7 @@ ${args}
   <key>StandardOutPath</key>
   <string>${xmlEscape(opts.stdoutPath)}</string>
   <key>StandardErrorPath</key>
-  <string>${xmlEscape(opts.stderrPath)}</string>${envBlock}
+  <string>${xmlEscape(opts.stderrPath)}</string>${limitBlock}${envBlock}
 </dict>
 </plist>
 `;

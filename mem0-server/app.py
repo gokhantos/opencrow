@@ -31,10 +31,108 @@ import time
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
-from mem0 import Memory
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("mem0-sidecar")
+
+
+# ─── CRITICAL: neutralize mem0's per-call PostHog telemetry (thread leak) ───────
+# mem0 0.1.118's `mem0.memory.telemetry.capture_event` constructs a BRAND-NEW
+# `AnonymousTelemetry()` on EVERY call, which constructs a brand-new `Posthog`
+# client, which starts a daemon `Consumer` thread in its constructor and is never
+# `.shutdown()`/`.close()`'d. mem0 calls `capture_event` on every add / search /
+# get / _create_memory (per verbatim chunk on infer:false writes), so each write
+# permanently leaks ~1 live OS thread. The Consumer's `run()` is `while
+# self.running:` and `self.running` only flips on `pause()` (called from
+# `shutdown()`), so the thread never exits — a TRUE unbounded leak, not a
+# transient spike. Under a high-volume backfill the sidecar's thread count climbs
+# monotonically until it hits `ulimit -u` (4000) and the runtime raises
+# "can't start new thread", then even /health fails.
+#
+# `MEM0_TELEMETRY=false` does NOT fix this: that flag only sets
+# `posthog.disabled = True`, which gates *sending* — the Consumer thread is still
+# started in `Posthog.__init__` regardless (measured: 50 AnonymousTelemetry() with
+# MEM0_TELEMETRY=false still leaked 50+ threads). The robust fix is to stop the
+# per-call client construction entirely: replace `capture_event` /
+# `capture_client_event` with no-ops, and neuter `AnonymousTelemetry` so neither
+# the module-level `client_telemetry` singleton nor any stray construction can
+# spawn a Posthog Consumer.
+#
+# This is patched BEFORE `from mem0 import Memory` so that when `mem0.memory.main`
+# / `mem0.proxy.main` do `from mem0.memory.telemetry import capture_event` (a
+# by-name binding at import time), they bind the no-op. We also overwrite the name
+# in already-loaded mem0 namespaces defensively in case import order ever changes.
+# Self-hosted OpenCrow has no use for mem0's anonymous usage analytics, so dropping
+# them is purely upside. The vector/graph/embedder/LLM paths are untouched — only
+# the analytics side-channel is removed.
+def _disable_mem0_telemetry() -> None:
+    try:
+        import mem0.memory.telemetry as _tel
+    except Exception as err:  # noqa: BLE001 — never block startup on telemetry
+        log.warning("could not load mem0 telemetry module to disable it: %s", err)
+        return
+
+    def _noop_capture_event(*_args, **_kwargs) -> None:
+        return None
+
+    def _noop_capture_client_event(*_args, **_kwargs) -> None:
+        return None
+
+    # 1) Replace the functions at their source so any LATER by-name import binds
+    #    the no-op.
+    _tel.capture_event = _noop_capture_event
+    _tel.capture_client_event = _noop_capture_client_event
+
+    # 1b) CRITICAL: `mem0.memory.main` (and possibly `mem0.proxy.main`) is already
+    #     imported transitively by `import mem0` BEFORE this runs, and it did
+    #     `from mem0.memory.telemetry import capture_event` — a by-name binding
+    #     that captured the ORIGINAL function. Patching `_tel.capture_event` alone
+    #     does not update that already-bound copy, so the hot call sites
+    #     (`_create_memory`, `add`, `search`, …) would still construct a Posthog
+    #     client per call. Overwrite the by-name binding in every loaded module
+    #     that holds one.
+    import sys
+
+    for _mod in list(sys.modules.values()):
+        if _mod is None or getattr(_mod, "__name__", "").startswith("mem0") is False:
+            continue
+        if getattr(_mod, "capture_event", None) is not None:
+            _mod.capture_event = _noop_capture_event
+        if getattr(_mod, "capture_client_event", None) is not None:
+            _mod.capture_client_event = _noop_capture_client_event
+
+    # 2) Neuter the class so the module-level `client_telemetry` singleton (already
+    #    constructed at import of this module) and any stray construction can never
+    #    start a Posthog Consumer thread. We null out the posthog client and make
+    #    capture_event/close no-ops on every instance.
+    class _InertTelemetry:  # noqa: D401 — drop-in inert replacement
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.posthog = None
+            self.user_id = "disabled"
+
+        def capture_event(self, *_a, **_k) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    _tel.AnonymousTelemetry = _InertTelemetry
+    # The already-built singleton may hold a live Posthog client (1 thread).
+    # Shut it down so we don't even leak that one, then replace it.
+    try:
+        existing = getattr(_tel, "client_telemetry", None)
+        if existing is not None and getattr(existing, "posthog", None) is not None:
+            existing.posthog.shutdown()
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        pass
+    _tel.client_telemetry = _InertTelemetry()
+
+    log.info("mem0 telemetry disabled (no per-call PostHog client / thread leak)")
+
+
+_disable_mem0_telemetry()
+
+from mem0 import Memory  # noqa: E402 — imported AFTER telemetry is neutralized
 
 
 # ─── Optional: disable hosted "reasoning"/thinking on the extraction LLM ───────
