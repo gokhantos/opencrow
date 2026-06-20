@@ -3,6 +3,8 @@ import {
   parseCompetability,
   decideCompetability,
   heuristicMoatFlags,
+  buildCompetabilityPersisted,
+  candidateCompetabilityPersisted,
   type CompetabilityScore,
   ALWAYS_REJECT_OVERALL,
   DEFAULT_REJECT_THRESHOLD,
@@ -137,5 +139,69 @@ describe("heuristicMoatFlags", () => {
   test("detects regulated-market keywords", () => {
     const v = heuristicMoatFlags("A neobank for freelancers", new Set<string>());
     expect(v.flags).toContain("regulated");
+  });
+});
+
+describe("buildCompetabilityPersisted", () => {
+  test("returns null for a missing score (un-scored idea)", () => {
+    expect(buildCompetabilityPersisted(null, "n/a", false)).toBeNull();
+    expect(buildCompetabilityPersisted(undefined, "n/a", false)).toBeNull();
+  });
+
+  test("builds the persisted scorecard, clamping overall", () => {
+    const s: CompetabilityScore = {
+      dimensions: { capital: 5, networkEffect: 5, logistics: 0, regulated: 0 },
+      overall: 1,
+      rationale: "two-sided marketplace",
+    };
+    const persisted = buildCompetabilityPersisted(s, "overall 1 < reject", true);
+    expect(persisted).not.toBeNull();
+    expect(persisted!.dimensions).toEqual(s.dimensions);
+    expect(persisted!.overall).toBe(1);
+    expect(persisted!.reason).toBe("overall 1 < reject");
+    expect(persisted!.gated).toBe(true);
+  });
+
+  test("clamps an out-of-range overall into [0,5]", () => {
+    const s: CompetabilityScore = {
+      dimensions: { capital: 0, networkEffect: 0, logistics: 0, regulated: 0 },
+      overall: 99,
+      rationale: "",
+    };
+    expect(buildCompetabilityPersisted(s, "", false)!.overall).toBe(5);
+  });
+});
+
+describe("candidateCompetabilityPersisted", () => {
+  test("returns null when the candidate has no competability dims", () => {
+    expect(candidateCompetabilityPersisted({})).toBeNull();
+    expect(
+      candidateCompetabilityPersisted({ competabilityOverall: 3 }),
+    ).toBeNull();
+  });
+
+  test("reconstructs the scorecard from loose candidate fields", () => {
+    const persisted = candidateCompetabilityPersisted({
+      competability: { capital: 4, networkEffect: 2, logistics: 1, regulated: 0 },
+      competabilityOverall: 2.5,
+      competabilityGated: true,
+      competabilityReason: "soft band",
+    });
+    expect(persisted).not.toBeNull();
+    expect(persisted!.dimensions.capital).toBe(4);
+    expect(persisted!.overall).toBe(2.5);
+    expect(persisted!.gated).toBe(true);
+    expect(persisted!.reason).toBe("soft band");
+  });
+
+  test("defaults overall to the neutral midpoint and clamps dims", () => {
+    const persisted = candidateCompetabilityPersisted({
+      competability: { capital: 99, networkEffect: -5, logistics: 3, regulated: 3 },
+    });
+    expect(persisted!.dimensions.capital).toBe(5);
+    expect(persisted!.dimensions.networkEffect).toBe(0);
+    expect(persisted!.overall).toBe(2.5);
+    expect(persisted!.gated).toBe(false);
+    expect(persisted!.reason).toBe("");
   });
 });

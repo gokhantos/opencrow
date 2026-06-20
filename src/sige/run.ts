@@ -30,7 +30,11 @@ export type { DivergentCandidate } from "./simulation/expert-game";
 import { loadConfig } from "../config/loader";
 import { createLogger } from "../logger";
 import type { MemoryManager } from "../memory/types";
-import { crossWriteSigeIdeas, SIGE_AGENT_ID } from "./cross-write";
+import {
+  crossWriteSigeIdeas,
+  DEFAULT_SIGE_CROSS_WRITE_LIMIT,
+  SIGE_AGENT_ID,
+} from "./cross-write";
 import type { CollectorContext } from "../pipelines/ideas/collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "../pipelines/ideas/collectors";
 import type { BroadCorpus, DiscoverFrontiersOptions, DiscoveryResult } from "./discovery/frontier-discovery";
@@ -589,7 +593,20 @@ async function runSeededSteps(
       if (sigeCrossWriteEnabled) {
         const memoryManager = await buildSigeMemoryManager();
 
-        const result = await crossWriteSigeIdeas(enrichedRankedIdeas, sessionId, memoryManager);
+        // Layer B competability gate on SIGE ideas — reuses the shared
+        // smart.competability config and the session's own model/provider.
+        const competabilityConfig = appConfig.pipelines.ideas.smart.competability;
+        const result = await crossWriteSigeIdeas(
+          enrichedRankedIdeas,
+          sessionId,
+          memoryManager,
+          DEFAULT_SIGE_CROSS_WRITE_LIMIT,
+          {
+            config: competabilityConfig,
+            model: session.config.model,
+            provider: session.config.provider,
+          },
+        );
         log.info("SIGE cross-write into generated_ideas", {
           sessionId,
           inserted: result.inserted,

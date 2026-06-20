@@ -28,6 +28,10 @@ import { getDb } from "../store/db";
 import { createLogger } from "../logger";
 import { checkForDuplicates } from "../pipelines/ideas/validate";
 import type { GeneratedIdeaCandidate } from "../pipelines/ideas/types";
+import type { CompetabilityPersisted } from "../pipelines/ideas/competability";
+import { gateSigeIdeasOnCompetability } from "./competability-scoring";
+import type { CompetabilityConfig } from "../config/schema";
+import type { AiProvider } from "../agent/types";
 import type { MemoryManager } from "../memory/types";
 import type { ScoredIdea } from "./types";
 
@@ -90,6 +94,7 @@ export interface SigeCrossWriteResult {
 async function insertSigeIdea(
   idea: ScoredIdea,
   sessionId: string,
+  competability: CompetabilityPersisted | null,
 ): Promise<void> {
   const db = getDb();
   const id = crypto.randomUUID();
@@ -103,16 +108,39 @@ async function insertSigeIdea(
     5,
   );
 
+  const competabilityOverall = competability?.overall ?? null;
+  // Pass the object directly: Bun.sql serializes a JS object into JSONB. A
+  // pre-stringified value would be double-encoded into a JSONB string scalar.
+  const competabilityJson = competability ?? null;
+
   await db`
     INSERT INTO generated_ideas
       (id, agent_id, title, summary, reasoning, sources_used, category,
        quality_score, source_ids_json,
-       sige_session_id, game_theoretic_score, strategic_metadata_json)
+       sige_session_id, game_theoretic_score, strategic_metadata_json,
+       competability_overall, competability_json)
     VALUES
       (${id}, ${SIGE_AGENT_ID}, ${idea.title}, ${idea.description}, ${idea.description},
        ${"sige"}, ${"sige"}, ${qualityScore}, ${JSON.stringify(provenance)},
-       ${sessionId}, ${idea.fusedScore ?? null}, ${JSON.stringify(idea.strategicMetadata)})
+       ${sessionId}, ${idea.fusedScore ?? null}, ${JSON.stringify(idea.strategicMetadata)},
+       ${competabilityOverall}, ${competabilityJson})
   `;
+}
+
+/**
+ * Optional Layer B competability gating for the SIGE cross-write. When omitted
+ * (or `config.enabled` is false) cross-write behaves exactly as before — no
+ * scoring, no gating, NULL competability columns. When supplied, finalized ideas
+ * are scored + gated with the SAME shadow/enforce semantics as the pipeline path.
+ */
+export interface SigeCompetabilityOpts {
+  readonly config: CompetabilityConfig;
+  /** Model the SIGE session uses for its auxiliary LLM calls. */
+  readonly model: string;
+  /** Provider the SIGE session uses (anthropic by default). */
+  readonly provider?: AiProvider;
+  /** Top-N incumbents for the cheap heuristic pre-filter. */
+  readonly incumbentSet?: ReadonlySet<string>;
 }
 
 /**
@@ -124,12 +152,14 @@ async function insertSigeIdea(
  * @param sessionId    SIGE session id (written to sige_session_id).
  * @param memoryManager Optional — enables the semantic dedup layer.
  * @param limit        Max ideas to promote (default 5, top-N by fusedScore).
+ * @param competability Optional Layer B competability gating (shadow/enforce).
  */
 export async function crossWriteSigeIdeas(
   rankedIdeas: readonly ScoredIdea[],
   sessionId: string,
   memoryManager: MemoryManager | null | undefined,
   limit: number = DEFAULT_SIGE_CROSS_WRITE_LIMIT,
+  competability?: SigeCompetabilityOpts,
 ): Promise<SigeCrossWriteResult> {
   try {
     if (rankedIdeas.length === 0) {
@@ -137,12 +167,33 @@ export async function crossWriteSigeIdeas(
     }
 
     // Top-N by fusedScore (falling back to expertScore), highest first.
-    const topIdeas = [...rankedIdeas]
+    let topIdeas = [...rankedIdeas]
       .sort(
         (a, b) =>
           (b.fusedScore ?? b.expertScore) - (a.fusedScore ?? a.expertScore),
       )
       .slice(0, Math.max(0, limit));
+
+    // ── Layer B competability gate ──────────────────────────────────────────
+    // Score + gate the finalized ideas BEFORE dedup/insert. In ENFORCE mode,
+    // uncompetable ideas are dropped here; in SHADOW mode they are kept and the
+    // scorecard is persisted alongside the idea. competabilityByIdeaId carries
+    // each surviving idea's persisted scorecard into insertSigeIdea.
+    const competabilityByIdeaId = new Map<string, CompetabilityPersisted>();
+    if (competability?.config.enabled === true && topIdeas.length > 0) {
+      const gate = await gateSigeIdeasOnCompetability({
+        ideas: topIdeas,
+        config: competability.config,
+        model: competability.model,
+        provider: competability.provider,
+        incumbentSet: competability.incumbentSet,
+      });
+      for (const result of gate.kept) {
+        competabilityByIdeaId.set(result.idea.id, result.persisted);
+      }
+      // In enforce mode, gate.kept already excludes dropped ideas.
+      topIdeas = gate.kept.map((r) => r.idea);
+    }
 
     const candidates = topIdeas.map(scoredIdeaToCandidate);
 
@@ -158,7 +209,11 @@ export async function crossWriteSigeIdeas(
     const insertedIdeas: ScoredIdea[] = [];
     for (const idea of ideasToWrite) {
       try {
-        await insertSigeIdea(idea, sessionId);
+        await insertSigeIdea(
+          idea,
+          sessionId,
+          competabilityByIdeaId.get(idea.id) ?? null,
+        );
         insertedIdeas.push(idea);
       } catch (err) {
         log.warn("Failed to cross-write a SIGE idea (non-fatal)", {

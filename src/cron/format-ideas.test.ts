@@ -16,6 +16,8 @@ function makeIdea(overrides: Partial<GeneratedIdea> = {}): GeneratedIdea {
     quality_score: null,
     model_references: "",
     created_at: Math.floor(Date.now() / 1000),
+    competability_overall: null,
+    competability_json: null,
     ...overrides,
   };
 }
