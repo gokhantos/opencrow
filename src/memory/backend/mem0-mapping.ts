@@ -86,9 +86,30 @@ function estimateTokenCount(text: string): number {
 }
 
 /**
+ * Coerce the server's top-level `created_at` (an ISO-8601 string) into the
+ * epoch-SECONDS integer the domain `MemorySource`/`MemoryChunk` use. Returns
+ * undefined for an unparseable/missing value so the caller can fall back to the
+ * numeric `created_at` we originally wrote into metadata (still stripped on some
+ * server builds, kept for forward-compat).
+ */
+function isoToEpochSeconds(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return undefined;
+  return Math.floor(ms / 1000);
+}
+
+/**
  * Reconstruct a `SearchResult` from a mem0 hit using the round-tripped metadata.
  * Returns null when the hit lacks the reserved keys (i.e. it was not written by
  * this backend), so foreign memories are skipped rather than mis-mapped.
+ *
+ * `agent_id` and `created_at` are read from the hit's TOP-LEVEL fields FIRST —
+ * the self-hosted mem0 server promotes both out of the stored metadata into
+ * dedicated top-level columns (and strips them from `metadata`) on search/getAll
+ * responses. We fall back to the metadata values for forward-compat with any
+ * server build that keeps them in metadata. `source_type` / `source_id` /
+ * `chunk_index` / `channel` stay metadata-keyed (the server preserves those).
  */
 export function mem0HitToSearchResult(hit: Mem0Memory): SearchResult | null {
   const meta = hit.metadata;
@@ -96,11 +117,16 @@ export function mem0HitToSearchResult(hit: Mem0Memory): SearchResult | null {
   if (!isMemorySourceKind(kind)) return null;
 
   const sourceId = readString(meta, "source_id");
-  const agentId = readString(meta, "agent_id");
+  // Top-level (server-promoted) agent_id wins; metadata is the forward-compat
+  // fallback. Only genuinely absent in BOTH places → drop the hit.
+  const agentId = hit.agentId ?? readString(meta, "agent_id");
   if (!sourceId || !agentId) return null;
 
   const chunkIndex = readNumber(meta, "chunk_index") ?? 0;
-  const createdAt = readNumber(meta, "created_at") ?? 0;
+  // Prefer the server-promoted ISO `created_at`; fall back to the numeric epoch
+  // we wrote into metadata; default 0 if neither is present.
+  const createdAt =
+    isoToEpochSeconds(hit.createdAt) ?? readNumber(meta, "created_at") ?? 0;
   const channel = readString(meta, "channel") ?? null;
   const content = hit.memory;
 
