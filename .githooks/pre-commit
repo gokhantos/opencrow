@@ -53,9 +53,12 @@ if [[ -n "$BUN" ]]; then
   done
 
   # Filter out integration tests that require a database
+  # Exclude *.integration.test.ts (suffix-based lane) and files using DB markers
   UNIT_TEST_FILES=""
   for tf in $TEST_FILES; do
-    if grep -q 'initDb\|DATABASE_URL' "$tf" 2>/dev/null; then
+    if [[ "$tf" == *.integration.test.ts ]]; then
+      echo "  skipping integration test (lane): $tf"
+    elif grep -q 'initDb\|DATABASE_URL\|PG_ADMIN_URL' "$tf" 2>/dev/null; then
       echo "  skipping integration test: $tf"
     else
       UNIT_TEST_FILES="$UNIT_TEST_FILES $tf"
