@@ -10,8 +10,34 @@
  * - stop(): prevents further ticks
  */
 import { describe, test, expect } from "bun:test";
-import { cadenceToIntervalMs, createAutonomousSigeScheduler, type AutoTickResult } from "./scheduler";
+import {
+  buildFastProfile,
+  cadenceToIntervalMs,
+  createAutonomousSigeScheduler,
+  type AutoTickResult,
+} from "./scheduler";
 import type { SigeAutoConfig } from "../../config/schema";
+
+// ── buildFastProfile ──────────────────────────────────────────────────────────
+
+describe("buildFastProfile", () => {
+  test("threads BOTH provider and model from the route into the session config", () => {
+    // Regression: previously only `model` was applied, leaving the default
+    // `anthropic` provider — so a routed alibaba model was sent to Anthropic's
+    // API and every autonomous run failed.
+    const profile = buildFastProfile("alibaba", "deepseek-v4-flash");
+    expect(profile.provider).toBe("alibaba");
+    expect(profile.agentModel).toBe("deepseek-v4-flash");
+  });
+
+  test("applies the trimmed expert/social round counts", () => {
+    const profile = buildFastProfile("anthropic", "claude-haiku-4-5");
+    expect(profile.provider).toBe("anthropic");
+    expect(profile.agentModel).toBe("claude-haiku-4-5");
+    expect(profile.expertRounds).toBe(2);
+    expect(profile.socialRounds).toBe(2);
+  });
+});
 
 // ── cadenceToIntervalMs ───────────────────────────────────────────────────────
 
