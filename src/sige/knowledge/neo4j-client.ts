@@ -35,7 +35,10 @@ const log = createLogger("sige:neo4j-client");
 
 /** One step in an opportunity path: a typed relationship into a named node. */
 export interface GraphStep {
-  /** Relationship type traversed to reach this node (already whitelist-filtered). */
+  /** Relationship type traversed to reach this node. Whitelist-filtered AND
+   *  upper-cased to the canonical vocabulary (see OPPORTUNITY_PATHS_CYPHER) so it
+   *  is stable across the weekly graph canonicalization, even for edges written
+   *  in lowercase since the last run. */
   readonly rel: string;
   /** Destination node name (raw graph text — sanitize before any prompt use). */
   readonly node: string;
@@ -258,20 +261,32 @@ MATCH (pain:Entity {user_id: $userId})
 WHERE pain.degree >= $minDegree
   AND pain.degree <= $maxDegree
   AND NOT pain.name =~ ('(?i)' + $stoplist)
-  AND any(r IN [(pain)-[rr]-() | type(rr)] WHERE r IN $relWhitelist)
+  -- toUpper(): $relWhitelist is the UPPERCASE canonical vocabulary, but
+  -- canonicalization is a WEEKLY backfill — the mem0 sidecar and code-graph
+  -- ingestion write FRESH lowercase rel types (uses / complained_about /
+  -- has_issue …) between runs. Folding the live type to upper-case before the
+  -- membership test keeps reasoning correct on those un-canonicalized edges
+  -- instead of silently dropping them until the next Sunday cleanup.
+  AND any(r IN [(pain)-[rr]-() | toUpper(type(rr))] WHERE r IN $relWhitelist)
 WITH pain
 ORDER BY pain.degree DESC
 LIMIT toInteger($searchLimit)
 MATCH path = (pain)-[rels*2..${MAX_HOPS_CEILING}]-(dest:Entity {user_id: $userId})
 WHERE length(path) <= toInteger($maxHops)
-  AND all(r IN relationships(path) WHERE type(r) IN $relWhitelist)
+  -- toUpper(): same as the seed predicate above — match fresh lowercase rel
+  -- types against the UPPERCASE whitelist so a path isn't dropped just because
+  -- it traverses an edge written since the last weekly canonicalization run.
+  AND all(r IN relationships(path) WHERE toUpper(type(r)) IN $relWhitelist)
   AND all(n IN nodes(path) WHERE
         n.user_id = $userId
         AND NOT n.name =~ ('(?i)' + $stoplist)
         AND n.degree <= $maxDegree)
 RETURN pain.name AS seed,
        [i IN range(1, length(path)) |
-          { rel: type(relationships(path)[i - 1]),
+          -- toUpper(): emit the CANONICAL hop label so a returned path's rel is
+          -- consistent with the (uppercase) vocabulary it was filtered against,
+          -- regardless of whether the underlying edge was canonicalized yet.
+          { rel: toUpper(type(relationships(path)[i - 1])),
             node: nodes(path)[i].name }] AS steps
 LIMIT toInteger($maxPaths)
 `;
