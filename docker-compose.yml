@@ -125,6 +125,25 @@ services:
       # FALLBACK — hosted Zhipu GLM (glm-5.1): plain text-gen (no thinking flag
       # needed), same endpoint + ${MEM0_LLM_API_KEY}. (No local-LLM fallback: the
       # gemma chat model was removed; embeddings remain local.)
+      #
+      # OPTION — OpenCode Zen gateway (consolidate onto the opencode subscription):
+      #   MEM0_LLM_MODEL: deepseek-v4-flash        # or a *-free model (see caveats)
+      #   MEM0_LLM_BASE_URL / OPENAI_BASE_URL / OPENAI_API_BASE:
+      #     https://opencode.ai/zen/v1
+      #   MEM0_LLM_API_KEY / OPENAI_API_KEY: ${OPENCODE_API_KEY}
+      #   MEM0_LLM_DISABLE_THINKING: "true"
+      # CAVEATS (verified 2026-06-20, do not enable blind):
+      #   1. The Zen *API* needs its own funded balance — the opencode Go plan is
+      #      for the CLI and does NOT fund it. Paid models (deepseek-v4-flash,
+      #      glm-5.1, …) return CreditsError "Insufficient balance" until you add
+      #      credits at opencode.ai/workspace; only `*-free` models work otherwise.
+      #   2. Zen does NOT honor enable_thinking:false — its deepseek still emits
+      #      light reasoning (~55 tokens) even with the flag. Tool-calls still
+      #      complete in isolation, but the full mem0 graph phase was NOT validated
+      #      end-to-end on Zen. Run an isolated-instance add() check before trusting
+      #      it for the SIGE ingestion firehose. The current Alibaba deepseek path
+      #      (thinking fully off, ~10-12s/record) is the proven default — keep it
+      #      unless you've validated Zen and funded its balance.
       MEM0_LLM_PROVIDER: openai
       MEM0_LLM_MODEL: deepseek-v4-flash
       MEM0_LLM_BASE_URL: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1

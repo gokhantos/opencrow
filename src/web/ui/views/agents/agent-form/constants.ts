@@ -11,6 +11,7 @@ export const PROVIDER_MODEL_DEFAULTS: Record<AiProvider, string> = {
   alibaba: "qwen3.5-plus",
   anthropic: "claude-sonnet-4-6",
   openrouter: "",
+  opencode: "deepseek-v4-flash",
 };
 
 /** MCP server toggles rendered on the Advanced tab. */

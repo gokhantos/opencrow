@@ -31,6 +31,7 @@ const PROVIDER_TABS = [
   { id: "anthropic", label: "Anthropic" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "alibaba", label: "Alibaba" },
+  { id: "opencode", label: "OpenCode Zen" },
 ] as const;
 
 /* ===============================================
@@ -150,6 +151,7 @@ export default function Agents() {
     anthropic: agents.filter((a) => a.provider === "anthropic").length,
     openrouter: agents.filter((a) => a.provider === "openrouter").length,
     alibaba: agents.filter((a) => a.provider === "alibaba").length,
+    opencode: agents.filter((a) => a.provider === "opencode").length,
   };
 
   const selectedAgent = selectedId

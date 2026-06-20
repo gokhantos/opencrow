@@ -40,7 +40,12 @@ export interface ConversationMessage {
   readonly imageMimeType?: string;
 }
 
-export type AiProvider = "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
+export type AiProvider =
+  | "openrouter"
+  | "agent-sdk"
+  | "alibaba"
+  | "anthropic"
+  | "opencode";
 
 export type ProgressEvent =
   | {
