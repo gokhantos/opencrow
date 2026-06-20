@@ -10,6 +10,7 @@ import type {
   MutationResponse,
   ProviderFilter,
 } from "./types";
+import { AlibabaTokenPlan } from "./AlibabaTokenPlan";
 import { AgentCard } from "./AgentCard";
 import { AgentFormModal, DeleteDialog } from "./AgentFormModal";
 import { DetailPanel } from "./DetailPanel";
@@ -216,6 +217,9 @@ export default function Agents() {
           />
         </div>
       </div>
+
+      {/* --- Alibaba Token Plan credentials --- */}
+      <AlibabaTokenPlan />
 
       {/* --- Main content area --- */}
       <div className="relative">

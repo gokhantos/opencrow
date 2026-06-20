@@ -34,6 +34,7 @@ import {
   MAX_THINKING_SUMMARY,
 } from "./sdk-progress";
 import { createLoopDetector } from "./loop-detection";
+import { resolveAlibabaEndpoint } from "./alibaba-endpoints";
 
 
 
@@ -61,9 +62,6 @@ function abortSignalToController(signal: AbortSignal): AbortController {
   }
   return controller;
 }
-
-const ALIBABA_DEFAULT_BASE_URL =
-  "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic";
 
 /**
  * Capture session_id from the first SDK message that has one.
@@ -95,8 +93,10 @@ export async function withAlibabaEnv<T>(fn: () => Promise<T>): Promise<T> {
     throw new Error("ALIBABA_API_KEY is not set");
   }
 
-  const alibabaBaseUrl =
-    (await getSecret("ALIBABA_BASE_URL")) ?? ALIBABA_DEFAULT_BASE_URL;
+  const alibabaBaseUrl = resolveAlibabaEndpoint(
+    "anthropic",
+    await getSecret("ALIBABA_BASE_URL"),
+  );
 
   process.env.ANTHROPIC_API_KEY = alibabaKey;
   process.env.ANTHROPIC_BASE_URL = alibabaBaseUrl;
