@@ -4,6 +4,8 @@
  * and produce structured output (e.g. ideas).
  */
 
+import type { ModelProvider } from "../store/model-routing";
+
 export type PipelineStatus = "pending" | "running" | "completed" | "failed";
 export type StepStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "interrupted";
 
@@ -20,6 +22,11 @@ export interface PipelineConfig {
   readonly minQualityScore: number;
   readonly sourcesToInclude: readonly string[];
   readonly model?: string;
+  /**
+   * Optional operator override for the generator PROVIDER. When set it wins over
+   * the `pipeline.generator` model route; absent → the route's provider is used.
+   */
+  readonly provider?: ModelProvider;
 }
 
 export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {

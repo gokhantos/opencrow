@@ -27,7 +27,7 @@ const agentInfoSchema = z.looseObject({
   id: z.string(),
   name: z.string(),
   description: z.string(),
-  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic"]),
+  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"]),
   model: z.string(),
   isDefault: z.boolean(),
   toolFilter: toolFilterSchema,

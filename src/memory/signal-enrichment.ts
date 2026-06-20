@@ -1,5 +1,6 @@
 import { createLogger } from "../logger";
 import { loadConfig } from "../config/loader";
+import { getModelRoute } from "../store/model-routing";
 import type { MemorySourceKind } from "./types";
 import { MEMORY_SOURCE_KINDS } from "./types";
 import {
@@ -14,9 +15,6 @@ import {
 } from "./signal-facets";
 
 const log = createLogger("signal-enrichment");
-
-/** Default model used to rank/categorize signals. Cheap on purpose. */
-const DEFAULT_RANK_MODEL = "claude-haiku-4-5";
 
 /**
  * MemorySourceKinds that are NOT scraped market signals. Conversations,
@@ -115,7 +113,7 @@ export interface EnrichSignalItem {
 }
 
 export interface EnrichSignalsOptions {
-  /** Override the ranking model (defaults to Haiku). */
+  /** Override the ranking model (defaults to the `signal.facets` route). */
   readonly model?: string;
   /** Max signals per LLM call. */
   readonly batchSize?: number;
@@ -200,7 +198,9 @@ export async function enrichSignals(
     return { payloads, facets };
   }
 
-  const model = opts.model ?? DEFAULT_RANK_MODEL;
+  // Ranking model defaults to the `signal.facets` route (same process key as
+  // facet extraction); an explicit `opts.model` still overrides it.
+  const model = opts.model ?? (await getModelRoute("signal.facets")).model;
   const extractBatch = opts.extractBatch ?? extractSignalFacetsBatch;
   const persist = opts.persist ?? persistSignalFacets;
 

@@ -21,6 +21,7 @@ import {
   EmptyState,
   SearchBar,
   FilterTabs,
+  ModelRoutePicker,
 } from "../../components";
 import { useToast } from "../../components/Toast";
 
@@ -150,6 +151,7 @@ export default function Agents() {
     anthropic: agents.filter((a) => a.provider === "anthropic").length,
     openrouter: agents.filter((a) => a.provider === "openrouter").length,
     alibaba: agents.filter((a) => a.provider === "alibaba").length,
+    opencode: agents.filter((a) => a.provider === "opencode").length,
   };
 
   const selectedAgent = selectedId
@@ -220,6 +222,14 @@ export default function Agents() {
 
       {/* --- Alibaba Token Plan credentials --- */}
       <AlibabaTokenPlan />
+
+      {/* --- Tool Template Model --- */}
+      <div className="bg-bg-1 border border-border rounded-xl p-5 mb-6 transition-all duration-200 hover:border-border-hover">
+        <div className="text-xs font-semibold uppercase tracking-widest text-accent mb-4 pb-2 border-b border-border">
+          Tool Template Model
+        </div>
+        <ModelRoutePicker processKey="agent-templates" label="Agent Templates" />
+      </div>
 
       {/* --- Main content area --- */}
       <div className="relative">

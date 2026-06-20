@@ -2,6 +2,12 @@ import { Controller } from "react-hook-form";
 import { Input } from "../../../components";
 import { SELECT_CLS } from "./constants";
 import type { UseAgentFormReturn } from "./useAgentForm";
+import {
+  ANTHROPIC_MODELS,
+  AGENT_SDK_MODELS,
+  ALIBABA_MODEL_GROUPS,
+  OPENCODE_MODELS,
+} from "../../../lib/model-lists";
 
 /** Model tab: provider/model config, thinking & effort controls, system prompt. */
 export function ModelTab({ form }: { form: UseAgentFormReturn }) {
@@ -29,6 +35,7 @@ export function ModelTab({ form }: { form: UseAgentFormReturn }) {
                   <option value="anthropic">Anthropic (OAuth)</option>
                   <option value="openrouter">OpenRouter</option>
                   <option value="alibaba">Alibaba ModelStudio</option>
+                  <option value="opencode">OpenCode</option>
                 </select>
               )}
             />
@@ -37,38 +44,41 @@ export function ModelTab({ form }: { form: UseAgentFormReturn }) {
             <label className="block text-xs font-semibold text-muted uppercase tracking-wide mb-2">
               Model
             </label>
-            {provider === "agent-sdk" || provider === "anthropic" ? (
+            {provider === "agent-sdk" ? (
               <select className={SELECT_CLS} {...register("model")}>
-                <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-                <option value="claude-opus-4-6">claude-opus-4-6</option>
-                <option value="claude-haiku-4-5">claude-haiku-4-5</option>
+                {AGENT_SDK_MODELS.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            ) : provider === "anthropic" ? (
+              <select className={SELECT_CLS} {...register("model")}>
+                {ANTHROPIC_MODELS.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
               </select>
             ) : provider === "alibaba" ? (
               <select className={SELECT_CLS} {...register("model")}>
-                <optgroup label="Qwen">
-                  <option value="qwen3.7-plus">qwen3.7-plus</option>
-                  <option value="qwen3.7-max">qwen3.7-max</option>
-                  <option value="qwen3.6-plus">qwen3.6-plus</option>
-                  <option value="qwen3.6-flash">qwen3.6-flash</option>
-                </optgroup>
-                <optgroup label="DeepSeek">
-                  <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-                  <option value="deepseek-v4-flash">deepseek-v4-flash</option>
-                  <option value="deepseek-v3.2">deepseek-v3.2</option>
-                </optgroup>
-                <optgroup label="Zhipu">
-                  <option value="glm-5.2">glm-5.2</option>
-                  <option value="glm-5.1">glm-5.1</option>
-                  <option value="glm-5">glm-5</option>
-                </optgroup>
-                <optgroup label="MiniMax">
-                  <option value="MiniMax-M2.5">MiniMax-M2.5</option>
-                </optgroup>
-                <optgroup label="Moonshot">
-                  <option value="kimi-k2.7-code">kimi-k2.7-code</option>
-                  <option value="kimi-k2.6">kimi-k2.6</option>
-                  <option value="kimi-k2.5">kimi-k2.5</option>
-                </optgroup>
+                {ALIBABA_MODEL_GROUPS.map((group) => (
+                  <optgroup key={group.label} label={group.label}>
+                    {group.models.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            ) : provider === "opencode" ? (
+              <select className={SELECT_CLS} {...register("model")}>
+                {OPENCODE_MODELS.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
               </select>
             ) : (
               <Input

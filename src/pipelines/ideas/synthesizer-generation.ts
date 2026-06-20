@@ -17,6 +17,7 @@ import { chat } from "../../agent/chat";
 import type { ConversationMessage } from "../../agent/types";
 import { createLogger } from "../../logger";
 import { UNTRUSTED_PREAMBLE } from "../../sige/untrusted";
+import type { ModelProvider } from "../../store/model-routing";
 import type { IdeaCategory } from "../types";
 import type {
   TrendData,
@@ -91,6 +92,7 @@ export async function discoverIntersections(
   chainOfEvidence: boolean,
   segmentDirective = "",
   graphDirective = "",
+  provider: ModelProvider = "anthropic",
 ): Promise<readonly IntersectionHypothesis[]> {
   const insightsSection = buildInsightsSection(trends, pains, capabilities, chainOfEvidence);
   // SEED diversity steering (learned from past verdicts, flag-gated upstream).
@@ -136,7 +138,7 @@ signalStrength is 0.0-1.0: how strongly the data supports this intersection (not
   ];
 
   const response = await chat(messages, {
-    ...buildChatOptions(model),
+    ...buildChatOptions(model, provider),
     systemPrompt: "You are a product opportunity spotter. Find non-obvious intersections between market pain points and new capabilities. Output only valid JSON arrays.",
   });
 
@@ -163,6 +165,7 @@ export async function developIdeas(
   chainOfEvidence: boolean,
   antiExemplars = "",
   outcomeMemory = "",
+  provider: ModelProvider = "anthropic",
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const intersectionLines = topIntersections.map((h, i) =>
     `${i + 1}. "${h.title}"\n   Pain: ${h.painSignal}\n   Capability: ${h.capabilitySignal}\n   Market: ${h.marketSignal}\n   Hypothesis: ${h.hypothesis}\n   Signal strength: ${h.signalStrength.toFixed(2)}`,
@@ -248,7 +251,7 @@ Return ONLY a JSON array of ${topIntersections.length} ideas:
   ];
 
   const response = await chat(messages, {
-    ...buildChatOptions(model),
+    ...buildChatOptions(model, provider),
     systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a product strategist turning validated market opportunities into concrete product ideas. Output only valid JSON arrays.`,
   });
 
@@ -265,7 +268,7 @@ Return ONLY a JSON array of ${topIntersections.length} ideas:
 
     const retryResponse = await chat(
       [{ role: "user", content: retryPrompt, timestamp: Date.now() }],
-      { ...buildChatOptions(model), systemPrompt: "Output only valid JSON. No other text." },
+      { ...buildChatOptions(model, provider), systemPrompt: "Output only valid JSON. No other text." },
     );
 
     candidates = parseJsonFromResponse<GeneratedIdeaCandidate[]>(retryResponse.text, []);
@@ -314,6 +317,7 @@ export async function developIdeasWide(
   generateWide: GenerateWideConfig,
   antiExemplars = "",
   outcomeMemory = "",
+  provider: ModelProvider = "anthropic",
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const intersectionLines = topIntersections
     .map(
@@ -419,7 +423,7 @@ Return ONLY a JSON array of {idea, probability} seeds (${seedsPer} per hypothesi
   ];
 
   const response = await chat(messages, {
-    ...buildChatOptions(model),
+    ...buildChatOptions(model, provider),
     // Over-generating N seeds per intersection is a large response; the default
     // 16k output cap truncates the JSON array mid-stream. Raise the budget and
     // pair it with the truncation-tolerant parser below so the pool never
@@ -505,6 +509,7 @@ export async function critiqueIdeas(
     /** Epoch SECONDS the decisions were made (caller supplies via `now()`). */
     readonly decidedAt: number;
   },
+  provider: ModelProvider = "anthropic",
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const competabilityOn = competability?.enabled === true;
   // The builder the gate is evaluated for. Defaults to the solo bootstrapper
@@ -609,7 +614,7 @@ Return ONLY a JSON array with one entry per idea (in the same order):
   ];
 
   const response = await chat(messages, {
-    ...buildChatOptions(model),
+    ...buildChatOptions(model, provider),
     // The GIANT critique scales with the (over-generated) pool: one scorecard per
     // candidate, each ~7 scores + 7 evidence strings + a whyNow array + verdict.
     // With generate-wide ON (default, up to maxCandidates ideas) the default 16k
@@ -925,11 +930,13 @@ export async function singlePassSynthesis(input: {
   readonly category: IdeaCategory;
   readonly maxIdeas: number;
   readonly model: string;
+  readonly provider?: ModelProvider;
   readonly validatedExemplars?: string;
   readonly antiExemplars?: string;
   readonly outcomeMemory?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
+  const provider: ModelProvider = input.provider ?? "anthropic";
 
   const saturatedSection = saturatedThemes
     ? `\nPREVIOUSLY GENERATED (avoid these themes):\n${saturatedThemes}`
@@ -992,7 +999,7 @@ Generate ${maxIdeas} ideas. Return ONLY a JSON array:
   ];
 
   const response = await chat(messages, {
-    ...buildChatOptions(model),
+    ...buildChatOptions(model, provider),
     systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a JSON API. You ONLY output valid JSON arrays. No markdown, no explanations, no preamble. Start your response with [ and end with ].`,
   });
 
@@ -1009,7 +1016,7 @@ Generate ${maxIdeas} ideas. Return ONLY a JSON array:
 
     const retryResponse = await chat(
       [{ role: "user", content: retryPrompt, timestamp: Date.now() }],
-      { ...buildChatOptions(model), systemPrompt: "Output only valid JSON. No other text." },
+      { ...buildChatOptions(model, provider), systemPrompt: "Output only valid JSON. No other text." },
     );
 
     candidates = parseJsonFromResponse<GeneratedIdeaCandidate[]>(retryResponse.text, []);

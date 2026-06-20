@@ -31,6 +31,7 @@ import { createPlayStoreRoutes } from "./routes/playstore";
 import { createWorkflowRoutes } from "./routes/workflows";
 import { createSigeRoutes } from "./routes/sige";
 import { createPipelineRoutes } from "./routes/pipelines";
+import { createModelRoutingRoutes } from "./routes/model-routing";
 import { createInternalLlmRoutes } from "./routes/internal-llm";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
@@ -396,6 +397,9 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
   const features = createFeaturesRoutes();
   app.route("/api", features);
+
+  const modelRouting = createModelRoutingRoutes();
+  app.route("/api", modelRouting);
 
   const secrets = createSecretsRoutes();
   app.route("/api", secrets);

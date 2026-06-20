@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { chat } from "../agent/chat";
+import { getModelRoute } from "../store/model-routing";
 import { getDb } from "../store/db";
 import { createLogger } from "../logger";
 
@@ -100,7 +101,7 @@ Rules:
 - Output one entry per signal id provided; do not invent ids.`;
 
 export interface ExtractSignalFacetsOptions {
-  /** Override the extraction model (defaults to Haiku). */
+  /** Override the extraction model (defaults to the `signal.facets` route). */
   readonly model?: string;
   /** Max characters of signal text to feed the model. */
   readonly maxChars?: number;
@@ -134,11 +135,13 @@ export async function extractSignalFacetsBatch(
   items: readonly SignalBatchItem[],
   opts: ExtractSignalFacetsBatchOptions = {},
 ): Promise<Map<string, SignalFacets | null>> {
-  const {
-    model = "claude-haiku-4-5",
-    maxChars = 4000,
-    batchSize = 12,
-  } = opts;
+  const { maxChars = 4000, batchSize = 12 } = opts;
+
+  // Model + provider come from the `signal.facets` route (DB-backed, hot
+  // reloaded per batch). An explicit `opts.model` still overrides the model.
+  const route = await getModelRoute("signal.facets");
+  const model = opts.model ?? route.model;
+  const provider = route.provider;
 
   const result = new Map<string, SignalFacets | null>();
 
@@ -172,7 +175,7 @@ Return the JSON object keyed by signal id:`;
         [{ role: "user", content: prompt, timestamp: Date.now() }],
         {
           model,
-          provider: "anthropic",
+          provider,
           systemPrompt:
             "You extract structured facets from batches of market signals. Return only valid JSON keyed by signal id.",
         },

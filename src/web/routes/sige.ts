@@ -60,7 +60,7 @@ const sessionConfigSchema = z.object({
   maxConcurrentAgents: z.number().int().min(1).optional(),
   alpha: z.number().min(0).max(1).optional(),
   incentiveWeights: incentiveWeightsSchema.optional(),
-  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic"]).optional(),
+  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"]).optional(),
   model: z.string().max(200).optional(),
   agentModel: z.string().max(200).optional(),
 });

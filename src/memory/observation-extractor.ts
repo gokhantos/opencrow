@@ -1,4 +1,5 @@
 import { chat } from "../agent/chat";
+import { getModelRoute } from "../store/model-routing";
 import type { Observation, ObservationType } from "../store/observations";
 import { createLogger } from "../logger";
 
@@ -72,6 +73,10 @@ export async function extractObservations(
     maxObservations = 3,
   } = params;
 
+  // Provider + model come from the `signal.observations` route (DB-backed, hot
+  // reloaded per call). An explicit `params.model` still overrides the model.
+  const route = await getModelRoute("signal.observations");
+
   const conversationText = messages
     .map((m) => {
       const tag = m.role === "user" ? "user_message" : "assistant_message";
@@ -94,8 +99,8 @@ Return the JSON array:`;
     const response = await chat(
       [{ role: "user", content: prompt, timestamp: Date.now() }],
       {
-        model: "claude-haiku-4-5",
-        provider: "anthropic",
+        model: params.model ?? route.model,
+        provider: route.provider,
         systemPrompt: "You extract structured observations from conversations. Return only valid JSON.",
       },
     );

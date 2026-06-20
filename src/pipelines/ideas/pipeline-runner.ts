@@ -13,6 +13,7 @@
 import type { GenerateWideConfig, SigeConfig, SigeHardeningConfig } from "../../config/schema";
 import { createLogger } from "../../logger";
 import type { MemoryManager } from "../../memory/types";
+import { getAllModelRoutes } from "../../store/model-routing";
 import {
   createPipelineStep,
   findCompletedStep,
@@ -216,11 +217,20 @@ function readEvaluation(ev: CandidateEvaluation): SigeEvalView {
  */
 async function runIndependentJury(
   candidates: readonly GeneratedIdeaCandidate[],
-  sigeHardening: SigeHardeningConfig,
   signals: Map<GeneratedIdeaCandidate, SigeSignals>,
 ): Promise<{ readonly candidates: readonly GeneratedIdeaCandidate[] }> {
   try {
-    const panel = buildJuryPanel(sigeHardening.judgeModels);
+    // Model-routing is the source of truth for the three judge slots: read the
+    // `sige.judge.0/1/2` routes (DB-backed, hot reloaded per run) instead of the
+    // static `sigeHardening.judgeModels` config default. The `judgeModels` schema
+    // field is kept for backward compat but no longer drives the runtime panel.
+    const routes = await getAllModelRoutes();
+    const judgeModels = [
+      routes["sige.judge.0"],
+      routes["sige.judge.1"],
+      routes["sige.judge.2"],
+    ];
+    const panel = buildJuryPanel(judgeModels);
 
     const rawCands = candidates.map((c) => ({
       id: candidateJoinId(c.title),
@@ -406,7 +416,7 @@ export async function applySigeValuation(
 
     let rescored = unioned;
     if (sigeHardening.independentJudge && unioned.length > 0) {
-      const juryResult = await runIndependentJury(unioned, sigeHardening, signals);
+      const juryResult = await runIndependentJury(unioned, signals);
       rescored = juryResult.candidates;
     }
 

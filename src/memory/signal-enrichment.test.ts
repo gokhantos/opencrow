@@ -155,6 +155,8 @@ describe("enrichSignals", () => {
   test("only signal kinds with non-empty text reach the extractor", async () => {
     const seen: string[] = [];
     await enrichSignals(items, {
+      // Explicit model keeps this a pure unit test (no model-routing DB read).
+      model: "test-model",
       gates: GATES_ON,
       extractBatch: async (batch) => {
         for (const i of batch) seen.push(i.id);
@@ -171,6 +173,7 @@ describe("enrichSignals", () => {
     const { payloads } = await enrichSignals(
       [{ id: "a", kind: "reddit_post", text: "x" }],
       {
+        model: "test-model",
         gates: GATES_ON,
         extractBatch: async (batch) =>
           new Map(batch.map((i) => [i.id, FACETS])),
@@ -196,6 +199,7 @@ describe("enrichSignals", () => {
     const { payloads, facets } = await enrichSignals(
       [{ id: "a", kind: "reddit_post", text: "x" }],
       {
+        model: "test-model",
         gates: GATES_FACETS_ONLY,
         extractBatch: async (batch) =>
           new Map(batch.map((i) => [i.id, FACETS])),
@@ -217,6 +221,7 @@ describe("enrichSignals", () => {
     const { payloads, facets } = await enrichSignals(
       [{ id: "a", kind: "reddit_post", text: "x" }],
       {
+        model: "test-model",
         gates: GATES_ON,
         extractBatch: async () => {
           throw new Error("model down");
@@ -241,6 +246,7 @@ describe("enrichSignals", () => {
         },
       ],
       {
+        model: "test-model",
         gates: GATES_ON,
         thresholds: { minEngagement: 50 },
         extractBatch: async (batch) => {

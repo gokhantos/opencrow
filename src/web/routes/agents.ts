@@ -16,7 +16,7 @@ import {
   AgentConflictError,
 } from "../../config/agent-mutations";
 
-import { TEMPLATES } from "../../tools/agent-templates";
+import { getAgentTemplates } from "../../tools/agent-templates";
 
 const log = createLogger("agents-api");
 
@@ -33,7 +33,7 @@ const agentCreateSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   default: z.boolean().optional(),
-  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic"]).optional(),
+  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"]).optional(),
   model: z.string().min(1).optional(),
   systemPrompt: z.string().optional(),
   maxIterations: z.number().int().min(1).optional(),
@@ -134,8 +134,8 @@ export function createAgentRoutes(deps: WebAppDeps): Hono {
     });
   });
 
-  app.get("/agents/templates", (c) => {
-    return c.json({ success: true, data: TEMPLATES });
+  app.get("/agents/templates", async (c) => {
+    return c.json({ success: true, data: await getAgentTemplates() });
   });
 
   app.get("/agents/subagents", (c) => {
