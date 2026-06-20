@@ -358,6 +358,29 @@ export interface SigeSession {
   readonly error?: string;
 }
 
+// ─── Session Summary (list endpoint — heavy JSON columns excluded) ────────────
+
+/**
+ * Light-weight projection of a SIGE session for list endpoints.
+ * Omits the heavy JSON artifact columns (`gameFormulation`, `expertResult`,
+ * `socialResult`, `fusedScores`, `report`) that are only needed by the detail
+ * view. The detail view fetches a full `SigeSession` separately.
+ */
+export interface SigeSessionSummary {
+  readonly id: string;
+  /** Seed input text. Absent for autonomous (seedless) sessions. */
+  readonly seedInput?: string;
+  /** Who created the session. */
+  readonly origin: SigeSessionOrigin;
+  readonly status: SigeSessionStatus;
+  readonly config: SigeSessionConfig;
+  readonly createdAt: Date;
+  readonly finishedAt?: Date;
+  /** Epoch seconds of the most recent activity touch. Absent for pre-migration rows. */
+  readonly lastActivityAt?: number;
+  readonly error?: string;
+}
+
 // ─── Ideas Aggregation ────────────────────────────────────────────────────────
 
 /**
