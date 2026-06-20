@@ -115,7 +115,13 @@ async function main(argv: readonly string[]): Promise<void> {
 
   // Load the SAME config the live backend reads, so scoping (shared/per-agent +
   // sharedUserId) and the mem0 endpoint match what a flipped backend will use.
+  // The DB must be initialized BEFORE loadConfigWithOverrides(), which reads the
+  // config_overrides table. The postgres URL comes from the env-only loadConfig(),
+  // so it needs no DB itself.
   const baseConfig = loadConfig();
+  const dbUrl = process.env.DATABASE_URL ?? baseConfig.postgres.url;
+  await initDb(dbUrl, { max: 4 });
+
   const config = await loadConfigWithOverrides();
 
   const memSearch = config.memorySearch;
@@ -133,9 +139,6 @@ async function main(argv: readonly string[]): Promise<void> {
         "Set the mem0 endpoint (env/secret) before backfilling.",
     );
   }
-
-  const dbUrl = process.env.DATABASE_URL ?? baseConfig.postgres.url;
-  await initDb(dbUrl, { max: 4 });
 
   try {
     const client = new Mem0Client({
