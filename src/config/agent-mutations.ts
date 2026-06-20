@@ -34,7 +34,7 @@ export class PrivilegeError extends Error {
  * Identity of the caller invoking a mutation.
  *
  * Operator/web callers omit this entirely (or pass `kind: "operator"`) and keep
- * full power. Agent callers (the manage_agent tool) pass `kind: "agent"` with
+ * full power. Agent callers pass `kind: "agent"` with
  * their own id and resolved tool filter so mutations can be made
  * privilege-monotonic: an agent can never grant more than it itself holds, and
  * can never modify its own privileged fields.

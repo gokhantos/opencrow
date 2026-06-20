@@ -18,7 +18,7 @@ import { DEFAULT_AGENT_TOOL_ALLOWLIST } from "../tools/privilege";
  *
  * Previously this agent ran with toolFilter `{ mode: "all" }`, which implicitly
  * granted every high-impact tool (bash, write/edit, db_query, process_manage,
- * spawn_agent, manage_agent, git_operations, cron). That implicit grant is the
+ * spawn_agent, cron). That implicit grant is the
  * escalation surface behind the prompt-injection findings — so high-impact tools
  * are now listed EXPLICITLY here rather than granted by mode:"all". The default
  * fail-closed allowlist (read/research/memory + read-only scrapers) is the base;
@@ -30,13 +30,11 @@ const OPENCROW_TOOL_ALLOWLIST: readonly string[] = [
   "bash",
   "write_file",
   "edit_file",
-  "git_operations",
   "db_query",
   "cron",
   "trigger_cron",
   "process_manage",
   "spawn_agent",
-  "manage_agent",
   // SIGE session control (start is a write operation)
   "sige_start_session",
 ];

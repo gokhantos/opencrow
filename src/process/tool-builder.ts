@@ -195,7 +195,7 @@ export function buildRegistryForAgent(
   } = deps;
 
   // Fail-closed grant check: high-impact tools (bash, write_file, edit_file,
-  // process_manage, db_query, cron, manage_agent, git_operations, spawn_agent, …)
+  // process_manage, db_query, cron, spawn_agent, …)
   // are NEVER granted implicitly — not even under mode:"all". They require an
   // explicit allowlist entry. See src/tools/privilege.ts.
   const allowsTool = (name: string): boolean => {
