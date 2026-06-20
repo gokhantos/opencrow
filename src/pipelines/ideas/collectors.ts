@@ -36,6 +36,7 @@ import {
   computeRankScore,
   obscurityFromEngagement,
   selectRanked,
+  selectStratified,
   lookupLearnedCredibility,
   parseMakers,
   parseTopics,
@@ -72,6 +73,7 @@ export {
   lookupLearnedCredibility,
   NEUTRAL_LEARNED_CREDIBILITY,
   selectRanked,
+  selectStratified,
   parseJsonArray,
   parseMakers,
   parseTopics,
@@ -898,6 +900,7 @@ export async function scanCapabilities(
   const resolvedProvider = provider ?? "agent-sdk";
   const smart = loadConfig().pipelines.ideas.smart;
   const adaptive = smart.adaptiveCollection;
+  const strat = smart.stratifiedIntake;
   const incumbentCfg = smart.incumbentExclusion;
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -1353,15 +1356,23 @@ export async function scanCapabilities(
     const echoCfg = smart.seedDiversity;
     let echoChamberDownweighted = 0;
 
-    // ── Per-source: normalize velocity, rank, select top-K, build ───────────
+    // ── Phase 1: per-source velocity normalization + scoring ────────────────
+    // Velocity normalization is per-source by design (each source has its own
+    // velocity range). We compute velNorm per-pool and merge into a single map
+    // so that the union-level selection pass below can look up any candidate.
+    const velNormByRow = new Map<string, number>();
+    const scoreByRow = new Map<string, number>();
+
     for (const pool of pools) {
-      const velNormByRow = normalizeVelocities(
+      const poolVelNorm = normalizeVelocities(
         pool.candidates.map((c) => ({ id: c.id, velocity: c.velocity })),
       );
+      for (const [id, norm] of poolVelNorm) {
+        velNormByRow.set(id, norm);
+      }
 
       // Score each candidate ONCE (jitter included) so the sort key and the
       // persisted rankScore stay consistent.
-      const scoreByRow = new Map<string, number>();
       for (const c of pool.candidates) {
         // Learned per-source posterior (optional; neutral no-op when absent).
         const learnedCredibility = lookupLearnedCredibility(
@@ -1372,7 +1383,7 @@ export async function scanCapabilities(
         );
         let score = computeRankScore({
           credibility: c.credibility,
-          velocityNorm: velNormByRow.get(c.id) ?? 0,
+          velocityNorm: poolVelNorm.get(c.id) ?? 0,
           corroborationCount: corroborationByRowId.get(c.id) ?? 1,
           recency: c.recency,
           // Layer A: inverse-popularity niche bonus from raw engagement.
@@ -1382,10 +1393,7 @@ export async function scanCapabilities(
         // Layer C: a capability signal whose entity name prominently matches a
         // top-N incumbent is strong-down-ranked (not dropped) so it cannot seed
         // the head of the pool but can still corroborate further down.
-        if (
-          incumbentSet.size > 0 &&
-          mentionsIncumbent(c.entity.name ?? null, incumbentSet)
-        ) {
+        if (incumbentSet.size > 0 && mentionsIncumbent(c.entity.name ?? null, incumbentSet)) {
           score *= INCUMBENT_DOWNRANK_FACTOR;
         }
         // Seed-diversity lever 3: an AI-builder-meta candidate (meta subreddit or
@@ -1403,26 +1411,56 @@ export async function scanCapabilities(
         }
         scoreByRow.set(c.id, score);
       }
+    }
 
-      const { selected, selectedIds } = selectRanked(
-        pool.candidates,
-        new Set<string>(), // already filtered to fresh above
-        (c) => c.id,
-        pool.target,
-        (c) => scoreByRow.get(c.id) ?? 0,
-        adaptive,
-      );
-      registerSelected(pool.table, selectedIds);
+    // ── Phase 2: cross-pool stratified selection (or legacy per-pool path) ───
+    // STAGE 1 — stratified intake: select across the union of all pool candidates
+    // using a single cross-pool pass that caps each `${table}:${signalType}`
+    // bucket at `perBucketCap`, so no single source/signalType can dominate.
+    // The legacy per-pool path is preserved behind strat.enabled=false.
+    const unionCandidates = pools.flatMap((p) => p.candidates);
+    const totalTarget = pools.reduce((sum, p) => sum + p.target, 0);
 
-      for (const c of selected) {
-        capabilities.push(
-          c.build({
-            corroborationCount: corroborationByRowId.get(c.id) ?? 1,
-            velocityNorm: velNormByRow.get(c.id) ?? 0,
-            rankScore: scoreByRow.get(c.id) ?? 0,
-          }),
+    const chosen = strat.enabled
+      ? selectStratified(unionCandidates, {
+          idOf: (c) => c.id,
+          bucketOf: (c) => `${c.table}:${c.signalType}`,
+          scoreOf: (c) => scoreByRow.get(c.id) ?? 0,
+          perBucketCap: strat.perBucketCap,
+          totalCap: Math.min(strat.totalCap, totalTarget),
+        }).selected
+      : // Legacy per-pool path preserved for reversibility (strat.enabled=false).
+        pools.flatMap(
+          (pool) =>
+            selectRanked(
+              pool.candidates,
+              new Set<string>(), // already filtered to fresh above
+              (c) => c.id,
+              pool.target,
+              (c) => scoreByRow.get(c.id) ?? 0,
+              adaptive,
+            ).selected,
         );
-      }
+
+    // Register selected ids per table (preserves the localSelected accounting).
+    const byTable = new Map<string, string[]>();
+    for (const c of chosen) {
+      const list = byTable.get(c.table) ?? [];
+      list.push(c.id);
+      byTable.set(c.table, list);
+    }
+    for (const [table, ids] of byTable) {
+      registerSelected(table, ids);
+    }
+
+    for (const c of chosen) {
+      capabilities.push(
+        c.build({
+          corroborationCount: corroborationByRowId.get(c.id) ?? 1,
+          velocityNorm: velNormByRow.get(c.id) ?? 0,
+          rankScore: scoreByRow.get(c.id) ?? 0,
+        }),
+      );
     }
 
     if (echoChamberDownweighted > 0) {
