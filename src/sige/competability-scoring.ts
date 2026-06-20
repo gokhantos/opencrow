@@ -31,10 +31,16 @@ import {
   type CompetabilityPersisted,
   type CompetabilityScore,
   buildCompetabilityPersisted,
-  decideCompetability,
   heuristicMoatFlags,
   parseCompetability,
 } from "../pipelines/ideas/competability";
+import {
+  DEFAULT_BUILDER_PROFILE,
+  type BuilderProfile,
+  decideCompetabilityForProfile,
+  describeBuilderProfile,
+  matchExpertiseDomain,
+} from "../pipelines/ideas/builder-profile";
 import type { CompetabilityConfig } from "../config/schema";
 import type { ScoredIdea } from "./types";
 
@@ -70,7 +76,10 @@ export interface SigeCompetabilityGateResult {
 }
 
 /** Build the model-facing batch scoring prompt over the finalized ideas. */
-function buildPrompt(ideas: readonly ScoredIdea[]): string {
+function buildPrompt(
+  ideas: readonly ScoredIdea[],
+  builderDescription: string,
+): string {
   const ideaList = ideas
     .map(
       (idea, i) =>
@@ -79,6 +88,7 @@ function buildPrompt(ideas: readonly ScoredIdea[]): string {
     .join("\n\n");
 
   return `Score the INCUMBENT moat a small / solo builder must overcome for each idea.
+Context: ${builderDescription} Score the OBJECTIVE, profile-independent moat barriers below — do NOT adjust for the builder; the system applies the builder's resources separately.
 
 Each moat dimension is 0..5 where 5 = the moat is OVERWHELMING for a small builder:
   - capital: capex / sustained funding burn to even launch (fleets, hardware, content licensing, deep subsidies).
@@ -154,6 +164,9 @@ export async function gateSigeIdeasOnCompetability(params: {
   const { ideas, config, model, provider = "anthropic" } = params;
   const incumbentSet = params.incumbentSet ?? new Set<string>();
   const enforce = config.enforceGate === true;
+  // The builder the gate is evaluated for (identity transform by default).
+  const builderProfile: BuilderProfile =
+    config.builderProfile ?? DEFAULT_BUILDER_PROFILE;
 
   if (ideas.length === 0) {
     return { kept: [], dropped: [] };
@@ -164,7 +177,11 @@ export async function gateSigeIdeasOnCompetability(params: {
   const rawById = new Map<string, Record<string, unknown>>();
   try {
     const messages: readonly ConversationMessage[] = [
-      { role: "user", content: buildPrompt(ideas), timestamp: Date.now() },
+      {
+        role: "user",
+        content: buildPrompt(ideas, describeBuilderProfile(builderProfile)),
+        timestamp: Date.now(),
+      },
     ];
     const response = await chat(messages, {
       systemPrompt: SYSTEM_PROMPT,
@@ -192,17 +209,26 @@ export async function gateSigeIdeasOnCompetability(params: {
     // parseCompetability is fail-safe: undefined/malformed → neutral midpoints.
     const score = parseCompetability(raw);
 
-    const decision = decideCompetability(score, {
-      rejectThreshold: config.rejectThreshold,
-      softPenaltyThreshold: config.softPenaltyThreshold,
-    });
+    // Apply the builder profile as a pure discount, then decide on the EFFECTIVE
+    // score (mirrors the pipeline critique).
+    const ideaText = `${idea.title}. ${idea.description}`;
+    const matchedExpertiseDomain = matchExpertiseDomain(
+      ideaText,
+      builderProfile.expertiseDomains,
+    );
+    const { effective, decision } = decideCompetabilityForProfile(
+      score,
+      builderProfile,
+      {
+        rejectThreshold: config.rejectThreshold,
+        softPenaltyThreshold: config.softPenaltyThreshold,
+      },
+      { matchedExpertiseDomain },
+    );
 
     // Cheap heuristic can ALSO flag an obvious uncompetable shell even when the
     // LLM was lenient (mirrors the pipeline critique).
-    const heuristic = heuristicMoatFlags(
-      `${idea.title}. ${idea.description}`,
-      incumbentSet,
-    );
+    const heuristic = heuristicMoatFlags(ideaText, incumbentSet);
 
     const gated = !decision.pass || heuristic.obvious;
     const reason = heuristic.obvious
@@ -211,12 +237,22 @@ export async function gateSigeIdeasOnCompetability(params: {
         : heuristic.reason
       : decision.reason;
 
-    // score is always a valid CompetabilityScore here, so this is never null.
-    const persisted = buildCompetabilityPersisted(score, reason, gated)!;
+    // Persist the EFFECTIVE (decided) score as the top-level dims/overall, with
+    // the RAW (pre-profile) score + matched domain preserved alongside. The
+    // effective score is always valid here, so this is never null.
+    const effectiveScore: CompetabilityScore = {
+      dimensions: effective.dimensions,
+      overall: effective.overall,
+      rationale: score.rationale,
+    };
+    const persisted = buildCompetabilityPersisted(effectiveScore, reason, gated, {
+      raw: { dimensions: score.dimensions, overall: score.overall },
+      matchedExpertiseDomain,
+    })!;
 
     const result: SigeCompetabilityResult = {
       idea,
-      score,
+      score: effectiveScore,
       gated,
       reason,
       persisted,

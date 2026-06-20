@@ -34,6 +34,21 @@ const SCORECARD: CompetabilityPersistedJson = {
   gated: true,
 };
 
+// A builder-profile scorecard: top-level dims/overall are the EFFECTIVE
+// (profile-discounted, decided) values; `raw` preserves the pre-profile barriers;
+// `matchedExpertiseDomain` records the domain that discounted the dominant moat.
+const PROFILE_SCORECARD: CompetabilityPersistedJson = {
+  dimensions: { capital: 2.5, networkEffect: 4.5, logistics: 0, regulated: 1 },
+  overall: 3.2,
+  reason: "overall 3.2 >= 2.5",
+  gated: false,
+  raw: {
+    dimensions: { capital: 5, networkEffect: 5, logistics: 4, regulated: 1 },
+    overall: 1.5,
+  },
+  matchedExpertiseDomain: "fintech",
+};
+
 describe("competability persistence round-trip", () => {
   beforeEach(async () => {
     await initDb(process.env.DATABASE_URL);
@@ -68,6 +83,36 @@ describe("competability persistence round-trip", () => {
     expect(read!.competability_json).toEqual(SCORECARD);
     expect(read!.competability_json!.dimensions.networkEffect).toBe(5);
     expect(read!.competability_json!.reason).toContain("uncompetable");
+  });
+
+  it("round-trips BOTH raw and effective (profile-adjusted) scores", async () => {
+    const created = await insertIdea({
+      agent_id: TEST_AGENT,
+      title: "A fintech compliance tool",
+      summary: "Solo dev with fintech expertise; effective barriers lower.",
+      reasoning: "builder profile applied",
+      sources_used: "pipeline",
+      category: "general",
+      quality_score: 4,
+      // The column carries the EFFECTIVE overall (3.2), not the raw (1.5).
+      competability_overall: PROFILE_SCORECARD.overall,
+      competability_json: PROFILE_SCORECARD,
+    });
+
+    // competability_overall is a REAL column → compare with float tolerance.
+    expect(created.competability_overall).toBeCloseTo(3.2, 5);
+
+    const read = await getIdeaById(created.id);
+    expect(read).not.toBeNull();
+    // Column = effective (decided) overall.
+    expect(read!.competability_overall).toBeCloseTo(3.2, 5);
+    // Full scorecard round-trips, raw + matched domain included.
+    expect(read!.competability_json).toEqual(PROFILE_SCORECARD);
+    expect(read!.competability_json!.raw!.overall).toBe(1.5);
+    expect(read!.competability_json!.raw!.dimensions.networkEffect).toBe(5);
+    // Effective networkEffect was discounted below raw.
+    expect(read!.competability_json!.dimensions.networkEffect).toBe(4.5);
+    expect(read!.competability_json!.matchedExpertiseDomain).toBe("fintech");
   });
 
   it("stores NULL competability columns when not scored", async () => {

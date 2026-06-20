@@ -46,6 +46,23 @@ export interface CompetabilityPersistedJson {
   readonly overall: number;
   readonly reason: string;
   readonly gated: boolean;
+  /**
+   * RAW (pre-builder-profile) moat slice. `dimensions`/`overall` above are the
+   * EFFECTIVE (decided) values after the builder profile discount; this preserves
+   * the objective barriers. Optional — absent on rows written before builder
+   * profiles existed (parseCompetabilityJson tolerates both).
+   */
+  readonly raw?: {
+    readonly dimensions: {
+      readonly capital: number;
+      readonly networkEffect: number;
+      readonly logistics: number;
+      readonly regulated: number;
+    };
+    readonly overall: number;
+  };
+  /** Builder expertise domain that matched this idea (discounting its dominant moat), or null. */
+  readonly matchedExpertiseDomain?: string | null;
 }
 
 export interface InsertIdeaInput {

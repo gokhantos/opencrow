@@ -181,6 +181,32 @@ function applyEnvOverrides(
     competabilityEnv.topNIncumbents = competabilityTopN;
   }
 
+  // OPENCROW_SMART_COMPETABILITY_BUILDER_* — the builder profile sub-block.
+  const builderProfileEnv: Record<string, unknown> = {};
+  if (process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_CAPITAL) {
+    builderProfileEnv.capital = process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_CAPITAL;
+  }
+  const builderTeamSize = Number(process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_TEAM_SIZE ?? "");
+  if (!Number.isNaN(builderTeamSize) && process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_TEAM_SIZE !== undefined) {
+    builderProfileEnv.teamSize = builderTeamSize;
+  }
+  if (process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_REGULATORY_APPETITE) {
+    builderProfileEnv.regulatoryAppetite =
+      process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_REGULATORY_APPETITE;
+  }
+  if (process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_OPS_APPETITE) {
+    builderProfileEnv.opsAppetite = process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_OPS_APPETITE;
+  }
+  if (process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_EXPERTISE_DOMAINS) {
+    const domains = process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_EXPERTISE_DOMAINS.split(",")
+      .map((d) => d.trim())
+      .filter((d) => d.length > 0);
+    builderProfileEnv.expertiseDomains = domains;
+  }
+  if (Object.keys(builderProfileEnv).length > 0) {
+    competabilityEnv.builderProfile = builderProfileEnv;
+  }
+
   if (
     Object.keys(smartEnv).length > 0 ||
     Object.keys(sigeAutoEnv).length > 0 ||
@@ -206,7 +232,18 @@ function applyEnvOverrides(
     }
     if (Object.keys(competabilityEnv).length > 0) {
       const existing = (existingSmart.competability ?? {}) as Record<string, unknown>;
-      smart.competability = { ...existing, ...competabilityEnv };
+      const mergedComp: Record<string, unknown> = { ...existing, ...competabilityEnv };
+      // The shallow spread above would CLOBBER existing.builderProfile with a
+      // PARTIAL env profile. Merge the profile field-wise so sibling profile
+      // fields survive.
+      if (competabilityEnv.builderProfile) {
+        const existingBP = (existing.builderProfile ?? {}) as Record<string, unknown>;
+        mergedComp.builderProfile = {
+          ...existingBP,
+          ...(competabilityEnv.builderProfile as Record<string, unknown>),
+        };
+      }
+      smart.competability = mergedComp;
     }
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }
@@ -349,11 +386,13 @@ export function deepMergeSigeOverride(
 async function mergeFeatureOverrides(
   base: OpenCrowConfig,
 ): Promise<OpenCrowConfig> {
-  const [enabledScrapers, qdrantEnabled, sigeOverride] = await Promise.all([
-    getOverride("features", "enabledScrapers"),
-    getOverride("features", "qdrantEnabled"),
-    getOverride("config", "sige"),
-  ]);
+  const [enabledScrapers, qdrantEnabled, sigeOverride, competabilityOverride] =
+    await Promise.all([
+      getOverride("features", "enabledScrapers"),
+      getOverride("features", "qdrantEnabled"),
+      getOverride("config", "sige"),
+      getOverride("config", "competability"),
+    ]);
 
   let result: Record<string, unknown> = { ...base };
 
@@ -386,6 +425,27 @@ async function mergeFeatureOverrides(
   if (sigeOverride !== null && typeof sigeOverride === "object") {
     const baseSige = (result.sige ?? {}) as Record<string, unknown>;
     result = { ...result, sige: deepMergeSigeOverride(baseSige, sigeOverride as Record<string, unknown>) };
+  }
+
+  // config/competability override → pipelines.ideas.smart.competability. Reuse
+  // deepMergeSigeOverride: it shallow-merges one level deep, which is EXACTLY
+  // deep enough — `builderProfile` sits exactly one level below `competability`,
+  // so a partial `{"builderProfile":{"capital":"funded"}}` override has its
+  // nested keys shallow-merged onto the base profile (sibling profile fields AND
+  // sibling competability fields survive). Rebuild each nested level immutably.
+  if (competabilityOverride !== null && typeof competabilityOverride === "object") {
+    const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
+    const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
+    const smart = { ...((ideas.smart ?? {}) as Record<string, unknown>) };
+    const baseComp = (smart.competability ?? {}) as Record<string, unknown>;
+    smart.competability = deepMergeSigeOverride(
+      baseComp,
+      competabilityOverride as Record<string, unknown>,
+    );
+    result = {
+      ...result,
+      pipelines: { ...pipelines, ideas: { ...ideas, smart } },
+    };
   }
 
   return opencrowConfigSchema.parse(result);

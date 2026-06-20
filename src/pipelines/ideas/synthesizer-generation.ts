@@ -33,10 +33,16 @@ import {
 } from "./giant";
 import {
   parseCompetability,
-  decideCompetability,
   heuristicMoatFlags,
   type CompetabilityScore,
 } from "./competability";
+import {
+  DEFAULT_BUILDER_PROFILE,
+  type BuilderProfile,
+  decideCompetabilityForProfile,
+  describeBuilderProfile,
+  matchExpertiseDomain,
+} from "./builder-profile";
 import type {
   GiantConfig,
   GenerateWideConfig,
@@ -483,6 +489,10 @@ export async function critiqueIdeas(
   incumbentSet: ReadonlySet<string> = new Set<string>(),
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const competabilityOn = competability?.enabled === true;
+  // The builder the gate is evaluated for. Defaults to the solo bootstrapper
+  // (identity transform) when no profile is configured.
+  const builderProfile: BuilderProfile =
+    competability?.builderProfile ?? DEFAULT_BUILDER_PROFILE;
   const ideaList = candidates.map((c, i) =>
     `${i + 1}. "${c.title}"\n   Summary: ${c.summary.slice(0, 300)}\n   Reasoning: ${c.reasoning.slice(0, 200)}\n   Target: ${c.targetAudience}\n   Features: ${c.keyFeatures.slice(0, 4).join(", ")}`,
   ).join("\n\n");
@@ -514,6 +524,7 @@ ${
     ? `
 === COMPETABILITY (can a SMALL / solo builder realistically WIN this market?) ===
 This is the INVERSE of defensibility: score the INCUMBENT moat the small builder must OVERCOME.
+Context: ${describeBuilderProfile(builderProfile)} Score the OBJECTIVE, profile-independent moat barriers below — do NOT adjust for the builder; the system applies the builder's resources separately.
 Each moat dimension is 0..5 where 5 = the moat is OVERWHELMING for a small builder:
   - capital: capex / sustained funding burn to even launch (fleets, hardware, content licensing, deep subsidies).
   - networkEffect: value needs critical-mass users/supply already locked up by incumbents (two-sided marketplaces, social).
@@ -704,6 +715,13 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       competabilityOn && competability?.enforceGate === true;
     let competabilityGated = false;
     let competabilityReason = "";
+    // EFFECTIVE (profile-adjusted) moat dims/overall persisted on the candidate;
+    // null until the profile transform runs on a scored idea.
+    let effectiveDims:
+      | Readonly<Record<"capital" | "networkEffect" | "logistics" | "regulated", number>>
+      | null = null;
+    let effectiveOverall: number | null = null;
+    let matchedExpertiseDomain: string | null = null;
 
     if (competabilityOn) {
       competabilityEvaluated += 1;
@@ -712,10 +730,23 @@ Return ONLY a JSON array with one entry per idea (in the same order):
         incumbentSet,
       );
       if (competabilityScore) {
-        const decision = decideCompetability(competabilityScore, {
-          rejectThreshold: competability?.rejectThreshold,
-          softPenaltyThreshold: competability?.softPenaltyThreshold,
-        });
+        // Apply the builder profile as a pure discount, then run the
+        // non-compensatory gate on the EFFECTIVE score.
+        matchedExpertiseDomain = matchExpertiseDomain(
+          `${candidate.title}. ${candidate.summary} ${candidate.targetAudience}`,
+          builderProfile.expertiseDomains,
+        );
+        const { effective, decision } = decideCompetabilityForProfile(
+          competabilityScore,
+          builderProfile,
+          {
+            rejectThreshold: competability?.rejectThreshold,
+            softPenaltyThreshold: competability?.softPenaltyThreshold,
+          },
+          { matchedExpertiseDomain },
+        );
+        effectiveDims = effective.dimensions;
+        effectiveOverall = effective.overall;
         competabilityGated = !decision.pass;
         competabilityReason = decision.reason;
       }
@@ -740,10 +771,15 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       giantComposite: aggregate.composite,
       giantGated: aggregate.gated,
       giantGateReasons: aggregate.gateReasons,
-      ...(competabilityScore
+      ...(competabilityScore && effectiveDims && effectiveOverall !== null
         ? {
-            competability: competabilityScore.dimensions,
-            competabilityOverall: competabilityScore.overall,
+            // EFFECTIVE (decided) values feed the column + JSON top-level.
+            competability: effectiveDims,
+            competabilityOverall: effectiveOverall,
+            // RAW (pre-profile) moat preserved for audit / re-scoring.
+            competabilityRaw: competabilityScore.dimensions,
+            competabilityRawOverall: competabilityScore.overall,
+            competabilityMatchedExpertiseDomain: matchedExpertiseDomain,
           }
         : {}),
       ...(competabilityOn
