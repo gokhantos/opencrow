@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { PageHeader, LoadingState, EmptyState } from "../components";
+import { PageHeader, LoadingState, EmptyState, ModelRoutePicker } from "../components";
 import { useToast } from "../components/Toast";
 import { usePolledFetch } from "../hooks/usePolledFetch";
 import { NewSessionForm } from "./sige/NewSessionForm";
@@ -95,6 +95,17 @@ export default function Sige() {
       />
 
       <NewSessionForm onSubmit={handleCreateSession} submitting={submitting} />
+
+      {/* Model Configuration */}
+      <div className="bg-bg-1 border border-border rounded-xl p-5 mb-6 mt-4 transition-all duration-200 hover:border-border-hover">
+        <div className="text-xs font-semibold uppercase tracking-widest text-accent mb-4 pb-2 border-b border-border">
+          Model Configuration
+        </div>
+        <ModelRoutePicker processKey="sige.fast-agent" label="Fast Agent (auto)" />
+        <ModelRoutePicker processKey="sige.judge.0" label="Judge 0" />
+        <ModelRoutePicker processKey="sige.judge.1" label="Judge 1" />
+        <ModelRoutePicker processKey="sige.judge.2" label="Judge 2" />
+      </div>
 
       {sessions.length === 0 ? (
         <EmptyState

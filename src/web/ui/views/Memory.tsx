@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useLocalStorage } from "../lib/useLocalStorage";
 import { apiFetch } from "../api";
-import { LoadingState, EmptyState, PageHeader } from "../components";
+import { LoadingState, EmptyState, PageHeader, ModelRoutePicker } from "../components";
 import { cn } from "../lib/cn";
 import { relativeTime, formatNumber } from "../lib/format";
 
@@ -348,6 +348,15 @@ export default function Memory() {
           ))}
         </div>
       )}
+
+      {/* Model Configuration */}
+      <div className="bg-bg-1 border border-border rounded-xl p-5 mb-6 transition-all duration-200 hover:border-border-hover">
+        <div className="text-xs font-semibold uppercase tracking-widest text-accent mb-4 pb-2 border-b border-border">
+          Model Configuration
+        </div>
+        <ModelRoutePicker processKey="signal.facets" label="Signal Facets" />
+        <ModelRoutePicker processKey="signal.observations" label="Observation Extraction" />
+      </div>
 
       {/* Tab Bar */}
       <div className="flex gap-1 mb-5 p-1 bg-bg-1 border border-border rounded-lg w-fit">
