@@ -58,6 +58,21 @@ async function internalAuthHeaders(
 }
 
 /**
+ * Shared infrastructure processes an agent must never restart/stop via this
+ * tool. Agents and dashboard-triggered SIGE/pipeline runs execute IN-PROCESS
+ * under `web` (so {@link getOwnProcessName} returns "web" for them); letting
+ * such a run restart `web` kills the run, which resumes and re-issues the
+ * restart — a self-inflicted loop. The control plane enforces this server-side
+ * too (see decideSelfOnlyProcessControl); this is defense-in-depth. Only an
+ * operator (via dashboard/CLI, not this tool) may control these.
+ */
+const PROTECTED_SHARED_PROCESSES: ReadonlySet<string> = new Set([
+  "web",
+  "cron",
+  "core",
+]);
+
+/**
  * Derives the current process name from env vars.
  * Agent processes have OPENCROW_AGENT_ID, scraper processes have OPENCROW_SCRAPER_ID, etc.
  */
@@ -125,6 +140,7 @@ export function createSelfRestartTool(): ToolDefinition {
       "Actions: restart (default), stop, start, list.",
       "Each subsystem runs as its own process: web, cron, market, agent:*, scraper:*.",
       "With no target, restarts the calling process (this agent).",
+      "Shared infrastructure processes (web, cron, core) cannot be restarted by an agent — only an operator can.",
       "Use 'list' to see all processes and their status before acting.",
     ].join(" "),
     categories: ["system"] as readonly ToolCategory[],
@@ -203,6 +219,22 @@ export function createSelfRestartTool(): ToolDefinition {
         });
         return {
           output: `Permission denied: '${ownName}' may only ${action} itself, not '${target}'. Cross-process control requires an operator.`,
+          isError: true,
+        };
+      }
+
+      // PROTECTED INFRA: agents and dashboard-triggered SIGE/pipeline runs run
+      // in-process under `web`, so a self-restart of `web` would kill the very
+      // run issuing it, resume, and re-issue — an unbreakable restart loop. Refuse
+      // outright; only an operator (dashboard/CLI) may restart shared infra.
+      if (PROTECTED_SHARED_PROCESSES.has(target)) {
+        log.warn("process_manage rejected protected shared process", {
+          action,
+          target,
+          owner: ownName,
+        });
+        return {
+          output: `Permission denied: '${target}' is a shared infrastructure process that hosts in-process runs; an agent may not ${action} it (it would loop). Cross-process control requires an operator.`,
           isError: true,
         };
       }

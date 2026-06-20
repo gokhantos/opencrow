@@ -27,6 +27,24 @@ const log = createLogger("internal-api");
 export const CALLER_PROCESS_HEADER = "x-opencrow-caller-process";
 
 /**
+ * Shared infrastructure processes that host the orchestrator's clients and/or
+ * the agent/SIGE/pipeline runs themselves in-process. An agent caller resolves
+ * its own identity from env (see self-restart.ts `getOwnProcessName`), and a
+ * run triggered via the dashboard executes INSIDE the `web` process — so its
+ * caller identity is literally `web`. A naive "self" check (caller === target)
+ * therefore lets such a run restart `web`, which kills the run, which resumes
+ * and re-issues the restart: a self-inflicted restart loop.
+ *
+ * These processes may only be restarted/stopped by an operator (no caller
+ * header). An agent self-targeting one of them is never legitimate.
+ */
+const PROTECTED_SHARED_PROCESSES: ReadonlySet<string> = new Set([
+  "web",
+  "cron",
+  "core",
+]);
+
+/**
  * Outcome of the self-only authorization decision. When `allowed` is false,
  * `status` and `error` carry the HTTP response the route should return.
  */
@@ -41,6 +59,13 @@ export type SelfOnlyDecision =
  * (no header) keep full power. This is the authoritative check — the tool-side
  * check in self-restart.ts is defense-in-depth only.
  *
+ * Additionally, an agent caller may NOT act on a shared infrastructure process
+ * ({@link PROTECTED_SHARED_PROCESSES}) even when it appears to be a self-match:
+ * agents and dashboard-triggered SIGE/pipeline runs execute in-process under
+ * `web`, so caller === target === "web" otherwise lets a run restart the very
+ * process it runs in, killing itself in a loop. Operators (no header) keep full
+ * power over these processes.
+ *
  * Kept pure (no Hono `Context`, no logging) so it is directly unit-testable.
  */
 export function decideSelfOnlyProcessControl(
@@ -49,6 +74,13 @@ export function decideSelfOnlyProcessControl(
   action: string,
 ): SelfOnlyDecision {
   if (!caller) return { allowed: true }; // operator capability — full power
+  if (PROTECTED_SHARED_PROCESSES.has(target)) {
+    return {
+      allowed: false,
+      status: 403,
+      error: `Self-only: agent '${caller}' may not ${action} shared infrastructure process '${target}' (it runs in-process and would loop). Only an operator can.`,
+    };
+  }
   if (caller === target) return { allowed: true }; // self — allowed
   return {
     allowed: false,
