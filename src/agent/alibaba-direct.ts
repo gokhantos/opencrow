@@ -1,10 +1,9 @@
 import type { AgentOptions, AgentResponse, ConversationMessage } from "./types";
 import { retryAsync } from "../infra/retry";
 import { createLogger } from "../logger";
+import { resolveAlibabaEndpoint } from "./alibaba-endpoints";
 
 const log = createLogger("alibaba-direct");
-
-const DEFAULT_BASE_URL = "https://coding-intl.dashscope.aliyuncs.com/v1";
 
 async function getCredentials(): Promise<{ apiKey: string; baseUrl: string }> {
   const { getSecret } = await import("../config/secrets");
@@ -12,7 +11,10 @@ async function getCredentials(): Promise<{ apiKey: string; baseUrl: string }> {
   if (!apiKey) {
     throw new Error("ALIBABA_API_KEY is not set");
   }
-  const baseUrl = (await getSecret("ALIBABA_BASE_URL")) ?? DEFAULT_BASE_URL;
+  const baseUrl = resolveAlibabaEndpoint(
+    "openai",
+    await getSecret("ALIBABA_BASE_URL"),
+  );
   return { apiKey, baseUrl };
 }
 

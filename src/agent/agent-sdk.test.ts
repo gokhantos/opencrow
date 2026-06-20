@@ -736,7 +736,7 @@ describe("withAlibabaEnv", () => {
       return "test";
     });
 
-    expect(capturedUrl).toBe("https://custom-alibaba-url.com");
+    expect(capturedUrl).toBe("https://custom-alibaba-url.com/apps/anthropic");
   });
 
   it("uses default ALIBABA_BASE_URL when ALIBABA_BASE_URL is not set", async () => {
@@ -750,7 +750,7 @@ describe("withAlibabaEnv", () => {
     });
 
     expect(capturedUrl).toBe(
-      "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
+      "https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic"
     );
   });
 
