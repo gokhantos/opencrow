@@ -5,6 +5,7 @@ import { nativePaths } from "./paths.ts";
 const env = renderMem0Env(nativePaths("/Users/test"), {
   internalToken: "tok-123",
   llmApiKey: "sk-llm",
+  neo4jPassword: "neo-pw",
 });
 const map = Object.fromEntries(
   env.trim().split("\n").map((l) => {
@@ -19,9 +20,16 @@ test("points qdrant + ollama at loopback", () => {
   expect(map.MEM0_OLLAMA_URL).toBe("http://127.0.0.1:11434");
 });
 
-test("resolves kuzu graph db to an absolute native path", () => {
-  expect(map.MEM0_GRAPH_PROVIDER).toBe("kuzu");
-  expect(map.MEM0_GRAPH_DB).toBe("/Users/test/.opencrow/mem0/kuzu");
+test("configures neo4j graph backend on loopback Bolt", () => {
+  expect(map.MEM0_GRAPH_PROVIDER).toBe("neo4j");
+  expect(map.NEO4J_URL).toBe("bolt://127.0.0.1:7687");
+  expect(map.NEO4J_USER).toBe("neo4j");
+  expect(map.NEO4J_PASSWORD).toBe("neo-pw");
+});
+
+test("no longer emits kuzu graph vars", () => {
+  expect(map.MEM0_GRAPH_DB).toBeUndefined();
+  expect(map.MEM0_GRAPH_PROVIDER).not.toBe("kuzu");
 });
 
 test("injects secrets and keeps hosted-DeepSeek extraction config", () => {

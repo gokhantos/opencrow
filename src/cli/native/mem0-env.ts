@@ -4,15 +4,24 @@ const LLM_BASE_URL =
   "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
 
 export function renderMem0Env(
-  p: NativePaths,
-  secrets: { readonly internalToken: string; readonly llmApiKey: string },
+  _p: NativePaths,
+  secrets: {
+    readonly internalToken: string;
+    readonly llmApiKey: string;
+    readonly neo4jPassword: string;
+  },
 ): string {
   const vars: Readonly<Record<string, string>> = {
     QDRANT_HOST: "127.0.0.1",
     QDRANT_PORT: "6333",
     MEM0_API_TOKEN: secrets.internalToken,
-    MEM0_GRAPH_PROVIDER: "kuzu",
-    MEM0_GRAPH_DB: p.mem0Kuzu,
+    // Graph backend: native Neo4j (Community) on loopback. app.py's
+    // _build_graph_config() reads NEO4J_URL / NEO4J_USER / NEO4J_PASSWORD when
+    // MEM0_GRAPH_PROVIDER=neo4j. NEO4J_PASSWORD is REQUIRED (KeyError if unset).
+    MEM0_GRAPH_PROVIDER: "neo4j",
+    NEO4J_URL: "bolt://127.0.0.1:7687",
+    NEO4J_USER: "neo4j",
+    NEO4J_PASSWORD: secrets.neo4jPassword,
     MEM0_LLM_PROVIDER: "openai",
     MEM0_LLM_MODEL: "deepseek-v4-flash",
     MEM0_LLM_BASE_URL: LLM_BASE_URL,

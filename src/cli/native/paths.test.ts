@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { nativePaths, QDRANT_LABEL, MEM0_LABEL } from "./paths.ts";
+import { nativePaths, QDRANT_LABEL, MEM0_LABEL, NEO4J_LABEL } from "./paths.ts";
 
 test("nativePaths resolves all dirs under the given home, absolute (no ~)", () => {
   const p = nativePaths("/Users/test");
@@ -10,10 +10,12 @@ test("nativePaths resolves all dirs under the given home, absolute (no ~)", () =
   expect(p.mem0AppDir).toBe("/Users/test/.opencrow/mem0/app");
   expect(p.mem0Kuzu).toBe("/Users/test/.opencrow/mem0/kuzu");
   expect(p.mem0EnvFile).toBe("/Users/test/.opencrow/mem0/mem0.env");
+  expect(p.neo4jDir).toBe("/Users/test/.opencrow/neo4j");
   expect(Object.values(p).every((v) => !v.includes("~"))).toBe(true);
 });
 
 test("service labels are stable", () => {
   expect(QDRANT_LABEL).toBe("com.opencrow.qdrant");
   expect(MEM0_LABEL).toBe("com.opencrow.mem0");
+  expect(NEO4J_LABEL).toBe("com.opencrow.neo4j");
 });

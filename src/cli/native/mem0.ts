@@ -15,7 +15,11 @@ function plistPath(label: string): string {
 export async function provisionMem0(
   p: NativePaths,
   repoDir: string,
-  secrets: { readonly internalToken: string; readonly llmApiKey: string },
+  secrets: {
+    readonly internalToken: string;
+    readonly llmApiKey: string;
+    readonly neo4jPassword: string;
+  },
 ): Promise<void> {
   // Source files live in the repo; app + venv are staged OUTSIDE the repo to
   // avoid macOS TCC "Operation not permitted" when launchd accesses ~/Desktop.

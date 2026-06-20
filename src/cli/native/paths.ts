@@ -2,6 +2,7 @@ import path from "node:path";
 
 export const QDRANT_LABEL = "com.opencrow.qdrant";
 export const MEM0_LABEL = "com.opencrow.mem0";
+export const NEO4J_LABEL = "com.opencrow.neo4j";
 
 export type NativePaths = {
   readonly root: string;
@@ -13,6 +14,7 @@ export type NativePaths = {
   readonly mem0AppDir: string;
   readonly mem0Kuzu: string;
   readonly mem0EnvFile: string;
+  readonly neo4jDir: string;
   readonly logDir: string;
 };
 
@@ -28,6 +30,7 @@ export function nativePaths(home: string): NativePaths {
     mem0AppDir: path.join(root, "mem0", "app"),
     mem0Kuzu: path.join(root, "mem0", "kuzu"),
     mem0EnvFile: path.join(root, "mem0", "mem0.env"),
+    neo4jDir: path.join(root, "neo4j"),
     logDir: path.join(root, "logs"),
   };
 }
