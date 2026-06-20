@@ -38,6 +38,12 @@ export async function runNativeUp(): Promise<void> {
     throw new Error(`Missing Homebrew formulae: ${missing.join(", ")}. Run: brew install ${missing.join(" ")}`);
   }
 
+  // mem0 provisioning now uses uv for venv creation (avoids broken pyexpat on macOS).
+  const uvCheck = spawnSync("uv", ["--version"]);
+  if (uvCheck.status !== 0 || uvCheck.error) {
+    throw new Error("uv not found — install it: brew install uv");
+  }
+
   w.write("Starting native Postgres (brew services)…\n");
   const brewResult = spawnSync("brew", ["services", "start", "postgresql@17"], { stdio: "inherit" });
   if (brewResult.status !== 0 && brewResult.status !== null) {
