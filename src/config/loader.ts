@@ -97,6 +97,18 @@ function applyEnvOverrides(
     result.embeddings = embeddings;
   }
 
+  // --- memorySearch.backend ---
+  // Selects the memory storage backend (qdrant | mem0). When set, ensure the
+  // memorySearch block exists so the override has somewhere to land; the schema
+  // fills the rest of the block with its defaults.
+  if (process.env.OPENCROW_MEMORY_BACKEND) {
+    const memorySearch = {
+      ...((result.memorySearch ?? {}) as Record<string, unknown>),
+    };
+    memorySearch.backend = process.env.OPENCROW_MEMORY_BACKEND;
+    result.memorySearch = memorySearch;
+  }
+
   // --- pipelines.ideas.smart (env toggles for the smart-pipeline feature flags) ---
   const smartEnv: Record<string, unknown> = {};
   const boolEnv = (name: string): boolean | undefined => {

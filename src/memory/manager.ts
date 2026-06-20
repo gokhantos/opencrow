@@ -1,24 +1,14 @@
 import { getDb } from "../store/db";
-import { createMemoryIndexer } from "./indexer";
-import { createMemorySearch } from "./search";
 import { createLogger } from "../logger";
+import { createMemoryBackend } from "./backend/factory";
+import type { MemoryBackend, MemoryBackendKind } from "./backend/types";
 import type {
-  ArticleForIndex,
-  ProductForIndex,
-  RedditPostForIndex,
-  StoryForIndex,
-  GithubRepoForIndex,
-  ObservationForIndex,
-  IdeaForIndex,
-  AppReviewForIndex,
-  AppRankingForIndex,
   EmbeddingProvider,
   EvictionResult,
   MemoryManager,
   MemoryStats,
   SearchOptions,
   SearchResult,
-  TweetForIndex,
 } from "./types";
 import type { QdrantClient } from "./qdrant";
 
@@ -34,6 +24,11 @@ interface ManagerConfig {
   readonly vectorWeight?: number;
   readonly textWeight?: number;
   readonly mmrLambda?: number;
+  /**
+   * Which storage backend to use. Defaults to `qdrant` (the live backend), so
+   * existing construction sites that omit it keep identical behavior.
+   */
+  readonly backend?: MemoryBackendKind;
 }
 
 interface StatsRow {
@@ -48,149 +43,106 @@ interface StaleSourceRow {
 }
 
 export function createMemoryManager(config: ManagerConfig): MemoryManager {
-  const indexer = createMemoryIndexer({
-    embeddingProvider: config.embeddingProvider,
-    qdrantClient: config.qdrantClient,
-    qdrantCollection: config.qdrantCollection,
-  });
-
-  const search = createMemorySearch({
-    embeddingProvider: config.embeddingProvider,
-    qdrantClient: config.qdrantClient,
-    qdrantCollection: config.qdrantCollection,
-    shared: config.shared,
-    defaultLimit: config.defaultLimit,
-    defaultMinScore: config.minScore,
-    vectorWeight: config.vectorWeight,
-    textWeight: config.textWeight,
-    mmrLambda: config.mmrLambda,
-  });
+  const backend: MemoryBackend = createMemoryBackend(
+    config.backend ?? "qdrant",
+    {
+      embeddingProvider: config.embeddingProvider,
+      qdrantClient: config.qdrantClient,
+      qdrantCollection: config.qdrantCollection,
+      shared: config.shared,
+      defaultLimit: config.defaultLimit,
+      minScore: config.minScore,
+      vectorWeight: config.vectorWeight,
+      textWeight: config.textWeight,
+      mmrLambda: config.mmrLambda,
+    },
+  );
 
   return {
-    async indexTweets(
-      agentId: string,
-      tweets: readonly TweetForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexTweets(agentId, tweets, metadata): Promise<string> {
       try {
-        return await indexer.indexTweets(agentId, tweets, metadata);
+        return await backend.indexTweets(agentId, tweets, metadata);
       } catch (error) {
         log.error("Failed to index tweets", { agentId, error });
         throw error;
       }
     },
 
-    async indexArticles(
-      agentId: string,
-      articles: readonly ArticleForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexArticles(agentId, articles, metadata): Promise<string> {
       try {
-        return await indexer.indexArticles(agentId, articles, metadata);
+        return await backend.indexArticles(agentId, articles, metadata);
       } catch (error) {
         log.error("Failed to index articles", { agentId, error });
         throw error;
       }
     },
 
-    async indexProducts(
-      agentId: string,
-      products: readonly ProductForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexProducts(agentId, products, metadata): Promise<string> {
       try {
-        return await indexer.indexProducts(agentId, products, metadata);
+        return await backend.indexProducts(agentId, products, metadata);
       } catch (error) {
         log.error("Failed to index products", { agentId, error });
         throw error;
       }
     },
 
-    async indexStories(
-      agentId: string,
-      stories: readonly StoryForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexStories(agentId, stories, metadata): Promise<string> {
       try {
-        return await indexer.indexStories(agentId, stories, metadata);
+        return await backend.indexStories(agentId, stories, metadata);
       } catch (error) {
         log.error("Failed to index stories", { agentId, error });
         throw error;
       }
     },
 
-    async indexRedditPosts(
-      agentId: string,
-      posts: readonly RedditPostForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexRedditPosts(agentId, posts, metadata): Promise<string> {
       try {
-        return await indexer.indexRedditPosts(agentId, posts, metadata);
+        return await backend.indexRedditPosts(agentId, posts, metadata);
       } catch (error) {
         log.error("Failed to index reddit posts", { agentId, error });
         throw error;
       }
     },
 
-    async indexGithubRepos(
-      agentId: string,
-      repos: readonly GithubRepoForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexGithubRepos(agentId, repos, metadata): Promise<string> {
       try {
-        return await indexer.indexGithubRepos(agentId, repos, metadata);
+        return await backend.indexGithubRepos(agentId, repos, metadata);
       } catch (error) {
         log.error("Failed to index GitHub repos", { agentId, error });
         throw error;
       }
     },
 
-    async indexObservations(
-      agentId: string,
-      observations: readonly ObservationForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexObservations(agentId, observations, metadata): Promise<string> {
       try {
-        return await indexer.indexObservations(agentId, observations, metadata);
+        return await backend.indexObservations(agentId, observations, metadata);
       } catch (error) {
         log.error("Failed to index observations", { agentId, error });
         throw error;
       }
     },
 
-    async indexIdea(
-      agentId: string,
-      idea: IdeaForIndex,
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexIdea(agentId, idea, metadata): Promise<string> {
       try {
-        return await indexer.indexIdea(agentId, idea, metadata);
+        return await backend.indexIdea(agentId, idea, metadata);
       } catch (error) {
         log.error("Failed to index idea", { agentId, error });
         throw error;
       }
     },
 
-    async indexAppReviews(
-      agentId: string,
-      reviews: readonly AppReviewForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexAppReviews(agentId, reviews, metadata): Promise<string> {
       try {
-        return await indexer.indexAppReviews(agentId, reviews, metadata);
+        return await backend.indexAppReviews(agentId, reviews, metadata);
       } catch (error) {
         log.error("Failed to index app reviews", { agentId, error });
         throw error;
       }
     },
 
-    async indexAppRankings(
-      agentId: string,
-      rankings: readonly AppRankingForIndex[],
-      metadata?: Record<string, string>,
-    ): Promise<string> {
+    async indexAppRankings(agentId, rankings, metadata): Promise<string> {
       try {
-        return await indexer.indexAppRankings(agentId, rankings, metadata);
+        return await backend.indexAppRankings(agentId, rankings, metadata);
       } catch (error) {
         log.error("Failed to index app rankings", { agentId, error });
         throw error;
@@ -202,7 +154,7 @@ export function createMemoryManager(config: ManagerConfig): MemoryManager {
       query: string,
       opts?: SearchOptions,
     ): Promise<readonly SearchResult[]> {
-      return search.search(agentId, query, opts);
+      return backend.search(agentId, query, opts);
     },
 
     async getStats(agentId?: string): Promise<MemoryStats> {
@@ -273,17 +225,7 @@ export function createMemoryManager(config: ManagerConfig): MemoryManager {
         await db`DELETE FROM memory_sources WHERE id IN ${db(sourceIds)}`;
         sourcesDeleted = sourceIds.length;
 
-        if (config.qdrantClient?.available) {
-          for (const sourceId of sourceIds) {
-            config.qdrantClient
-              .deletePoints(config.qdrantCollection, {
-                must: [{ key: "sourceId", match: { value: sourceId } }],
-              })
-              .catch((err) =>
-                log.error("Qdrant eviction delete failed", { sourceId, err }),
-              );
-          }
-        }
+        await backend.deleteSourceVectors(sourceIds);
 
         log.info("Memory eviction completed", {
           sourcesDeleted,
