@@ -1,4 +1,6 @@
+import { createLogger } from "../logger"
 import { getDb } from "../store/db"
+import { buildSessionConfig } from "./config"
 import type {
   SigeSession,
   SigeSessionSummary,
@@ -14,10 +16,70 @@ import type {
   SocialSimResult,
 } from "./types"
 
+const log = createLogger("sige:store")
+
+/**
+ * Hydrate a persisted `config_json` into a complete SigeSessionConfig.
+ *
+ * Defense-at-source: a session persisted by an older code path (e.g. a
+ * `buildFastProfile` that did not spread DEFAULT_SIGE_SESSION_CONFIG) can store
+ * a partial config_json missing required fields like `model`. Left untouched
+ * that `undefined` threads into every `config.model` consumer (collectors,
+ * formulateGame, discoverFrontiers, signal synthesis) and crashed the Anthropic
+ * provider (`undefined.toLowerCase()`). We therefore:
+ *   1. JSON.parse defensively — a malformed/empty blob falls back to defaults
+ *      (logged) instead of throwing out of the row mapper.
+ *   2. Merge the parsed partial over DEFAULT_SIGE_SESSION_CONFIG (deep-merging
+ *      incentiveWeights) via the canonical buildSessionConfig, so every field
+ *      always has a concrete value.
+ */
+function hydrateConfig(rawConfigJson: unknown, sessionId: unknown): SigeSessionConfig {
+  if (typeof rawConfigJson !== "string" || rawConfigJson.length === 0) {
+    log.warn("sige session config_json missing/empty; using defaults", {
+      sessionId,
+    })
+    return buildSessionConfig()
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawConfigJson)
+  } catch (error) {
+    log.warn("sige session config_json malformed; using defaults", {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return buildSessionConfig()
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
+    log.warn("sige session config_json is not an object; using defaults", {
+      sessionId,
+    })
+    return buildSessionConfig()
+  }
+
+  const merged = buildSessionConfig(parsed as Partial<SigeSessionConfig>)
+
+  // Surface stale rows so the underlying persistence bug stays visible rather
+  // than being silently papered over by the merge.
+  const filled = (Object.keys(merged) as (keyof SigeSessionConfig)[]).filter(
+    (key) => (parsed as Record<string, unknown>)[key] === undefined,
+  )
+  if (filled.length > 0) {
+    log.warn("sige session config_json missing fields; filled from defaults", {
+      sessionId,
+      filled,
+    })
+  }
+
+  return merged
+}
+
 // ─── Row Mappers ─────────────────────────────────────────────────────────────
 
-function rowToSession(row: Record<string, unknown>): SigeSession {
-  const config: SigeSessionConfig = JSON.parse(row.config_json as string)
+export function rowToSession(row: Record<string, unknown>): SigeSession {
+  const config: SigeSessionConfig = hydrateConfig(row.config_json, row.id)
 
   const gameFormulation: GameFormulation | undefined =
     row.game_formulation_json
@@ -282,7 +344,7 @@ interface SigeSessionSummaryRow {
  * Heavy artifact columns are NOT present — never pass a full `*` row here.
  */
 export function rowToSessionSummary(row: SigeSessionSummaryRow): SigeSessionSummary {
-  const config: SigeSessionConfig = JSON.parse(row.config_json as string)
+  const config: SigeSessionConfig = hydrateConfig(row.config_json, row.id)
 
   const seedInput = (row.seed_input as string | null) ?? undefined
   const origin = ((row.origin as string | null) ?? "human") as SigeSessionOrigin

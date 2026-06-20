@@ -1,5 +1,45 @@
 import { test, expect, describe } from "bun:test";
-import { summarizeUsage } from "./anthropic-direct";
+import { buildModel, resolveModelMetadata, summarizeUsage } from "./anthropic-direct";
+
+describe("resolveModelMetadata (fail-safe on missing model)", () => {
+  test("does not TypeError on undefined — returns conservative default", () => {
+    // Regression: a stale persisted SIGE config threaded model=undefined here,
+    // and the old `modelId.toLowerCase()` crashed with an opaque TypeError.
+    expect(() => resolveModelMetadata(undefined)).not.toThrow();
+    const meta = resolveModelMetadata(undefined);
+    expect(meta.inputPerMillion).toBe(3);
+    expect(meta.outputPerMillion).toBe(15);
+    expect(meta.contextWindow).toBe(200_000);
+  });
+
+  test("does not TypeError on empty string — returns conservative default", () => {
+    expect(() => resolveModelMetadata("")).not.toThrow();
+    expect(resolveModelMetadata("").maxTokens).toBe(16_384);
+  });
+
+  test("still resolves a known model by longest-prefix", () => {
+    const meta = resolveModelMetadata("claude-sonnet-4-6-20260101");
+    expect(meta.contextWindow).toBe(1_000_000);
+    expect(meta.maxTokens).toBe(64_000);
+  });
+});
+
+describe("buildModel (never emits an undefined model id)", () => {
+  test("falls back to the default Anthropic model id when given undefined", () => {
+    const model = buildModel(undefined);
+    expect(model.id).toBe("claude-sonnet-4-6");
+    expect(model.name).toBe("claude-sonnet-4-6");
+    expect(model.id).toBeTruthy();
+  });
+
+  test("falls back to the default id when given an empty string", () => {
+    expect(buildModel("").id).toBe("claude-sonnet-4-6");
+  });
+
+  test("preserves an explicit model id verbatim", () => {
+    expect(buildModel("claude-opus-4-8").id).toBe("claude-opus-4-8");
+  });
+});
 
 describe("summarizeUsage", () => {
   test("surfaces cache-write tokens that the old log dropped", () => {
