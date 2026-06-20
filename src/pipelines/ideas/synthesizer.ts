@@ -32,6 +32,7 @@ import type {
 } from "./types";
 import { applyMmr } from "../../memory/mmr";
 import { getDb } from "../../store/db";
+import type { ModelProvider } from "../../store/model-routing";
 import { loadIncumbentNames } from "./incumbents";
 import type { IdeaCategory } from "../types";
 import { selectWithNoveltyReserve } from "./generate-wide";
@@ -59,11 +60,18 @@ export function sanitizeForPrompt(text: string): string {
     .slice(0, 80000);
 }
 
-export function buildChatOptions(model: string) {
+/**
+ * Build the shared chat options for an idea-pipeline LLM call. The PROVIDER is
+ * routed (the generator path threads `provider` from `getModelRoute(
+ * "pipeline.generator")` through the synthesis passes). Defaults to "anthropic"
+ * so unthreaded callers (collectors, deep-search reranker) keep today's
+ * behavior.
+ */
+export function buildChatOptions(model: string, provider: ModelProvider = "anthropic") {
   return {
     systemPrompt: "",
     model,
-    provider: "anthropic" as const,
+    provider,
     agentId: "idea-pipeline",
     usageContext: { channel: "pipeline" as const, chatId: "ideas", source: "workflow" as const },
   };
@@ -227,6 +235,12 @@ export async function synthesizeFromTrends(input: {
   readonly maxIdeas: number;
   readonly model: string;
   /**
+   * Provider for the generator LLM calls. Routed from
+   * `getModelRoute("pipeline.generator")` (or a `config.provider` override) by
+   * the Pipeline phase. Optional — absent → "anthropic" (today's behavior).
+   */
+  readonly provider?: ModelProvider;
+  /**
    * #5 Positive few-shot block of human-validated ideas (built by the Pipeline
    * phase via buildValidatedExemplars). Optional — backward-compatible; injected
    * only when smart.validatedExemplars is on AND the caller supplies it.
@@ -302,6 +316,7 @@ export async function synthesizeFromTrends(input: {
   readonly graphDirective?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
+  const provider: ModelProvider = input.provider ?? "anthropic";
 
   const smart = loadConfig().pipelines.ideas.smart;
   const chainOfEvidence = smart.chainOfEvidence;
@@ -337,6 +352,7 @@ export async function synthesizeFromTrends(input: {
       chainOfEvidence,
       segmentDirective,
       graphDirective,
+      provider,
     );
   } catch (err) {
     log.error("Pass 1 failed, falling back to single-pass synthesis", { err });
@@ -402,6 +418,7 @@ export async function synthesizeFromTrends(input: {
           generateWide,
           antiExemplars,
           outcomeMemory,
+          provider,
         );
         if (rawCandidates.length === 0) {
           log.warn(
@@ -417,6 +434,7 @@ export async function synthesizeFromTrends(input: {
             chainOfEvidence,
             antiExemplars,
             outcomeMemory,
+            provider,
           );
         }
       } catch (wideErr) {
@@ -434,6 +452,7 @@ export async function synthesizeFromTrends(input: {
           chainOfEvidence,
           antiExemplars,
           outcomeMemory,
+          provider,
         );
       }
     } else {
@@ -447,6 +466,7 @@ export async function synthesizeFromTrends(input: {
         chainOfEvidence,
         antiExemplars,
         outcomeMemory,
+        provider,
       );
     }
   } catch (err) {
@@ -507,6 +527,7 @@ export async function synthesizeFromTrends(input: {
             decidedAt: input.competabilityDecidedAt,
           }
         : undefined,
+      provider,
     );
   } catch (err) {
     log.error("Pass 3 failed, returning uncritiqued candidates", { err });
