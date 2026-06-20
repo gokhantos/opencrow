@@ -88,9 +88,21 @@ export interface OpportunityPathsParams {
  *   uses                                                 → USES
  *   category                                             → IN_CATEGORY
  *   available_on                                         → AVAILABLE_ON
- * Each canonicalized edge also keeps an `orig_type` property (reversible). The
- * graph is periodically re-canonicalized — there is no write-side prevention, so
- * un-canonicalized edges can transiently reappear before the next cleanup run.
+ *   targets / for / aimed_at                             → TARGETS
+ * Each canonicalized edge also keeps an `orig_type` property (reversible).
+ *
+ * Casing is enforced on BOTH sides now: the mem0 sidecar uppercases relationship
+ * types at write (mem0-server/app.py), and this query folds live types to upper
+ * before the membership test (`toUpper(type(r)) IN $relWhitelist`), so an
+ * un-canonicalized lowercase edge that transiently appears (e.g. from the
+ * code-graph ingestion path) is still matched rather than silently dropped. The
+ * weekly canonicalizer still owns the deeper synonym/label/orphan consolidation.
+ *
+ * `TARGETS` carries product → audience-segment signal (e.g. trip_planner →
+ * backpackers, correlation_studio → researchers) — directly relevant to matching
+ * an opportunity to its user segment, and low-noise. Catch-all/taxonomy types
+ * (RELATED_TO, IS_A, DESCRIBED_AS) and noisy ones (CAUSES) are deliberately
+ * excluded to keep multi-hop paths clean.
  */
 export const REL_WHITELIST: readonly string[] = [
   "COMPLAINED_ABOUT",
@@ -101,6 +113,7 @@ export const REL_WHITELIST: readonly string[] = [
   "USES",
   "IN_CATEGORY",
   "AVAILABLE_ON",
+  "TARGETS",
 ];
 
 /**

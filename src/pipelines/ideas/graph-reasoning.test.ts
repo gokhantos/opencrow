@@ -114,6 +114,8 @@ describe("REL_WHITELIST", () => {
     expect(REL_WHITELIST).toContain("LACKS");
     expect(REL_WHITELIST).toContain("HAS_FEATURE");
     expect(REL_WHITELIST).toContain("AVAILABLE_ON");
+    // product → audience-segment signal, added for opportunity↔segment matching.
+    expect(REL_WHITELIST).toContain("TARGETS");
     expect(new Set(REL_WHITELIST).size).toBe(REL_WHITELIST.length);
   });
 
