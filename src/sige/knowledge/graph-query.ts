@@ -83,22 +83,50 @@ const CREDIBILITY_SCORE_WEIGHT = 5;
 // ─── Mem0 → GraphView Conversion ──────────────────────────────────────────────
 
 /**
+ * Stable UUID prefix for nodes synthesized from a relation endpoint (a graph
+ * entity name such as "app_store"). Distinct from memory-fact node UUIDs (mem0
+ * memory ids), so the two never collide.
+ */
+const ENTITY_NODE_PREFIX = "entity:";
+
+/**
+ * Normalizes an entity name for use as a lookup key and stable UUID seed.
+ * mem0/Neo4j entity endpoints are short snake_case names (e.g. "app_store");
+ * lowercasing + trimming makes the source/target join stable regardless of
+ * incidental casing or padding.
+ */
+function normalizeEntityName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/**
  * Converts Mem0 search results into a GraphView.
  *
- * Each Mem0 memory item becomes a GraphNode. The `memory` text is used as the
- * node name (truncated) and summary. The `metadata.entityType` field is used
- * when present, otherwise "Fact" is the default type.
+ * Two node populations are unified into one graph:
  *
- * Each Mem0 relation triple becomes a GraphEdge. Source and target strings are
- * matched against node names to resolve UUIDs; unresolvable endpoints are given
- * synthetic UUIDs so no data is silently dropped.
+ *  1. **Memory-fact nodes** — each Mem0 memory item becomes a GraphNode keyed by
+ *     its mem0 id. The (truncated) `memory` text is the node name; `summary` is
+ *     the full fact. `metadata.entityType` is used when present, else "Fact".
+ *
+ *  2. **Entity nodes** — Mem0/Neo4j relation triples reference graph *entities*
+ *     by name (e.g. "app_store"), NOT by memory-fact text. Those names never
+ *     match a fact-text node, so historically every edge resolved to a synthetic
+ *     UUID and was then dropped by the connectivity filter (edgeCount always 0).
+ *     We therefore synthesize one GraphNode per distinct relation endpoint, keyed
+ *     by its normalized entity name with a stable `entity:<name>` UUID, so edges
+ *     resolve to real, retained nodes and survive truncation's connectivity check.
+ *
+ * Each relation triple then becomes a GraphEdge whose endpoints resolve to a
+ * memory-fact node when one matches by name, otherwise to the entity node for
+ * that endpoint. Entity nodes are deduplicated, so an entity appearing on many
+ * relations is a single node.
  */
 export function mem0ResultToGraphView(
   memories: readonly Mem0Memory[],
   relations: readonly Mem0Relation[],
 ): GraphView {
-  // Build nodes from memories
-  const nodes: GraphNode[] = memories.map((m) => ({
+  // Build memory-fact nodes
+  const memoryNodes: GraphNode[] = memories.map((m) => ({
     uuid: m.id,
     name: truncateName(m.memory),
     entityType:
@@ -110,26 +138,42 @@ export function mem0ResultToGraphView(
       typeof m.metadata?.source_type === "string" ? m.metadata.source_type : undefined,
   }));
 
-  // Build a name → uuid lookup for edge resolution
+  // name → uuid lookup for edge resolution, seeded with memory-fact node names.
   const nameToUuid = new Map<string, string>();
-  for (const node of nodes) {
+  for (const node of memoryNodes) {
     nameToUuid.set(node.name.toLowerCase(), node.uuid);
   }
 
-  // Build edges from relations
-  const edges: GraphEdge[] = relations.map((r, i) => {
-    const sourceKey = r.source.toLowerCase();
-    const targetKey = r.target.toLowerCase();
+  // Synthesize entity nodes from distinct relation endpoints so edges can join
+  // to real nodes. Keyed by normalized entity name; a stable `entity:<name>`
+  // UUID dedups an entity that appears across multiple relations into one node.
+  const entityNodes: GraphNode[] = [];
+  const entityUuidByName = new Map<string, string>();
 
-    // Best-effort UUID resolution: exact match first, then substring match
-    const sourceUuid =
-      nameToUuid.get(sourceKey) ??
-      findBestMatchUuid(nameToUuid, sourceKey) ??
-      `synthetic:src:${i}`;
-    const targetUuid =
-      nameToUuid.get(targetKey) ??
-      findBestMatchUuid(nameToUuid, targetKey) ??
-      `synthetic:tgt:${i}`;
+  const ensureEntityNode = (rawName: string): string => {
+    const key = normalizeEntityName(rawName);
+    // Prefer an existing memory-fact node whose name matches this entity, so a
+    // fact that genuinely names the entity stays the canonical node.
+    const factUuid = nameToUuid.get(key);
+    if (factUuid !== undefined) return factUuid;
+
+    const existing = entityUuidByName.get(key);
+    if (existing !== undefined) return existing;
+
+    const uuid = `${ENTITY_NODE_PREFIX}${key}`;
+    entityUuidByName.set(key, uuid);
+    entityNodes.push({
+      uuid,
+      name: rawName.trim(),
+      entityType: "Entity",
+    });
+    return uuid;
+  };
+
+  // Build edges from relations, resolving each endpoint to a real node.
+  const edges: GraphEdge[] = relations.map((r, i) => {
+    const sourceUuid = ensureEntityNode(r.source);
+    const targetUuid = ensureEntityNode(r.target);
 
     return {
       uuid: `rel:${i}:${r.source}:${r.target}`,
@@ -140,6 +184,7 @@ export function mem0ResultToGraphView(
     };
   });
 
+  const nodes: GraphNode[] = [...memoryNodes, ...entityNodes];
   const summary = buildSummary(nodes, edges);
   return { nodes, edges, summary };
 }
@@ -240,26 +285,50 @@ function buildSummary(nodes: readonly GraphNode[], edges: readonly GraphEdge[]):
 
 // ─── Truncation ───────────────────────────────────────────────────────────────
 
-function retainConnectedEdges(
-  edges: readonly GraphEdge[],
-  nodeUuids: ReadonlySet<string>,
-): readonly GraphEdge[] {
-  return edges.filter(
-    (e) => nodeUuids.has(e.sourceNodeUuid) && nodeUuids.has(e.targetNodeUuid),
-  );
-}
-
 function truncateGraph(
   nodes: readonly GraphNode[],
   edges: readonly GraphEdge[],
   maxNodes: number,
   maxEdges: number,
 ): { readonly nodes: readonly GraphNode[]; readonly edges: readonly GraphEdge[] } {
-  const truncatedNodes = nodes.slice(0, maxNodes);
-  const nodeUuids = new Set(truncatedNodes.map((n) => n.uuid));
-  const connectedEdges = retainConnectedEdges(edges, nodeUuids);
-  const truncatedEdges = connectedEdges.slice(0, maxEdges);
-  return { nodes: truncatedNodes, edges: truncatedEdges };
+  // Take the top-ranked nodes up to the cap.
+  const primaryNodes = nodes.slice(0, maxNodes);
+  const retainedUuids = new Set(primaryNodes.map((n) => n.uuid));
+
+  // Keep only edges whose endpoints are both retained, then cap edge count.
+  // Endpoint nodes can fall outside the primary slice (entity nodes are appended
+  // after relevance-ranked memory nodes), so pull those endpoint nodes back into
+  // the node set — still bounded by maxNodes — rather than dropping the edge.
+  // This preserves the "no dangling endpoints" invariant (every edge endpoint is
+  // a node present in the result) while ensuring real relations survive truncation.
+  const byUuid = new Map(nodes.map((n) => [n.uuid, n]));
+  const finalNodes: GraphNode[] = [...primaryNodes];
+  const finalEdges: GraphEdge[] = [];
+
+  for (const edge of edges) {
+    if (finalEdges.length >= maxEdges) break;
+
+    const endpointUuids = [edge.sourceNodeUuid, edge.targetNodeUuid];
+    const missing = endpointUuids.filter((id) => !retainedUuids.has(id));
+
+    // Adding both endpoints must not exceed the node cap; if it would, skip this
+    // edge rather than overflow or admit a dangling endpoint.
+    if (finalNodes.length + missing.length > maxNodes) continue;
+
+    // Every endpoint must resolve to a real node we know about.
+    const resolved = endpointUuids.every((id) => retainedUuids.has(id) || byUuid.has(id));
+    if (!resolved) continue;
+
+    for (const id of missing) {
+      const node = byUuid.get(id);
+      if (node === undefined) continue;
+      finalNodes.push(node);
+      retainedUuids.add(id);
+    }
+    finalEdges.push(edge);
+  }
+
+  return { nodes: finalNodes, edges: finalEdges };
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -588,16 +657,4 @@ function truncateName(text: string): string {
   // Use up to the first sentence or 80 chars as the node name
   const firstSentence = text.split(/[.!?]/)[0] ?? text;
   return firstSentence.trim().slice(0, 80);
-}
-
-function findBestMatchUuid(
-  nameToUuid: Map<string, string>,
-  key: string,
-): string | undefined {
-  for (const [name, uuid] of nameToUuid) {
-    if (name.includes(key) || key.includes(name)) {
-      return uuid;
-    }
-  }
-  return undefined;
 }

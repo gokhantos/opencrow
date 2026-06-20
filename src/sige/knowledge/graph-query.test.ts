@@ -81,6 +81,143 @@ describe("mem0ResultToGraphView metadata lifting", () => {
   });
 });
 
+// ─── mem0ResultToGraphView: relations become real edges ─────────────────────
+
+describe("mem0ResultToGraphView relation → edge resolution", () => {
+  // Reproduces the bug: relation endpoints are entity NAMES (e.g. "app_store"),
+  // not fact text, so they never matched fact-text node names and every edge was
+  // dropped by the connectivity filter (edgeCount always 0).
+  const rel = (source: string, relationship: string, target: string): Mem0Relation => ({
+    source,
+    relationship,
+    target,
+  });
+
+  test("entity-name relations produce edges connected to real nodes", () => {
+    const view = mem0ResultToGraphView(
+      // Fact-text memories — none of these names match the entity endpoints below.
+      [mem("m1", "ChatGPT provides content filters for parents"), mem("m2", "App Store hosts ChatGPT")],
+      [rel("app_store", "PROVIDES", "chatgpt"), rel("chatgpt", "PROVIDES", "content_filters")],
+    );
+
+    expect(view.edges.length).toBeGreaterThan(0);
+    expect(view.edges).toHaveLength(2);
+
+    // Every edge endpoint must be a node present in the graph (no synthetic
+    // dangling endpoints).
+    const nodeUuids = new Set(view.nodes.map((n) => n.uuid));
+    for (const edge of view.edges) {
+      expect(nodeUuids.has(edge.sourceNodeUuid)).toBe(true);
+      expect(nodeUuids.has(edge.targetNodeUuid)).toBe(true);
+      expect(edge.sourceNodeUuid.startsWith("synthetic:")).toBe(false);
+      expect(edge.targetNodeUuid.startsWith("synthetic:")).toBe(false);
+    }
+  });
+
+  test("dedups a repeated entity endpoint into a single node", () => {
+    const view = mem0ResultToGraphView(
+      [],
+      [rel("app_store", "PROVIDES", "chatgpt"), rel("app_store", "HOSTS", "whatnot")],
+    );
+
+    // app_store appears in both relations → exactly one entity node for it.
+    const appStoreNodes = view.nodes.filter((n) => n.name === "app_store");
+    expect(appStoreNodes).toHaveLength(1);
+
+    // Both edges point at the same app_store uuid.
+    const appStoreUuid = appStoreNodes[0]?.uuid;
+    expect(view.edges[0]?.sourceNodeUuid).toBe(appStoreUuid);
+    expect(view.edges[1]?.sourceNodeUuid).toBe(appStoreUuid);
+  });
+
+  test("entity nodes are typed Entity and matched case-insensitively", () => {
+    const view = mem0ResultToGraphView(
+      [],
+      [rel("App_Store", "PROVIDES", "ChatGPT"), rel("app_store", "HOSTS", "chatgpt")],
+    );
+
+    // Case-insensitive dedup: App_Store / app_store collapse to one node, as do
+    // ChatGPT / chatgpt.
+    expect(view.nodes).toHaveLength(2);
+    expect(view.nodes.every((n) => n.entityType === "Entity")).toBe(true);
+  });
+
+  test("resolves an endpoint to a memory-fact node when its name matches", () => {
+    // A fact whose truncated name equals the entity endpoint should be reused as
+    // the canonical node instead of synthesizing a separate entity node.
+    const view = mem0ResultToGraphView(
+      [mem("fact-app", "app_store")],
+      [rel("app_store", "HOSTS", "chatgpt")],
+    );
+
+    // The edge source resolves to the memory-fact node, not a synthetic entity.
+    expect(view.edges[0]?.sourceNodeUuid).toBe("fact-app");
+    // Only the chatgpt endpoint needed a new entity node.
+    expect(view.nodes.filter((n) => n.uuid.startsWith("entity:"))).toHaveLength(1);
+  });
+
+  test("no relations produces no edges (empty-graph fast path preserved)", () => {
+    const view = mem0ResultToGraphView([mem("m1", "Solo fact")], NO_RELATIONS);
+    expect(view.edges).toHaveLength(0);
+    expect(view.nodes).toHaveLength(1);
+  });
+});
+
+// ─── getFilteredGraphView: edges survive end-to-end ──────────────────────────
+
+describe("getFilteredGraphView edge survival", () => {
+  const rel = (source: string, relationship: string, target: string): Mem0Relation => ({
+    source,
+    relationship,
+    target,
+  });
+
+  test("edges survive truncation and connect real nodes (regression: edgeCount 0)", async () => {
+    const client = fakeClient({
+      memories: [mem("m1", "Some unrelated fact about onboarding", { score: 0.9 })],
+      relations: [rel("app_store", "PROVIDES", "chatgpt"), rel("chatgpt", "PROVIDES", "content_filters")],
+    });
+
+    const filter = getDefaultKnowledgeFilter("rational_player");
+    const view = await getFilteredGraphView(client, "user-1", "rational_player", filter);
+
+    expect(view.edges.length).toBeGreaterThan(0);
+    const nodeUuids = new Set(view.nodes.map((n) => n.uuid));
+    for (const edge of view.edges) {
+      expect(nodeUuids.has(edge.sourceNodeUuid)).toBe(true);
+      expect(nodeUuids.has(edge.targetNodeUuid)).toBe(true);
+    }
+  });
+
+  test("tight maxNodes still keeps edges by pulling endpoint nodes within the cap", async () => {
+    const client = fakeClient({
+      // Many high-score memory facts would otherwise crowd out entity nodes.
+      memories: [
+        mem("f1", "fact one", { score: 0.9 }),
+        mem("f2", "fact two", { score: 0.8 }),
+      ],
+      relations: [rel("app_store", "PROVIDES", "chatgpt")],
+    });
+
+    const filter = getDefaultKnowledgeFilter("rational_player");
+    // maxNodes 3: 2 fact nodes ranked first, then 2 entity endpoints need to fit.
+    // Only one edge whose endpoints (2) fit within remaining cap (3 - some primary).
+    const view = await getFilteredGraphView(client, "user-1", "rational_player", filter, {
+      maxNodes: 3,
+    });
+
+    // With cap 3, primary slice takes f1,f2 + one entity; the second endpoint
+    // would overflow, so the edge is dropped rather than dangling. Verify no
+    // dangling endpoints regardless of which way the cap falls.
+    expect(view.nodes.length).toBeLessThanOrEqual(3);
+    const nodeUuids = new Set(view.nodes.map((n) => n.uuid));
+    for (const edge of view.edges) {
+      expect(nodeUuids.has(edge.sourceNodeUuid)).toBe(true);
+      expect(nodeUuids.has(edge.targetNodeUuid)).toBe(true);
+    }
+  });
+});
+
 // ─── getFullGraph: relevance ranking before truncation ───────────────────────
 
 describe("getFullGraph relevance ranking", () => {
