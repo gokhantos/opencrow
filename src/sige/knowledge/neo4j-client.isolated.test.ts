@@ -189,6 +189,41 @@ describe("Neo4jReadClient.opportunityPaths — success path", () => {
     await client.close();
   });
 
+  test("query is index-backed: :Entity-qualified matches + degree-property filter, no runtime COUNT{}", async () => {
+    okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
+    const client = freshClient();
+    await client.opportunityPaths(PARAMS);
+
+    const { query } = captured.queries[0]!;
+    // Seed AND destination are label-qualified so the property indexes apply
+    // (a bare `{user_id:…}` match is label-less and forces a full node scan).
+    expect(query).toContain("(pain:Entity {user_id: $userId})");
+    expect(query).toContain("(dest:Entity {user_id: $userId})");
+    // Degree filtering reads the precomputed `degree` property, never a runtime
+    // per-node subquery — that subquery was the original >4min timeout cause.
+    expect(query).toContain("pain.degree >= $minDegree");
+    expect(query).toContain("pain.degree <= $maxDegree");
+    expect(query).toContain("n.degree <= $maxDegree");
+    expect(query).not.toContain("COUNT {");
+    expect(query).not.toContain("COUNT{");
+    await client.close();
+  });
+
+  test("variable-length pattern carries a LITERAL upper bound (not unbounded *2..)", async () => {
+    okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
+    const client = freshClient();
+    await client.opportunityPaths(PARAMS);
+
+    const { query } = captured.queries[0]!;
+    // An unbounded `*2..` makes the planner expand an enormous frontier and
+    // times out; a literal ceiling lets it prune at expansion time. The
+    // caller's runtime $maxHops is still enforced via the length guard.
+    expect(query).toMatch(/\[rels\*2\.\.\d+\]/);
+    expect(query).not.toMatch(/\[rels\*2\.\.\]/);
+    expect(query).toContain("length(path) <= toInteger($maxHops)");
+    await client.close();
+  });
+
   test("forwards the per-query { timeout } transaction config", async () => {
     okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
     const client = freshClient(1234);

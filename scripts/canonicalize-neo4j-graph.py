@@ -21,7 +21,7 @@ drifts back toward sprawl between runs. `src/sige/knowledge/neo4j-client.ts`
 `REL_WHITELIST` is the canonical vocabulary's consumer and must stay in sync with
 the canonical relationship set this tool produces.
 
-FOUR PHASES (idempotent; each preserves the original so the whole run is reversible)
+FIVE PHASES (idempotent; phases 1-2 preserve the original so they are reversible)
 ------------------------------------------------------------------------------------
   1. RETYPE   relationships -> canonical type   (sets r.orig_type; skips already-done)
   2. RELABEL  typed nodes   -> canonical label  (sets n.orig_label; `__User__` skipped)
@@ -31,6 +31,13 @@ FOUR PHASES (idempotent; each preserves the original so the whole run is reversi
               fractions, `user_id:` artifacts, etc.). `app_store`/`play_store`
               are real platforms and are NEVER deleted (they are relabeled in
               phase 2, not removed).
+  5. INDEX    ensure the `:Entity` base label on every node, recompute the
+              `degree` property, and create the three `:Entity` property indexes
+              (`entity_user_id` / `entity_name` / `entity_degree`) the SIGE
+              read-side graph-reasoning query relies on to stay INDEX-BACKED and
+              avoid a per-node runtime degree subquery (the original >4min
+              timeout). Additive + idempotent. MUST stay in sync with
+              `src/sige/knowledge/neo4j-client.ts`.
 
 Reversibility: every retyped edge keeps `orig_type` and every relabeled node
 keeps `orig_label`, so the structural changes can be unwound. Phases 3/4 DELETE
@@ -319,6 +326,58 @@ def phase4_delete(db: Neo4jHttp, apply: bool) -> None:
         print("  deleted pre-existing orphans + stoplist")
 
 
+# SIGE read-side index requirements. The graph-reasoning Cypher
+# (`src/sige/knowledge/neo4j-client.ts`) qualifies every traversed node to the
+# `:Entity` base label and filters on a precomputed `n.degree` property so its
+# bounded multi-hop query is INDEX-BACKED instead of doing a full-scan +
+# per-node `COUNT { (n)--() }` (which timed out at >4min on sige-global). These
+# three steps make that contract hold and are idempotent. Keep in sync with the
+# index names / property in neo4j-client.ts.
+_ENTITY_LABEL = "Entity"
+_ENTITY_INDEXES = (
+    ("entity_user_id", "user_id"),
+    ("entity_name", "name"),
+    ("entity_degree", "degree"),
+)
+
+
+def phase5_index(db: Neo4jHttp, apply: bool) -> None:
+    """Ensure the `:Entity` base label, a recomputed `degree` property, and the
+    three `:Entity` property indexes the SIGE graph-reasoning query relies on.
+
+    Idempotent: labeling skips nodes already carrying `:Entity`; `degree` is
+    recomputed wholesale (cheap relative to the rest of the run and correct after
+    phases 1-4 may have changed connectivity); indexes use IF NOT EXISTS.
+    """
+    unlabeled = db.count(f"MATCH (n) WHERE NOT n:{esc(_ENTITY_LABEL)} RETURN count(n)")
+    total = db.count("MATCH (n) RETURN count(n)")
+    print(
+        f"\nPHASE 5 INDEX: {unlabeled} nodes need :{_ENTITY_LABEL}, "
+        f"{total} nodes will get degree recomputed, "
+        f"{len(_ENTITY_INDEXES)} indexes ensured"
+    )
+    if not apply:
+        return
+    if unlabeled:
+        db.one(f"MATCH (n) WHERE NOT n:{esc(_ENTITY_LABEL)} SET n:{esc(_ENTITY_LABEL)}")
+    # Recompute degree for every Entity node (undirected degree, matching the
+    # `COUNT { (n)--() }` the Cypher used to evaluate at query time).
+    db.one(
+        f"MATCH (n:{esc(_ENTITY_LABEL)}) SET n.degree = COUNT {{ (n)--() }}"
+    )
+    for name, prop in _ENTITY_INDEXES:
+        db.one(
+            f"CREATE INDEX {esc(name)} IF NOT EXISTS "
+            f"FOR (n:{esc(_ENTITY_LABEL)}) ON (n.{prop})"
+        )
+    # Block until the new indexes are populated so the next read is fast.
+    db.one("CALL db.awaitIndexes(120000)")
+    print(
+        f"  ensured :{_ENTITY_LABEL} on all nodes, recomputed degree, "
+        "indexes ONLINE"
+    )
+
+
 def run_canonicalize(args: argparse.Namespace) -> int:
     rel_map, lbl_map = load_maps()
     password = resolve_password(args.env_file)
@@ -334,6 +393,7 @@ def run_canonicalize(args: argparse.Namespace) -> int:
     phase2_relabel(db, lbl_map, args.apply)
     phase3_merge(db, args.apply)
     phase4_delete(db, args.apply)
+    phase5_index(db, args.apply)
 
     if args.apply:
         print_counts(db, "\nAFTER")
