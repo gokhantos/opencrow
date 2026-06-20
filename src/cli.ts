@@ -20,6 +20,7 @@ function printHelp(): void {
   w.write(
     "  update                          Pull latest + reinstall + restart\n",
   );
+  w.write("  native up                       Provision + start the native macOS stack\n");
   w.write("  version                         Show version info\n");
   w.write(
     "  service [core|web] <cmd>        Service management (install|reinstall|uninstall|start|stop|restart|status)\n",
@@ -37,6 +38,17 @@ async function main(): Promise<void> {
     case "doctor": {
       const { runDoctor } = await import("./cli/doctor.ts");
       await runDoctor();
+      break;
+    }
+
+    case "native": {
+      const sub = rest[0];
+      if (sub !== "up") {
+        process.stderr.write("Usage: opencrow native up\n");
+        process.exit(1);
+      }
+      const { runNativeUp } = await import("./cli/native/provision.ts");
+      await runNativeUp();
       break;
     }
 
