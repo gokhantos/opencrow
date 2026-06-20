@@ -24,6 +24,11 @@ describe("memorySearch.backend schema default", () => {
   test("an invalid backend value is rejected", () => {
     expect(() => memorySearchConfigSchema.parse({ backend: "pinecone" })).toThrow();
   });
+
+  test("mem0SharedUserId defaults to 'opencrow-shared'", () => {
+    const parsed = memorySearchConfigSchema.parse({});
+    expect(parsed.mem0SharedUserId).toBe("opencrow-shared");
+  });
 });
 
 describe("OPENCROW_MEMORY_BACKEND env override", () => {

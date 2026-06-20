@@ -360,6 +360,10 @@ export const memorySearchConfigSchema = z.object({
   backend: memoryBackendKindSchema,
   autoIndex: z.boolean().default(true),
   shared: z.boolean().default(true),
+  // mem0 backend only: the shared `user_id` used for the scraped-signal pool
+  // when `shared` is true. Distinct from SIGE's sige-global/sige-ideas userIds.
+  // Ignored by the qdrant backend.
+  mem0SharedUserId: z.string().default("opencrow-shared"),
   vectorWeight: z.number().min(0).max(1).default(0.7),
   textWeight: z.number().min(0).max(1).default(0.3),
   defaultLimit: z.number().int().min(1).default(5),

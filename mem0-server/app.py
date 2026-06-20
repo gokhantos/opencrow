@@ -291,6 +291,11 @@ class AddBody(BaseModel):
     user_id: str
     metadata: dict | None = None
     enable_graph: bool | None = None  # accepted, ignored (graph always on)
+    # Whether mem0 should run its LLM "fact extraction" phase on the input.
+    # None → preserve mem0's own default (True). The OpenCrow memory backend
+    # passes infer=False to store verbatim chunks (parity with the Qdrant path);
+    # SIGE omits it, so its requests stay byte-identical to before this field.
+    infer: bool | None = None
 
 
 class SearchBody(BaseModel):
@@ -298,6 +303,11 @@ class SearchBody(BaseModel):
     user_id: str
     limit: int | None = 30
     enable_graph: bool | None = None  # accepted, ignored
+    # Optional top-level metadata-equality filters forwarded to mem0.search.
+    # Only passed through when provided, so omitting it yields a byte-identical
+    # call to mem.search(...) as before this field existed. Server-side filter
+    # support is version-dependent; callers also post-filter client-side.
+    filters: dict | None = None
 
 
 app = FastAPI(title="OpenCrow Mem0 Sidecar")
@@ -331,6 +341,9 @@ def add_memories(body: AddBody) -> dict:
             messages=[m.model_dump() for m in body.messages],
             user_id=body.user_id,
             metadata=body.metadata or {},
+            # Preserve mem0's default (True) when unset — SIGE stays identical;
+            # the memory backend passes False to store verbatim chunks.
+            infer=(body.infer if body.infer is not None else True),
         )
     except Exception as err:  # noqa: BLE001
         log.exception("add failed")
@@ -342,7 +355,17 @@ def add_memories(body: AddBody) -> dict:
 def search_memories(body: SearchBody) -> dict:
     mem = get_memory()
     try:
-        res = mem.search(query=body.query, user_id=body.user_id, limit=body.limit or 30)
+        # Forward metadata filters only when supplied so the no-filter call is
+        # byte-identical to before this field existed.
+        if body.filters is not None:
+            res = mem.search(
+                query=body.query,
+                user_id=body.user_id,
+                limit=body.limit or 30,
+                filters=body.filters,
+            )
+        else:
+            res = mem.search(query=body.query, user_id=body.user_id, limit=body.limit or 30)
     except Exception as err:  # noqa: BLE001
         log.exception("search failed")
         raise HTTPException(status_code=500, detail=str(err)) from err

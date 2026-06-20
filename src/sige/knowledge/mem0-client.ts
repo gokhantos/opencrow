@@ -281,12 +281,17 @@ export class Mem0Client {
     readonly userId: string;
     readonly metadata?: Record<string, unknown>;
     readonly enableGraph?: boolean;
+    // When false, the sidecar stores the content verbatim (no LLM fact
+    // extraction). Omitted → the sidecar preserves mem0's default (True), so
+    // the request body is byte-identical to before this field existed.
+    readonly infer?: boolean;
   }): Promise<Mem0AddResult> {
     const body = {
       messages: [{ role: "user", content: params.content }],
       user_id: params.userId,
       metadata: params.metadata ?? {},
       enable_graph: params.enableGraph ?? true,
+      ...(params.infer !== undefined ? { infer: params.infer } : {}),
     };
 
     let res: Mem0ApiAddResponse | undefined;
@@ -317,9 +322,10 @@ export class Mem0Client {
     readonly items: readonly { readonly content: string; readonly metadata?: Record<string, unknown> }[];
     readonly userId: string;
     readonly enableGraph?: boolean;
+    readonly infer?: boolean;
     readonly maxConcurrent?: number;
   }): Promise<void> {
-    const { items, userId, enableGraph, maxConcurrent = 3 } = params;
+    const { items, userId, enableGraph, infer, maxConcurrent = 3 } = params;
 
     if (items.length === 0) return;
 
@@ -334,6 +340,7 @@ export class Mem0Client {
             userId,
             metadata: item.metadata,
             enableGraph,
+            infer,
           }),
         ),
       );
