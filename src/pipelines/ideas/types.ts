@@ -294,6 +294,28 @@ export interface GeneratedIdeaCandidate {
   /** Human-readable reasons for each gate/cap that fired (prefixed hard-gate:/demand-evidence-gate:). */
   readonly giantGateReasons?: readonly string[];
   /**
+   * Layer B "competability gate": the 4 moat-dimension scores (0..5; 5 = the
+   * incumbent moat is overwhelming) emitted by Pass 3 critique. Optional —
+   * populated only when smart.competability.enabled is on. The inverse of GIANT
+   * defensibility (penalizes a moat the SMALL builder cannot overcome).
+   */
+  readonly competability?: {
+    readonly capital: number;
+    readonly networkEffect: number;
+    readonly logistics: number;
+    readonly regulated: number;
+  };
+  /** Overall "a small builder can win v1" score (0..5; 5 = wide open). */
+  readonly competabilityOverall?: number;
+  /**
+   * Whether the competability gate would reject this idea (shadow-mode: stored
+   * regardless; the idea is only dropped when smart.competability.enforceGate is
+   * true). Mirrors giantGated semantics.
+   */
+  readonly competabilityGated?: boolean;
+  /** Human-readable reason for the competability decision. */
+  readonly competabilityReason?: string;
+  /**
    * Phase 1 "generate-wide": the opportunity SEGMENT this candidate was tagged
    * into (consumer/b2b_saas/devtools/...). Optional — populated when
    * smart.generateWide.multiSegment is on (the model emits it and/or it is

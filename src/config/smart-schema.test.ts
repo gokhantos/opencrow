@@ -90,7 +90,33 @@ describe("smartConfigSchema", () => {
         avoidCap: 5,
         searchLimit: 12,
       },
+      incumbentExclusion: {
+        enabled: true,
+        topN: 100,
+      },
+      competability: {
+        enabled: true,
+        enforceGate: false,
+        rejectThreshold: 2,
+        softPenaltyThreshold: 2.5,
+        topNIncumbents: 100,
+      },
     });
+  });
+
+  test("Layer C incumbent exclusion defaults ON (pure-logic safe)", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.incumbentExclusion.enabled).toBe(true);
+    expect(parsed.incumbentExclusion.topN).toBe(100);
+  });
+
+  test("Layer B competability is enabled but SHADOW (enforceGate OFF) by default", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.competability.enabled).toBe(true);
+    // Shadow mode: computed + logged, never rejects until explicitly enforced.
+    expect(parsed.competability.enforceGate).toBe(false);
+    expect(parsed.competability.rejectThreshold).toBe(2);
+    expect(parsed.competability.softPenaltyThreshold).toBe(2.5);
   });
 
   test("external-service and expensive gates default OFF", () => {

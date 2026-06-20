@@ -31,6 +31,8 @@ import type {
   SynthesisResult,
 } from "./types";
 import { applyMmr } from "../../memory/mmr";
+import { getDb } from "../../store/db";
+import { loadIncumbentNames } from "./incumbents";
 import type { IdeaCategory } from "../types";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import {
@@ -444,6 +446,19 @@ export async function synthesizeFromTrends(input: {
   let critiquedCandidates: readonly GeneratedIdeaCandidate[];
 
   try {
+    // Layer B: load the incumbent set for the competability heuristic pre-filter
+    // (empty / no-op when competability is off or the load fails). Best-effort.
+    let incumbentSet: ReadonlySet<string> = new Set<string>();
+    if (smart.competability.enabled) {
+      try {
+        incumbentSet = await loadIncumbentNames(
+          getDb(),
+          smart.competability.topNIncumbents,
+        );
+      } catch (err) {
+        log.warn("Competability incumbent load failed; heuristic degrades to no-op", { err });
+      }
+    }
     critiquedCandidates = await critiqueIdeas(
       rawCandidates,
       trends.summary,
@@ -452,6 +467,8 @@ export async function synthesizeFromTrends(input: {
       model,
       smart.giant,
       antiExemplars,
+      smart.competability,
+      incumbentSet,
     );
   } catch (err) {
     log.error("Pass 3 failed, returning uncritiqued candidates", { err });

@@ -31,7 +31,17 @@ import {
   aggregateGiant,
   type ParsedGiant,
 } from "./giant";
-import type { GiantConfig, GenerateWideConfig } from "../../config/schema";
+import {
+  parseCompetability,
+  decideCompetability,
+  heuristicMoatFlags,
+  type CompetabilityScore,
+} from "./competability";
+import type {
+  GiantConfig,
+  GenerateWideConfig,
+  CompetabilityConfig,
+} from "../../config/schema";
 import {
   parseVerbalizedSeeds,
   planSegmentDirectives,
@@ -448,6 +458,8 @@ interface GiantCritiqueEntry {
   readonly parsed: ParsedGiant;
   readonly painSeverity: number;
   readonly verdict: string;
+  /** Layer B: parsed competability moat score (present only when emitted). */
+  readonly competability?: CompetabilityScore;
 }
 
 /**
@@ -467,7 +479,10 @@ export async function critiqueIdeas(
   model: string,
   giant: GiantConfig,
   antiExemplars = "",
+  competability?: CompetabilityConfig,
+  incumbentSet: ReadonlySet<string> = new Set<string>(),
 ): Promise<readonly GeneratedIdeaCandidate[]> {
+  const competabilityOn = competability?.enabled === true;
   const ideaList = candidates.map((c, i) =>
     `${i + 1}. "${c.title}"\n   Summary: ${c.summary.slice(0, 300)}\n   Reasoning: ${c.reasoning.slice(0, 200)}\n   Target: ${c.targetAudience}\n   Features: ${c.keyFeatures.slice(0, 4).join(", ")}`,
   ).join("\n\n");
@@ -494,6 +509,20 @@ ${antiSection}
 ${ideaList}
 
 ${GIANT_RUBRIC_PROMPT}
+${
+  competabilityOn
+    ? `
+=== COMPETABILITY (can a SMALL / solo builder realistically WIN this market?) ===
+This is the INVERSE of defensibility: score the INCUMBENT moat the small builder must OVERCOME.
+Each moat dimension is 0..5 where 5 = the moat is OVERWHELMING for a small builder:
+  - capital: capex / sustained funding burn to even launch (fleets, hardware, content licensing, deep subsidies).
+  - networkEffect: value needs critical-mass users/supply already locked up by incumbents (two-sided marketplaces, social).
+  - logistics: physical ops / fulfillment / field operations at scale.
+  - regulated: licensing / compliance / regulatory capture as a barrier.
+Then give ONE overall 0..5 score for "a small builder CAN realistically win v1" (5 = wide open, 0 = impossible).
+A "build a DoorDash / Uber / Spotify" idea must score overall LOW (<=1.5). A sharp niche tool a solo dev can ship scores HIGH.`
+    : ""
+}
 
 Return ONLY a JSON array with one entry per idea (in the same order):
 [
@@ -527,7 +556,21 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       "defensibility": "string",
       "marketShape": "string",
       "founderFit": "string"
-    },
+    },${
+      competabilityOn
+        ? `
+    "competability": {
+      "dimensions": {
+        "capital": number,
+        "networkEffect": number,
+        "logistics": number,
+        "regulated": number
+      },
+      "overall": number,
+      "rationale": "string"
+    },`
+        : ""
+    }
     "verdict": "string — one sentence on the idea's core strength or fatal flaw"
   }
 ]`;
@@ -597,11 +640,17 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       typeof r.painSeverity === "number"
         ? Math.min(5, Math.max(0, r.painSeverity))
         : parsed.scores.acuteProblem;
+    // Layer B: tolerantly parse the competability moat object when present.
+    const competabilityScore =
+      competabilityOn && "competability" in r
+        ? parseCompetability(r.competability)
+        : undefined;
     const entry: GiantCritiqueEntry = {
       title,
       parsed,
       painSeverity,
       verdict: typeof r.verdict === "string" ? r.verdict : "",
+      ...(competabilityScore ? { competability: competabilityScore } : {}),
     };
     critiqueByTitle.set(title.toLowerCase().trim(), entry);
     critiquesInOrder.push(entry);
@@ -640,6 +689,39 @@ Return ONLY a JSON array with one entry per idea (in the same order):
 
     const qualityScore = compositeToQualityScore(aggregate.composite);
 
+    // ── Layer B: competability gate ─────────────────────────────────────────
+    // Cheap heuristic pre-filter first (no extra LLM cost), then the LLM-scored
+    // moat decision. Computed whenever competability is enabled; ENFORCED only
+    // when enforceGate is on (shadow mode by default, mirroring giant gates).
+    const competabilityScore = critique.competability;
+    const enforceCompetability =
+      competabilityOn && competability?.enforceGate === true;
+    let competabilityGated = false;
+    let competabilityReason = "";
+
+    if (competabilityOn) {
+      const heuristic = heuristicMoatFlags(
+        `${candidate.title}. ${candidate.summary} ${candidate.targetAudience}`,
+        incumbentSet,
+      );
+      if (competabilityScore) {
+        const decision = decideCompetability(competabilityScore, {
+          rejectThreshold: competability?.rejectThreshold,
+          softPenaltyThreshold: competability?.softPenaltyThreshold,
+        });
+        competabilityGated = !decision.pass;
+        competabilityReason = decision.reason;
+      }
+      // The heuristic can ALSO flag an obvious uncompetable shell even when the
+      // LLM was lenient — treat that as a gate too.
+      if (heuristic.obvious) {
+        competabilityGated = true;
+        competabilityReason = competabilityReason
+          ? `${competabilityReason}; ${heuristic.reason}`
+          : heuristic.reason;
+      }
+    }
+
     const scored: GeneratedIdeaCandidate = {
       ...candidate,
       qualityScore,
@@ -651,6 +733,15 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       giantComposite: aggregate.composite,
       giantGated: aggregate.gated,
       giantGateReasons: aggregate.gateReasons,
+      ...(competabilityScore
+        ? {
+            competability: competabilityScore.dimensions,
+            competabilityOverall: competabilityScore.overall,
+          }
+        : {}),
+      ...(competabilityOn
+        ? { competabilityGated, competabilityReason }
+        : {}),
     };
 
     // SHADOW MODE: gating is always computed + stored; the idea is only actually
@@ -670,6 +761,23 @@ Return ONLY a JSON array with one entry per idea (in the same order):
         composite: aggregate.composite,
         gateReasons: aggregate.gateReasons,
         verdict: critique.verdict,
+      });
+    }
+
+    // Layer B competability gate (independent of the GIANT gate above).
+    if (competabilityGated) {
+      if (enforceCompetability) {
+        log.info("Idea KILLED by competability gate (enforced)", {
+          title: candidate.title,
+          overall: competabilityScore?.overall,
+          reason: competabilityReason,
+        });
+        continue;
+      }
+      log.info("Idea WOULD-KILL by competability gate (shadow mode, kept)", {
+        title: candidate.title,
+        overall: competabilityScore?.overall,
+        reason: competabilityReason,
       });
     }
 

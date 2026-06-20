@@ -248,6 +248,62 @@ export function isGenericArchetype(idea: ScoredIdeaRow): GenericVerdict {
   return { generic: false, reason: "" };
 }
 
+// ── Uncompetable-market detector (PURE) ───────────────────────────────────────
+
+/**
+ * Moat-keyword families that signal a structurally hard-to-enter market for a
+ * small builder (delivery/logistics/marketplace/regulated). Complements the
+ * template detector above: a "DoorDash for X" idea can pass the template check
+ * (high acuteProblem) yet still be uncompetable. Conservative — these are FLAGS.
+ */
+const UNCOMPETABLE_MARKET_PATTERNS: readonly { readonly re: RegExp; readonly label: string }[] = [
+  { re: /\b(food|grocery|package|parcel|meal)\s+deliver(y|ies)\b/i, label: "physical delivery / last-mile logistics" },
+  { re: /\blast[-\s]?mile\b/i, label: "last-mile logistics" },
+  { re: /\bride[-\s]?(hail|shar)(ing|e)\b/i, label: "ride-hailing fleet ops" },
+  { re: /\b(two|2)[-\s]?sided\s+marketplace\b/i, label: "two-sided marketplace network effect" },
+  { re: /\bgig\s+(economy|marketplace)\b/i, label: "gig marketplace network effect" },
+  { re: /\bsocial\s+network(ing)?\b/i, label: "social-network cold-start moat" },
+  { re: /\b(streaming\s+(service|platform)|content\s+licens(e|ing))\b/i, label: "content-licensing capital moat" },
+  { re: /\b(neobank|banking\s+app|insuranc(e|er))\b/i, label: "regulated / licensed market" },
+];
+
+/** Result of {@link isUncompetableMarket}: verdict + human-readable why. */
+export interface UncompetableVerdict {
+  readonly uncompetable: boolean;
+  readonly reason: string;
+}
+
+/**
+ * Pure heuristic flagging an idea whose MARKET is structurally uncompetable for a
+ * small/solo builder — a moat (logistics, two-sided network, capital, regulation)
+ * the small builder cannot overcome. Complements {@link isGenericArchetype}
+ * (which catches templated SHELLS) by catching well-specified but un-winnable
+ * markets.
+ *
+ * Flagged when the title/summary names a known uncompetable-market pattern.
+ * Conservative: a high GIANT defensibility axis (>= 4) means the idea itself has
+ * a credible counter-moat, so it is NOT flagged (the model judged it winnable).
+ * PURE — no DB, clock, or rng.
+ */
+export function isUncompetableMarket(idea: ScoredIdeaRow): UncompetableVerdict {
+  const scores = idea.giantScores ?? undefined;
+  const defensibility = scores ? clampScore(scores.defensibility) : undefined;
+  // The idea has a credible counter-moat of its own — don't flag the market.
+  if (typeof defensibility === "number" && defensibility >= 4) {
+    return { uncompetable: false, reason: "" };
+  }
+
+  const haystack = `${idea.title ?? ""}. ${idea.summary ?? ""}`;
+  const match = UNCOMPETABLE_MARKET_PATTERNS.find((p) => p.re.test(haystack));
+  if (match) {
+    return {
+      uncompetable: true,
+      reason: `${match.label} — incumbent moat a small builder cannot overcome`,
+    };
+  }
+  return { uncompetable: false, reason: "" };
+}
+
 // ── Grounding ─────────────────────────────────────────────────────────────────
 
 /** A "grounded" idea has real demand evidence (demand score or whitespace). */
