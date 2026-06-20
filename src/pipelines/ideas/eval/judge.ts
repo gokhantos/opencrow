@@ -62,7 +62,7 @@ export interface JudgeOptions {
   /** Master switch — judging only runs when true. Default false. */
   readonly enabled?: boolean;
   readonly model?: string;
-  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
+  readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic" | "opencode";
   /** Cap the number of ideas sent to the judge in one call. Default 25. */
   readonly maxIdeas?: number;
   /**

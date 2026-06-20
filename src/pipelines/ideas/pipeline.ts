@@ -42,6 +42,7 @@ import { fetchOutcomeMemoryGuidance } from "./outcome-memory";
 import { fetchGraphReasoningDirective } from "./graph-reasoning";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import { getDb } from "../../store/db";
+import { getModelRoute } from "../../store/model-routing";
 import { annotateOriginality, checkForDuplicates, verifyEvidence } from "./validate";
 import { buildValidatedExemplars, deepSearch, synthesizeFromTrends } from "./synthesizer";
 
@@ -213,7 +214,13 @@ export async function runIdeasPipeline(
   let graphClient: Neo4jReadClient | null = null;
 
   try {
-    const model = config.model ?? "claude-sonnet-4-6";
+    // Model-routing is the source of truth for the idea generator model. An
+    // explicit `config.model` (operator override) still wins; otherwise the
+    // `pipeline.generator` route (DB-backed, hot reloaded) supplies it.
+    // NOTE: provider stays "anthropic" (hardcoded in synthesizer.buildChatOptions);
+    // routing the generator PROVIDER would require threading it through the whole
+    // synthesizer-generation call chain — deferred (see model-routing plan Task 7).
+    const model = config.model ?? (await getModelRoute("pipeline.generator")).model;
     const smart = loadConfig().pipelines.ideas.smart;
     const sigeConfig = loadConfig().sige;
     const taste = smart.taste;

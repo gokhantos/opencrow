@@ -9,7 +9,7 @@ export interface SubagentConfig {
   maxChildren: number;
 }
 
-export type AiProvider = "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
+export type AiProvider = "openrouter" | "agent-sdk" | "alibaba" | "anthropic" | "opencode";
 
 export interface SkillInfo {
   id: string;

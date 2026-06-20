@@ -13,6 +13,7 @@
 import type { SigeAutoConfig } from "../../config/schema";
 import { getErrorMessage } from "../../lib/error-serialization";
 import { createLogger } from "../../logger";
+import { getModelRoute } from "../../store/model-routing";
 import { DEFAULT_SIGE_SESSION_CONFIG } from "../run";
 import { createSession } from "../store";
 import type { SigeSessionConfig } from "../types";
@@ -20,8 +21,6 @@ import { acquireSigeRunSlot, countRunnableSessions } from "./run-guard";
 
 const log = createLogger("sige:scheduler");
 
-/** Haiku model id for the cheap autonomous "fast profile". */
-const FAST_AGENT_MODEL = "claude-haiku-4-5-20251001";
 /** Daily cadence interval in ms (24h). */
 const DAILY_INTERVAL_MS = 86_400_000;
 
@@ -44,13 +43,14 @@ export function cadenceToIntervalMs(cadence: SigeAutoConfig["cadence"]): number 
 }
 
 /**
- * The trimmed "fast profile" used for autonomous sessions: Haiku agent model
- * and reduced expert/social rounds to keep the unattended cost bounded. PURE.
+ * The trimmed "fast profile" used for autonomous sessions: a cheap agent model
+ * (resolved by the caller from the `sige.fast-agent` route) and reduced
+ * expert/social rounds to keep the unattended cost bounded. PURE.
  */
-function buildFastProfile(): SigeSessionConfig {
+function buildFastProfile(model: string): SigeSessionConfig {
   return {
     ...DEFAULT_SIGE_SESSION_CONFIG,
-    agentModel: FAST_AGENT_MODEL,
+    agentModel: model,
     expertRounds: 2,
     socialRounds: 2,
   };
@@ -92,6 +92,10 @@ export function createAutonomousSigeScheduler(deps: {
         return { enqueued: false, reason: "already-active" };
       }
 
+      // Fast-agent model comes from the `sige.fast-agent` route (DB-backed, hot
+      // reloaded per tick).
+      const { model: fastAgentModel } = await getModelRoute("sige.fast-agent");
+
       const sessionId = crypto.randomUUID();
       try {
         await createSession({
@@ -99,7 +103,7 @@ export function createAutonomousSigeScheduler(deps: {
           seedInput: null,
           origin: "auto",
           status: "pending",
-          configJson: JSON.stringify(buildFastProfile()),
+          configJson: JSON.stringify(buildFastProfile(fastAgentModel)),
         });
       } catch (err) {
         // A NOT NULL violation here means migration 020 (seed_input nullable)

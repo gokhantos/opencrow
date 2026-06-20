@@ -507,7 +507,7 @@ export async function formulateGame(
   seedInput: string,
   options: {
     readonly model: string;
-    readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
+    readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic" | "opencode";
     readonly sessionId: string;
     readonly preferredGameType?: GameType;
     /**
