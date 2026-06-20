@@ -224,6 +224,27 @@ describe("Neo4jReadClient.opportunityPaths — success path", () => {
     await client.close();
   });
 
+  test("matches rel types case-INSENSITIVELY against the uppercase whitelist", async () => {
+    okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
+    const client = freshClient();
+    await client.opportunityPaths(PARAMS);
+
+    const { query } = captured.queries[0]!;
+    // Canonicalization is a WEEKLY backfill, but the sidecar / code-graph
+    // ingestion write fresh LOWERCASE rel types between runs. Both whitelist
+    // predicates (seed expansion + per-path) MUST fold the live type to upper
+    // before the membership test, or those un-canonicalized edges are silently
+    // dropped from reasoning until the next cleanup. Assert on the query text
+    // since this lane has no live DB.
+    expect(query).toContain("toUpper(type(rr))"); // seed predicate
+    expect(query).toContain("toUpper(type(r)) IN $relWhitelist"); // per-path predicate
+    // The returned hop label is emitted in the same canonical (uppercase) form.
+    expect(query).toContain("toUpper(type(relationships(path)[i - 1]))");
+    // Regression guard: no remaining case-sensitive `type(r) IN $relWhitelist`.
+    expect(query).not.toMatch(/[^(]type\(r\) IN \$relWhitelist/);
+    await client.close();
+  });
+
   test("forwards the per-query { timeout } transaction config", async () => {
     okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
     const client = freshClient(1234);
