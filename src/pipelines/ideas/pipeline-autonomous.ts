@@ -25,6 +25,7 @@ import { discoverFrontiers } from "../../sige/discovery/frontier-discovery";
 import { generateDivergentIdeas } from "../../sige/run";
 import { acquireSigeRunSlot } from "../../sige/auto/run-guard";
 import { getDb } from "../../store/db";
+import { getModelRoute } from "../../store/model-routing";
 import {
   createPipelineStep,
   findCompletedStep,
@@ -32,6 +33,7 @@ import {
   updatePipelineStep,
 } from "../store";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
+import { resolveGeneratorRoute } from "./generator-route";
 import type { CollectorContext } from "./collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
 import { getConsumedIds, markConsumed } from "./consumption";
@@ -193,7 +195,13 @@ export async function runAutonomousSige(
       apiToken: sigeConfig.mem0.apiToken,
     });
     const userId = sigeConfig.mem0.userId;
-    const model = config.model ?? "claude-haiku-4-5-20251001";
+    // Collectors run on the dashboard-controlled `pipeline.generator` route
+    // (model + provider as a coupled pair — see resolveGeneratorRoute). No
+    // hardcoded model: a bare config.model would mismatch the route provider.
+    const { model, provider } = resolveGeneratorRoute(
+      config,
+      await getModelRoute("pipeline.generator"),
+    );
 
     // ── Outcome-memory parity with the seeded pipeline ────────────────────────
     // Read past verdicts at synthesis (gated readAtSynthesis) and write fresh
@@ -233,7 +241,7 @@ export async function runAutonomousSige(
       runStep(
         runId,
         "landscape",
-        () => analyzeAppLandscape(model, collectorCtx),
+        () => analyzeAppLandscape(model, collectorCtx, provider),
         (t) => `${t.trendingCategories.length} trend categories`,
       ).catch((err) => {
         log.warn("autonomous: landscape collector failed", { runId, err: getErrorMessage(err) });
@@ -242,7 +250,7 @@ export async function runAutonomousSige(
       runStep(
         runId,
         "reviews",
-        () => clusterReviews(undefined, model, collectorCtx),
+        () => clusterReviews(undefined, model, collectorCtx, provider),
         (p) => `${p.clusters.length} review clusters`,
       ).catch((err) => {
         log.warn("autonomous: reviews collector failed", { runId, err: getErrorMessage(err) });
@@ -251,7 +259,7 @@ export async function runAutonomousSige(
       runStep(
         runId,
         "capabilities",
-        () => scanCapabilities(model, collectorCtx),
+        () => scanCapabilities(model, collectorCtx, provider),
         (c) => `${c.capabilities.length} capabilities`,
       ).catch((err) => {
         log.warn("autonomous: capabilities collector failed", { runId, err: getErrorMessage(err) });
