@@ -54,6 +54,10 @@ async function del(app: ReturnType<typeof makeApp>, path: string): Promise<Respo
 // A key we can write + delete safely (it's in MANAGED_KEYS and test-owned)
 const TEST_KEY = "VOYAGE_API_KEY";
 
+// A newly added managed key, used to verify the write/mask path covers the
+// config-as-data additions too.
+const NEW_TEST_KEY = "GITHUB_TOKEN";
+
 // ---------------------------------------------------------------------------
 // DB lifecycle
 // ---------------------------------------------------------------------------
@@ -61,13 +65,17 @@ const TEST_KEY = "VOYAGE_API_KEY";
 beforeEach(async () => {
   await initDb(process.env.DATABASE_URL);
   const db = getDb();
-  // Clear any leftover test secret
-  await db.unsafe(`DELETE FROM config_overrides WHERE namespace = 'secrets' AND key = '${TEST_KEY}'`);
+  // Clear any leftover test secrets
+  await db.unsafe(
+    `DELETE FROM config_overrides WHERE namespace = 'secrets' AND key IN ('${TEST_KEY}', '${NEW_TEST_KEY}')`,
+  );
 });
 
 afterEach(async () => {
   const db = getDb();
-  await db.unsafe(`DELETE FROM config_overrides WHERE namespace = 'secrets' AND key = '${TEST_KEY}'`);
+  await db.unsafe(
+    `DELETE FROM config_overrides WHERE namespace = 'secrets' AND key IN ('${TEST_KEY}', '${NEW_TEST_KEY}')`,
+  );
   await closeDb();
 });
 
@@ -92,6 +100,33 @@ describe("GET /secrets", () => {
     expect(keys).toContain("OPENCROW_WEB_TOKEN");
     expect(keys).toContain("OPENROUTER_API_KEY");
     expect(keys).toContain(TEST_KEY);
+  });
+
+  it("exposes every newly managed credential key (config-as-data completeness)", async () => {
+    const app = makeApp();
+    const res = await get(app, "/secrets");
+    const body = await json<{ data: Array<{ key: string }> }>(res);
+    const keys = body.data.map((s) => s.key);
+
+    // Every credential the app reads should be manageable from the Secrets UI.
+    const required = [
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "MEM0_LLM_API_KEY",
+      "OPENCODE_API_KEY",
+      "NEO4J_PASSWORD",
+      "GITHUB_TOKEN",
+      "BRAVE_API_KEY",
+      "FIRECRAWL_API_KEY",
+      "QDRANT_API_KEY",
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_BASE_URL",
+      "OPENCROW_INTERNAL_TOKEN",
+      "OPENCROW_INTERNAL_LLM_MODEL",
+      "OPENCROW_INTERNAL_LLM_PROVIDER",
+    ];
+    for (const key of required) {
+      expect(keys).toContain(key);
+    }
   });
 
   it("each entry has the expected shape", async () => {
@@ -146,6 +181,23 @@ describe("PUT /secrets/:key", () => {
     // Masked value should not expose the full secret
     expect(entry!.masked).toBeDefined();
     expect(entry!.masked).not.toBe("route-test-secret-xyz");
+  });
+
+  it("stores + masks a newly managed key (GITHUB_TOKEN) as source=db", async () => {
+    const app = makeApp();
+    const raw = "ghp_route_test_token_abcdef";
+    const putRes = await put(app, `/secrets/${NEW_TEST_KEY}`, { value: raw });
+    expect(putRes.status).toBe(200);
+
+    const res = await get(app, "/secrets");
+    const body = await json<{
+      data: Array<{ key: string; set: boolean; source: string | null; masked: string | null }>;
+    }>(res);
+    const entry = body.data.find((s) => s.key === NEW_TEST_KEY);
+    expect(entry).toBeDefined();
+    expect(entry!.set).toBe(true);
+    expect(entry!.source).toBe("db");
+    expect(entry!.masked).not.toBe(raw);
   });
 
   it("400 on unknown key", async () => {

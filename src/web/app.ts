@@ -33,6 +33,13 @@ import { createSigeRoutes } from "./routes/sige";
 import { createPipelineRoutes } from "./routes/pipelines";
 import { createModelRoutingRoutes } from "./routes/model-routing";
 import { createInternalLlmRoutes } from "./routes/internal-llm";
+import { createConfigSignalsRoutes } from "./routes/config-signals";
+import { createConfigSigeRoutes } from "./routes/config-sige";
+import { createConfigIdeasRoutes } from "./routes/config-ideas";
+import { createConfigGraphRoutes } from "./routes/config-graph";
+import { createEmbeddingsMemoryRoutes } from "./routes/config-embeddings-memory";
+import { createConfigRuntimeRoutes } from "./routes/config-runtime";
+import { createConfigIntrospectRoutes } from "./routes/config-introspect";
 import type { BookmarkProcessor } from "../sources/x/bookmarks/processor";
 import type { AutolikeProcessor } from "../sources/x/interactions/processor";
 import type { AutofollowProcessor } from "../sources/x/follow/processor";
@@ -101,7 +108,16 @@ export function createWebApp(deps: WebAppDeps): Hono {
   // Guarded by OPENCROW_INTERNAL_TOKEN, fail-closed. Mounted before the /api/*
   // auth block so it uses its own token rather than the web UI token.
   app.use("/internal/*", async (c, next) => {
-    const expected = process.env.OPENCROW_INTERNAL_TOKEN;
+    // Resolve DB-first (Secrets UI) with env fallback, per-request so a config
+    // change takes effect without a restart (mirrors the /api/* auth below).
+    const { getSecret } = await import("../config/secrets");
+    let expected: string | undefined;
+    try {
+      expected = await getSecret("OPENCROW_INTERNAL_TOKEN");
+    } catch (err) {
+      log.error("Failed to resolve internal token — failing closed", { err });
+      return c.json({ error: { message: "internal API auth unavailable" } }, 503);
+    }
     if (!expected) {
       return c.json({ error: { message: "internal API not configured" } }, 503);
     }
@@ -406,6 +422,20 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
   const sige = createSigeRoutes();
   app.route("/api", sige);
+
+  // Config-as-data routes. All land under the auth-guarded /api/* middleware
+  // above, mirroring how features/secrets routers are mounted. Each writes a
+  // partial config_overrides row that the loader deep-merges over env+defaults.
+  app.route("/api/config", createConfigSignalsRoutes()); // GET/PUT /api/config/signals
+  app.route("/api", createConfigSigeRoutes()); // GET /api/config/sige, PUT /api/config/sige/{core,auto}
+  app.route("/api/config", createConfigIdeasRoutes()); // GET /api/config/ideas, PUT /api/config/ideas/:section
+  app.route("/api/config/graph", createConfigGraphRoutes()); // GET/PUT /api/config/graph
+  app.route(
+    "/api/config/embeddings-memory",
+    createEmbeddingsMemoryRoutes(),
+  ); // GET /api/config/embeddings-memory, PUT memory + embeddings/dimensions
+  app.route("/api/config/runtime", createConfigRuntimeRoutes()); // GET/PUT /api/config/runtime/{server,sandbox}
+  app.route("/api", createConfigIntrospectRoutes()); // GET /api/config/effective
 
   return app;
 }

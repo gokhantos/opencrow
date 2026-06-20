@@ -8,6 +8,7 @@ import type { createOpenCrowMcpServer } from "./mcp-bridge";
 import type { ToolFilter } from "../agents/types";
 import { isToolGranted } from "../tools/privilege";
 import { createLogger } from "../logger";
+import { getSecret } from "../config/secrets";
 import { join } from "path";
 import { homedir } from "os";
 import { mkdirSync, symlinkSync, existsSync } from "fs";
@@ -110,10 +111,19 @@ export function buildSystemPromptOption(customPrompt: string): {
 /**
  * Build the mcpServers config object based on enabled flags in AgentOptions.
  */
-export function buildMcpServers(
+export async function buildMcpServers(
   options: AgentOptions,
   opencrowMcp: ReturnType<typeof createOpenCrowMcpServer>,
-): Record<string, McpServerConfig> {
+): Promise<Record<string, McpServerConfig>> {
+  // Resolve credentials that get injected into MCP child process env DB-first
+  // (Secrets UI) with env fallback. Resolved once here rather than reading
+  // process.env at each spawn site below.
+  const [qdrantApiKey, braveApiKey, firecrawlApiKey] = await Promise.all([
+    getSecret("QDRANT_API_KEY"),
+    getSecret("BRAVE_API_KEY"),
+    getSecret("FIRECRAWL_API_KEY"),
+  ]);
+
   return {
     "opencrow-tools": opencrowMcp,
     ...(options.browserEnabled
@@ -196,9 +206,7 @@ export function buildMcpServers(
             args: ["qdrant-mcp-server"],
             env: {
               QDRANT_URL: process.env.QDRANT_URL ?? "http://127.0.0.1:6333",
-              ...(process.env.QDRANT_API_KEY
-                ? { QDRANT_API_KEY: process.env.QDRANT_API_KEY }
-                : {}),
+              ...(qdrantApiKey ? { QDRANT_API_KEY: qdrantApiKey } : {}),
             },
           },
         }
@@ -210,9 +218,7 @@ export function buildMcpServers(
             command: "npx",
             args: ["-y", "brave-search-mcp"],
             env: {
-              ...(process.env.BRAVE_API_KEY
-                ? { BRAVE_API_KEY: process.env.BRAVE_API_KEY }
-                : {}),
+              ...(braveApiKey ? { BRAVE_API_KEY: braveApiKey } : {}),
             },
           },
         }
@@ -224,9 +230,7 @@ export function buildMcpServers(
             command: "npx",
             args: ["-y", "firecrawl-mcp"],
             env: {
-              ...(process.env.FIRECRAWL_API_KEY
-                ? { FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY }
-                : {}),
+              ...(firecrawlApiKey ? { FIRECRAWL_API_KEY: firecrawlApiKey } : {}),
             },
           },
         }

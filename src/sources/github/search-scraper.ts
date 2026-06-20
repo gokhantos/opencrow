@@ -9,6 +9,7 @@ import {
 } from "./store";
 import { getErrorMessage } from "../../lib/error-serialization";
 import { getOverride } from "../../store/config-overrides";
+import { getSecret } from "../../config/secrets";
 import { loadScraperIntervalMs } from "../scraper-config";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 
@@ -161,7 +162,8 @@ async function fetchSearchPage(
     "X-GitHub-Api-Version": "2022-11-28",
   };
 
-  const token = process.env.GITHUB_TOKEN;
+  // Resolve the GitHub token DB-first (Secrets UI) with env fallback.
+  const token = await getSecret("GITHUB_TOKEN");
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }

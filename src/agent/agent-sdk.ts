@@ -309,7 +309,7 @@ async function runQuery(
         maxTurns,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
-        mcpServers: buildMcpServers(options, opencrowMcp),
+        mcpServers: await buildMcpServers(options, opencrowMcp),
         disallowedTools: buildDisallowedTools(options),
         stderr: stderrCapture.handler,
         ...buildThinkingOptions(options),
