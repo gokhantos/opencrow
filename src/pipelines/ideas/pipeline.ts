@@ -300,7 +300,7 @@ export async function runIdeasPipeline(
     const trends = await runStep(
       runId,
       "landscape",
-      () => analyzeAppLandscape(model, collectorCtx),
+      () => analyzeAppLandscape(model, collectorCtx, provider),
       (t) =>
         `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points${t.insights ? " (with LLM insights)" : ""}`,
     );
@@ -314,7 +314,7 @@ export async function runIdeasPipeline(
     const pains = await runStep(
       runId,
       "reviews",
-      () => clusterReviews(focusCategories, model, collectorCtx),
+      () => clusterReviews(focusCategories, model, collectorCtx, provider),
       (p) =>
         `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)${p.insights ? " (with LLM insights)" : ""}`,
     );
@@ -323,7 +323,7 @@ export async function runIdeasPipeline(
     const capabilities = await runStep(
       runId,
       "capabilities",
-      () => scanCapabilities(model, collectorCtx),
+      () => scanCapabilities(model, collectorCtx, provider),
       (c) =>
         `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
     );
@@ -385,7 +385,7 @@ export async function runIdeasPipeline(
         .slice(0, 6)
         .map((c) => `${c.category} mobile app opportunity`);
 
-      const deepSearchOptions = buildDeepSearchOptions(model, smart, sigeConfig);
+      const deepSearchOptions = buildDeepSearchOptions(model, smart, sigeConfig, provider);
 
       deepSearchContext = await runStep(
         runId,

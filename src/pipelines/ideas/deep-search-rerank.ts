@@ -17,6 +17,7 @@
 import { chat } from "../../agent/chat";
 import { createLogger } from "../../logger";
 import type { SearchResult } from "../../memory/types";
+import type { ModelProvider } from "../../store/model-routing";
 import { buildChatOptions, parseJsonFromResponse, sanitizeForPrompt } from "./synthesizer";
 
 const log = createLogger("pipeline:deep-search-rerank");
@@ -45,6 +46,7 @@ export async function llmListwiseRerank(
   candidates: readonly RerankCandidate[],
   topK: number,
   model: string,
+  provider?: ModelProvider,
 ): Promise<readonly RerankCandidate[]> {
   if (candidates.length === 0) return [];
   if (candidates.length <= topK) return candidates;
@@ -66,7 +68,7 @@ export async function llmListwiseRerank(
 
     const response = await chat(
       [{ role: "user", content: prompt, timestamp: Date.now() }],
-      buildChatOptions(model),
+      buildChatOptions(model, provider),
     );
 
     const order = parseJsonFromResponse<number[]>(response.text, []);
