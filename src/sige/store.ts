@@ -753,49 +753,6 @@ export async function saveSimulationResult(result: {
   `
 }
 
-export async function getSimulationResults(
-  sessionId: string,
-  layer?: "expert" | "social",
-): Promise<
-  readonly {
-    readonly id: string
-    readonly sessionId: string
-    readonly layer: string
-    readonly round: number | null
-    readonly resultJson: string
-    readonly score: number | null
-  }[]
-> {
-  const db = getDb()
-
-  let rows: unknown[]
-
-  if (layer !== undefined) {
-    rows = await db`
-      SELECT id, session_id, layer, round, result_json, score
-      FROM sige_simulation_results
-      WHERE session_id = ${sessionId} AND layer = ${layer}
-      ORDER BY round ASC NULLS FIRST, created_at ASC
-    `
-  } else {
-    rows = await db`
-      SELECT id, session_id, layer, round, result_json, score
-      FROM sige_simulation_results
-      WHERE session_id = ${sessionId}
-      ORDER BY layer ASC, round ASC NULLS FIRST, created_at ASC
-    `
-  }
-
-  return (rows as Record<string, unknown>[]).map((row) => ({
-    id: row.id as string,
-    sessionId: row.session_id as string,
-    layer: row.layer as string,
-    round: row.round as number | null,
-    resultJson: row.result_json as string,
-    score: row.score as number | null,
-  }))
-}
-
 // ─── Idea Score Operations ────────────────────────────────────────────────────
 
 export async function saveIdeaScore(score: {
@@ -827,20 +784,6 @@ export async function getIdeaScores(
     SELECT * FROM sige_idea_scores
     WHERE session_id = ${sessionId}
     ORDER BY fused_score DESC NULLS LAST
-  `
-  return (rows as Record<string, unknown>[]).map(rowToFusedScore)
-}
-
-export async function getTopIdeas(
-  sessionId: string,
-  limit = 10,
-): Promise<readonly FusedScore[]> {
-  const db = getDb()
-  const rows = await db`
-    SELECT * FROM sige_idea_scores
-    WHERE session_id = ${sessionId}
-    ORDER BY fused_score DESC NULLS LAST
-    LIMIT ${limit}
   `
   return (rows as Record<string, unknown>[]).map(rowToFusedScore)
 }
@@ -979,21 +922,6 @@ export async function getSessionProgressRaw(
 }
 
 // ─── Population Dynamics Operations ──────────────────────────────────────────
-
-export async function savePopulationDynamic(entry: {
-  readonly id: string
-  readonly sessionId: string
-  readonly strategy: string
-  readonly fitness: number
-  readonly generation: number
-  readonly metadataJson?: string
-}): Promise<void> {
-  const db = getDb()
-  await db`
-    INSERT INTO sige_population_dynamics (id, session_id, strategy, fitness, generation, metadata_json)
-    VALUES (${entry.id}, ${entry.sessionId}, ${entry.strategy}, ${entry.fitness}, ${entry.generation}, ${entry.metadataJson ?? null})
-  `
-}
 
 export async function getPopulationDynamics(
   sessionId: string,

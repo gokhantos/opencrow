@@ -179,19 +179,3 @@ export function createLaunchdService(
     },
   };
 }
-
-// Backwards-compatible named exports for existing code
-export const installLaunchAgent =
-  createLaunchdService("ai.opencrow.app", "opencrow").install;
-export const uninstallLaunchAgent =
-  createLaunchdService("ai.opencrow.app", "opencrow").uninstall;
-export const startLaunchAgent =
-  createLaunchdService("ai.opencrow.app", "opencrow").start;
-export const stopLaunchAgent =
-  createLaunchdService("ai.opencrow.app", "opencrow").stop;
-export const restartLaunchAgent =
-  createLaunchdService("ai.opencrow.app", "opencrow").restart;
-export const readLaunchAgentStatus =
-  createLaunchdService("ai.opencrow.app", "opencrow").status;
-export const isLaunchAgentInstalled =
-  createLaunchdService("ai.opencrow.app", "opencrow").isInstalled;

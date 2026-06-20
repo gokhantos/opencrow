@@ -200,33 +200,3 @@ export function createSystemdService(
     },
   };
 }
-
-// Backwards-compatible named exports for existing code
-export const installSystemdService = createSystemdService(
-  "opencrow.service",
-  "OpenCrow AI Assistant",
-).install;
-export const uninstallSystemdService = createSystemdService(
-  "opencrow.service",
-  "OpenCrow AI Assistant",
-).uninstall;
-export const startSystemdService = createSystemdService(
-  "opencrow.service",
-  "OpenCrow AI Assistant",
-).start;
-export const stopSystemdService = createSystemdService(
-  "opencrow.service",
-  "OpenCrow AI Assistant",
-).stop;
-export const restartSystemdService = createSystemdService(
-  "opencrow.service",
-  "OpenCrow AI Assistant",
-).restart;
-export const readSystemdServiceStatus = createSystemdService(
-  "opencrow.service",
-  "OpenCrow AI Assistant",
-).status;
-export const isSystemdServiceInstalled = createSystemdService(
-  "opencrow.service",
-  "OpenCrow AI Assistant",
-).isInstalled;

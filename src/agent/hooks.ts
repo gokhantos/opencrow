@@ -19,10 +19,6 @@ function recordHookFailure(hookName: string, error: unknown): void {
   });
 }
 
-export function getHookFailureCounts(): ReadonlyMap<string, number> {
-  return hookFailureCounts;
-}
-
 export interface HooksConfig {
   readonly auditLog?: boolean;
   readonly notifications?: boolean;

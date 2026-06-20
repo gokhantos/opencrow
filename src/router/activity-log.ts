@@ -375,21 +375,3 @@ export function createActivityLog(
   };
 }
 
-/**
- * Backward-compat alias — same API shape but finalize() replaces cleanup().
- */
-export function createProgressTracker(
-  channel: Channel,
-  chatId: string,
-): {
-  readonly onProgress: (event: ProgressEvent) => void;
-  start(): Promise<void>;
-  cleanup(): Promise<void>;
-} {
-  const activityLog = createActivityLog(channel, chatId);
-  return {
-    onProgress: activityLog.onProgress,
-    start: activityLog.start,
-    cleanup: () => activityLog.finalize(),
-  };
-}
