@@ -90,6 +90,7 @@ export async function discoverIntersections(
   model: string,
   chainOfEvidence: boolean,
   segmentDirective = "",
+  graphDirective = "",
 ): Promise<readonly IntersectionHypothesis[]> {
   const insightsSection = buildInsightsSection(trends, pains, capabilities, chainOfEvidence);
   // SEED diversity steering (learned from past verdicts, flag-gated upstream).
@@ -100,10 +101,16 @@ export async function discoverIntersections(
   // segments (not a single new one) so the pool the cap balances is multi-segment.
   // Empty string → prompt is byte-identical to today.
   const diversitySection = segmentDirective ? `${segmentDirective}\n\n` : "";
+  // SEED graph-reasoning steering (multi-hop opportunity paths from the Neo4j
+  // graph, flag-gated upstream). Injected right after the diversity directive so
+  // both shape WHICH intersections are surfaced before the source insights. The
+  // directive is already sanitized + untrusted-fenced. Empty string → prompt is
+  // byte-identical to today.
+  const graphSection = graphDirective ? `${graphDirective}\n\n` : "";
 
   const prompt = `You have structured market intelligence from three sources. Find the non-obvious intersections.
 
-${diversitySection}${insightsSection}
+${diversitySection}${graphSection}${insightsSection}
 
 Generate 15-20 intersection hypotheses. Each hypothesis should represent a SPECIFIC opportunity where:
 - A real pain or gap in the market (from the landscape/review data) meets

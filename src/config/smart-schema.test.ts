@@ -90,6 +90,14 @@ describe("smartConfigSchema", () => {
         avoidCap: 5,
         searchLimit: 12,
       },
+      graphReasoning: {
+        enabled: false,
+        maxHops: 2,
+        maxPaths: 8,
+        searchLimit: 25,
+        minDegree: 3,
+        maxDegree: 200,
+      },
       incumbentExclusion: {
         enabled: true,
         topN: 100,
@@ -173,6 +181,16 @@ describe("smartConfigSchema", () => {
     expect(parsed.outcomeMemory.readAtSynthesis).toBe(true);
     // sigeAuto.memoryWriteback stays OFF — autonomous feedback-loop risk.
     expect(parsed.sigeAuto.memoryWriteback).toBe(false);
+  });
+
+  test("graph reasoning defaults OFF with bounded traversal caps", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.graphReasoning.enabled).toBe(false);
+    expect(parsed.graphReasoning.maxHops).toBe(2);
+    expect(parsed.graphReasoning.maxPaths).toBe(8);
+    expect(parsed.graphReasoning.searchLimit).toBe(25);
+    expect(parsed.graphReasoning.minDegree).toBe(3);
+    expect(parsed.graphReasoning.maxDegree).toBe(200);
   });
 
   test("signalRanking defaults OFF and is gated on top of signalFacets", () => {
