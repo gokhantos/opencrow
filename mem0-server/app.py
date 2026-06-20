@@ -7,7 +7,7 @@ mem0 SDK instance wired to:
   - vector store : Qdrant   (existing container)
   - graph store  : Neo4j    (relations — the only thing SIGE reads)
   - embedder     : Ollama   (host-native, nomic-embed-text)
-  - extraction   : OpenRouter (OpenAI-compatible) → an Anthropic Claude model
+  - extraction   : Ollama   (host-native, via the OpenAI-compatible /v1 endpoint)
 
 This deliberately mirrors the client's request/response contract so no TypeScript
 client changes are needed. The `enable_graph` flag in request bodies is accepted and
@@ -99,16 +99,24 @@ def _build_graph_config() -> dict:
 def _build_llm_config() -> dict:
     """
     Extraction LLM. Defaults to local Ollama (no external key, fully self-hosted).
-    Set MEM0_LLM_PROVIDER=openai + MEM0_LLM_API_KEY/MEM0_LLM_BASE_URL to route to a
-    hosted OpenAI-compatible endpoint (e.g. Alibaba Model Studio → GLM) instead.
-    Use a non-reasoning model: reasoning models stall the always-on graph phase.
+    The `openai` provider is used for the local Ollama OpenAI-compatible endpoint
+    (MEM0_LLM_BASE_URL=http://host.docker.internal:11434/v1). There is intentionally
+    NO external default model: MEM0_LLM_MODEL must be set explicitly so extraction can
+    never silently fall back to a hosted/Anthropic model. Use a non-reasoning model:
+    reasoning models stall the always-on graph phase.
     """
     provider = os.environ.get("MEM0_LLM_PROVIDER", "ollama")
     if provider == "openai":
+        model = os.environ.get("MEM0_LLM_MODEL")
+        if not model:
+            raise RuntimeError(
+                "MEM0_LLM_MODEL must be set when MEM0_LLM_PROVIDER=openai "
+                "(no external fallback model is allowed — keep extraction local)."
+            )
         return {
             "provider": "openai",
             "config": {
-                "model": os.environ.get("MEM0_LLM_MODEL", "anthropic/claude-3.5-haiku"),
+                "model": model,
                 "openai_base_url": os.environ.get("MEM0_LLM_BASE_URL"),
                 "api_key": os.environ.get("MEM0_LLM_API_KEY"),
                 "temperature": 0,
