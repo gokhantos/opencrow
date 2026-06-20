@@ -24,7 +24,12 @@ import { z } from "zod";
 import { createLogger } from "../../logger";
 import type { Mem0Client, Mem0Memory } from "../../sige/knowledge/mem0-client";
 import { sanitizeScrapedField, wrapUntrusted } from "../../sige/untrusted";
+import type { CandidateCompetabilityFields } from "./competability";
 import type { DemandArtifact } from "./demand";
+import {
+  buildMoatLearningsDirective,
+  highMoats,
+} from "./outcome-competability-correlation";
 import { GIANT_AXIS_KEYS } from "./giant";
 import type { Archetype, GiantAggregate, GiantAxisKey } from "./giant";
 import { SEGMENT_IDS } from "./segments";
@@ -40,6 +45,35 @@ export const OUTCOME_VERDICTS = [
   "stored-pending",
   "dedup-rejected",
 ] as const;
+
+/**
+ * Competability slice stamped onto an outcome memory when the moat gate scored the
+ * idea. EFFECTIVE (profile-adjusted) per-moat dimensions + overall, the RAW
+ * (pre-profile) overall for audit, whether the gate would/did reject, and the
+ * builder-expertise domain that matched (discounting the dominant moat). Entirely
+ * OPTIONAL: absent when an idea was never competability-scored (dedup-rejected
+ * themes, pre-feature rows), so a memory with no competability behaves exactly as
+ * today. Mirrors {@link CompetabilityPersistedJson} but flattened into mem0 metadata.
+ */
+export const outcomeCompetabilitySchema = z.object({
+  /** EFFECTIVE (profile-adjusted, decided) per-moat dimensions, each 0..5. */
+  dimensions: z.object({
+    capital: z.number(),
+    networkEffect: z.number(),
+    logistics: z.number(),
+    regulated: z.number(),
+  }),
+  /** EFFECTIVE "a small builder can win v1" overall (0..5; 5 = wide open). */
+  overall: z.number(),
+  /** RAW (pre-profile) overall, when a builder profile discounted the score. */
+  rawOverall: z.number().nullable(),
+  /** Whether the competability gate would/did reject this idea. */
+  gated: z.boolean(),
+  /** Builder expertise domain that matched (discounted the moat), or null. */
+  matchedExpertiseDomain: z.string().nullable(),
+});
+
+export type OutcomeCompetability = Readonly<z.infer<typeof outcomeCompetabilitySchema>>;
 
 /**
  * Structured metadata stamped on every outcome memory. This is the ONLY thing
@@ -59,6 +93,14 @@ export const outcomeMemorySchema = z.object({
   convergenceVeto: z.boolean(),
   demandScore: z.number().nullable(),
   whitespace: z.number().nullable(),
+  /**
+   * Competability/moat signal for this idea, or absent/null when it was never
+   * scored. Optional + nullable so a memory written before this field existed (or
+   * for an un-scored idea) parses cleanly and the read side behaves as today. Kept
+   * OPTIONAL (not `.default(null)`) so the inferred type stays `T | null |
+   * undefined`, matching pre-existing fixtures that omit the field entirely.
+   */
+  competability: outcomeCompetabilitySchema.nullable().optional(),
   runId: z.string(),
   promptVersion: z.string(),
   model: z.string(),
@@ -69,12 +111,49 @@ export type OutcomeMemory = Readonly<z.infer<typeof outcomeMemorySchema>>;
 
 // ─── toOutcomeMemory (PURE) ───────────────────────────────────────────────────
 
-/** Minimal candidate shape needed to build an outcome memory. */
-export interface OutcomeCandidate {
+/**
+ * Minimal candidate shape needed to build an outcome memory. Carries the loose
+ * per-candidate competability fields ({@link CandidateCompetabilityFields}) so the
+ * moat signal can be folded into the memory without an extra DB read — the same
+ * fields the pipeline already persists onto the generated_ideas row. All
+ * competability fields are optional; absent ⇒ the memory carries no moat slice.
+ */
+export interface OutcomeCandidate extends CandidateCompetabilityFields {
   readonly ideaId: string | null;
   readonly segment?: string | null;
   readonly archetype?: Archetype | null;
   readonly giantComposite?: number | null;
+}
+
+/**
+ * Derive the {@link OutcomeCompetability} slice from the loose per-candidate
+ * competability fields. Returns null when the candidate was never scored (no
+ * `competability` dims), so an un-scored idea carries no moat slice and the
+ * read/write paths behave exactly as before. PURE — clamps defensively via the
+ * gate's shared bounds (re-using COMPETABILITY_DIMENSIONS), never throws.
+ */
+export function competabilityFromCandidate(
+  fields: CandidateCompetabilityFields,
+): OutcomeCompetability | null {
+  const dims = fields.competability;
+  if (!dims) return null;
+  const dimensions = {
+    capital: dims.capital,
+    networkEffect: dims.networkEffect,
+    logistics: dims.logistics,
+    regulated: dims.regulated,
+  };
+  return {
+    dimensions,
+    overall:
+      typeof fields.competabilityOverall === "number" ? fields.competabilityOverall : 0,
+    rawOverall:
+      typeof fields.competabilityRawOverall === "number"
+        ? fields.competabilityRawOverall
+        : null,
+    gated: fields.competabilityGated === true,
+    matchedExpertiseDomain: fields.competabilityMatchedExpertiseDomain ?? null,
+  };
 }
 
 /** Verdict assignment for a single idea/theme. */
@@ -156,6 +235,7 @@ export function toOutcomeMemory(
     convergenceVeto: signals.convergenceVeto === true,
     demandScore: demand && Number.isFinite(demand.score) ? demand.score : null,
     whitespace: demand && Number.isFinite(demand.whitespace) ? demand.whitespace : null,
+    competability: competabilityFromCandidate(candidate),
     runId: context.runId,
     promptVersion: context.promptVersion,
     model: context.model,
@@ -168,6 +248,24 @@ export function toOutcomeMemory(
 /** Render a nullable score as a fixed display, "n/a" when null. */
 function num(value: number | null, digits = 1): string {
   return value === null ? "n/a" : value.toFixed(digits);
+}
+
+/**
+ * Render the moat clause for a sentence: the overall "can-win" score, the named
+ * high moats (if any), and the matched builder-expertise domain (if any). Returns
+ * "" when the memory carries no competability slice, so an un-scored idea's
+ * sentence is byte-identical to today. PURE — the matched domain is sanitized
+ * (it can be free text) before it enters the sentence.
+ */
+function moatClause(memory: OutcomeMemory): string {
+  const c = memory.competability;
+  if (!c) return "";
+  const high = highMoats(c);
+  const moats = high.length > 0 ? `high moats: ${high.join(", ")}` : "no high moats";
+  const domain = c.matchedExpertiseDomain
+    ? `; builder-fit domain: ${sanitizeScrapedField(c.matchedExpertiseDomain, 40)}`
+    : "";
+  return ` Competability can-win ${c.overall.toFixed(1)}/5 (${moats})${domain}.`;
 }
 
 /**
@@ -194,7 +292,8 @@ export function renderOutcomeSentence(memory: OutcomeMemory, title: string): str
       const veto = memory.convergenceVeto ? "; jury convergence-veto fired" : "";
       return (
         `Idea "${t}" (segment: ${s}, archetype: ${a}) was ARCHIVED. ` +
-        `GIANT composite ${g}/5 with failing axes: ${axes}; demand ${d}/5${veto}. ` +
+        `GIANT composite ${g}/5 with failing axes: ${axes}; demand ${d}/5${veto}.` +
+        `${moatClause(memory)} ` +
         `Verdict source: ${vs}. Avoid regenerating this archetype/segment pattern ` +
         "unless evidence is materially stronger."
       );
@@ -202,7 +301,8 @@ export function renderOutcomeSentence(memory: OutcomeMemory, title: string): str
     case "validated":
       return (
         `Idea "${t}" (segment: ${s}, archetype: ${a}) was VALIDATED. ` +
-        `GIANT composite ${g}/5; demand ${d}/5; grounded. ` +
+        `GIANT composite ${g}/5; demand ${d}/5; grounded.` +
+        `${moatClause(memory)} ` +
         `Verdict source: ${vs}. Reinforce the rigor of this archetype/segment pattern.`
       );
     case "stored-pending":
@@ -286,7 +386,14 @@ export function buildOutcomeMemoryBlock(
     avoidCap,
   );
 
-  if (reinforce.length === 0 && avoid.length === 0) return "";
+  // Competability-aware moat learnings: correlate the moat signal on retrieved
+  // outcomes with their verdict and distil a bounded directive. PURE, no LLM, no
+  // extra fetch — it reads only the structured competability slice on the SAME
+  // memories. "" when there is no competability-scored evidence, so absent-data is
+  // byte-identical to today.
+  const moatDirective = buildMoatLearningsDirective(retrieved);
+
+  if (reinforce.length === 0 && avoid.length === 0 && moatDirective === "") return "";
 
   const parts: string[] = [HEADER];
 
@@ -298,6 +405,9 @@ export function buildOutcomeMemoryBlock(
     parts.push("AVOID — patterns ARCHIVED or rejected as duplicates (do NOT regenerate):");
     for (const a of avoid) parts.push(bullet(a.memory));
   }
+  // Append the learned moat-scoring directive after the per-idea bullets so the
+  // model reads the aggregate "moat ↔ outcome" lesson last.
+  if (moatDirective !== "") parts.push(moatDirective);
 
   return parts.join("\n");
 }
@@ -563,8 +673,14 @@ async function deletePriorOutcomeMemories(
   return deleted;
 }
 
-/** Inputs for a single human-verdict write-back. */
-export interface HumanOutcomeInput {
+/**
+ * Inputs for a single human-verdict write-back. Extends
+ * {@link CandidateCompetabilityFields} so the caller can hand over the idea's
+ * persisted competability scorecard (read off the generated_ideas row) and the
+ * memory carries the same moat slice as a run-time write-back. All competability
+ * fields are optional; absent ⇒ the human memory carries no moat slice (as before).
+ */
+export interface HumanOutcomeInput extends CandidateCompetabilityFields {
   readonly ideaId: string;
   readonly title: string;
   readonly stage: string;
@@ -620,6 +736,16 @@ export async function writeHumanOutcomeMemory(
         segment: input.segment ?? null,
         archetype: input.archetype ?? null,
         giantComposite: input.giantComposite ?? null,
+        // Carry the persisted competability scorecard so the human memory's moat
+        // slice matches a run-time write-back. Spread the loose fields directly;
+        // competabilityFromCandidate folds them (or yields null when absent).
+        competability: input.competability,
+        competabilityOverall: input.competabilityOverall,
+        competabilityGated: input.competabilityGated,
+        competabilityReason: input.competabilityReason,
+        competabilityRaw: input.competabilityRaw,
+        competabilityRawOverall: input.competabilityRawOverall,
+        competabilityMatchedExpertiseDomain: input.competabilityMatchedExpertiseDomain,
       },
       { verdict, verdictSource: "human" },
       { gate: null, sigeDissent: null, convergenceVeto: null, demand: null },

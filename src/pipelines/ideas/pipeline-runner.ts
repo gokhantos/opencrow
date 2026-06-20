@@ -765,6 +765,16 @@ export async function runOutcomeMemoryWriteBack(params: {
           segment: resolveCandidateSegment(candidate),
           archetype: candidate.archetype ?? null,
           giantComposite: candidate.giantComposite ?? null,
+          // Fold the candidate's competability/moat slice into the memory so the
+          // verdict learns moat ↔ outcome. The GeneratedIdeaCandidate's
+          // competability* fields ARE the CandidateCompetabilityFields shape.
+          competability: candidate.competability,
+          competabilityOverall: candidate.competabilityOverall,
+          competabilityGated: candidate.competabilityGated,
+          competabilityReason: candidate.competabilityReason,
+          competabilityRaw: candidate.competabilityRaw,
+          competabilityRawOverall: candidate.competabilityRawOverall,
+          competabilityMatchedExpertiseDomain: candidate.competabilityMatchedExpertiseDomain,
         },
         outcomeVerdict,
         {

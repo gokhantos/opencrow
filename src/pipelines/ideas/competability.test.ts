@@ -5,6 +5,7 @@ import {
   heuristicMoatFlags,
   buildCompetabilityPersisted,
   candidateCompetabilityPersisted,
+  persistedToCandidateCompetability,
   type CompetabilityScore,
   ALWAYS_REJECT_OVERALL,
   DEFAULT_REJECT_THRESHOLD,
@@ -203,5 +204,50 @@ describe("candidateCompetabilityPersisted", () => {
     expect(persisted!.overall).toBe(2.5);
     expect(persisted!.gated).toBe(false);
     expect(persisted!.reason).toBe("");
+  });
+});
+
+describe("persistedToCandidateCompetability", () => {
+  test("returns empty fields when there is no scorecard", () => {
+    expect(persistedToCandidateCompetability(null)).toEqual({});
+    expect(persistedToCandidateCompetability(undefined)).toEqual({});
+  });
+
+  test("round-trips a stored scorecard back into loose candidate fields", () => {
+    const fields = persistedToCandidateCompetability({
+      dimensions: { capital: 2, networkEffect: 5, logistics: 1, regulated: 1 },
+      overall: 1.5,
+      reason: "uncompetable",
+      gated: true,
+      raw: {
+        dimensions: { capital: 5, networkEffect: 5, logistics: 1, regulated: 1 },
+        overall: 1,
+      },
+      matchedExpertiseDomain: "marketplaces",
+    });
+    expect(fields.competability).toEqual({
+      capital: 2,
+      networkEffect: 5,
+      logistics: 1,
+      regulated: 1,
+    });
+    expect(fields.competabilityOverall).toBe(1.5);
+    expect(fields.competabilityGated).toBe(true);
+    expect(fields.competabilityReason).toBe("uncompetable");
+    expect(fields.competabilityRaw?.capital).toBe(5);
+    expect(fields.competabilityRawOverall).toBe(1);
+    expect(fields.competabilityMatchedExpertiseDomain).toBe("marketplaces");
+  });
+
+  test("is the inverse of candidateCompetabilityPersisted (round-trip stable)", () => {
+    const original = candidateCompetabilityPersisted({
+      competability: { capital: 3, networkEffect: 4, logistics: 2, regulated: 1 },
+      competabilityOverall: 2.5,
+      competabilityGated: false,
+      competabilityReason: "soft band",
+    });
+    const back = persistedToCandidateCompetability(original);
+    const again = candidateCompetabilityPersisted(back);
+    expect(again).toEqual(original);
   });
 });

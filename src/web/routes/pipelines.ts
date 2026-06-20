@@ -24,6 +24,7 @@ import {
   calibrateCompetability,
   type CompetabilityCalibrationReport,
 } from "../../pipelines/ideas/competability-calibration";
+import { persistedToCandidateCompetability } from "../../pipelines/ideas/competability";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
 import { writeHumanOutcomeMemory } from "../../pipelines/ideas/outcome-memory";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
@@ -502,6 +503,10 @@ export function createPipelineRoutes(deps?: {
             segment: null,
             archetype: null,
             giantComposite: null,
+            // Carry the idea's PERSISTED competability scorecard (migration 027)
+            // so the human verdict learns moat ↔ outcome too. Lifted from the
+            // generated_ideas row; empty fields when the idea was never scored.
+            ...persistedToCandidateCompetability(updated.competability_json),
             runId: HUMAN_VERDICT_RUN_ID,
             promptVersion: HUMAN_VERDICT_PROMPT_VERSION,
             model: HUMAN_VERDICT_MODEL,
