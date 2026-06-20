@@ -101,7 +101,7 @@ export async function runShell(
      * OS sandbox mode for this invocation. When provided, the command is wrapped
      * via the sandbox (sandbox-exec/bwrap) per the mode. "required" fails closed
      * if no mechanism is available. Omit to keep legacy unwrapped behavior for
-     * trusted internal callers (e.g. git_operations build their own commands).
+     * trusted internal callers that build their own commands.
      */
     sandbox?: SandboxMode;
     /** Allow outbound network inside the sandbox. Default false. */

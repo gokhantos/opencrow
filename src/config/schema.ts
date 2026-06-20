@@ -231,7 +231,7 @@ export const toolsConfigSchema = z.object({
   devToolsAllowNetwork: z.boolean().default(false),
   /**
    * Opt-in escape hatch that lets the dev-tool exec path (run_tests AND
-   * validate_code's lint/typecheck/test steps, plus git_operations) run even
+   * validate_code's lint/typecheck/test steps) run even
    * when the OS sandbox is NOT active — i.e. sandbox mode "off", or
    * "best-effort" on a host with no sandbox mechanism.
    *
