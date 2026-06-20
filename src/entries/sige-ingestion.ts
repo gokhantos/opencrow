@@ -2,7 +2,7 @@
  * Standalone entry point for the SIGE continuous ingestion process.
  *
  * Runs on a 5-minute timer and incrementally ingests project data
- * (app reviews, Reddit posts, HN stories, PH products, news, apps)
+ * (app reviews, Reddit posts, HN stories, PH products, apps)
  * into the Mem0 knowledge graph via the Mem0 REST API.
  *
  * Cursor positions are persisted in config_overrides so each run
@@ -119,15 +119,6 @@ interface HnStoryRow {
   readonly points: number;
   readonly comment_count: number;
   readonly description: string | null;
-  readonly indexed_at: number | null;
-}
-
-interface NewsArticleRow {
-  readonly id: string;
-  readonly title: string;
-  readonly summary: string | null;
-  readonly category: string | null;
-  readonly source_name: string | null;
   readonly indexed_at: number | null;
 }
 
@@ -813,46 +804,6 @@ const SOURCES: ReadonlyArray<
     },
     getContent(r) {
       return `${r.title} ${r.description ?? ""}`;
-    },
-  }),
-
-  makeSource<NewsArticleRow>({
-    name: "news_articles",
-    priority: 3,
-    async fetchBatch(cursor, limit) {
-      const db = getDb();
-      return (await db`
-        SELECT id, title, summary, category, source_name, indexed_at
-        FROM news_articles
-        WHERE indexed_at IS NOT NULL
-          AND (indexed_at > ${cursor.ts} OR (indexed_at = ${cursor.ts} AND id > ${cursor.id}))
-        ORDER BY indexed_at DESC, id DESC
-        LIMIT ${limit}
-      `) as NewsArticleRow[];
-    },
-    async maxIndexedAt() {
-      const db = getDb();
-      const rows = await db`
-        SELECT MAX(indexed_at)::integer AS max_ts FROM news_articles
-      `;
-      const row = rows[0] as { max_ts: number | null } | undefined;
-      return row?.max_ts ?? null;
-    },
-    toText(r) {
-      const summary = (r.summary ?? "").slice(0, 400);
-      return `[${r.category ?? "General"}] ${r.title} — ${summary}. Source: ${r.source_name ?? "unknown"}.`;
-    },
-    toMetadata(r) {
-      return {
-        source: "news",
-        source_type: "news_article",
-        category: r.category,
-        credibility: computeCredibility({ source_type: "news_article" }),
-        ingested_at: Math.floor(Date.now() / 1_000),
-      };
-    },
-    getContent(r) {
-      return `${r.title} ${r.summary ?? ""}`;
     },
   }),
 
