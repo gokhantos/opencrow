@@ -19,6 +19,7 @@ const EXPECTED_EXPORTS = [
   "IconButton",
   "Tabs",
   "IntervalConfigPanel",
+  "ModelRoutePicker",
 ];
 
 test("barrel export has all expected components", () => {
