@@ -10,8 +10,18 @@ mem0 SDK instance wired to:
   - extraction   : Ollama   (host-native, via the OpenAI-compatible /v1 endpoint)
 
 This deliberately mirrors the client's request/response contract so no TypeScript
-client changes are needed. The `enable_graph` flag in request bodies is accepted and
-ignored — graph extraction is always on server-side because a graph_store is configured.
+client changes are needed.
+
+Two Memory instances back the ADD path, differing only in whether a graph_store is
+configured (same Qdrant collection / embedder / llm otherwise):
+  - `_memory`          — graph_store configured → graph extraction ON (SIGE writes).
+  - `_memory_nograph`  — no graph_store → graph phase skipped → ~embedding-latency
+                         fast (agent-memory writes, the Qdrant→mem0 migration path).
+The `enable_graph` flag in ADD request bodies is now HONORED: `enable_graph: false`
+routes the write to the graph-less instance; unset/true keeps the graph-on instance
+so SIGE's behavior is byte-identical. Reads (search/get_all/delete) always run on
+`_memory`; because both instances share the SAME Qdrant collection, graph-less writes
+are still returned by the existing search path (scoped by user_id).
 """
 import os
 import logging
@@ -177,7 +187,13 @@ def _build_llm_config() -> dict:
     }
 
 
-def build_config() -> dict:
+def _build_base_config() -> dict:
+    """
+    Everything shared by the graph-on and graph-less Memory instances: the SAME
+    Qdrant collection (so a graph-less write is visible to the existing search
+    path), embedder, and extraction llm. Deliberately omits `graph_store` — each
+    caller adds it (or not) to select whether mem0 runs its graph phase.
+    """
     return {
         "vector_store": {
             "provider": "qdrant",
@@ -188,7 +204,6 @@ def build_config() -> dict:
                 "embedding_model_dims": EMBED_DIMS,
             },
         },
-        "graph_store": _build_graph_config(),
         "llm": _build_llm_config(),
         "embedder": {
             "provider": "ollama",
@@ -203,8 +218,29 @@ def build_config() -> dict:
     }
 
 
+def build_config() -> dict:
+    """Graph-ON config (SIGE writes). Unchanged behavior: adds the graph_store."""
+    return {**_build_base_config(), "graph_store": _build_graph_config()}
+
+
+def build_config_nograph() -> dict:
+    """
+    Graph-OFF config (agent-memory writes). Identical vector_store/embedder/llm as
+    build_config(), but NO graph_store, so mem0 sets enable_graph=False and skips
+    the always-on entity/relation extraction LLM call (the measured ~7.4s/write).
+    Same Qdrant collection_name as the graph-on instance, so writes here remain
+    findable by the existing graph-on search path.
+    """
+    return _build_base_config()
+
+
 # ─── mem0 init (retry so the sidecar tolerates Qdrant/Neo4j boot ordering) ──────
+# Two instances against the SAME Qdrant collection:
+#   _memory          — graph_store configured → graph extraction ON  (SIGE).
+#   _memory_nograph  — no graph_store → graph phase skipped → fast    (agent mem).
+# Both init off-thread with retry so /health serves "initializing" during boot.
 _memory: Memory | None = None
+_memory_nograph: Memory | None = None
 
 
 def get_memory() -> Memory:
@@ -212,6 +248,15 @@ def get_memory() -> Memory:
     if _memory is None:
         raise HTTPException(status_code=503, detail="mem0 not initialized yet")
     return _memory
+
+
+def get_memory_nograph() -> Memory:
+    global _memory_nograph
+    if _memory_nograph is None:
+        raise HTTPException(
+            status_code=503, detail="mem0 (graph-less) not initialized yet"
+        )
+    return _memory_nograph
 
 
 def init_memory_with_retry(attempts: int = 30, delay_s: float = 3.0) -> None:
@@ -227,6 +272,26 @@ def init_memory_with_retry(attempts: int = 30, delay_s: float = 3.0) -> None:
             log.warning("mem0 init failed (attempt %d/%d): %s", i + 1, attempts, err)
             time.sleep(delay_s)
     log.error("mem0 init exhausted retries: %s", last_err)
+
+
+def init_memory_nograph_with_retry(attempts: int = 30, delay_s: float = 3.0) -> None:
+    global _memory_nograph
+    last_err: Exception | None = None
+    for i in range(attempts):
+        try:
+            _memory_nograph = Memory.from_config(build_config_nograph())
+            log.info("mem0 (graph-less) initialized (attempt %d)", i + 1)
+            return
+        except Exception as err:  # noqa: BLE001 — broad on purpose during boot
+            last_err = err
+            log.warning(
+                "mem0 (graph-less) init failed (attempt %d/%d): %s",
+                i + 1,
+                attempts,
+                err,
+            )
+            time.sleep(delay_s)
+    log.error("mem0 (graph-less) init exhausted retries: %s", last_err)
 
 
 # ─── Response normalization (match the TS client's mapMemory/mapRelation) ───────
@@ -290,7 +355,9 @@ class AddBody(BaseModel):
     messages: list[Message]
     user_id: str
     metadata: dict | None = None
-    enable_graph: bool | None = None  # accepted, ignored (graph always on)
+    # HONORED on the ADD path: False → graph-less instance (skips the ~7.4s graph
+    # extraction LLM call). None/True → graph-on instance (SIGE, byte-identical).
+    enable_graph: bool | None = None
     # Whether mem0 should run its LLM "fact extraction" phase on the input.
     # None → preserve mem0's own default (True). The OpenCrow memory backend
     # passes infer=False to store verbatim chunks (parity with the Qdrant path);
@@ -302,7 +369,11 @@ class SearchBody(BaseModel):
     query: str
     user_id: str
     limit: int | None = 30
-    enable_graph: bool | None = None  # accepted, ignored
+    # Search is NOT routed: it always runs on the graph-on `_memory`, which shares
+    # the Qdrant collection with the graph-less instance, so graph-less writes are
+    # still returned (scoped by user_id). enable_graph here only toggles whether
+    # the graph relation lookup is included; accepted as-is.
+    enable_graph: bool | None = None
     # Optional top-level metadata-equality filters forwarded to mem0.search.
     # Only passed through when provided, so omitting it yields a byte-identical
     # call to mem.search(...) as before this field existed. Server-side filter
@@ -322,10 +393,12 @@ def _startup() -> None:
             "the sidecar (GHSA-jfv9-68m5-gjjr defense-in-depth)."
         )
     # Init off-thread so the server can serve /health (and report "initializing")
-    # while it retries connecting to Qdrant/Neo4j/Ollama on boot.
+    # while it retries connecting to Qdrant/Neo4j/Ollama on boot. Both instances
+    # init independently; neither blocks startup nor the other.
     import threading
 
     threading.Thread(target=init_memory_with_retry, daemon=True).start()
+    threading.Thread(target=init_memory_nograph_with_retry, daemon=True).start()
 
 
 @app.get("/health")
@@ -335,7 +408,11 @@ def health() -> dict:
 
 @app.post("/v1/memories/", dependencies=[Depends(require_token)])
 def add_memories(body: AddBody) -> dict:
-    mem = get_memory()
+    # Route the write: enable_graph=False → graph-less instance (no graph phase,
+    # ~embedding-latency fast); None/True → graph-on instance, byte-identical to
+    # the pre-split behavior so SIGE is unaffected. Both write the SAME Qdrant
+    # collection, so the graph-on search path still finds graph-less writes.
+    mem = get_memory_nograph() if body.enable_graph is False else get_memory()
     try:
         res = mem.add(
             messages=[m.model_dump() for m in body.messages],
