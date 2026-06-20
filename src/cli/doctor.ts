@@ -119,6 +119,40 @@ async function checkMem0(): Promise<CheckResult> {
   }
 }
 
+/**
+ * Neo4j is mem0's graph backend. Bolt isn't HTTP, so probe the TCP port rather
+ * than fetch(). Reachability of 127.0.0.1:7687 is the pre-flight signal mem0's
+ * graph init depends on; if it's down, mem0 init fails closed.
+ *
+ * Reachability alone is NOT a security guarantee: a TCP connect to 127.0.0.1
+ * succeeds even when Bolt is bound to 0.0.0.0 (exposed on all interfaces). So we
+ * additionally assert that neo4j.conf explicitly pins the listen addresses to
+ * loopback (defense-in-depth) and warn if it doesn't.
+ */
+async function checkNeo4j(): Promise<CheckResult> {
+  const { probeBolt, confPinsLoopback, activeConfPath, NEO4J_BOLT_HOST, NEO4J_BOLT_PORT } =
+    await import("./native/neo4j.ts");
+  const url = `bolt://${NEO4J_BOLT_HOST}:${NEO4J_BOLT_PORT}`;
+  const ok = await probeBolt(NEO4J_BOLT_HOST, NEO4J_BOLT_PORT, 3000);
+  if (!ok) return classifyHttpCheck("Neo4j", false, url);
+
+  let pinned = false;
+  try {
+    pinned = confPinsLoopback(activeConfPath());
+  } catch {
+    pinned = false;
+  }
+  if (!pinned) {
+    return {
+      name: "Neo4j",
+      status: "warn",
+      message: `Reachable at ${url}, but neo4j.conf does not explicitly pin listen addresses to 127.0.0.1 (relying on the formula default)`,
+      repair: "opencrow native up (pins loopback in neo4j.conf, then restarts)",
+    };
+  }
+  return { name: "Neo4j", status: "pass", message: `Reachable at ${url} (loopback-pinned)` };
+}
+
 async function checkEnvFile(): Promise<CheckResult> {
   if (!fs.existsSync(ENV_PATH)) {
     return {
@@ -364,6 +398,7 @@ export async function runDoctor(): Promise<void> {
     checkRuntimeTokens(),
     checkPostgres(),
     checkQdrant(),
+    checkNeo4j(),
     checkMem0(),
     checkService(),
     checkDiskSpace(),

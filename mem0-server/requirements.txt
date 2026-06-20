@@ -10,3 +10,10 @@ uvicorn[standard]==0.34.0
 # move that path and silently no-op the patch, re-introducing the graph-phase
 # stall. Keep in sync with the version validated end-to-end.
 openai==1.109.1
+# Neo4j graph backend (MEM0_GRAPH_PROVIDER=neo4j). These are pulled transitively
+# by mem0ai[graph], but pinned explicitly so a fresh reprovision can't drift onto
+# an incompatible driver/integration. Versions validated end-to-end against
+# Neo4j Community (Bolt). neo4j 6.x → bolt:// driver; langchain-neo4j is mem0's
+# graph-store adapter.
+neo4j==6.2.0
+langchain-neo4j==0.10.0
