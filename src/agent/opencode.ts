@@ -19,7 +19,11 @@ import { pruneToolResultsOpenAI } from "./context-pruning-openai";
 
 const log = createLogger("opencode");
 
-const DEFAULT_BASE_URL = "https://opencode.ai/zen/v1/chat/completions";
+// OpenCode Go subscription gateway (flat-rate, covers the curated coding models:
+// deepseek-v4-flash/pro, glm-5.x, kimi, qwen3.x, minimax, mimo, …). For the
+// pay-per-token OpenCode Zen gateway instead, set OPENCODE_BASE_URL to
+// "https://opencode.ai/zen/v1".
+const DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1/chat/completions";
 const DEFAULT_MODEL = "deepseek-v4-flash";
 const DEFAULT_CONTEXT_WINDOW = 180_000;
 const TOKEN_BUDGET_MULTIPLIER = 1.5;

@@ -85,7 +85,7 @@ describe("opencode chat()", () => {
     expect(res.usage).toEqual({ inputTokens: 10, outputTokens: 3 });
 
     const req = capture.last!;
-    expect(req.url).toBe("https://opencode.ai/zen/v1/chat/completions");
+    expect(req.url).toBe("https://opencode.ai/zen/go/v1/chat/completions");
     expect(req.headers.Authorization).toBe("Bearer test-key-123");
     expect(req.body.model).toBe("deepseek-v4-flash");
     const messages = req.body.messages as Array<{ role: string; content: string }>;
