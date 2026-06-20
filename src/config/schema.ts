@@ -261,6 +261,20 @@ export const internalApiConfigSchema = z.object({
   host: z.string().default("127.0.0.1"),
 });
 
+/**
+ * Global browser-tooling toggle. Historically `OPENCROW_BROWSER_ENABLED` was
+ * written to `config.browser.enabled` by the env loader but had no schema field,
+ * so the schema parse silently dropped it (per-agent `mcpServers.browser` is the
+ * runtime switch). The field is defined here so the value can survive the parse
+ * and be DB-driven via the `config/server` override (`browserEnabled`). Default
+ * false matches the prior behavior (env only ever set it true).
+ */
+export const browserConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+  })
+  .default({ enabled: false });
+
 export const cronConfigSchema = z.object({
   defaultTimeoutSeconds: z.number().int().min(1).default(300),
   tickIntervalMs: z.number().int().min(1000).default(10000),
@@ -1190,6 +1204,7 @@ export const opencrowConfigSchema = z.object({
     port: 48081,
     host: "127.0.0.1",
   }),
+  browser: browserConfigSchema.default({ enabled: false }),
   tools: toolsConfigSchema.default({
     allowedDirectories: [DEFAULT_AGENT_WORKSPACE],
     blockedCommands: [...DEFAULT_BLOCKED_COMMANDS],
@@ -1233,6 +1248,7 @@ export type CompactionConfig = z.infer<typeof compactionConfigSchema>;
 export type FailoverConfig = z.infer<typeof failoverConfigSchema>;
 export type ToolsConfig = z.infer<typeof toolsConfigSchema>;
 export type WebConfig = z.infer<typeof webConfigSchema>;
+export type BrowserConfig = z.infer<typeof browserConfigSchema>;
 export type CronConfig = z.infer<typeof cronConfigSchema>;
 export type MemorySearchConfig = z.infer<typeof memorySearchConfigSchema>;
 export type MemoryBackendKind = z.infer<typeof memoryBackendKindSchema>;

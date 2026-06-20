@@ -1,4 +1,5 @@
 import { createLogger } from "../logger";
+import { getSecret } from "../config/secrets";
 
 const log = createLogger("core-client");
 
@@ -105,7 +106,8 @@ export interface CoreClient {
 export function createCoreClient(baseUrl: string): CoreClient {
   async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     const url = `${baseUrl}${path}`;
-    const internalToken = process.env.OPENCROW_INTERNAL_TOKEN;
+    // Resolve DB-first (Secrets UI) with env fallback.
+    const internalToken = await getSecret("OPENCROW_INTERNAL_TOKEN");
     const res = await fetch(url, {
       ...init,
       headers: {
@@ -135,7 +137,8 @@ export function createCoreClient(baseUrl: string): CoreClient {
 
     async chatStream(body) {
       const url = `${baseUrl}/internal/chat/stream`;
-      const internalToken = process.env.OPENCROW_INTERNAL_TOKEN;
+      // Resolve DB-first (Secrets UI) with env fallback.
+      const internalToken = await getSecret("OPENCROW_INTERNAL_TOKEN");
       const res = await fetch(url, {
         method: "POST",
         headers: {

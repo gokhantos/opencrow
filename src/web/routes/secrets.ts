@@ -10,6 +10,7 @@ import { createLogger } from "../../logger";
 const log = createLogger("web-secrets");
 
 const MANAGED_KEYS = [
+  // --- existing ---
   "OPENCROW_WEB_TOKEN",
   "TELEGRAM_BOT_TOKEN",
   "OPENROUTER_API_KEY",
@@ -19,6 +20,21 @@ const MANAGED_KEYS = [
   "QDRANT_URL",
   "PH_API_TOKEN",
   "PH_API_SECRET",
+  // --- added for config-as-data: every credential the app reads should be
+  // manageable from the Secrets UI so nothing has to live only in .env ---
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "MEM0_LLM_API_KEY",
+  "OPENCODE_API_KEY",
+  "NEO4J_PASSWORD",
+  "GITHUB_TOKEN",
+  "BRAVE_API_KEY",
+  "FIRECRAWL_API_KEY",
+  "QDRANT_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_BASE_URL",
+  "OPENCROW_INTERNAL_TOKEN",
+  "OPENCROW_INTERNAL_LLM_MODEL",
+  "OPENCROW_INTERNAL_LLM_PROVIDER",
 ] as const;
 
 type ManagedKey = (typeof MANAGED_KEYS)[number];

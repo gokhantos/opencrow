@@ -1,6 +1,7 @@
 import type { ToolDefinition, ToolCategory } from "./types";
 import { createLogger } from "../logger";
 import { getDb } from "../store/db";
+import { getSecret } from "../config/secrets";
 
 const log = createLogger("tool:process-manage");
 
@@ -46,10 +47,11 @@ const CALLER_PROCESS_HEADER = "X-OpenCrow-Caller-Process";
  * routes (process start/stop/restart) are rejected. The token is provisioned in
  * setup and inherited by every child process via the parent env.
  */
-function internalAuthHeaders(
+async function internalAuthHeaders(
   base: Record<string, string> = {},
-): Record<string, string> {
-  const internalToken = process.env.OPENCROW_INTERNAL_TOKEN;
+): Promise<Record<string, string>> {
+  // Resolve DB-first (Secrets UI) with env fallback.
+  const internalToken = await getSecret("OPENCROW_INTERNAL_TOKEN");
   return internalToken
     ? { ...base, Authorization: `Bearer ${internalToken}` }
     : base;
@@ -78,7 +80,7 @@ interface OrchestratorProcess {
 
 async function listProcesses(): Promise<readonly OrchestratorProcess[]> {
   const res = await fetch(`${CORE_URL}/internal/orchestrator/state`, {
-    headers: internalAuthHeaders(),
+    headers: await internalAuthHeaders(),
     signal: AbortSignal.timeout(5000),
   });
   if (!res.ok) throw new Error(`Core API returned ${res.status}`);
@@ -94,7 +96,7 @@ async function processAction(
     `${CORE_URL}/internal/processes/${encodeURIComponent(name)}/${action}`,
     {
       method: "POST",
-      headers: internalAuthHeaders({
+      headers: await internalAuthHeaders({
         "Content-Type": "application/json",
         [CALLER_PROCESS_HEADER]: getOwnProcessName(),
       }),

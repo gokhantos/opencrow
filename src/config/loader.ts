@@ -463,20 +463,108 @@ export function deepMergeSigeOverride(
 }
 
 /**
+ * Smart-pipeline sub-blocks that are DB-driven via per-subtree `config/smart.<sub>`
+ * overrides. Each entry stores a PARTIAL JSON object that is deep-merged
+ * (one level, via deepMergeSigeOverride) onto
+ * `pipelines.ideas.smart.<sub>` — exactly the way `config/competability` merges
+ * onto `smart.competability`. Kept as a typed tuple of the literal smart keys so
+ * the override key (`config/smart.signal`) maps unambiguously to the config field
+ * (`smart.signal`) without loosening the rest of the config to `any`.
+ *
+ * NOTE: `signal` is the UI-facing grouping of the three flat smart fields
+ * (signalFacets / signalRanking / signalImportanceFloor). Its merge is handled
+ * separately (FLAT, not a nested sub-block) — see mergeSmartSignalOverride.
+ */
+const SMART_SUBTREE_KEYS = [
+  "sigeAuto",
+  "outcomeMemory",
+  "graphReasoning",
+  "incumbentExclusion",
+  "diversityGuard",
+] as const;
+type SmartSubtreeKey = (typeof SMART_SUBTREE_KEYS)[number];
+
+/**
+ * Deep-merge a partial DB override for a single nested `smart.<sub>` block onto
+ * the smart object, rebuilding every level immutably. Returns a NEW smart object;
+ * never mutates the input. Reuses deepMergeSigeOverride for the one-level-deep
+ * field merge so a partial `{ enabled: true }` override keeps sibling fields.
+ */
+function mergeSmartSubtreeOverride(
+  smart: Record<string, unknown>,
+  subKey: SmartSubtreeKey,
+  override: Record<string, unknown>,
+): Record<string, unknown> {
+  const baseSub = (smart[subKey] ?? {}) as Record<string, unknown>;
+  return {
+    ...smart,
+    [subKey]: deepMergeSigeOverride(baseSub, override),
+  };
+}
+
+/**
+ * Merge the FLAT `config/smart.signal` override. The signal "subtree" is a UI
+ * grouping of three flat smart fields, not a nested object, so its override keys
+ * map field-wise: { facets, ranking, importanceFloor } →
+ * { signalFacets, signalRanking, signalImportanceFloor }. Unknown keys are
+ * ignored; absent keys leave the base value intact. Returns a NEW smart object.
+ */
+function mergeSmartSignalOverride(
+  smart: Record<string, unknown>,
+  override: Record<string, unknown>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...smart };
+  if (typeof override.facets === "boolean") next.signalFacets = override.facets;
+  if (typeof override.ranking === "boolean") {
+    next.signalRanking = override.ranking;
+  }
+  if (typeof override.importanceFloor === "string") {
+    next.signalImportanceFloor = override.importanceFloor;
+  }
+  return next;
+}
+
+/**
  * Apply feature toggle overrides from DB:
  * - features.enabledScrapers → sets scraperProcesses.scraperIds
  * - features.qdrantEnabled → toggles memorySearch on/off
+ * - config/sige, config/competability → deep-merged onto their subtrees
+ * - config/smart.<sub> → deep-merged onto pipelines.ideas.smart.<sub>
+ * - config/server, config/sandbox, config/memory → mapped onto web/logLevel/
+ *   browser, tools, and memorySearch.backend respectively
+ *
+ * Precedence is preserved: env (already applied in `base`) is the fallback; a DB
+ * row deep-merges ON TOP of it, so DB > env > schema default.
  */
 async function mergeFeatureOverrides(
   base: OpenCrowConfig,
 ): Promise<OpenCrowConfig> {
-  const [enabledScrapers, qdrantEnabled, sigeOverride, competabilityOverride] =
-    await Promise.all([
-      getOverride("features", "enabledScrapers"),
-      getOverride("features", "qdrantEnabled"),
-      getOverride("config", "sige"),
-      getOverride("config", "competability"),
-    ]);
+  const [
+    enabledScrapers,
+    qdrantEnabled,
+    sigeOverride,
+    competabilityOverride,
+    signalOverride,
+    smartSubtreeOverrides,
+    serverOverride,
+    sandboxOverride,
+    memoryOverride,
+  ] = await Promise.all([
+    getOverride("features", "enabledScrapers"),
+    getOverride("features", "qdrantEnabled"),
+    getOverride("config", "sige"),
+    getOverride("config", "competability"),
+    getOverride("config", "smart.signal"),
+    Promise.all(
+      SMART_SUBTREE_KEYS.map(
+        async (k) =>
+          [k, await getOverride("config", `smart.${k}`)] as const,
+      ),
+    ),
+    getOverride("config", "server"),
+    getOverride("config", "sandbox"),
+    getOverride("config", "memory"),
+  ]);
 
   let result: Record<string, unknown> = { ...base };
 
@@ -530,6 +618,104 @@ async function mergeFeatureOverrides(
       ...result,
       pipelines: { ...pipelines, ideas: { ...ideas, smart } },
     };
+  }
+
+  // config/smart.signal + config/smart.<sub> overrides → pipelines.ideas.smart.*
+  // Each per-subtree key stores a PARTIAL object deep-merged onto its smart
+  // sub-block (so two Settings forms never clobber each other). Rebuild the
+  // pipelines → ideas → smart chain once, immutably, only if any smart override
+  // is present.
+  const hasSmartSubtree = smartSubtreeOverrides.some(
+    ([, value]) => value !== null && typeof value === "object",
+  );
+  if (
+    (signalOverride !== null && typeof signalOverride === "object") ||
+    hasSmartSubtree
+  ) {
+    const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
+    const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
+    let smart = { ...((ideas.smart ?? {}) as Record<string, unknown>) };
+    if (signalOverride !== null && typeof signalOverride === "object") {
+      smart = mergeSmartSignalOverride(
+        smart,
+        signalOverride as Record<string, unknown>,
+      );
+    }
+    for (const [subKey, value] of smartSubtreeOverrides) {
+      if (value !== null && typeof value === "object") {
+        smart = mergeSmartSubtreeOverride(
+          smart,
+          subKey,
+          value as Record<string, unknown>,
+        );
+      }
+    }
+    result = {
+      ...result,
+      pipelines: { ...pipelines, ideas: { ...ideas, smart } },
+    };
+  }
+
+  // config/server → web.host / web.port / logLevel / browser.enabled. The
+  // override field names map onto the existing schema fields the matching env
+  // vars already populate (do NOT invent a new shape). Only fields present in
+  // the override are applied; absent fields fall through to env/default.
+  if (serverOverride !== null && typeof serverOverride === "object") {
+    const o = serverOverride as Record<string, unknown>;
+    if (typeof o.webHost === "string" || typeof o.webPort === "number") {
+      const web = { ...((result.web ?? {}) as Record<string, unknown>) };
+      if (typeof o.webHost === "string") web.host = o.webHost;
+      if (typeof o.webPort === "number") web.port = o.webPort;
+      result = { ...result, web };
+    }
+    if (typeof o.logLevel === "string") {
+      result = { ...result, logLevel: o.logLevel };
+    }
+    if (typeof o.browserEnabled === "boolean") {
+      const browser = { ...((result.browser ?? {}) as Record<string, unknown>) };
+      browser.enabled = o.browserEnabled;
+      result = { ...result, browser };
+    }
+  }
+
+  // config/sandbox → tools.sandbox / tools.devToolsAllowNetwork /
+  // tools.allowUnsandboxedDevTools (reuse the existing tools schema fields the
+  // OPENCROW_TOOLS_SANDBOX / *_ALLOW_NETWORK / *_ALLOW_UNSANDBOXED_DEV_TOOLS env
+  // vars already set).
+  if (sandboxOverride !== null && typeof sandboxOverride === "object") {
+    const o = sandboxOverride as Record<string, unknown>;
+    const tools = { ...((result.tools ?? {}) as Record<string, unknown>) };
+    let toolsChanged = false;
+    if (
+      typeof o.toolsSandbox === "string" &&
+      ["off", "best-effort", "required"].includes(o.toolsSandbox)
+    ) {
+      tools.sandbox = o.toolsSandbox;
+      toolsChanged = true;
+    }
+    if (typeof o.devToolsAllowNetwork === "boolean") {
+      tools.devToolsAllowNetwork = o.devToolsAllowNetwork;
+      toolsChanged = true;
+    }
+    if (typeof o.allowUnsandboxedDevTools === "boolean") {
+      tools.allowUnsandboxedDevTools = o.allowUnsandboxedDevTools;
+      toolsChanged = true;
+    }
+    if (toolsChanged) result = { ...result, tools };
+  }
+
+  // config/memory → memorySearch.backend (qdrant | mem0). Ensure the
+  // memorySearch block exists so the override has somewhere to land; the schema
+  // fills the rest of the block with its defaults (mirrors the env path).
+  if (memoryOverride !== null && typeof memoryOverride === "object") {
+    const o = memoryOverride as Record<string, unknown>;
+    if (o.backend === "qdrant" || o.backend === "mem0") {
+      const memorySearch = {
+        ...((result.memorySearch ?? {}) as Record<string, unknown>),
+      };
+      memorySearch.backend = o.backend;
+      result = { ...result, memorySearch };
+    }
   }
 
   return opencrowConfigSchema.parse(result);
