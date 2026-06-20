@@ -26,13 +26,21 @@ export async function provisionMem0(
   await fs.mkdir(p.logDir, { recursive: true });
 
   const py = spawnSync("python3.11", ["-m", "venv", venv], { stdio: "inherit" });
-  if (py.status !== 0) throw new Error("Failed to create mem0 venv (python3.11)");
+  if (py.status !== 0) {
+    throw new Error(
+      `Failed to create mem0 venv (python3.11): ${py.error?.message ?? `exited ${py.status}`}`,
+    );
+  }
   const pip = spawnSync(
     venvPython,
     ["-m", "pip", "install", "--quiet", "-r", path.join(serverDir, "requirements.txt")],
     { stdio: "inherit" },
   );
-  if (pip.status !== 0) throw new Error("Failed to pip install mem0 requirements");
+  if (pip.status !== 0) {
+    throw new Error(
+      `Failed to pip install mem0 requirements: ${pip.error?.message ?? `exited ${pip.status}`}`,
+    );
+  }
 
   await fs.writeFile(p.mem0EnvFile, renderMem0Env(p, secrets), { mode: 0o600 });
 
@@ -63,6 +71,17 @@ exec "${venvUvicorn}" app:app --host 127.0.0.1 --port 8050
   const domain = `gui/${process.getuid?.() ?? ""}`;
   spawnSync("launchctl", ["bootout", domain, dest], { stdio: "ignore" });
   const boot = spawnSync("launchctl", ["bootstrap", domain, dest], { stdio: "inherit" });
-  if (boot.status !== 0) throw new Error("launchctl bootstrap (mem0) failed");
-  spawnSync("launchctl", ["kickstart", "-k", `${domain}/${MEM0_LABEL}`], { stdio: "inherit" });
+  if (boot.status !== 0) {
+    throw new Error(
+      `launchctl bootstrap (mem0) failed: ${boot.error?.message ?? `exited ${boot.status}`}`,
+    );
+  }
+  const kick = spawnSync("launchctl", ["kickstart", "-k", `${domain}/${MEM0_LABEL}`], {
+    stdio: "inherit",
+  });
+  if (kick.status !== 0) {
+    throw new Error(
+      `launchctl kickstart (mem0) failed: ${kick.error?.message ?? `exited ${kick.status}`}`,
+    );
+  }
 }
