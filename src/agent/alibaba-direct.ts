@@ -109,6 +109,16 @@ export async function chat(
     model: options.model,
     max_tokens: options.maxOutputTokens ?? 16384,
     messages: toAlibabaMessages(options.systemPrompt, messages),
+    // Reasoning models routed here (glm-*, deepseek-*, qwen*) emit large
+    // reasoning-token traces by default, which blow the per-call LLM timeout on
+    // non-agentic steps (e.g. idea-pipeline synthesis). Disable thinking unless
+    // the caller explicitly opts in via options.reasoning. The OpenAI-compatible
+    // token-plan endpoint accepts both flags harmlessly; send both for
+    // cross-model robustness (glm/deepseek honor thinking:{type:disabled};
+    // qwen honors enable_thinking:false).
+    ...(options.reasoning === true
+      ? {}
+      : { thinking: { type: "disabled" }, enable_thinking: false }),
   };
 
   try {
