@@ -483,6 +483,59 @@ export const rateLimitConfigSchema = z
   })
   .optional();
 
+// ─── Ingestion (data ingestion → mem0) ─────────────────────────────────────────
+//
+// Data ingestion is SHARED infrastructure, NOT a SIGE-only concern: the mem0
+// knowledge it populates is read by BOTH the generation pipeline (graph-reasoning
+// in the synthesizer) AND SIGE. It is therefore a first-class top-level domain,
+// independent of `config.sige`. The continuous extraction loop (the `ingestion`
+// process) reads scraped Postgres rows on a timer and writes them to mem0 with
+// credibility scoring + dedup.
+//
+// It is an LLM-bound loop that burns mem0 quota with no operator in the loop.
+// Default ON so existing deployments are unchanged. Set `enabled: false` to stop
+// the autonomous loop entirely; SIGE and the pipeline keep running and read
+// whatever corpus already exists.
+//
+// `mem0` is ingestion's OWN connection config (same shape/defaults as sige.mem0).
+// Both point at the same shared mem0 instance — that is intentional; the duplicate
+// is the connection config, not the instance, so ingestion has zero dependency on
+// the `sige` domain.
+export const ingestionConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    mem0: z
+      .object({
+        baseUrl: z.string().url().default("http://127.0.0.1:8050"),
+        userId: z.string().default("sige-global"),
+        // Shared bearer token sent on every /v1/memories/* request to the mem0
+        // sidecar (which has no upstream auth). Optional so a tokenless dev run
+        // still boots. Sourced from env in the loader (reuses OPENCROW_INTERNAL_TOKEN).
+        apiToken: z.string().optional(),
+      })
+      .default({
+        baseUrl: "http://127.0.0.1:8050",
+        userId: "sige-global",
+      }),
+    // How many records may be ingested per calendar day (cost ceiling). Runtime-
+    // tunable at finer grain via the `maxRecordsPerDay` config_override.
+    maxRecordsPerDay: z.number().int().min(1).default(3_000),
+    // Rows fetched per source per cycle.
+    batchSize: z.number().int().min(1).default(20),
+    // Gap between ingestion cycles (run-then-reschedule).
+    pollIntervalMs: z.number().int().min(1_000).default(5 * 60 * 1_000),
+    // Minimum trimmed content length to pass the quality gate.
+    minContentLength: z.number().int().min(1).default(40),
+  })
+  .default({
+    enabled: true,
+    mem0: { baseUrl: "http://127.0.0.1:8050", userId: "sige-global" },
+    maxRecordsPerDay: 3_000,
+    batchSize: 20,
+    pollIntervalMs: 5 * 60 * 1_000,
+    minContentLength: 40,
+  });
+
 export const sigeConfigSchema = z.object({
   enabled: z.boolean().default(false),
   mem0: z
@@ -561,17 +614,6 @@ export const sigeConfigSchema = z.object({
   provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"]).default("anthropic"),
   model: z.string().default("claude-sonnet-4-6"),
   agentModel: z.string().default("claude-sonnet-4-6"),
-  // Autonomous mem0 entity/relation extraction loop (the `sige-ingestion`
-  // process). It is an LLM-bound 5-minute loop that burns mem0/GLM quota with no
-  // operator in the loop. Default ON so existing autonomous-SIGE deployments are
-  // unchanged. Set `enabled: false` for "manual only" — SIGE itself (the `sige`
-  // process + manual session execution) keeps running, but nothing extracts
-  // signals into mem0 unsupervised.
-  ingestion: z
-    .object({
-      enabled: z.boolean().default(true),
-    })
-    .default({ enabled: true }),
   workflow: z
     .object({
       topology: z
@@ -1405,6 +1447,8 @@ export const opencrowConfigSchema = z.object({
   rateLimit: rateLimitConfigSchema,
   memoryEviction: memoryEvictionConfigSchema.optional(),
   sige: sigeConfigSchema.optional(),
+  // Data ingestion → mem0. Top-level (shared infra), independent of `sige`.
+  ingestion: ingestionConfigSchema,
   pipelines: pipelinesConfigSchema.default({
     ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
   }),
@@ -1440,6 +1484,7 @@ export type RateLimitConfig = z.infer<typeof rateLimitConfigSchema>;
 export type RateLimitPerSenderConfig = z.infer<typeof rateLimitPerSenderSchema>;
 export type MemoryEvictionConfig = z.infer<typeof memoryEvictionConfigSchema>;
 export type SigeConfig = z.infer<typeof sigeConfigSchema>;
+export type IngestionConfig = z.infer<typeof ingestionConfigSchema>;
 export type SmartIdeasConfig = z.infer<typeof smartConfigSchema>;
 export type GiantConfig = z.infer<typeof giantConfigSchema>;
 export type GenerateWideConfig = z.infer<typeof generateWideConfigSchema>;

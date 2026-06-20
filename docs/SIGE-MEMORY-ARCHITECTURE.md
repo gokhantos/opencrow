@@ -304,7 +304,7 @@ No changes needed — Mem0 uses the same Qdrant instance with a separate collect
 - Verify: run a SIGE session end-to-end with Mem0
 
 ### Phase 3: Continuous Ingestion (Day 3)
-- Create ingestion cron job (`src/entries/sige-ingestion.ts`)
+- Create ingestion cron job (`src/entries/ingestion.ts`)
 - Implement per-source ingestion with natural language templates
 - Add cursor tracking in `config_overrides`
 - Start with reviews (highest priority), then expand

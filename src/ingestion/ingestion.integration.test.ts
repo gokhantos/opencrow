@@ -1,6 +1,6 @@
 /**
- * Integration tests for sige-ingestion: composite cursor, freshest-first ordering,
- * high-water advance, legacy-cursor migration, and dedup/budget invariants.
+ * Integration tests for the ingestion domain: composite cursor, freshest-first
+ * ordering, high-water advance, legacy-cursor migration, and dedup/budget invariants.
  *
  * Requires a running Postgres instance (docker compose up -d postgres).
  * Lane: *.integration.test.ts → `bun run test:integration`
@@ -17,13 +17,15 @@ import {
   serializeCursor,
   todayUtc,
   writeCursor,
-} from "./sige-ingestion";
+} from "./index";
 
 // ─── Setup / Teardown ─────────────────────────────────────────────────────────
 
 // A scratch table that mirrors the relevant columns of a real source table.
 // UUID ids simulate news_articles / playstore_reviews (non-monotonic).
 const SCRATCH_TABLE = "sige_test_scratch";
+// LEGACY persisted cursor namespace — kept AS-IS for compat (matches
+// src/ingestion/cursor.ts CURSOR_NAMESPACE). Renaming would orphan stored cursors.
 const CURSOR_NS = "sige-ingestion";
 const TEST_SOURCE = "sige-test-scratch-source";
 
@@ -521,6 +523,7 @@ describe("cursor round-trip via config_overrides (writeCursor/readCursor)", () =
 // ─── Daily budget counter — config_overrides round-trip ──────────────────────
 
 describe("daily budget counter", () => {
+  // LEGACY persisted namespace — kept AS-IS for compat (see CURSOR_NAMESPACE).
   const BUDGET_NS = "sige-ingestion";
 
   async function writeDailyCountDirect(date: string, count: number): Promise<void> {
