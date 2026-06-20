@@ -192,6 +192,7 @@ export async function bootstrap(
       embeddingProvider,
       qdrantClient,
       qdrantCollection,
+      backend: memSearch.backend,
       shared: memSearch.shared,
       defaultLimit: memSearch.defaultLimit,
       minScore: memSearch.minScore,

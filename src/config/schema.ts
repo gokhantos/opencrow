@@ -347,7 +347,17 @@ export const embeddingsConfigSchema = z
     batchSize: 64,
   });
 
+/**
+ * Selectable memory storage backend. `qdrant` is the live default (Postgres +
+ * Qdrant + FTS); `mem0` is reserved for the planned phase-2 backend and is not
+ * implemented yet — the backend factory throws if it is selected.
+ */
+export const memoryBackendKindSchema = z
+  .enum(["qdrant", "mem0"])
+  .default("qdrant");
+
 export const memorySearchConfigSchema = z.object({
+  backend: memoryBackendKindSchema,
   autoIndex: z.boolean().default(true),
   shared: z.boolean().default(true),
   vectorWeight: z.number().min(0).max(1).default(0.7),
@@ -1154,6 +1164,7 @@ export type ToolsConfig = z.infer<typeof toolsConfigSchema>;
 export type WebConfig = z.infer<typeof webConfigSchema>;
 export type CronConfig = z.infer<typeof cronConfigSchema>;
 export type MemorySearchConfig = z.infer<typeof memorySearchConfigSchema>;
+export type MemoryBackendKind = z.infer<typeof memoryBackendKindSchema>;
 export type PostgresConfig = z.infer<typeof postgresConfigSchema>;
 export type QdrantConfig = z.infer<typeof qdrantConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof embeddingsConfigSchema>;
