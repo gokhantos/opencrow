@@ -41,3 +41,7 @@ test("injects secrets and keeps hosted-DeepSeek extraction config", () => {
   expect(map.MEM0_EMBED_MODEL).toBe("nomic-embed-text:latest");
   expect(map.MEM0_EMBED_DIMS).toBe("768");
 });
+
+test("raises embedder context window so dense chunks don't 500 on embed", () => {
+  expect(map.MEM0_EMBED_NUM_CTX).toBe("8192");
+});

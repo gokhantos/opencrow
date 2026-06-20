@@ -33,6 +33,14 @@ export function renderMem0Env(
     MEM0_OLLAMA_URL: "http://127.0.0.1:11434",
     MEM0_EMBED_MODEL: "nomic-embed-text:latest",
     MEM0_EMBED_DIMS: "768",
+    // Embedder context window. nomic-embed-text supports up to 8192 tokens but
+    // loads a 2048-token context by default, so dense chunks (~4.5k chars of
+    // reddit/markdown/URLs) overflow it. app.py patches mem0's Ollama embedder to
+    // call Ollama's modern /api/embed with this num_ctx + truncate=true, which
+    // (unlike the legacy /api/embeddings mem0 uses by default) honors the larger
+    // window and never 500s on over-context input. 8192 = no data loss for any
+    // realistic chunk; truncate is the safety net for pathological inputs.
+    MEM0_EMBED_NUM_CTX: "8192",
     MEM0_COLLECTION: "sige_mem0",
     // Defense-in-depth only. mem0 0.1.118 constructs a fresh PostHog client (which
     // starts a daemon thread) on EVERY add/search and never shuts it down, so each

@@ -135,6 +135,85 @@ _disable_mem0_telemetry()
 from mem0 import Memory  # noqa: E402 — imported AFTER telemetry is neutralized
 
 
+# ─── CRITICAL: make the Ollama embedder tolerate over-context chunks ────────────
+# mem0 0.1.118's `OllamaEmbedding.embed` calls the ollama-python client's LEGACY
+# `Client.embeddings(model=..., prompt=text)` → Ollama's deprecated
+# `POST /api/embeddings`. That path passes NO `options` and NO `truncate`, and —
+# verified against the live sidecar's Ollama — the legacy endpoint IGNORES
+# `options.num_ctx` and HARD-ERRORS (HTTP 500 "the input length exceeds the
+# context length") whenever a chunk's token count exceeds nomic-embed-text's
+# loaded context. nomic's modelfile loads a 2048-token context by default, so
+# dense content (reddit/markdown/URL-heavy) blows past it in ~4.5k chars. This
+# broke (a) the Qdrant→mem0 backfill (failed mid-run) and (b) every live SIGE /
+# agent-memory write of a dense chunk — both embed through this same code path.
+#
+# mem0 0.1.118 exposes NO config passthrough for `num_ctx`/`truncate`/endpoint
+# (the embedder config block only accepts model / ollama_base_url /
+# embedding_dims), so this cannot be fixed by config alone. We instead replace
+# `OllamaEmbedding.embed` with a drop-in that calls the MODERN
+# `Client.embed(model, input, truncate=True, options={"num_ctx": …})` →
+# `POST /api/embed`, which (verified live):
+#   - HONORS `options.num_ctx` (raise the window to nomic's supported 8192, so
+#     chunks up to ~8192 tokens embed with ZERO data loss — the 4,503-char
+#     reddit chunk fits fully), and
+#   - HONORS `truncate=True` (safety net: a genuinely huge >8192-token input is
+#     truncated to the window instead of erroring — lossy only for pathological
+#     inputs, but it NEVER 500s).
+# `num_ctx` alone is insufficient (a 28k-char input still exceeds 8192 tokens →
+# 400) and `truncate` alone keeps only 2048 tokens; combining both maximizes
+# fidelity while guaranteeing no error. This mirrors the OpenCrow Qdrant path
+# (`src/memory/embeddings.ts`), which already tolerates these same chunks because
+# Ollama's OpenAI-compatible `/v1/embeddings` truncates by default.
+#
+# Patched at the CLASS level, so it applies identically to BOTH Memory instances
+# (graph-on SIGE writes and graph-off agent-memory writes share the one embedder
+# class) — SIGE's graph path is otherwise byte-identical. The output (a list of
+# floats) and the EmbeddingBase contract are unchanged, so mem0's vector-store
+# and dimension handling are unaffected.
+def _patch_ollama_embedder_context() -> None:
+    try:
+        from mem0.embeddings.ollama import OllamaEmbedding
+    except Exception as err:  # noqa: BLE001 — never block startup on the patch
+        log.warning("could not patch Ollama embedder context: %s", err)
+        return
+
+    # Read directly (not via _int_env, which is defined later in this module —
+    # this patch runs at import time, right after `from mem0 import Memory`).
+    try:
+        num_ctx = int(os.environ.get("MEM0_EMBED_NUM_CTX", "8192"))
+    except (TypeError, ValueError):
+        num_ctx = 8192
+
+    def embed(self, text, memory_action=None):  # type: ignore[no-untyped-def]
+        # Modern /api/embed: honors num_ctx + truncate (legacy /api/embeddings
+        # ignores both and 500s on over-context input). truncate=True is the
+        # never-error guarantee; num_ctx=8192 keeps full fidelity up to nomic's
+        # supported ceiling so realistic chunks lose nothing.
+        response = self.client.embed(
+            model=self.config.model,
+            input=text,
+            truncate=True,
+            options={"num_ctx": num_ctx},
+        )
+        # /api/embed returns {"embeddings": [[...]]} (batched), vs legacy
+        # /api/embeddings' {"embedding": [...]}. We embed a single string, so the
+        # vector is embeddings[0]; fall back to the legacy key defensively.
+        embeddings = response.get("embeddings")
+        if embeddings:
+            return embeddings[0]
+        return response["embedding"]
+
+    OllamaEmbedding.embed = embed
+    log.info(
+        "Ollama embedder patched: /api/embed with num_ctx=%d + truncate "
+        "(no 500 on over-context chunks)",
+        num_ctx,
+    )
+
+
+_patch_ollama_embedder_context()
+
+
 # ─── Optional: disable hosted "reasoning"/thinking on the extraction LLM ───────
 # Some hosted OpenAI-compatible models (e.g. the Alibaba token-plan DeepSeek/Qwen
 # family) are *reasoning* models: they emit a hidden chain-of-thought and make
