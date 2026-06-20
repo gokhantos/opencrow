@@ -109,38 +109,32 @@ services:
       # Graph store: embedded Kùzu (in-process, no server/JVM), persisted to /data.
       MEM0_GRAPH_PROVIDER: kuzu
       MEM0_GRAPH_DB: /data/kuzu
-      # Extraction LLM: LOCAL Ollama (gemma4:e2b-it-qat) via Ollama's
-      # OpenAI-compatible endpoint (/v1). $0 marginal cost, no external quota.
-      # Routed through the `openai` provider (NOT mem0's native ollama provider)
+      # Extraction LLM: HOSTED Alibaba token-plan DeepSeek (deepseek-v4-flash) via
+      # its OpenAI-compatible endpoint. Routed through the `openai` provider
       # because only the OpenAI path forwards `tools` — required for graph
-      # entity/relation extraction. Gemma is non-reasoning with native
-      # function-calling: it follows mem0's nested relation tool-schema and avoids
-      # the reasoning chain-of-thought that stalls qwen3-family models.
+      # entity/relation extraction.
       #
-      # Use the QAT (quantization-aware-trained) 4-bit variant: ~4.3GB resident vs
-      # ~7GB for the default gemma4:e2b. The 7GB default exhausted RAM alongside
-      # the Docker stack on a 24GB host and drove heavy swap thrash; the QAT build
-      # keeps the same tool-calling quality at a footprint that fits. ~40-140s per
-      # record (background-tolerant). API key is a dummy (Ollama ignores it).
+      # deepseek-v4-flash is a *reasoning* model and would stall mem0's always-on
+      # graph phase (hidden chain-of-thought; sequential tool-calls never return).
+      # We disable thinking with MEM0_LLM_DISABLE_THINKING=true, which makes the
+      # sidecar inject `enable_thinking: false` on every completion (verified: it
+      # then tool-calls with zero reasoning tokens). Extraction is fully hosted —
+      # the local Ollama chat model (gemma) has been decommissioned; only the
+      # EMBEDDER below still uses host Ollama (nomic-embed-text).
       #
-      # HOST PREREQUISITE: the host must run Ollama with the model pulled —
-      #   `ollama pull gemma4:e2b-it-qat`  (host also serves nomic-embed-text).
-      # Recommended host env (LaunchAgent): OLLAMA_NUM_PARALLEL=1 to avoid KV-slot
-      # memory multiplication under concurrent ingestion. Reachable from this
-      # container at host.docker.internal (see extra_hosts).
-      #
-      # FALLBACK — hosted Zhipu GLM (keeps graph, costs MEM0_LLM_API_KEY quota):
-      #   MEM0_LLM_MODEL: glm-5.1
-      #   MEM0_LLM_BASE_URL / OPENAI_BASE_URL / OPENAI_API_BASE:
-      #     https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
-      #   MEM0_LLM_API_KEY / OPENAI_API_KEY: ${MEM0_LLM_API_KEY}
+      # FALLBACK — hosted Zhipu GLM (glm-5.1): plain text-gen (no thinking flag
+      # needed), same endpoint + ${MEM0_LLM_API_KEY}. (No local-LLM fallback: the
+      # gemma chat model was removed; embeddings remain local.)
       MEM0_LLM_PROVIDER: openai
-      MEM0_LLM_MODEL: gemma4:e2b-it-qat
-      MEM0_LLM_BASE_URL: http://host.docker.internal:11434/v1
-      MEM0_LLM_API_KEY: ollama
-      OPENAI_API_KEY: ollama
-      OPENAI_BASE_URL: http://host.docker.internal:11434/v1
-      OPENAI_API_BASE: http://host.docker.internal:11434/v1
+      MEM0_LLM_MODEL: deepseek-v4-flash
+      MEM0_LLM_BASE_URL: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      MEM0_LLM_API_KEY: ${MEM0_LLM_API_KEY}
+      # Reasoning/thinking OFF (deepseek-v4-flash is a reasoning model; thinking
+      # stalls the graph phase). The sidecar injects enable_thinking=false.
+      MEM0_LLM_DISABLE_THINKING: "true"
+      OPENAI_API_KEY: ${MEM0_LLM_API_KEY}
+      OPENAI_BASE_URL: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      OPENAI_API_BASE: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
       # Embeddings stay on host-native Ollama (nomic-embed-text, 768-dim).
       MEM0_OLLAMA_URL: http://host.docker.internal:11434
       MEM0_EMBED_MODEL: nomic-embed-text:latest
