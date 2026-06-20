@@ -214,28 +214,61 @@ function toGraphPath(seedName: unknown, rawSteps: unknown): GraphPath | null {
 // ─── Cypher (parameterized; static query text) ────────────────────────────────
 
 /**
- * Single bounded read query. Seeds on mid-degree pain entities, traverses 2..N
- * whitelisted relationships to a same-partition destination through nodes that
- * are all same-partition, non-stoplisted, and below the degree cap, then returns
- * the seed name + an ordered step list. EVERY caller value is a $param — no
- * interpolation. `(?i)` makes the stoplist regex case-insensitive server-side.
+ * Largest hop bound the traversal pattern is allowed to expand to. Cypher
+ * requires a LITERAL upper bound on a variable-length pattern — an *unbounded*
+ * `*2..` makes the planner expand an enormous frontier from high-degree seeds
+ * (it post-filters by `length(path)` only AFTER expanding), which times out on
+ * the real sige-global graph. A literal cap lets the planner prune at expansion
+ * time; `length(path) <= $maxHops` still enforces the caller's (smaller) runtime
+ * bound on top. This MUST be ≥ the config schema's `graphReasoning.maxHops` max
+ * (currently 6 — see `src/config/schema.ts`). At ceiling=6 the query runs in
+ * tens of ms; the runtime `$maxHops` guard keeps results bounded as configured.
+ */
+const MAX_HOPS_CEILING = 6;
+
+/**
+ * Single bounded read query. Seeds on mid-degree pain entities, traverses
+ * `2..MAX_HOPS_CEILING` whitelisted relationships (further clamped to `$maxHops`
+ * via the `length(path)` guard) to a same-partition destination through nodes
+ * that are all same-partition, non-stoplisted, and below the degree cap, then
+ * returns the seed name + an ordered step list. EVERY caller value is a $param —
+ * no interpolation. `(?i)` makes the stoplist regex case-insensitive server-side.
+ *
+ * PERFORMANCE — this query is engineered to be INDEX-BACKED and avoid per-node
+ * runtime degree subqueries (both were the cause of the original >4min timeout):
+ *   - Seed/destination/intermediate nodes are qualified to the `:Entity` base
+ *     label (every sige-graph node carries it) so the `entity_user_id` /
+ *     `entity_name` property indexes can apply — a bare `{user_id:…}` match has
+ *     no label and forces a full node scan (Neo4j property indexes are
+ *     label-scoped).
+ *   - Degree filtering reads a precomputed `n.degree` property (index
+ *     `entity_degree`) instead of evaluating `COUNT { (n)--() }` for every node
+ *     on every candidate path. The `:Entity` label, the `degree` property, and
+ *     all three indexes are maintained by `scripts/canonicalize-neo4j-graph.py`
+ *     (weekly via launchd) and ensured at deploy. `degree` can be transiently
+ *     stale between canonicalization runs — acceptable for a guidance-only hub
+ *     cap (the only two sige-global nodes over the default cap, app_store /
+ *     play_store, are STOPLISTed anyway).
+ *   - The variable-length pattern carries a LITERAL upper bound
+ *     (`MAX_HOPS_CEILING`); see that constant for why an unbounded `*2..` is
+ *     pathological.
  */
 const OPPORTUNITY_PATHS_CYPHER = `
-MATCH (pain {user_id: $userId})
-WHERE COUNT { (pain)--() } >= $minDegree
-  AND COUNT { (pain)--() } <= $maxDegree
+MATCH (pain:Entity {user_id: $userId})
+WHERE pain.degree >= $minDegree
+  AND pain.degree <= $maxDegree
   AND NOT pain.name =~ ('(?i)' + $stoplist)
   AND any(r IN [(pain)-[rr]-() | type(rr)] WHERE r IN $relWhitelist)
-WITH pain, COUNT { (pain)--() } AS deg
-ORDER BY deg DESC
+WITH pain
+ORDER BY pain.degree DESC
 LIMIT toInteger($searchLimit)
-MATCH path = (pain)-[rels*2..]-(dest {user_id: $userId})
+MATCH path = (pain)-[rels*2..${MAX_HOPS_CEILING}]-(dest:Entity {user_id: $userId})
 WHERE length(path) <= toInteger($maxHops)
   AND all(r IN relationships(path) WHERE type(r) IN $relWhitelist)
   AND all(n IN nodes(path) WHERE
         n.user_id = $userId
         AND NOT n.name =~ ('(?i)' + $stoplist)
-        AND COUNT { (n)--() } <= $maxDegree)
+        AND n.degree <= $maxDegree)
 RETURN pain.name AS seed,
        [i IN range(1, length(path)) |
           { rel: type(relationships(path)[i - 1]),
