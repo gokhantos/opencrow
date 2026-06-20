@@ -32,10 +32,15 @@ import {
   type ParsedGiant,
 } from "./giant";
 import {
+  buildCompetabilityPersisted,
   parseCompetability,
   heuristicMoatFlags,
   type CompetabilityScore,
 } from "./competability";
+import {
+  type CompetabilityDecisionInput,
+  persistCompetabilityDecisions,
+} from "../../sources/ideas/competability-decisions-store";
 import {
   DEFAULT_BUILDER_PROFILE,
   type BuilderProfile,
@@ -487,6 +492,12 @@ export async function critiqueIdeas(
   antiExemplars = "",
   competability?: CompetabilityConfig,
   incumbentSet: ReadonlySet<string> = new Set<string>(),
+  audit?: {
+    /** Pipeline run id stamped on each audit decision row (nullable). */
+    readonly pipelineRunId?: string | null;
+    /** Epoch SECONDS the decisions were made (caller supplies via `now()`). */
+    readonly decidedAt: number;
+  },
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const competabilityOn = competability?.enabled === true;
   // The builder the gate is evaluated for. Defaults to the solo bootstrapper
@@ -680,6 +691,11 @@ Return ONLY a JSON array with one entry per idea (in the same order):
   let competabilityEvaluated = 0;
   let competabilityWouldKill = 0;
   let competabilityDropped = 0;
+  // Audit EVERY competability-evaluated idea — KEPT or KILLED — so the calibration
+  // backtest sees the complete gate population, not just the survivors. Collected
+  // here, flushed in ONE best-effort batch after the loop.
+  const enforceCompetabilityGate = competabilityOn && competability?.enforceGate === true;
+  const competabilityDecisions: CompetabilityDecisionInput[] = [];
 
   for (let idx = 0; idx < candidates.length; idx++) {
     const candidate = candidates[idx]!;
@@ -758,6 +774,40 @@ Return ONLY a JSON array with one entry per idea (in the same order):
           ? `${competabilityReason}; ${heuristic.reason}`
           : heuristic.reason;
       }
+
+      // AUDIT this evaluation (KEPT or KILLED), BEFORE the kill `continue` below,
+      // using the EFFECTIVE (decided) score + RAW slice — the same scorecard the
+      // idea would carry. Only when a real LLM score exists (heuristic-only rows
+      // have no dims to persist). Skipped when the caller passed no `audit` ctx.
+      if (audit && competabilityScore && effectiveDims && effectiveOverall !== null) {
+        const persisted = buildCompetabilityPersisted(
+          {
+            dimensions: effectiveDims,
+            overall: effectiveOverall,
+            rationale: competabilityScore.rationale,
+          },
+          competabilityReason,
+          competabilityGated,
+          {
+            raw: {
+              dimensions: competabilityScore.dimensions,
+              overall: competabilityScore.overall,
+            },
+            matchedExpertiseDomain,
+          },
+        );
+        if (persisted) {
+          competabilityDecisions.push({
+            source: "pipeline",
+            pipelineRunId: audit.pipelineRunId ?? null,
+            ideaTitle: candidate.title,
+            persisted,
+            gated: competabilityGated,
+            enforced: enforceCompetabilityGate,
+            decidedAt: audit.decidedAt,
+          });
+        }
+      }
     }
 
     const scored: GeneratedIdeaCandidate = {
@@ -827,6 +877,13 @@ Return ONLY a JSON array with one entry per idea (in the same order):
     }
 
     survived.push(scored);
+  }
+
+  // Best-effort audit flush — NEVER throws (the store swallows + logs), so an
+  // audit-insert problem can never break idea generation. No-op when the caller
+  // passed no `audit` context (e.g. tests) or when nothing was scored.
+  if (audit) {
+    await persistCompetabilityDecisions(competabilityDecisions);
   }
 
   // Competability gate summary — emitted EVERY run regardless of kills (mirrors

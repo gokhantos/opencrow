@@ -42,6 +42,11 @@ import {
   matchExpertiseDomain,
 } from "../pipelines/ideas/builder-profile";
 import type { CompetabilityConfig } from "../config/schema";
+import {
+  type CompetabilityDecisionInput,
+  persistCompetabilityDecisions,
+} from "../sources/ideas/competability-decisions-store";
+import { now } from "../pipelines/ideas/pipeline-runner";
 import type { ScoredIdea } from "./types";
 
 const log = createLogger("sige:competability");
@@ -160,8 +165,10 @@ export async function gateSigeIdeasOnCompetability(params: {
   readonly model: string;
   readonly provider?: AiProvider;
   readonly incumbentSet?: ReadonlySet<string>;
+  /** SIGE session id, persisted on each audit decision row (best-effort). */
+  readonly sessionId?: string | null;
 }): Promise<SigeCompetabilityGateResult> {
-  const { ideas, config, model, provider = "anthropic" } = params;
+  const { ideas, config, model, provider = "anthropic", sessionId = null } = params;
   const incumbentSet = params.incumbentSet ?? new Set<string>();
   const enforce = config.enforceGate === true;
   // The builder the gate is evaluated for (identity transform by default).
@@ -203,6 +210,11 @@ export async function gateSigeIdeasOnCompetability(params: {
 
   const kept: SigeCompetabilityResult[] = [];
   const dropped: SigeCompetabilityResult[] = [];
+  // Audit EVERY evaluated idea — KEPT or KILLED — so the calibration backtest sees
+  // the complete gate population, not just the survivors. Epoch SECONDS once per
+  // batch (the gate is a single synchronous pass; no per-idea clock drift needed).
+  const decidedAt = now();
+  const decisions: CompetabilityDecisionInput[] = [];
 
   for (const idea of ideas) {
     const raw = rawById.get(idea.id);
@@ -258,6 +270,16 @@ export async function gateSigeIdeasOnCompetability(params: {
       persisted,
     };
 
+    decisions.push({
+      source: "sige",
+      sessionId,
+      ideaTitle: idea.title,
+      persisted,
+      gated,
+      enforced: enforce,
+      decidedAt,
+    });
+
     if (gated && enforce) {
       dropped.push(result);
       log.info("SIGE idea KILLED by competability gate (enforced)", {
@@ -278,6 +300,10 @@ export async function gateSigeIdeasOnCompetability(params: {
       }
     }
   }
+
+  // Best-effort audit flush — NEVER throws (the store swallows + logs), so an
+  // audit-insert problem can never break the SIGE cross-write.
+  await persistCompetabilityDecisions(decisions);
 
   // Summary log — emitted EVERY run regardless of kills (mirrors the pipeline's
   // GIANT/Competability shadow gate summaries) so an all-pass run is observable.

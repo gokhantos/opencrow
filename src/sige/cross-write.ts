@@ -224,6 +224,7 @@ export async function crossWriteSigeIdeas(
         model: competability.model,
         provider: competability.provider,
         incumbentSet: competability.incumbentSet,
+        sessionId,
       });
       for (const result of gate.kept) {
         competabilityByIdeaId.set(result.idea.id, result.persisted);

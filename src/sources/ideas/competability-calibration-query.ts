@@ -6,11 +6,17 @@
  * `parseCompetabilityJson` mapper exported by `store.ts` rather than duplicating
  * the object|string|null JSONB parse.
  *
- * Pulls every idea that carries a persisted overall competability score, mapping
- * each row TOLERANTLY into a {@link CalibrationRecord}: the overall comes from the
- * REAL `competability_overall` column; `gated` and `dimensions` come from the
- * JSONB scorecard when well-formed. A NULL / malformed scorecard still yields a
- * usable record (`gated:false`, `dimensions:undefined`) rather than crashing.
+ * Reads from `competability_decisions` (migration 028) — the COMPLETE gate
+ * population (every evaluated idea, KEPT or KILLED), NOT `generated_ideas` (which
+ * only ever sees SURVIVORS because ENFORCE mode drops killed ideas before they
+ * are persisted there). Reading the audit table is what makes the kill-rate curve
+ * / `gatedFraction` / recommended threshold MEANINGFUL rather than survivor-biased.
+ *
+ * Maps each row TOLERANTLY into a {@link CalibrationRecord}: the overall comes
+ * from the REAL `competability_overall` column; `gated` from the audit `gated`
+ * column; `dimensions` from the JSONB scorecard when well-formed. A NULL /
+ * malformed scorecard still yields a usable record (`dimensions:undefined`)
+ * rather than crashing.
  */
 
 import {
@@ -26,13 +32,19 @@ const log = createLogger("ideas:competability-calibration-query");
 
 /**
  * Defense-in-depth cap on the backtest read. Far above any realistic volume of
- * scored ideas, so it never biases the calibration in practice; it only bounds
- * the worst-case memory footprint of this authed read-only endpoint.
+ * decisions, so it never biases the calibration in practice; it only bounds the
+ * worst-case memory footprint of this authed read-only endpoint.
  */
 const MAX_CALIBRATION_ROWS = 100_000;
 
-interface CompetabilityScoredRow {
+/**
+ * One `competability_decisions` row, as read for calibration. `gated` is the REAL
+ * audit column (the gate's actual decision), so the backtest sees both the kept
+ * survivors AND the killed ideas — the whole point of repointing this read.
+ */
+interface CompetabilityDecisionScoredRow {
   readonly competability_overall: number | null;
+  readonly gated: boolean | null;
   readonly competability_json: CompetabilityPersistedJson | string | null;
 }
 
@@ -55,18 +67,21 @@ function extractDimensions(
 }
 
 /**
- * Read every scored idea (`competability_overall IS NOT NULL`) and map it to a
- * backtest {@link CalibrationRecord}. Parameterized via `getDb()` tagged template —
- * no string interpolation. Tolerates NULL / malformed `competability_json`.
+ * Read every competability DECISION (`competability_decisions`, migration 028 —
+ * KEPT and KILLED alike) and map it to a backtest {@link CalibrationRecord}.
+ * Parameterized via `getDb()` tagged template — no string interpolation.
+ * `gated` comes from the REAL audit column (the gate's decision), so the sample is
+ * the COMPLETE population, not the survivor-biased `generated_ideas` view.
+ * Tolerates NULL / malformed `competability_json`.
  */
 export async function getCompetabilityScoredIdeas(): Promise<readonly CalibrationRecord[]> {
   const db = getDb();
   const rows = (await db`
-    SELECT competability_overall, competability_json
-    FROM generated_ideas
+    SELECT competability_overall, gated, competability_json
+    FROM competability_decisions
     WHERE competability_overall IS NOT NULL
     LIMIT ${MAX_CALIBRATION_ROWS}
-  `) as readonly CompetabilityScoredRow[];
+  `) as readonly CompetabilityDecisionScoredRow[];
 
   const records: CalibrationRecord[] = [];
   for (const row of rows) {
@@ -76,13 +91,15 @@ export async function getCompetabilityScoredIdeas(): Promise<readonly Calibratio
       json = parseCompetabilityJson(row.competability_json);
     } catch (err) {
       // parseCompetabilityJson already swallows JSON errors; this is belt-and-braces.
-      log.warn("Failed to parse competability_json; treating as un-gated", { err });
+      log.warn("Failed to parse competability_json; treating dims as absent", { err });
       json = null;
     }
     const dimensions = extractDimensions(json);
     records.push({
       overall: row.competability_overall,
-      gated: json?.gated === true,
+      // The REAL gate decision is the audit `gated` column; fall back to the JSON
+      // flag only when the column is somehow NULL (defensive — it is NOT NULL).
+      gated: row.gated === true || (row.gated === null && json?.gated === true),
       ...(dimensions ? { dimensions } : {}),
     });
   }
