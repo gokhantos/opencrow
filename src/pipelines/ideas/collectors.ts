@@ -12,6 +12,7 @@
  */
 
 import { getDb } from "../../store/db";
+import type { ModelProvider } from "../../store/model-routing";
 import { createLogger } from "../../logger";
 import { chat } from "../../agent/chat";
 import type { ConversationMessage } from "../../agent/types";
@@ -157,11 +158,21 @@ export function excludeConsumed<T>(
   return { selected, selectedIds };
 }
 
-function buildChatOptions(model: string) {
+/**
+ * Build the chat options for a collector LLM insight pass. The PROVIDER is
+ * threaded from the routed `pipeline.generator` provider so a non-Anthropic
+ * route (e.g. alibaba) actually dispatches the collector call to that provider.
+ * Defaults to "agent-sdk" — the collectors' historical provider — so callers
+ * that omit it keep today's behavior. Exported for unit testing.
+ */
+export function buildChatOptions(
+  model: string,
+  provider: ModelProvider = "agent-sdk",
+) {
   return {
     systemPrompt: "",
     model,
-    provider: "agent-sdk" as const,
+    provider,
     agentId: "idea-pipeline",
     usageContext: { channel: "pipeline" as const, chatId: "ideas", source: "workflow" as const },
   };
@@ -193,6 +204,7 @@ function makeUserMessage(content: string): ConversationMessage {
 async function extractLandscapeInsights(
   rawSummary: string,
   model: string,
+  provider?: ModelProvider,
 ): Promise<LandscapeInsight | undefined> {
   const systemPrompt =
     "You are a market analyst. Extract structured insights from app store data. Return only valid JSON.";
@@ -215,7 +227,7 @@ ${sanitizeForPrompt(rawSummary).slice(0, 60000)}`;
   const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
 
   try {
-    const response = await chat(messages, { ...buildChatOptions(model), systemPrompt });
+    const response = await chat(messages, { ...buildChatOptions(model, provider), systemPrompt });
     return parseJsonFromResponse<LandscapeInsight | undefined>(response.text, undefined);
   } catch (err) {
     log.warn("Landscape insight extraction failed", { err });
@@ -229,9 +241,14 @@ ${sanitizeForPrompt(rawSummary).slice(0, 60000)}`;
  * - What existing apps offer (descriptions = feature landscape)
  * - Which categories are underserved (low satisfaction + many apps = opportunity)
  */
-export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContext): Promise<TrendData> {
+export async function analyzeAppLandscape(
+  model?: string,
+  _ctx?: CollectorContext,
+  provider?: ModelProvider,
+): Promise<TrendData> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
+  const resolvedProvider = provider ?? "agent-sdk";
   const summaryLines: string[] = [];
 
   // B7 — accumulate selected IDs into a local map; return them in the result
@@ -425,7 +442,11 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
     });
 
     // LLM insight extraction (graceful degradation on failure)
-    const insights = await extractLandscapeInsights(summaryLines.join("\n"), resolvedModel);
+    const insights = await extractLandscapeInsights(
+      summaryLines.join("\n"),
+      resolvedModel,
+      resolvedProvider,
+    );
 
     return {
       risingApps: [],
@@ -445,6 +466,7 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
 async function extractReviewInsights(
   rawSummary: string,
   model: string,
+  provider?: ModelProvider,
 ): Promise<ReviewInsight | undefined> {
   const systemPrompt =
     "You are a UX researcher. Extract structured insights from user reviews. Return only valid JSON.";
@@ -481,7 +503,7 @@ ${rawSummary.slice(0, 60000)}`;
   const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
 
   try {
-    const response = await chat(messages, { ...buildChatOptions(model), systemPrompt });
+    const response = await chat(messages, { ...buildChatOptions(model, provider), systemPrompt });
     return parseJsonFromResponse<ReviewInsight | undefined>(response.text, undefined);
   } catch (err) {
     log.warn("Review insight extraction failed", { err });
@@ -497,9 +519,11 @@ export async function clusterReviews(
   focusCategories?: readonly string[],
   model?: string,
   _ctx?: CollectorContext,
+  provider?: ModelProvider,
 ): Promise<ClusteredPains> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
+  const resolvedProvider = provider ?? "agent-sdk";
   const clusters: PainCluster[] = [];
 
   // Layer C: load the incumbent set so complaints ABOUT a top-N giant (which a
@@ -704,7 +728,7 @@ export async function clusterReviews(
     : summaryLines.join("\n\n");
 
   // LLM insight extraction (graceful degradation on failure)
-  const insights = await extractReviewInsights(summaryText, resolvedModel);
+  const insights = await extractReviewInsights(summaryText, resolvedModel, resolvedProvider);
 
   return {
     clusters: clusters.slice(0, 15),
@@ -719,6 +743,7 @@ export async function clusterReviews(
 async function extractCapabilityInsights(
   capabilities: readonly import("./types").Capability[],
   model: string,
+  provider?: ModelProvider,
 ): Promise<CapabilityInsight | undefined> {
   const lines: string[] = [];
   for (const c of capabilities) {
@@ -764,7 +789,7 @@ ${sanitizeForPrompt(rawText).slice(0, 50000)}`;
   const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
 
   try {
-    const response = await chat(messages, { ...buildChatOptions(model), systemPrompt });
+    const response = await chat(messages, { ...buildChatOptions(model, provider), systemPrompt });
     return parseJsonFromResponse<CapabilityInsight | undefined>(response.text, undefined);
   } catch (err) {
     log.warn("Capability insight extraction failed", { err });
@@ -809,9 +834,14 @@ interface RawCandidate {
   }) => Capability;
 }
 
-export async function scanCapabilities(model?: string, ctx?: CollectorContext): Promise<CapabilityScan> {
+export async function scanCapabilities(
+  model?: string,
+  ctx?: CollectorContext,
+  provider?: ModelProvider,
+): Promise<CapabilityScan> {
   const db = getDb();
   const resolvedModel = model ?? DEFAULT_MODEL;
+  const resolvedProvider = provider ?? "agent-sdk";
   const smart = loadConfig().pipelines.ideas.smart;
   const adaptive = smart.adaptiveCollection;
   const incumbentCfg = smart.incumbentExclusion;
@@ -1361,7 +1391,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
   });
 
   // LLM insight extraction (graceful degradation on failure)
-  const insights = await extractCapabilityInsights(capabilities, resolvedModel);
+  const insights = await extractCapabilityInsights(capabilities, resolvedModel, resolvedProvider);
 
   return {
     capabilities,

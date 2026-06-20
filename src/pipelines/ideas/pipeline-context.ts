@@ -19,6 +19,7 @@ import type { SmartIdeasConfig, TasteConfig } from "../../config/schema";
 import type { SigeConfig } from "../../config/schema";
 import { getIdeasByStage } from "../../sources/ideas/store";
 import { getDb } from "../../store/db";
+import type { ModelProvider } from "../../store/model-routing";
 import { credibilityKey, getSourceCredibility } from "./credibility";
 import type { DeepSearchOptions, ValidatedExemplar } from "./synthesizer";
 import { buildValidatedExemplars } from "./synthesizer";
@@ -387,9 +388,10 @@ export function buildDeepSearchOptions(
   model: string,
   smart: SmartIdeasConfig,
   sigeConfig: SigeConfig | undefined,
+  provider?: ModelProvider,
 ): DeepSearchOptions {
   if (!smart.knowledgeGraphRetrieval) {
-    return { model };
+    return { model, provider };
   }
 
   const baseUrl = sigeConfig?.mem0.baseUrl ?? "http://127.0.0.1:8050";
@@ -397,10 +399,10 @@ export function buildDeepSearchOptions(
   const apiToken = sigeConfig?.mem0.apiToken;
 
   try {
-    return { model, mem0: new Mem0Client({ baseUrl, apiToken }), userId };
+    return { model, provider, mem0: new Mem0Client({ baseUrl, apiToken }), userId };
   } catch (err) {
     log.warn("Failed to build Mem0 client for graph retrieval — skipping graph branch", { err });
-    return { model };
+    return { model, provider };
   }
 }
 

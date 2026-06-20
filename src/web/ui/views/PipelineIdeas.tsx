@@ -8,7 +8,7 @@ import {
 import { apiFetch } from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
-import { PageHeader, LoadingState, EmptyState, SearchBar, ModelRoutePicker } from "../components";
+import { PageHeader, LoadingState, EmptyState, SearchBar } from "../components";
 import { useToast } from "../components/Toast";
 import { useLocalStorage } from "../lib/useLocalStorage";
 
@@ -456,14 +456,6 @@ export default function PipelineIdeas() {
           </select>
         }
       />
-
-      {/* Model Configuration */}
-      <div className="bg-bg-1 border border-border rounded-xl p-5 mb-6 transition-all duration-200 hover:border-border-hover">
-        <div className="text-xs font-semibold uppercase tracking-widest text-accent mb-4 pb-2 border-b border-border">
-          Model Configuration
-        </div>
-        <ModelRoutePicker processKey="pipeline.generator" label="Generator" />
-      </div>
 
       {/* Stage filter tabs */}
       <div className="flex gap-1.5 flex-wrap mb-4 p-2 bg-bg border border-border rounded-md">

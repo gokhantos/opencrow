@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
+  buildChatOptions,
   excludeConsumed,
   selectRanked,
   normalizeVelocities,
@@ -19,6 +20,32 @@ interface Row {
 }
 
 const id = (r: Row) => r.id;
+
+// ── buildChatOptions (collector provider routing) ───────────────────────────
+//
+// Regression: collectors used to hardcode the provider, so a non-Anthropic
+// routed generator (e.g. alibaba/deepseek-v4-flash) sent a deepseek model to
+// the wrong provider. The local helper must now honor a routed provider while
+// defaulting to the collectors' historical "agent-sdk" when none is supplied.
+
+describe("buildChatOptions (collectors)", () => {
+  test("defaults provider to agent-sdk when none is supplied", () => {
+    const opts = buildChatOptions("claude-sonnet-4-6");
+    expect(opts.provider).toBe("agent-sdk");
+    expect(opts.model).toBe("claude-sonnet-4-6");
+  });
+
+  test("honors a routed non-anthropic provider", () => {
+    const opts = buildChatOptions("deepseek-v4-flash", "alibaba");
+    expect(opts.provider).toBe("alibaba");
+    expect(opts.model).toBe("deepseek-v4-flash");
+  });
+
+  test("threads any supported provider through unchanged", () => {
+    expect(buildChatOptions("x/y", "openrouter").provider).toBe("openrouter");
+    expect(buildChatOptions("c", "anthropic").provider).toBe("anthropic");
+  });
+});
 
 // ── excludeConsumed (consumed-source dedup) ────────────────────────────────
 
