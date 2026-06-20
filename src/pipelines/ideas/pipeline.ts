@@ -449,6 +449,10 @@ export async function runIdeasPipeline(
           extraCandidates,
           outcomeMemory,
           segmentDirective,
+          // Audit the Pass-3 competability gate against this run, stamped with the
+          // shared epoch-seconds `now()` helper (keeps synthesizer clock-free).
+          pipelineRunId: runId,
+          competabilityDecidedAt: now(),
         }),
       (s) =>
         `Generated ${s.totalGenerated} idea candidates from trend intersections` +

@@ -196,3 +196,50 @@ describe("calibrateCompetability — small-n / empty / dims edges", () => {
     expect(report.caveats).toContain("moat dimensions");
   });
 });
+
+describe("calibrateCompetability — KILLED records make the metrics meaningful", () => {
+  // This is the WHOLE point of persisting killed ideas (migration 028): without
+  // the killed (low-overall, gated) records the sample is survivor-biased, so
+  // gatedFraction is ~0 and the kill-rate curve is flat at the low end. Prove that
+  // ADDING killed records moves gatedFraction > 0 and yields a non-trivial curve.
+  it("survivor-only sample: gatedFraction is 0 and the low-threshold curve is flat", () => {
+    // Only survivors (high overall, not gated) — the OLD survivor-biased read.
+    const survivors: readonly CalibrationRecord[] = Array.from({ length: 20 }, () =>
+      rec(4.0, false),
+    );
+    const report = calibrateCompetability(survivors);
+    expect(report.gatedFraction).toBe(0);
+    const byThreshold = new Map(report.killRateCurve.map((p) => [p.threshold, p.rejectFraction]));
+    // Nothing rejected below the survivor cluster — flat 0 across the low band.
+    expect(byThreshold.get(1.5)).toBe(0);
+    expect(byThreshold.get(2.0)).toBe(0);
+    expect(report.currentKillRate).toBe(0);
+  });
+
+  it("adding killed (low, gated) records: gatedFraction > 0 and the curve becomes non-trivial", () => {
+    const survivors: readonly CalibrationRecord[] = Array.from({ length: 20 }, () =>
+      rec(4.0, false),
+    );
+    // 10 killed ideas the gate dropped: low overall, gated:true — the population
+    // that ENFORCE mode used to discard before persistence.
+    const killed: readonly CalibrationRecord[] = Array.from({ length: 10 }, () =>
+      rec(0.8, true),
+    );
+    const report = calibrateCompetability([...survivors, ...killed]);
+
+    // gatedFraction now reflects the real kill rate: 10 / 30 ≈ 0.333.
+    expect(report.gatedFraction).toBeCloseTo(10 / 30, 10);
+    expect(report.gatedFraction).toBeGreaterThan(0);
+
+    // The kill-rate curve is non-trivial: the killed tail is rejected below ~1.0
+    // while the survivors are not, so the low band carries real mass.
+    const byThreshold = new Map(report.killRateCurve.map((p) => [p.threshold, p.rejectFraction]));
+    expect(byThreshold.get(1.0)).toBeCloseTo(10 / 30, 10); // all killed < 1.0
+    expect(byThreshold.get(2.0)).toBeCloseTo(10 / 30, 10); // survivors (4.0) still pass
+    expect(byThreshold.get(5.0)).toBe(1); // everything < 5.0
+
+    // currentKillRate (reject @ DEFAULT_REJECT_THRESHOLD = 2.0) now bites.
+    expect(report.currentThreshold).toBe(DEFAULT_REJECT_THRESHOLD);
+    expect(report.currentKillRate).toBeCloseTo(10 / 30, 10);
+  });
+});

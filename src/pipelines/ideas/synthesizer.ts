@@ -265,6 +265,20 @@ export async function synthesizeFromTrends(input: {
    */
   readonly outcomeMemory?: string;
   /**
+   * Pipeline run id, threaded into the Pass-3 competability gate so each gate
+   * decision (KEPT or KILLED) is stamped on its `competability_decisions` audit
+   * row. Optional — backward-compatible; absent → audit rows carry a null run id.
+   */
+  readonly pipelineRunId?: string | null;
+  /**
+   * Epoch SECONDS to stamp on the Pass-3 competability audit decisions. Supplied
+   * by the caller (which owns the `now()` helper) to keep this module clock-free
+   * and avoid an import cycle with `pipeline-runner`. When absent, competability
+   * audit persistence is SKIPPED (no clock to stamp with) — generation is
+   * unaffected. Optional — backward-compatible.
+   */
+  readonly competabilityDecidedAt?: number;
+  /**
    * SEED segment-diversity directive (built by the Pipeline phase via
    * fetchOutcomeMemoryGuidance → buildSegmentDiversityDirective from the SAME
    * past-verdict mem0 read as outcomeMemory). Injected ONLY at Pass 1
@@ -469,6 +483,14 @@ export async function synthesizeFromTrends(input: {
       antiExemplars,
       smart.competability,
       incumbentSet,
+      // Audit ctx: only when the caller supplied a clock (decidedAt). Absent →
+      // critiqueIdeas skips audit persistence, leaving generation unaffected.
+      input.competabilityDecidedAt !== undefined
+        ? {
+            pipelineRunId: input.pipelineRunId ?? null,
+            decidedAt: input.competabilityDecidedAt,
+          }
+        : undefined,
     );
   } catch (err) {
     log.error("Pass 3 failed, returning uncritiqued candidates", { err });
