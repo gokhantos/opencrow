@@ -29,6 +29,13 @@ interface ManagerConfig {
    * existing construction sites that omit it keep identical behavior.
    */
   readonly backend?: MemoryBackendKind;
+  /**
+   * mem0 backend dependencies. Only consumed when `backend === "mem0"`; the
+   * qdrant path ignores them, so omitting them keeps existing behavior. The
+   * client reuses SIGE's circuit-broken Mem0Client (never a second HTTP client).
+   */
+  readonly mem0Client?: import("../sige/knowledge/mem0-client").Mem0Client | null;
+  readonly mem0SharedUserId?: string;
 }
 
 interface StatsRow {
@@ -55,6 +62,8 @@ export function createMemoryManager(config: ManagerConfig): MemoryManager {
       vectorWeight: config.vectorWeight,
       textWeight: config.textWeight,
       mmrLambda: config.mmrLambda,
+      mem0Client: config.mem0Client,
+      mem0SharedUserId: config.mem0SharedUserId,
     },
   );
 

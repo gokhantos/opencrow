@@ -101,6 +101,17 @@ async function buildSigeMemoryManager(): Promise<MemoryManager | null> {
       await qdrantClient.ensureCollection(qdrantCollection, embeddingsConfig.dimensions);
     }
 
+    // mem0 backend (opt-in): build a Mem0Client only when selected, reusing the
+    // sige.mem0 baseUrl/apiToken. The qdrant default gets a null client.
+    let mem0Client: import("../sige/knowledge/mem0-client").Mem0Client | null = null;
+    if (memSearch.backend === "mem0" && config.sige?.mem0) {
+      const { Mem0Client } = await import("../sige/knowledge/mem0-client");
+      mem0Client = new Mem0Client({
+        baseUrl: config.sige.mem0.baseUrl,
+        apiToken: config.sige.mem0.apiToken,
+      });
+    }
+
     return createMemoryManager({
       embeddingProvider,
       qdrantClient,
@@ -112,6 +123,8 @@ async function buildSigeMemoryManager(): Promise<MemoryManager | null> {
       vectorWeight: memSearch.vectorWeight,
       textWeight: memSearch.textWeight,
       mmrLambda: memSearch.mmrLambda,
+      mem0Client,
+      mem0SharedUserId: memSearch.mem0SharedUserId,
     });
   } catch (err) {
     log.warn(
