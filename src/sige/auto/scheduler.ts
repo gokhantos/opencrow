@@ -44,12 +44,21 @@ export function cadenceToIntervalMs(cadence: SigeAutoConfig["cadence"]): number 
 
 /**
  * The trimmed "fast profile" used for autonomous sessions: a cheap agent model
- * (resolved by the caller from the `sige.fast-agent` route) and reduced
- * expert/social rounds to keep the unattended cost bounded. PURE.
+ * AND its provider (both resolved by the caller from the `sige.fast-agent`
+ * route) and reduced expert/social rounds to keep the unattended cost bounded.
+ *
+ * The provider MUST be threaded alongside the model: a model id is only valid
+ * for its own provider (e.g. `deepseek-v4-flash` only resolves via `alibaba`),
+ * so applying the routed model while leaving the default `anthropic` provider
+ * would send the model to the wrong API and fail every autonomous run. PURE.
  */
-function buildFastProfile(model: string): SigeSessionConfig {
+export function buildFastProfile(
+  provider: SigeSessionConfig["provider"],
+  model: string,
+): SigeSessionConfig {
   return {
     ...DEFAULT_SIGE_SESSION_CONFIG,
+    provider,
     agentModel: model,
     expertRounds: 2,
     socialRounds: 2,
@@ -92,9 +101,11 @@ export function createAutonomousSigeScheduler(deps: {
         return { enqueued: false, reason: "already-active" };
       }
 
-      // Fast-agent model comes from the `sige.fast-agent` route (DB-backed, hot
-      // reloaded per tick).
-      const { model: fastAgentModel } = await getModelRoute("sige.fast-agent");
+      // Fast-agent provider + model come from the `sige.fast-agent` route
+      // (DB-backed, hot reloaded per tick). Both are threaded into the session
+      // config so the routed model is sent to the matching provider's API.
+      const { provider: fastAgentProvider, model: fastAgentModel } =
+        await getModelRoute("sige.fast-agent");
 
       const sessionId = crypto.randomUUID();
       try {
@@ -103,7 +114,9 @@ export function createAutonomousSigeScheduler(deps: {
           seedInput: null,
           origin: "auto",
           status: "pending",
-          configJson: JSON.stringify(buildFastProfile(fastAgentModel)),
+          configJson: JSON.stringify(
+            buildFastProfile(fastAgentProvider, fastAgentModel),
+          ),
         });
       } catch (err) {
         // A NOT NULL violation here means migration 020 (seed_input nullable)
