@@ -31,7 +31,11 @@ async function downloadBinary(p: NativePaths): Promise<void> {
   const tar = spawnSync("tar", ["-xzf", tmp, "-C", p.bin, "qdrant"], {
     stdio: "inherit",
   });
-  if (tar.status !== 0) throw new Error("Failed to extract qdrant binary");
+  if (tar.status !== 0) {
+    throw new Error(
+      `Failed to extract qdrant binary: ${tar.error?.message ?? `tar exited ${tar.status}`}`,
+    );
+  }
   await fs.chmod(p.qdrantBinary, 0o755);
 }
 
@@ -56,6 +60,17 @@ export async function provisionQdrant(p: NativePaths): Promise<void> {
   const domain = `gui/${process.getuid?.() ?? ""}`;
   spawnSync("launchctl", ["bootout", domain, dest], { stdio: "ignore" });
   const boot = spawnSync("launchctl", ["bootstrap", domain, dest], { stdio: "inherit" });
-  if (boot.status !== 0) throw new Error("launchctl bootstrap (qdrant) failed");
-  spawnSync("launchctl", ["kickstart", "-k", `${domain}/${QDRANT_LABEL}`], { stdio: "inherit" });
+  if (boot.status !== 0) {
+    throw new Error(
+      `launchctl bootstrap (qdrant) failed: ${boot.error?.message ?? `exited ${boot.status}`}`,
+    );
+  }
+  const kick = spawnSync("launchctl", ["kickstart", "-k", `${domain}/${QDRANT_LABEL}`], {
+    stdio: "inherit",
+  });
+  if (kick.status !== 0) {
+    throw new Error(
+      `launchctl kickstart (qdrant) failed: ${kick.error?.message ?? `exited ${kick.status}`}`,
+    );
+  }
 }
