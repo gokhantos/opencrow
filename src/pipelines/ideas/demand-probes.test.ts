@@ -40,7 +40,10 @@ const CANDIDATE = {
 describe("enrichDemand", () => {
   test("extracts keywords from the candidate and passes them to probes", async () => {
     const reddit = recordingProbe("redditIntent", []);
-    await enrichDemand(CANDIDATE, [reddit], { fundingSignal: false });
+    await enrichDemand(CANDIDATE, [reddit], {
+      fundingSignal: false,
+      phSupply: false,
+    });
     expect(reddit.seen.length).toBe(1);
     const kws = reddit.seen[0] ?? [];
     expect(kws.length).toBeGreaterThan(0);
@@ -54,7 +57,9 @@ describe("enrichDemand", () => {
     const funding = recordingProbe("fundingNews", [
       { kind: "funding_news", query: "invoice", count: 3 },
     ]);
-    const art = await enrichDemand(CANDIDATE, [reddit, funding]);
+    const art = await enrichDemand(CANDIDATE, [reddit, funding], {
+      phSupply: false,
+    });
     expect(art.evidence.length).toBe(2);
     expect(art.score).toBeGreaterThan(ABSENCE_SCORE_CAP);
     expect(art.confidence).toBeGreaterThan(ABSENCE_CONFIDENCE_CAP);
@@ -89,7 +94,7 @@ describe("enrichDemand", () => {
     const ok = recordingProbe("redditIntent", [
       { kind: "reddit_intent", query: "invoice", count: 6 },
     ]);
-    const art = await enrichDemand(CANDIDATE, [boom, ok]);
+    const art = await enrichDemand(CANDIDATE, [boom, ok], { phSupply: false });
     expect(art.evidence.length).toBe(1);
     expect(art.score).toBeGreaterThan(ABSENCE_SCORE_CAP);
   });
@@ -103,6 +108,7 @@ describe("enrichDemand", () => {
     ]);
     const art = await enrichDemand(CANDIDATE, [reddit, funding], {
       redditIntent: false,
+      phSupply: false,
     });
     expect(reddit.seen.length).toBe(0);
     expect(funding.seen.length).toBe(1);
@@ -113,11 +119,17 @@ describe("enrichDemand", () => {
     const ext = recordingProbe("externalTrends", [
       { kind: "search_trend", query: "x", count: 9 },
     ]);
-    const off = await enrichDemand(CANDIDATE, [ext], { externalTrends: false });
+    const off = await enrichDemand(CANDIDATE, [ext], {
+      externalTrends: false,
+      phSupply: false,
+    });
     expect(ext.seen.length).toBe(0);
     expect(off.score).toBeLessThanOrEqual(ABSENCE_SCORE_CAP);
 
-    const on = await enrichDemand(CANDIDATE, [ext], { externalTrends: true });
+    const on = await enrichDemand(CANDIDATE, [ext], {
+      externalTrends: true,
+      phSupply: false,
+    });
     expect(ext.seen.length).toBe(1);
     expect(on.evidence.length).toBe(1);
   });
@@ -131,6 +143,47 @@ describe("enrichDemand", () => {
       supplyDensity: 0.9,
     });
     expect(crowded.whitespace).toBeLessThan(open.whitespace);
+  });
+
+  test("selectProbes gating: reviewComplaint off => not run", async () => {
+    const review = recordingProbe("reviewComplaint", [
+      { kind: "review_complaint", query: "x", count: 5 },
+    ]);
+    const art = await enrichDemand(CANDIDATE, [review], {
+      reviewComplaint: false,
+      phSupply: false,
+    });
+    expect(review.seen.length).toBe(0);
+    expect(art.evidence.length).toBe(0);
+  });
+
+  test("selectProbes gating: hnIntent off => not run", async () => {
+    const hn = recordingProbe("hnIntent", [
+      { kind: "hn_intent", query: "x", count: 5 },
+    ]);
+    const art = await enrichDemand(CANDIDATE, [hn], {
+      hnIntent: false,
+      phSupply: false,
+    });
+    expect(hn.seen.length).toBe(0);
+    expect(art.evidence.length).toBe(0);
+  });
+
+  test("review/hn probes run by default and aggregate as cited demand", async () => {
+    const review = recordingProbe("reviewComplaint", [
+      { kind: "review_complaint", query: "x", count: 4 },
+    ]);
+    const hn = recordingProbe("hnIntent", [
+      { kind: "hn_intent", query: "x", count: 4 },
+    ]);
+    // phSupply disabled so the orchestrator does not touch the DB for ph_products.
+    const art = await enrichDemand(CANDIDATE, [review, hn], {
+      phSupply: false,
+    });
+    expect(review.seen.length).toBe(1);
+    expect(hn.seen.length).toBe(1);
+    expect(art.evidence.length).toBe(2);
+    expect(art.score).toBeGreaterThan(ABSENCE_SCORE_CAP);
   });
 });
 
@@ -155,8 +208,20 @@ describe("externalTrendsProbe", () => {
 // ── default probe set ────────────────────────────────────────────────────────
 
 describe("DEFAULT_DEMAND_PROBES", () => {
-  test("includes the reddit-intent, funding-news, and external-trends probes", () => {
+  test("includes reddit, funding, review, hn, and external-trends probes", () => {
     const names = DEFAULT_DEMAND_PROBES.map((p) => p.name).sort();
-    expect(names).toEqual(["externalTrends", "fundingNews", "redditIntent"]);
+    expect(names).toEqual([
+      "externalTrends",
+      "fundingNews",
+      "hnIntent",
+      "redditIntent",
+      "reviewComplaint",
+    ]);
+  });
+
+  test("does NOT include a ph_products demand probe (supply, not demand)", () => {
+    const names = DEFAULT_DEMAND_PROBES.map((p) => p.name);
+    expect(names).not.toContain("phSupply");
+    expect(names.some((n) => n.toLowerCase().includes("ph"))).toBe(false);
   });
 });

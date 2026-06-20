@@ -34,8 +34,12 @@ const DEMAND_CFG: DemandConfig = {
   enabled: true,
   redditIntent: true,
   fundingSignal: true,
+  reviewComplaint: true,
+  hnIntent: true,
+  phSupply: true,
   externalTrends: false,
   minMatches: 2,
+  minKeywordHits: 2,
 };
 
 /** A baseline scorecard with a high ASSERTED demand (5) the gate will cap. */
@@ -118,8 +122,12 @@ describe("buildEnrichDemandConfig", () => {
       enabled: true,
       redditIntent: true,
       fundingSignal: true,
+      reviewComplaint: true,
+      hnIntent: true,
+      phSupply: true,
       externalTrends: false,
       minMatches: 2,
+      minKeywordHits: 2,
     });
   });
 

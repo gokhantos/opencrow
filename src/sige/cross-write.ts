@@ -30,7 +30,12 @@ import { checkForDuplicates } from "../pipelines/ideas/validate";
 import type { GeneratedIdeaCandidate } from "../pipelines/ideas/types";
 import type { CompetabilityPersisted } from "../pipelines/ideas/competability";
 import { gateSigeIdeasOnCompetability } from "./competability-scoring";
-import { computeDiversityReport, selectDiverseBy } from "../pipelines/ideas/idea-diversity";
+import {
+  computeDiversityReport,
+  normalizeAnchorFingerprint,
+  selectDiverseBy,
+  selectDiverseByKeys,
+} from "../pipelines/ideas/idea-diversity";
 import { inferSegment } from "../pipelines/ideas/segments";
 import type { CompetabilityConfig, DiversityGuardConfig } from "../config/schema";
 import type { AiProvider } from "../agent/types";
@@ -195,11 +200,32 @@ export async function crossWriteSigeIdeas(
           resolveBucket: resolveSegment,
         }),
       ];
+      // Compose the SIGNAL/SEED guard. SIGE ideas carry no source-signal ids, so
+      // the seed key is the normalized fingerprint of the idea TEXT — this caps
+      // near-identical SIGE ideas (same anchor reworded) on top of the segment
+      // cap above. Anti-starvation preserves the promoted count.
+      if (diversityGuard.signalGuard) {
+        const resolveTextFingerprint = (idea: ScoredIdea): readonly string[] => {
+          const fp = normalizeAnchorFingerprint(`${idea.title} ${idea.description}`);
+          return fp.length > 0 ? [`anchor:${fp}`] : [];
+        };
+        topIdeas = [
+          ...selectDiverseByKeys(topIdeas, {
+            maxIdeas: Math.max(0, limit),
+            maxKeyShare: diversityGuard.maxSignalShare,
+            resolveKeys: resolveTextFingerprint,
+          }),
+        ];
+      }
       // Bucket the metric by the SAME inferred segments (title+summary both
       // survive scoredIdeaToCandidate, so the candidate resolver agrees).
       const report = computeDiversityReport(topIdeas.map(scoredIdeaToCandidate), {
         bucketBy: "category",
         resolveBucket: (c) => inferSegment(`${c.title} ${c.summary}`),
+        resolveSignalKeys: (c) => {
+          const fp = normalizeAnchorFingerprint(`${c.title} ${c.summary}`);
+          return fp.length > 0 ? [`anchor:${fp}`] : [];
+        },
       });
       log.info("Diversity summary", {
         sessionId,
@@ -208,6 +234,8 @@ export async function crossWriteSigeIdeas(
         dominantBucket: report.dominantBucket,
         dominantShare: Number(report.dominantShare.toFixed(2)),
         entropy: Number(report.entropy.toFixed(2)),
+        distinctSignals: report.distinctSignals,
+        dominantSignalShare: Number(report.dominantSignalShare.toFixed(2)),
       });
     }
 

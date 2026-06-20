@@ -501,3 +501,83 @@ describe("deepMergeSigeOverride — competability builderProfile no-clobber", ()
     expect(result.rejectThreshold).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// seedDiversity env-toggle tests (loadConfig — no DB required)
+// ---------------------------------------------------------------------------
+
+const SEED_DIVERSITY_VARS = [
+  "OPENCROW_SMART_SEED_DIVERSITY_ENABLED",
+  "OPENCROW_SMART_SEED_DIVERSITY_FOCUS_ROTATION",
+  "OPENCROW_SMART_SEED_DIVERSITY_FOCUS_SPREAD",
+  "OPENCROW_SMART_SEED_DIVERSITY_HIGH_OPPORTUNITY_SLICE",
+  "OPENCROW_SMART_SEED_DIVERSITY_RECENT_ANCHOR_LOOKBACK",
+  "OPENCROW_SMART_SEED_DIVERSITY_PAIN_THEMES_LEAD_SUMMARY",
+  "OPENCROW_SMART_SEED_DIVERSITY_MAX_LEADING_PAIN_THEMES",
+  "OPENCROW_SMART_SEED_DIVERSITY_ECHO_CHAMBER_DOWNWEIGHT",
+  "OPENCROW_SMART_SEED_DIVERSITY_ECHO_CHAMBER_FACTOR",
+] as const;
+
+describe("loadConfig — seedDiversity env toggles", () => {
+  let saved: Partial<Record<string, string>> = {};
+
+  beforeEach(() => {
+    saved = {};
+    for (const name of SEED_DIVERSITY_VARS) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
+  });
+
+  afterEach(() => {
+    for (const name of SEED_DIVERSITY_VARS) {
+      const prev = saved[name];
+      if (prev === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = prev;
+      }
+    }
+  });
+
+  test("no env vars set → all seedDiversity fields carry schema defaults", () => {
+    const sd = loadConfig().pipelines.ideas.smart.seedDiversity;
+    expect(sd.enabled).toBe(true);
+    expect(sd.focusRotation).toBe(true);
+    expect(sd.focusSpread).toBe(8);
+    expect(sd.highOpportunitySlice).toBe(4);
+    expect(sd.recentAnchorLookback).toBe(40);
+    expect(sd.painThemesLeadSummary).toBe(true);
+    expect(sd.maxLeadingPainThemes).toBe(15);
+    expect(sd.echoChamberDownweight).toBe(true);
+    expect(sd.echoChamberFactor).toBe(0.5);
+  });
+
+  test("ECHO_CHAMBER_FACTOR=0.25 → number override; sibling fields keep defaults", () => {
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_ECHO_CHAMBER_FACTOR = "0.25";
+    const sd = loadConfig().pipelines.ideas.smart.seedDiversity;
+    expect(sd.echoChamberFactor).toBe(0.25);
+    expect(typeof sd.echoChamberFactor).toBe("number");
+    // siblings survive the shallow-merge
+    expect(sd.enabled).toBe(true);
+    expect(sd.focusRotation).toBe(true);
+    expect(sd.focusSpread).toBe(8);
+  });
+
+  test("FOCUS_ROTATION=false and ENABLED=false override booleans", () => {
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_FOCUS_ROTATION = "false";
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_ENABLED = "false";
+    const sd = loadConfig().pipelines.ideas.smart.seedDiversity;
+    expect(sd.enabled).toBe(false);
+    expect(sd.focusRotation).toBe(false);
+    // numeric siblings still default
+    expect(sd.focusSpread).toBe(8);
+  });
+
+  test("FOCUS_SPREAD=12 → numeric override (not string)", () => {
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_FOCUS_SPREAD = "12";
+    const sd = loadConfig().pipelines.ideas.smart.seedDiversity;
+    expect(sd.focusSpread).toBe(12);
+    expect(typeof sd.focusSpread).toBe("number");
+  });
+});

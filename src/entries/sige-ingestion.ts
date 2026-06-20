@@ -1277,8 +1277,12 @@ async function main(): Promise<void> {
 
   const config = await loadConfigWithOverrides();
 
-  if (config.sige === undefined || !config.sige.enabled) {
-    log.info("SIGE not configured or disabled — exiting");
+  // Ingestion is INDEPENDENT of the SIGE idea engine (config.sige.enabled). It
+  // only needs the sige.mem0 connection, so it runs to keep the corpus fresh
+  // whether or not the (manual-only) idea engine is enabled. Exit only when there
+  // is no sige section at all (no mem0 creds) or ingestion is explicitly disabled.
+  if (config.sige === undefined || config.sige.ingestion?.enabled === false) {
+    log.info("SIGE ingestion disabled or unconfigured — exiting");
     process.exit(0);
   }
 
