@@ -87,31 +87,35 @@ async function checkPostgres(): Promise<CheckResult> {
   }
 }
 
-async function checkQdrant(): Promise<CheckResult> {
-  const env = readEnvVars();
-  const url = env.QDRANT_URL;
-  if (!url) {
-    return {
-      name: "Qdrant",
-      status: "warn",
-      message: "QDRANT_URL not set (vector search disabled)",
-    };
-  }
+export function classifyHttpCheck(name: string, ok: boolean, url: string): CheckResult {
+  if (ok) return { name, status: "pass", message: `Reachable at ${url}` };
+  return {
+    name,
+    status: "fail",
+    message: `Not reachable at ${url}`,
+    repair: "opencrow native up",
+  };
+}
 
+async function checkQdrant(): Promise<CheckResult> {
   try {
-    const res = await fetch(`${url}/healthz`, {
+    const res = await fetch("http://127.0.0.1:6333/healthz", {
       signal: AbortSignal.timeout(3000),
     });
-    return res.ok
-      ? { name: "Qdrant", status: "pass", message: "Healthy" }
-      : { name: "Qdrant", status: "fail", message: `HTTP ${res.status}` };
+    return classifyHttpCheck("Qdrant", res.ok, "http://127.0.0.1:6333");
   } catch {
-    return {
-      name: "Qdrant",
-      status: "fail",
-      message: "Connection failed",
-      repair: "Ensure Qdrant is running on the configured URL",
-    };
+    return classifyHttpCheck("Qdrant", false, "http://127.0.0.1:6333");
+  }
+}
+
+async function checkMem0(): Promise<CheckResult> {
+  try {
+    const res = await fetch("http://127.0.0.1:8050/docs", {
+      signal: AbortSignal.timeout(3000),
+    });
+    return classifyHttpCheck("mem0", res.ok, "http://127.0.0.1:8050");
+  } catch {
+    return classifyHttpCheck("mem0", false, "http://127.0.0.1:8050");
   }
 }
 
@@ -352,9 +356,6 @@ async function checkSigeAutoConfig(): Promise<CheckResult[]> {
 export async function runDoctor(): Promise<void> {
   p.intro(`OpenCrow v${getVersion()} — Health Check`);
 
-  const env = readEnvVars();
-  const hasQdrant = Boolean(env.QDRANT_URL);
-
   const sigeAutoChecks = await checkSigeAutoConfig();
 
   const checks = await Promise.all([
@@ -362,7 +363,8 @@ export async function runDoctor(): Promise<void> {
     checkEnvFile(),
     checkRuntimeTokens(),
     checkPostgres(),
-    ...(hasQdrant ? [checkQdrant()] : []),
+    checkQdrant(),
+    checkMem0(),
     checkService(),
     checkDiskSpace(),
     checkMonitorProbes(),
