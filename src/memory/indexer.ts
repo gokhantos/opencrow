@@ -60,8 +60,11 @@ interface ChunkResult {
  * Flatten an extracted facet profile into Qdrant-payload-safe scalar fields.
  * Returns an empty object when facets are absent (e.g. extraction disabled or
  * failed), so the default payload shape is unchanged.
+ *
+ * Exported so the offline facet-backfill tool builds the exact same payload
+ * shape as the live indexer instead of re-deriving it.
  */
-function facetsToPayload(
+export function facetsToPayload(
   facets: SignalFacets | null,
 ): Record<string, string | number> {
   if (!facets) {

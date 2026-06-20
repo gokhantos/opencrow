@@ -50,6 +50,7 @@
     "service:web:restart": "bun run src/cli.ts service web restart",
     "service:web:status": "bun run src/cli.ts service web status",
     "setup": "bun install",
+    "memory:facet-backfill": "bun run src/memory/facet-backfill/cli.ts",
     "lint": "biome lint src",
     "format:check": "biome format src",
     "test:isolated": "bun test --timeout 30000 $(find src -name '*.isolated.test.ts')",

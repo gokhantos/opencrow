@@ -4,6 +4,13 @@ const log = createLogger("qdrant");
 
 const HEALTH_CHECK_INTERVAL_MS = 30_000; // Re-probe every 30s when down
 
+// Qdrant's default `indexing_threshold`. A segment must hold at least this many
+// vectors before its HNSW index is built; below it, search falls back to an
+// exact O(n) flat scan. Setting this to 0 DISABLES HNSW index building entirely
+// (every search becomes brute-force) — so we pin it to Qdrant's normal default
+// on both the collection-create and patch-existing paths.
+const INDEXING_THRESHOLD = 20_000;
+
 export interface QdrantPoint {
   readonly id: string;
   readonly vector: readonly number[];
@@ -43,6 +50,27 @@ export interface QdrantSearchOptions {
   readonly scoreThreshold?: number;
 }
 
+/** A point returned by {@link QdrantClient.scrollPoints} (id + payload only). */
+export interface QdrantScrollPoint {
+  readonly id: string;
+  readonly payload: Readonly<Record<string, string | number>>;
+}
+
+/** Options for a single {@link QdrantClient.scrollPoints} page. */
+export interface QdrantScrollOptions {
+  readonly filter?: QdrantFilter;
+  readonly limit: number;
+  /** Opaque cursor from the previous page's `nextPageOffset`. */
+  readonly offset?: string | number;
+}
+
+/** One page of a {@link QdrantClient.scrollPoints} cursor scan. */
+export interface QdrantScrollResult {
+  readonly points: readonly QdrantScrollPoint[];
+  /** Cursor for the next page, or `null` when the scan is exhausted. */
+  readonly nextPageOffset: string | number | null;
+}
+
 export interface QdrantClient {
   readonly available: boolean;
   ensureCollection(name: string, vectorSize: number): Promise<boolean>;
@@ -57,6 +85,16 @@ export interface QdrantClient {
     opts?: QdrantSearchOptions,
   ): Promise<readonly QdrantSearchResult[]>;
   deletePoints(collection: string, filter: QdrantFilter): Promise<void>;
+  /**
+   * Cursor-scan points (payload only, no vectors) for offline maintenance —
+   * e.g. backfilling enrichment facets onto points that predate facet
+   * extraction. One page per call; pass back `nextPageOffset` to continue until
+   * it is `null`. Returns an empty page when Qdrant is unavailable.
+   */
+  scrollPoints(
+    collection: string,
+    opts: QdrantScrollOptions,
+  ): Promise<QdrantScrollResult>;
   /**
    * Patch (merge) payload fields onto existing points without re-upserting
    * their vectors. Used by non-blocking, after-index signal enrichment so the
@@ -259,7 +297,7 @@ export async function createQdrantClient(
                 distance: "Cosine",
               },
               optimizers_config: {
-                indexing_threshold: 0,
+                indexing_threshold: INDEXING_THRESHOLD,
               },
             });
             log.info("Qdrant collection created", { name, vectorSize });
@@ -289,11 +327,12 @@ export async function createQdrantClient(
             );
           }
 
-          // Ensure HNSW indexing threshold is set (segments < 20k default
-          // would otherwise do flat O(n) scans instead of HNSW)
+          // Ensure HNSW indexing threshold is set. indexing_threshold: 0 would
+          // DISABLE HNSW index building, forcing every search into a flat O(n)
+          // scan — pin it to Qdrant's normal default so the index gets built.
           await request("PATCH", `/collections/${name}`, {
             optimizers_config: {
-              indexing_threshold: 0,
+              indexing_threshold: INDEXING_THRESHOLD,
             },
           }).catch((err) =>
             log.warn("Failed to update optimizers_config", { name, error: err }),
@@ -466,6 +505,46 @@ export async function createQdrantClient(
       } catch (error) {
         log.error("Qdrant delete failed", { collection, error });
         markUnavailable();
+      }
+    },
+
+    async scrollPoints(collection, opts): Promise<QdrantScrollResult> {
+      if (!isAvailable) {
+        return { points: [], nextPageOffset: null };
+      }
+
+      try {
+        const body: Record<string, unknown> = {
+          limit: opts.limit,
+          with_payload: true,
+          with_vector: false,
+        };
+        if (opts.filter) body.filter = opts.filter;
+        if (opts.offset !== undefined) body.offset = opts.offset;
+
+        const result = await request<{
+          result: {
+            points: ReadonlyArray<{
+              id: string | number;
+              payload: Readonly<Record<string, string | number>> | null;
+            }>;
+            next_page_offset: string | number | null;
+          };
+        }>("POST", `/collections/${collection}/points/scroll`, body);
+
+        const points: QdrantScrollPoint[] = result.result.points.map((p) => ({
+          id: String(p.id),
+          payload: p.payload ?? {},
+        }));
+
+        return {
+          points,
+          nextPageOffset: result.result.next_page_offset,
+        };
+      } catch (error) {
+        log.error("Qdrant scroll failed", { collection, error });
+        markUnavailable();
+        return { points: [], nextPageOffset: null };
       }
     },
 
