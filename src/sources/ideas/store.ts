@@ -104,8 +104,12 @@ export interface GeneratedIdeaRow {
   readonly competability_json: CompetabilityPersistedJson | string | null;
 }
 
-/** Tolerantly parse the competability_json column (object | string | null). */
-function parseCompetabilityJson(
+/**
+ * Tolerantly parse the competability_json column (object | string | null).
+ * Exported so the read-only calibration query reuses the EXACT same tolerant
+ * parse instead of duplicating it.
+ */
+export function parseCompetabilityJson(
   value: CompetabilityPersistedJson | string | null | undefined,
 ): CompetabilityPersistedJson | null {
   if (value == null) return null;

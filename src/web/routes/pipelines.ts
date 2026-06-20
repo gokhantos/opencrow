@@ -19,6 +19,11 @@ import {
   getPipelineRunsList,
 } from "../../pipelines/store";
 import { updateIdeaStage } from "../../sources/ideas/store";
+import { getCompetabilityScoredIdeas } from "../../sources/ideas/competability-calibration-query";
+import {
+  calibrateCompetability,
+  type CompetabilityCalibrationReport,
+} from "../../pipelines/ideas/competability-calibration";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
 import { writeHumanOutcomeMemory } from "../../pipelines/ideas/outcome-memory";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
@@ -81,6 +86,41 @@ const runConfigSchema = z
   })
   .strict();
 
+// Output contract for GET /pipelines/competability-calibration. We `.parse` the
+// computed report against this before returning so the wire shape is enforced.
+const competabilityDimensionsSchema = z.object({
+  capital: z.number(),
+  networkEffect: z.number(),
+  logistics: z.number(),
+  regulated: z.number(),
+});
+
+const competabilityCalibrationReportSchema = z.object({
+  sampleSize: z.number().int().nonnegative(),
+  lowConfidence: z.boolean(),
+  histogram: z.array(
+    z.object({
+      lo: z.number(),
+      hi: z.number(),
+      count: z.number().int().nonnegative(),
+    }),
+  ),
+  killRateCurve: z.array(
+    z.object({
+      threshold: z.number(),
+      rejectFraction: z.number().min(0).max(1),
+    }),
+  ),
+  currentThreshold: z.number(),
+  currentKillRate: z.number().min(0).max(1),
+  gatedFraction: z.number().min(0).max(1),
+  dimensionAverages: competabilityDimensionsSchema,
+  recordsWithDimensions: z.number().int().nonnegative(),
+  recommendedThreshold: z.number(),
+  recommendationMethod: z.enum(["valley", "target-band-fallback"]),
+  caveats: z.string(),
+}) satisfies z.ZodType<CompetabilityCalibrationReport>;
+
 function projectRunForApi(run: {
   readonly id: string;
   readonly status: string;
@@ -117,6 +157,32 @@ export function createPipelineRoutes(deps?: {
     );
 
     return c.json({ success: true, data: pipelines });
+  });
+
+  // READ-ONLY competability threshold calibration / backtest. Registered BEFORE
+  // the dynamic "/pipelines/:id" route so the static path wins (otherwise :id
+  // would capture "competability-calibration" → 404). Does NOT change live gate
+  // behavior — it backtests the persisted distribution and recommends a threshold.
+  app.get("/pipelines/competability-calibration", async (c) => {
+    try {
+      const records = await getCompetabilityScoredIdeas();
+      const report = calibrateCompetability(records);
+      const data = competabilityCalibrationReportSchema.parse(report);
+      log.info("Competability calibration", {
+        sampleSize: data.sampleSize,
+        currentThreshold: data.currentThreshold,
+        currentKillRate: data.currentKillRate,
+        recommendedThreshold: data.recommendedThreshold,
+        lowConfidence: data.lowConfidence,
+      });
+      return c.json({ success: true, data });
+    } catch (err) {
+      log.error("Competability calibration failed", { err });
+      return c.json(
+        { success: false, error: "Competability calibration failed" },
+        500,
+      );
+    }
   });
 
   // Get a specific pipeline definition
