@@ -131,12 +131,48 @@ describe("resolveManifest", () => {
     expect(ingestion?.heartbeat?.enabled).toBe(false);
   });
 
-  test("omits sige-ingestion when sige disabled", () => {
+  test("omits sige-ingestion but keeps sige when ingestion disabled (manual-only)", () => {
+    const config = makeConfig({
+      processes: { static: [] },
+      sige: { enabled: true, ingestion: { enabled: false } } as OpenCrowConfig["sige"],
+    });
+    const specs = resolveManifest(config, []);
+    // sige itself still runs so manual sessions execute via its poll loop.
+    expect(specs.some((s) => s.name === "sige")).toBe(true);
+    // The autonomous extraction loop must NOT be spawned.
+    expect(specs.some((s) => s.name === "sige-ingestion")).toBe(false);
+  });
+
+  test("includes sige-ingestion when sige enabled and ingestion explicitly enabled", () => {
+    const config = makeConfig({
+      processes: { static: [] },
+      sige: { enabled: true, ingestion: { enabled: true } } as OpenCrowConfig["sige"],
+    });
+    const specs = resolveManifest(config, []);
+    expect(specs.some((s) => s.name === "sige")).toBe(true);
+    expect(specs.some((s) => s.name === "sige-ingestion")).toBe(true);
+  });
+
+  test("runs sige-ingestion INDEPENDENTLY when the idea engine is disabled", () => {
+    // Decoupled: ingestion keeps the corpus fresh even when sige.enabled=false
+    // (idea engine off). Ingestion defaults ON; only the `sige` process is gated
+    // on sige.enabled.
     const config = makeConfig({
       processes: { static: [] },
       sige: { enabled: false } as OpenCrowConfig["sige"],
     });
     const specs = resolveManifest(config, []);
+    expect(specs.some((s) => s.name === "sige")).toBe(false);
+    expect(specs.some((s) => s.name === "sige-ingestion")).toBe(true);
+  });
+
+  test("omits sige-ingestion when ingestion explicitly disabled even if idea engine off", () => {
+    const config = makeConfig({
+      processes: { static: [] },
+      sige: { enabled: false, ingestion: { enabled: false } } as OpenCrowConfig["sige"],
+    });
+    const specs = resolveManifest(config, []);
+    expect(specs.some((s) => s.name === "sige")).toBe(false);
     expect(specs.some((s) => s.name === "sige-ingestion")).toBe(false);
   });
 

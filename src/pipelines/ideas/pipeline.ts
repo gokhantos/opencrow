@@ -23,12 +23,7 @@ import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
 import { Neo4jReadClient } from "../../sige/knowledge/neo4j-client";
-import {
-  findCompletedStep,
-  getPipelineRun,
-  markRunFailed,
-  updatePipelineRun,
-} from "../store";
+import { findCompletedStep, getPipelineRun, markRunFailed, updatePipelineRun } from "../store";
 import { beginRun, endRun } from "../active-runs";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
 import type { CollectorContext } from "./collectors";
@@ -108,16 +103,19 @@ import {
   buildTasteBlocks,
   buildDeepSearchOptions,
   loadCredibilityPosteriors,
+  loadRecentlyAnchoredCategories,
 } from "./pipeline-context";
+import { selectFocusCategories } from "./collector-focus";
 import {
   enforceSegmentSpread,
   summarizeSegmentSpread,
   paretoSelect,
   computeSigeConvergenceVeto,
   buildSignalsContext,
+  buildJuryPanel,
   type SigeSignals,
 } from "./pipeline-sige-math";
-import { computeDiversityReport, selectDiverse } from "./idea-diversity";
+import { computeDiversityReport, selectDiverse, selectDiverseBySignals } from "./idea-diversity";
 import {
   applySigeValuation,
   fetchDivergentCandidates,
@@ -129,6 +127,7 @@ import {
   runStorePhase,
   sanitizeError,
 } from "./pipeline-runner";
+import { applyIndependentJuryPenalty } from "./synthesizer-jury";
 import type { GeneratedIdeaCandidate } from "./types";
 
 const log = createLogger("pipeline:ideas");
@@ -314,10 +313,46 @@ export async function runIdeasPipeline(
     );
 
     // ── Step 2: Cluster reviews (complaints + praises) ────────────────────
-    const focusCategories =
+    // Seed-diversity lever 1: when enabled, ROTATE which categories seed the run
+    // — keep a high-opportunity head (lowest-rated / most acute) but rotate the
+    // tail across the FULL category distribution by a per-run seed, avoiding
+    // categories recent runs already anchored on. Otherwise fall back to the
+    // existing behavior (all <=3.5-rated trending categories). Degrades to the
+    // fallback whenever categoryStats is unavailable (e.g. cached/older result).
+    const seedDiversity = smart.seedDiversity;
+    const fallbackFocus =
       trends.trendingCategories.length > 0
         ? trends.trendingCategories.map((c) => c.category)
         : undefined;
+
+    let focusCategories: readonly string[] | undefined = fallbackFocus;
+    if (
+      seedDiversity.enabled &&
+      seedDiversity.focusRotation &&
+      trends.categoryStats &&
+      trends.categoryStats.length > 0
+    ) {
+      const recentlyAnchored = await loadRecentlyAnchoredCategories(
+        seedDiversity.recentAnchorLookback,
+      );
+      const rotated = selectFocusCategories({
+        stats: trends.categoryStats,
+        spread: seedDiversity.focusSpread,
+        highOpportunitySlice: seedDiversity.highOpportunitySlice,
+        rotationSeed,
+        recentlyAnchored,
+      });
+      if (rotated.length > 0) {
+        focusCategories = rotated;
+        log.info("Seed-diversity lever 1: rotated focus categories", {
+          runId,
+          rotationSeed,
+          focusCategories: rotated,
+          recentlyAnchored: recentlyAnchored.length,
+          fromDistribution: trends.categoryStats.length,
+        });
+      }
+    }
 
     const pains = await runStep(
       runId,
@@ -355,8 +390,7 @@ export async function runIdeasPipeline(
         findCompletedStep(runId, "reviews"),
         findCompletedStep(runId, "capabilities"),
       ]);
-      const hasCollectorCheckpoints =
-        lcCheck.hasOutput || rvCheck.hasOutput || cpCheck.hasOutput;
+      const hasCollectorCheckpoints = lcCheck.hasOutput || rvCheck.hasOutput || cpCheck.hasOutput;
 
       if (hasCollectorCheckpoints) {
         const reason =
@@ -382,7 +416,11 @@ export async function runIdeasPipeline(
         durationMs: nowMs() - startTime,
       };
 
-      await updatePipelineRun(runId, { status: "completed", resultSummary: summary, finishedAt: now() });
+      await updatePipelineRun(runId, {
+        status: "completed",
+        resultSummary: summary,
+        finishedAt: now(),
+      });
       return { runId, summary };
     }
 
@@ -539,7 +577,10 @@ export async function runIdeasPipeline(
         const annotated = await annotateOriginality(kept, memoryManager, { agentId: AGENT_ID });
         kept = annotated;
         const withPriorArt = annotated.filter((c) => c.nearestProduct !== undefined).length;
-        log.info("generate-wide: originality annotated", { candidates: annotated.length, withPriorArt });
+        log.info("generate-wide: originality annotated", {
+          candidates: annotated.length,
+          withPriorArt,
+        });
       } catch (err) {
         log.warn("Originality annotation failed — proceeding unannotated", { err });
       }
@@ -675,6 +716,31 @@ export async function runIdeasPipeline(
       }
     }
 
+    // ── INDEPENDENT JURY (main pipeline): the giant composite that backs
+    // quality_score is emitted by the SAME LLM that wrote the idea (Pass-3
+    // self-critique), so it is self-serving. Run the existing cross-family jury
+    // and pull DOWN any self-inflated quality (one-sided min-lean penalty;
+    // never inflates) BEFORE the min-quality filter + selection, so a skeptical
+    // verdict affects both. DOUBLE-JUDGE GUARD: the SIGE valuation path already
+    // ran its own jury this run (sigeOn), so skip here to run exactly one jury.
+    if (smart.independentJury.enabled && !sigeOn && giantSurvivors.length > 0) {
+      const panel = buildJuryPanel(smart.sige.judgeModels);
+      const { candidates: judged, stats } = await applyIndependentJuryPenalty(
+        giantSurvivors,
+        panel,
+        { lambda: smart.independentJury.penaltyWeight },
+      );
+      giantSurvivors = judged;
+      log.info("Independent jury (main pipeline) summary", {
+        evaluated: giantSurvivors.length,
+        judges: stats.judges,
+        meanAgreement: stats.meanAgreement,
+        penalized: stats.penalized,
+        meanPenalty: stats.meanPenalty,
+        penaltyWeight: smart.independentJury.penaltyWeight,
+      });
+    }
+
     const qualityFiltered = giantSurvivors.filter((c) => c.qualityScore >= config.minQualityScore);
 
     // ── PHASE 1/3: final selection (Pareto when SIGE on, else novelty-reserve) ──
@@ -705,11 +771,37 @@ export async function runIdeasPipeline(
     // anti-starvation: re-orders the already-sized set, never shrinks it. ────────
     const diversityGuard = smart.diversityGuard;
     if (diversityGuard.enabled) {
-      finalSelected = selectDiverse(finalSelected, {
+      // The guards cap a bucket/signal's SHARE of the kept set, so they must see
+      // a pool LARGER than maxIdeas to have alternatives to swap in (a set already
+      // sized to maxIdeas would short-circuit unchanged). Build that pool by
+      // prefixing the primary-selected set (pareto/novelty/segment picks keep
+      // priority) with the remaining quality-ranked candidates as back-fill
+      // alternatives, de-duplicated by reference.
+      const primary = new Set(finalSelected);
+      const guardPool: readonly GeneratedIdeaCandidate[] = [
+        ...finalSelected,
+        ...qualityFiltered.filter((c) => !primary.has(c)),
+      ];
+      finalSelected = selectDiverse(guardPool, {
         maxIdeas: config.maxIdeas,
         maxBucketShare: diversityGuard.maxBucketShare,
         bucketBy: diversityGuard.bucketBy,
       });
+      // Compose the SIGNAL/SEED guard ON TOP of the archetype guard so a single
+      // source signal cannot seed many near-duplicate "reskins" that merely
+      // differ in archetype. Re-run over the SAME larger pool, seeded by the
+      // archetype-guarded picks first, so it too has alternatives to swap in.
+      if (diversityGuard.signalGuard) {
+        const archetypeKept = new Set(finalSelected);
+        const signalPool: readonly GeneratedIdeaCandidate[] = [
+          ...finalSelected,
+          ...guardPool.filter((c) => !archetypeKept.has(c)),
+        ];
+        finalSelected = selectDiverseBySignals(signalPool, {
+          maxIdeas: config.maxIdeas,
+          maxSignalShare: diversityGuard.maxSignalShare,
+        });
+      }
     }
     const diversityReport = computeDiversityReport(finalSelected, {
       bucketBy: diversityGuard.bucketBy,
@@ -722,6 +814,9 @@ export async function runIdeasPipeline(
       dominantArchetype: diversityReport.dominantArchetype,
       dominantShare: Number(diversityReport.dominantArchetypeShare.toFixed(2)),
       archetypeEntropy: Number(diversityReport.archetypeEntropy.toFixed(2)),
+      distinctSignals: diversityReport.distinctSignals,
+      dominantSignal: diversityReport.dominantSignal,
+      dominantSignalShare: Number(diversityReport.dominantSignalShare.toFixed(2)),
     });
 
     const spread = summarizeSegmentSpread(finalSelected);
@@ -750,9 +845,9 @@ export async function runIdeasPipeline(
     );
 
     // ── Step 7: Store ideas ───────────────────────────────────────────────
-    const runLevelProvenance: readonly ProvenanceEntry[] = [
-      ...mergedSelected.entries(),
-    ].flatMap(([table, selectedIds]) => selectedIds.map((id) => ({ table, id })));
+    const runLevelProvenance: readonly ProvenanceEntry[] = [...mergedSelected.entries()].flatMap(
+      ([table, selectedIds]) => selectedIds.map((id) => ({ table, id })),
+    );
 
     const ideaIds = await runStep(
       runId,
@@ -843,7 +938,11 @@ export async function runIdeasPipeline(
       archetypeEntropy: diversityReport.archetypeEntropy,
     };
 
-    await updatePipelineRun(runId, { status: "completed", resultSummary: summary, finishedAt: now() });
+    await updatePipelineRun(runId, {
+      status: "completed",
+      resultSummary: summary,
+      finishedAt: now(),
+    });
 
     log.info("Pipeline run complete", {
       runId,

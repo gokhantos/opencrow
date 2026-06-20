@@ -35,6 +35,12 @@ export const DEMAND_EVIDENCE_KINDS = [
   "funding_news",
   "hiring",
   "search_trend",
+  // A ≤2★ app-store / play-store review that names the candidate keyword: the
+  // low rating IS the expressed unmet need (no separate intent marker required).
+  "review_complaint",
+  // A Hacker News story/discussion pairing the keyword WITH a buyer-intent
+  // marker — same "people who WANT a tool" semantics as reddit_intent.
+  "hn_intent",
 ] as const;
 
 export type DemandEvidenceKind = (typeof DEMAND_EVIDENCE_KINDS)[number];
@@ -92,6 +98,15 @@ export const ABSENCE_SCORE_CAP = 1;
 export const ABSENCE_CONFIDENCE_CAP = 0.2;
 
 /**
+ * RELEVANCE GATE default: minimum number of DISTINCT candidate keywords that must
+ * co-occur in a single document for it to count as demand evidence. 2 means "a
+ * random row sharing one generic word does NOT count; the row must be about THIS
+ * idea (two distinct idea terms, or one multi-word idea phrase)". Bias toward
+ * missing rather than inflating — see {@link distinctKeywordHits}.
+ */
+export const DEFAULT_MIN_KEYWORD_HITS = 2;
+
+/**
  * Log scaling for the score: score ≈ DEMAND_SCORE_MAX * ln(1 + w) / ln(1 + SAT),
  * so the weighted match total `w` saturates the 0..5 range near {@link SCORE_SATURATION}.
  * Log-scaled so a handful of strong matches is meaningful but a flood of weak
@@ -110,6 +125,14 @@ export const DEMAND_KIND_WEIGHTS: Readonly<Record<DemandEvidenceKind, number>> =
   funding_news: 1.5,
   hiring: 1.25,
   search_trend: 1.0,
+  // A single ≤2★ review is one user's pain; weighted slightly below a forum
+  // "is there a tool for X" because it expresses dissatisfaction with an
+  // existing product rather than an unmet want, but engagement (thumbs_up) on
+  // play-store reviews already amplifies the loud ones via `count`.
+  review_complaint: 0.75,
+  // HN discussion pairs a keyword with a buyer-intent marker — same strength as
+  // the reddit-intent signal it mirrors.
+  hn_intent: 1.0,
 };
 
 /** Confidence saturates as evidence volume + source diversity grow. */
@@ -149,6 +172,54 @@ const STOPWORDS: ReadonlySet<string> = new Set([
   "which", "while", "because", "without", "within", "across", "between", "data",
 ]);
 
+/**
+ * GENERICNESS STOPLIST — ultra-common tokens that, ON THEIR OWN, carry no TOPICAL
+ * signal: they appear in tens of thousands of unrelated scraped rows, so a single
+ * one of them satisfying a keyword match inflates the demand count without
+ * indicating the document is about the idea (e.g. a package-tracking review
+ * matched a glucose idea on the bare word "tracking"; a Hinge dating review
+ * matched it on "monitor"; a DoorDash delivery review matched a staff-scheduling
+ * idea on "restaurant").
+ *
+ * These are dropped from the extracted UNIGRAM keyword set (see
+ * {@link extractDemandKeywords}) so a lone generic word can neither prefilter
+ * candidates nor satisfy the co-occurrence gate. They are STILL allowed to form
+ * BIGRAMS, because a phrase like "glucose monitoring" / "staff scheduling" /
+ * "restaurant scheduling" is highly topical even though its parts are generic —
+ * and {@link distinctKeywordHits} treats a phrase match as strong co-occurrence.
+ *
+ * Curated deliberately narrow: only words generic enough to be corpus-wide noise.
+ * Distinctive domain terms (glucose, paystub, hotschedules, overtime, wage,
+ * diabetes, payroll) are intentionally NOT here — they are the signal the gate
+ * relies on. Disjoint from {@link STOPWORDS} (function words).
+ */
+const DEMAND_GENERIC_STOPWORDS: ReadonlySet<string> = new Set([
+  // generic product/usage nouns
+  "feature", "features", "version", "update", "updates", "account", "accounts",
+  "company", "companies", "business", "businesses", "customer", "customers",
+  "consumer", "consumers", "client", "clients", "worker", "workers", "employee",
+  "employees", "team", "teams", "member", "members", "manager", "managers",
+  // generic verbs/states that match almost anything as a single token
+  "track", "tracks", "tracking", "tracker", "monitor", "monitors", "monitoring",
+  "manage", "manages", "managing", "management", "schedule", "schedules",
+  "scheduling", "scheduler", "report", "reports", "reporting", "system",
+  "systems", "software", "website", "site", "page", "pages", "screen", "click",
+  "button", "menu", "login", "log", "sign", "email", "message", "messages",
+  "notification", "notifications", "support", "experience", "interface", "device",
+  // generic adjectives / quality words (dominate low-star review text)
+  "free", "paid", "premium", "pro", "basic", "simple", "easy", "fast", "slow",
+  "good", "bad", "great", "best", "better", "worst", "nice", "cool", "awesome",
+  "terrible", "awful", "broken", "buggy", "useful", "happy",
+  // broad domain umbrellas (too wide to be topical on their own)
+  "health", "fitness", "money", "finance", "financial", "work", "job", "jobs",
+  "time", "day", "days", "daily", "week", "month", "year", "today", "online",
+  "mobile", "digital", "smart", "tech", "technology", "internet", "web", "cloud",
+  "restaurant", "restaurants", "food", "order", "orders", "delivery",
+  // universal quantifiers / indefinite pronouns (match literally anything)
+  "every", "everyone", "everything", "everybody", "anyone", "anything",
+  "someone", "something", "somebody", "nobody", "nothing", "everywhere",
+]);
+
 /** A candidate's text fields used for demand keyword extraction. */
 export interface DemandCandidateText {
   readonly title?: string;
@@ -183,6 +254,47 @@ function isSalient(token: string, minLen: number): boolean {
   if (STOPWORDS.has(token)) return false;
   if (/^\d+$/.test(token)) return false;
   return true;
+}
+
+/** Whether a salient token is also TOPICAL (not an ultra-generic single word). */
+function isTopicalUnigram(token: string, minLen: number): boolean {
+  return isSalient(token, minLen) && !DEMAND_GENERIC_STOPWORDS.has(token);
+}
+
+/**
+ * RELEVANCE-GATE primitive — count how many DISTINCT candidate keywords co-occur
+ * in `haystack`, so a probe can require ≥ N before treating the document as
+ * demand evidence (see {@link DemandProbeOptions.minKeywordHits}).
+ *
+ * A MULTI-WORD keyword (a bigram like "glucose monitoring", "staff scheduling")
+ * is itself an expression of co-occurrence — its parts already had to appear
+ * adjacently in the candidate AND adjacently here — so a single phrase match
+ * counts as `phraseWeight` (default 2) distinct hits, enough to clear the default
+ * gate on its own. A single-word keyword counts as 1. This is what lets a
+ * genuinely-on-topic phrase match a real review while a row that merely shares
+ * one generic word ("tracking", "restaurant") cannot reach the threshold.
+ *
+ * Each distinct keyword is counted at most once (a keyword repeated in the text
+ * does not inflate the hit count). PURE: no IO, deterministic.
+ */
+export function distinctKeywordHits(
+  haystack: string,
+  keywords: readonly string[],
+  phraseWeight = 2,
+): number {
+  if (!haystack || keywords.length === 0) return 0;
+  const lower = haystack.toLowerCase();
+  const seen = new Set<string>();
+  let hits = 0;
+  for (const raw of keywords) {
+    const kw = raw.toLowerCase();
+    if (!kw || seen.has(kw)) continue;
+    if (!lower.includes(kw)) continue;
+    seen.add(kw);
+    // A space => multi-word phrase; weight it as strong co-occurrence.
+    hits += kw.includes(" ") ? Math.max(1, Math.floor(phraseWeight)) : 1;
+  }
+  return hits;
 }
 
 /**
@@ -256,11 +368,20 @@ export function extractDemandKeywords(
       })
       .map(([k]) => k);
 
+  // A bigram is only kept if at least one of its words is TOPICAL — a phrase of
+  // two ultra-generic words ("easy login", "great app") is still corpus noise.
+  const bigramIsTopical = (b: string): boolean =>
+    b.split(" ").some((w) => !DEMAND_GENERIC_STOPWORDS.has(w));
+
   // Prefer bigrams that recurred (score>=2) up front; the rest interleave.
-  const rankedBigrams = rank(bigramScore);
+  const rankedBigrams = rank(bigramScore).filter(bigramIsTopical);
   const strongBigrams = rankedBigrams.filter((b) => (bigramScore.get(b) ?? 0) >= 2);
   const weakBigrams = rankedBigrams.filter((b) => (bigramScore.get(b) ?? 0) < 2);
-  const rankedUnigrams = rank(unigramScore);
+  // Drop ultra-generic single tokens from the UNIGRAM set: a lone generic word
+  // must not prefilter candidates or satisfy the co-occurrence relevance gate.
+  const rankedUnigrams = rank(unigramScore).filter((u) =>
+    isTopicalUnigram(u, minLen),
+  );
 
   const ordered = [...strongBigrams, ...rankedUnigrams, ...weakBigrams];
 
@@ -432,6 +553,15 @@ export interface DemandProbeOptions {
   readonly limit?: number;
   /** Whether the externalTrends (paid vendor) probe is permitted to run. */
   readonly externalTrends?: boolean;
+  /**
+   * RELEVANCE GATE — minimum number of DISTINCT candidate keywords that must
+   * co-occur in a single document for it to count as demand evidence. The DB
+   * keyword-filter (OR semantics) is only a cheap candidate prefilter; this gate
+   * is applied in code per row ({@link distinctKeywordHits}) to ensure the
+   * document is actually ABOUT this idea, not just sharing one generic word like
+   * "tracking" / "restaurant" / "monitor". Default {@link DEFAULT_MIN_KEYWORD_HITS}.
+   */
+  readonly minKeywordHits?: number;
 }
 
 /**

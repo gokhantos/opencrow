@@ -47,9 +47,7 @@ export const agentConfigSchema = z.object({
   model: z.string().default("claude-sonnet-4-6"),
   systemPrompt: z
     .string()
-    .default(
-      "You are OpenCrow, a helpful personal AI assistant. Be concise and direct.",
-    ),
+    .default("You are OpenCrow, a helpful personal AI assistant. Be concise and direct."),
   retry: retryConfigSchema,
   compaction: compactionConfigSchema,
   failover: failoverConfigSchema,
@@ -322,9 +320,7 @@ export const monitorConfigSchema = z
   });
 
 export const postgresConfigSchema = z.object({
-  url: z
-    .string()
-    .default("postgres://opencrow:opencrow@127.0.0.1:5432/opencrow"),
+  url: z.string().default("postgres://opencrow:opencrow@127.0.0.1:5432/opencrow"),
   max: z.number().int().min(1).max(100).default(20),
 });
 
@@ -366,9 +362,7 @@ export const embeddingsConfigSchema = z
  * Qdrant + FTS); `mem0` is reserved for the planned phase-2 backend and is not
  * implemented yet — the backend factory throws if it is selected.
  */
-export const memoryBackendKindSchema = z
-  .enum(["qdrant", "mem0"])
-  .default("qdrant");
+export const memoryBackendKindSchema = z.enum(["qdrant", "mem0"]).default("qdrant");
 
 export const memorySearchConfigSchema = z.object({
   backend: memoryBackendKindSchema,
@@ -491,23 +485,25 @@ export const rateLimitConfigSchema = z
 
 export const sigeConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  mem0: z.object({
-    baseUrl: z.string().url().default("http://127.0.0.1:8050"),
-    userId: z.string().default("sige-global"),
-    // Dedicated userId for idea-outcome memories (separate namespace from raw
-    // signals so per-segment metadata filters stay clean).
-    ideasUserId: z.string().default("sige-ideas"),
-    // Shared bearer token sent on every /v1/memories/* request to the mem0
-    // sidecar (which has no upstream auth; GHSA-jfv9-68m5-gjjr). Optional so a
-    // tokenless dev run still boots — the sidecar then rejects with 503 and SIGE
-    // degrades gracefully via the client circuit breaker. Sourced from env in
-    // the loader (reuses OPENCROW_INTERNAL_TOKEN, already shared with mem0).
-    apiToken: z.string().optional(),
-  }).default({
-    baseUrl: "http://127.0.0.1:8050",
-    userId: "sige-global",
-    ideasUserId: "sige-ideas",
-  }),
+  mem0: z
+    .object({
+      baseUrl: z.string().url().default("http://127.0.0.1:8050"),
+      userId: z.string().default("sige-global"),
+      // Dedicated userId for idea-outcome memories (separate namespace from raw
+      // signals so per-segment metadata filters stay clean).
+      ideasUserId: z.string().default("sige-ideas"),
+      // Shared bearer token sent on every /v1/memories/* request to the mem0
+      // sidecar (which has no upstream auth; GHSA-jfv9-68m5-gjjr). Optional so a
+      // tokenless dev run still boots — the sidecar then rejects with 503 and SIGE
+      // degrades gracefully via the client circuit breaker. Sourced from env in
+      // the loader (reuses OPENCROW_INTERNAL_TOKEN, already shared with mem0).
+      apiToken: z.string().optional(),
+    })
+    .default({
+      baseUrl: "http://127.0.0.1:8050",
+      userId: "sige-global",
+      ideasUserId: "sige-ideas",
+    }),
   // Read-only Bolt connection to the SAME Neo4j instance mem0 writes its graph
   // store to (no ETL). Powers the multi-hop "opportunity paths" graph-reasoning
   // directive. Default OFF — no driver is loaded and no connection is dialed
@@ -565,6 +561,17 @@ export const sigeConfigSchema = z.object({
   provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"]).default("anthropic"),
   model: z.string().default("claude-sonnet-4-6"),
   agentModel: z.string().default("claude-sonnet-4-6"),
+  // Autonomous mem0 entity/relation extraction loop (the `sige-ingestion`
+  // process). It is an LLM-bound 5-minute loop that burns mem0/GLM quota with no
+  // operator in the loop. Default ON so existing autonomous-SIGE deployments are
+  // unchanged. Set `enabled: false` for "manual only" — SIGE itself (the `sige`
+  // process + manual session execution) keeps running, but nothing extracts
+  // signals into mem0 unsupervised.
+  ingestion: z
+    .object({
+      enabled: z.boolean().default(true),
+    })
+    .default({ enabled: true }),
   workflow: z
     .object({
       topology: z
@@ -612,9 +619,7 @@ export const giantConfigSchema = z
         acuteProblem: z.number().default(GIANT_DEFAULT_WEIGHTS.acuteProblem),
         whyNow: z.number().default(GIANT_DEFAULT_WEIGHTS.whyNow),
         demand: z.number().default(GIANT_DEFAULT_WEIGHTS.demand),
-        nonObviousness: z
-          .number()
-          .default(GIANT_DEFAULT_WEIGHTS.nonObviousness),
+        nonObviousness: z.number().default(GIANT_DEFAULT_WEIGHTS.nonObviousness),
         defensibility: z.number().default(GIANT_DEFAULT_WEIGHTS.defensibility),
         marketShape: z.number().default(GIANT_DEFAULT_WEIGHTS.marketShape),
         founderFit: z.number().default(GIANT_DEFAULT_WEIGHTS.founderFit),
@@ -669,30 +674,48 @@ export const demandConfigSchema = z
     redditIntent: z.boolean().default(true),
     // Funding-mention probe over existing news_articles. Default ON.
     fundingSignal: z.boolean().default(true),
+    // Low-star (<=2★) review-complaint probe over existing appstore_reviews +
+    // playstore_reviews. Internal-DB only, no external call. Default ON.
+    reviewComplaint: z.boolean().default(true),
+    // Hacker News buyer-intent probe over existing hn_stories. Default ON.
+    hnIntent: z.boolean().default(true),
+    // Use keyword-matching ph_products to DISCOUNT whitespace via supplyDensity
+    // (supply, not demand — never affects the demand score). Default ON.
+    phSupply: z.boolean().default(true),
     // Pluggable external search-volume / trends vendor. Default OFF (stubbed).
     externalTrends: z.boolean().default(false),
     // Minimum matched rows before demand evidence is considered corroborated;
     // below this the artifact takes the absence penalty (low score/confidence).
     minMatches: z.number().int().min(1).default(2),
+    // RELEVANCE GATE: minimum number of DISTINCT idea keywords that must co-occur
+    // in a single scraped document before it counts as demand evidence. The DB
+    // keyword-filter (OR) is only a cheap candidate prefilter; this in-code gate
+    // ensures the document is actually ABOUT the idea (not just sharing one
+    // generic word like "tracking"/"restaurant"). 2 = a phrase match, or two
+    // distinct idea terms, is required. Bias toward missing over inflating.
+    minKeywordHits: z.number().int().min(1).default(2),
   })
   .default({
     enabled: true,
     redditIntent: true,
     fundingSignal: true,
+    reviewComplaint: true,
+    hnIntent: true,
+    phSupply: true,
     externalTrends: false,
     minMatches: 2,
+    minKeywordHits: 2,
   });
 
 // Cross-family default jury for the hardened SIGE judge. These models are ONLY
 // instantiated when smart.sigeValuation is ON; any provider without a key is
 // gracefully skipped at runtime. The mix is intentionally multi-family so the
 // independent judge does not share a model lineage with the generators.
-export const SIGE_DEFAULT_JUDGE_MODELS: readonly { provider: string; model: string }[] =
-  [
-    { provider: "anthropic", model: "claude-haiku-4-5" },
-    { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
-    { provider: "alibaba", model: "qwen3.7-plus" },
-  ];
+export const SIGE_DEFAULT_JUDGE_MODELS: readonly { provider: string; model: string }[] = [
+  { provider: "anthropic", model: "claude-haiku-4-5" },
+  { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
+  { provider: "alibaba", model: "qwen3.7-plus" },
+];
 
 // Phase-3 SIGE hardening: an independent, anonymized, multi-family judge with
 // first-class dissent weighting and a convergence veto. Fully defaulted so the
@@ -894,9 +917,7 @@ export const incumbentExclusionConfigSchema = z
     enabled: true,
     topN: 100,
   });
-export type IncumbentExclusionConfig = z.infer<
-  typeof incumbentExclusionConfigSchema
->;
+export type IncumbentExclusionConfig = z.infer<typeof incumbentExclusionConfigSchema>;
 
 // Layer B "competability / moat gate": penalize ideas whose market sits behind a
 // moat a small/solo builder cannot overcome (the inverse of GIANT defensibility).
@@ -983,13 +1004,96 @@ export const diversityGuardConfigSchema = z
     // Which candidate field defines a bucket. Archetype is the canonical
     // monoculture axis; category is the free-text fallback.
     bucketBy: z.enum(["archetype", "category"]).default("archetype"),
+    // SIGNAL/SEED guard: caps how many ideas a SINGLE source signal (seed) may
+    // spawn, on TOP of the archetype/category cap above. Attacks "one seed, many
+    // reskins" — the archetype guard alone lets one signal seed many ideas that
+    // happen to land in different archetypes. Composed AFTER the bucket guard.
+    signalGuard: z.boolean().default(true),
+    // Share ceiling (0..1) any single source signal may occupy in the kept set.
+    // ~0.34 => one signal seeds at most ⌈maxIdeas·0.34⌉ ideas (2 of 5, 3 of 8).
+    maxSignalShare: z.number().min(0).max(1).default(0.34),
   })
   .default({
     enabled: true,
     maxBucketShare: 0.5,
     bucketBy: "archetype",
+    signalGuard: true,
+    maxSignalShare: 0.34,
   });
 export type DiversityGuardConfig = z.infer<typeof diversityGuardConfigSchema>;
+
+// MAIN-pipeline independent jury. `quality_score` is otherwise a pure
+// pass-through of the giant composite emitted by the SAME LLM that wrote the
+// idea (Pass-3 self-critique) — a self-serving grade with no independent check.
+// This runs the existing cross-family jury (jury.ts) on the MAIN (non-SIGE)
+// path and blends its verdict into quality under a ONE-SIDED min-lean rule: the
+// jury may only PENALIZE a self-inflated idea, never inflate one. It costs LLM
+// calls, so the flag cleanly disables it; it shares the SIGE `judgeModels`
+// panel definition (no duplication) and is a graceful no-op when no judge key
+// is configured. The SIGE valuation path runs its OWN jury, so exactly one jury
+// pass runs per run (the pipeline gates this off when SIGE valuation is on).
+export const independentJuryConfigSchema = z
+  .object({
+    // Master switch. Default ON. Disabling skips the jury LLM calls entirely.
+    enabled: z.boolean().default(true),
+    // Min-lean penalty weight λ. The maximum fraction of the (giant − jury) gap
+    // a UNANIMOUS jury can close; a split jury penalizes proportionally less.
+    // 0 disables the pull (no penalty); 1 pulls fully to a confident jury.
+    penaltyWeight: z.number().min(0).max(1).default(0.7),
+  })
+  .default({
+    enabled: true,
+    penaltyWeight: 0.7,
+  });
+export type IndependentJuryConfig = z.infer<typeof independentJuryConfigSchema>;
+
+// SEED-DIVERSITY: attacks generation-seed MONOCULTURE at the SOURCE (the
+// collectors), upstream of the within-run diversityGuard. Three levers:
+//   1. focusRotation — rotate WHICH review categories seed the run (keep a
+//      high-opportunity head, rotate the tail by a per-run seed, avoid
+//      recently-anchored categories) instead of always the same lowest-rated set.
+//   2. painThemesLeadSummary — lead the pain seed with the SPECIFIC LLM-extracted
+//      pain themes so a concrete recurring complaint (not the bare store-category
+//      name) is the primary pain seed reaching the generator prompt.
+//   3. echoChamberDownweight — down-weight (not drop) AI-builder-meta capability
+//      signals so the funnel isn't dominated by "build an AI agent" echo chamber.
+// All levers default ON, pure-logic (no external calls). Fully defaulted ->
+// backward-compatible.
+export const seedDiversityConfigSchema = z
+  .object({
+    // Master switch for all three levers. Default ON.
+    enabled: z.boolean().default(true),
+    // Lever 1: rotate focus categories across runs (vs. always the lowest-rated).
+    focusRotation: z.boolean().default(true),
+    // Total focus categories to feed clusterReviews.
+    focusSpread: z.number().int().min(1).max(40).default(8),
+    // How many of those come from the genuine high-opportunity head (lowest
+    // avgRating / most acute complaint ratio). The remainder are rotated.
+    highOpportunitySlice: z.number().int().min(0).max(40).default(4),
+    // How many recent generated_ideas.category rows to treat as "anchored" and
+    // de-prioritize in the rotated tail.
+    recentAnchorLookback: z.number().int().min(0).max(500).default(40),
+    // Lever 2: lead pains.summary with specific LLM pain themes.
+    painThemesLeadSummary: z.boolean().default(true),
+    // Max specific pain themes rendered ahead of the category aggregate.
+    maxLeadingPainThemes: z.number().int().min(1).max(50).default(15),
+    // Lever 3: down-weight AI-builder-meta capability signals.
+    echoChamberDownweight: z.boolean().default(true),
+    // Multiplier applied to a meta signal's rank score (REDUCE, not eliminate).
+    echoChamberFactor: z.number().min(0).max(1).default(0.5),
+  })
+  .default({
+    enabled: true,
+    focusRotation: true,
+    focusSpread: 8,
+    highOpportunitySlice: 4,
+    recentAnchorLookback: 40,
+    painThemesLeadSummary: true,
+    maxLeadingPainThemes: 15,
+    echoChamberDownweight: true,
+    echoChamberFactor: 0.5,
+  });
+export type SeedDiversityConfig = z.infer<typeof seedDiversityConfigSchema>;
 
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
@@ -1007,9 +1111,7 @@ export const smartConfigSchema = z.object({
   // scraped signals. Layered on top of signalFacets; default OFF.
   signalRanking: z.boolean().default(false),
   // Retrieval filter floor for ranked-signal importance buckets.
-  signalImportanceFloor: z
-    .enum(["noise", "low", "medium", "high"])
-    .default("low"),
+  signalImportanceFloor: z.enum(["noise", "low", "medium", "high"]).default("low"),
   // Pure-logic improvements: safe, default ON (they change default idea
   // output by design but add no external calls).
   adaptiveCollection: z.boolean().default(true), // velocity/credibility/corroboration ordering
@@ -1056,6 +1158,15 @@ export const smartConfigSchema = z.object({
   // kept set so the funnel can't collapse into one monoculture. Default ON,
   // pure-logic. Fully defaulted -> backward-compatible.
   diversityGuard: diversityGuardConfigSchema,
+  // SEED diversity: attack generation-seed monoculture at the collectors
+  // (focus-category rotation + specific-pain-theme lead + echo-chamber
+  // down-weight). Default ON, pure-logic. Fully defaulted -> backward-compatible.
+  seedDiversity: seedDiversityConfigSchema,
+  // MAIN-pipeline independent jury: blend a cross-family jury verdict into
+  // quality_score under a one-sided min-lean penalty so quality is not a pure
+  // self-grade. Default ON; gracefully no-ops without a judge key. Fully
+  // defaulted -> backward-compatible.
+  independentJury: independentJuryConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -1086,8 +1197,12 @@ const SMART_IDEAS_DEFAULTS = {
     enabled: true,
     redditIntent: true,
     fundingSignal: true,
+    reviewComplaint: true,
+    hnIntent: true,
+    phSupply: true,
     externalTrends: false,
     minMatches: 2,
+    minKeywordHits: 2,
   },
   sige: {
     independentJudge: true,
@@ -1151,6 +1266,23 @@ const SMART_IDEAS_DEFAULTS = {
     enabled: true,
     maxBucketShare: 0.5,
     bucketBy: "archetype",
+    signalGuard: true,
+    maxSignalShare: 0.34,
+  },
+  seedDiversity: {
+    enabled: true,
+    focusRotation: true,
+    focusSpread: 8,
+    highOpportunitySlice: 4,
+    recentAnchorLookback: 40,
+    painThemesLeadSummary: true,
+    maxLeadingPainThemes: 15,
+    echoChamberDownweight: true,
+    echoChamberFactor: 0.5,
+  },
+  independentJury: {
+    enabled: true,
+    penaltyWeight: 0.7,
   },
 } as const;
 
@@ -1175,8 +1307,7 @@ export const pipelinesConfigSchema = z
 export const opencrowConfigSchema = z.object({
   agent: agentConfigSchema.default({
     model: "claude-sonnet-4-6",
-    systemPrompt:
-      "You are OpenCrow, a helpful personal AI assistant. Be concise and direct.",
+    systemPrompt: "You are OpenCrow, a helpful personal AI assistant. Be concise and direct.",
     retry: { attempts: 3, minDelayMs: 500, maxDelayMs: 30000, jitter: 0.15 },
     compaction: {
       maxContextTokens: 180_000,
@@ -1260,9 +1391,7 @@ export type ObservationsConfig = z.infer<typeof observationsConfigSchema>;
 export type ProcessSpec = z.infer<typeof processSpecSchema>;
 export type ProcessesConfig = z.infer<typeof processesConfigSchema>;
 export type AgentProcessesConfig = z.infer<typeof agentProcessesConfigSchema>;
-export type ScraperProcessesConfig = z.infer<
-  typeof scraperProcessesConfigSchema
->;
+export type ScraperProcessesConfig = z.infer<typeof scraperProcessesConfigSchema>;
 export type MonitorConfig = z.infer<typeof monitorConfigSchema>;
 export type MonitorThresholds = z.infer<typeof monitorThresholdsSchema>;
 export type ModelParams = z.infer<typeof modelParamsSchema>;

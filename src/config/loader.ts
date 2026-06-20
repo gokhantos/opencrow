@@ -1,22 +1,9 @@
-import {
-  opencrowConfigSchema,
-  agentDefinitionSchema,
-  type OpenCrowConfig,
-} from "./schema";
-import {
-  getAllOverrides,
-  getOverride,
-  type ConfigOverride,
-} from "../store/config-overrides";
-import {
-  getAgentOverrides,
-  type AgentOverride,
-} from "../store/agent-overrides";
+import { opencrowConfigSchema, agentDefinitionSchema, type OpenCrowConfig } from "./schema";
+import { getAllOverrides, getOverride, type ConfigOverride } from "../store/config-overrides";
+import { getAgentOverrides, type AgentOverride } from "../store/agent-overrides";
 import type { AgentDefinition } from "../agents/types";
 
-function applyEnvOverrides(
-  config: Record<string, unknown>,
-): Record<string, unknown> {
+function applyEnvOverrides(config: Record<string, unknown>): Record<string, unknown> {
   const result = { ...config };
 
   // --- channels.telegram ---
@@ -121,26 +108,36 @@ function applyEnvOverrides(
   const smartRanking = boolEnv("OPENCROW_SMART_SIGNAL_RANKING");
   if (smartRanking !== undefined) smartEnv.signalRanking = smartRanking;
   if (process.env.OPENCROW_SMART_SIGNAL_IMPORTANCE_FLOOR) {
-    smartEnv.signalImportanceFloor =
-      process.env.OPENCROW_SMART_SIGNAL_IMPORTANCE_FLOOR;
+    smartEnv.signalImportanceFloor = process.env.OPENCROW_SMART_SIGNAL_IMPORTANCE_FLOOR;
   }
   // OPENCROW_SMART_SIGE_AUTO_* overrides for the autonomous SIGE feature block.
   const sigeAutoEnv: Record<string, unknown> = {};
   const sigeAutoEnabled = boolEnv("OPENCROW_SMART_SIGE_AUTO_ENABLED");
   if (sigeAutoEnabled !== undefined) sigeAutoEnv.enabled = sigeAutoEnabled;
-  const sigeAutoMaxDeepFrontiers = Number(process.env.OPENCROW_SMART_SIGE_AUTO_MAX_DEEP_FRONTIERS ?? "");
-  if (!Number.isNaN(sigeAutoMaxDeepFrontiers) && process.env.OPENCROW_SMART_SIGE_AUTO_MAX_DEEP_FRONTIERS !== undefined) {
+  const sigeAutoMaxDeepFrontiers = Number(
+    process.env.OPENCROW_SMART_SIGE_AUTO_MAX_DEEP_FRONTIERS ?? "",
+  );
+  if (
+    !Number.isNaN(sigeAutoMaxDeepFrontiers) &&
+    process.env.OPENCROW_SMART_SIGE_AUTO_MAX_DEEP_FRONTIERS !== undefined
+  ) {
     sigeAutoEnv.maxDeepFrontiers = sigeAutoMaxDeepFrontiers;
   }
   const sigeAutoBroadPoolSize = Number(process.env.OPENCROW_SMART_SIGE_AUTO_BROAD_POOL_SIZE ?? "");
-  if (!Number.isNaN(sigeAutoBroadPoolSize) && process.env.OPENCROW_SMART_SIGE_AUTO_BROAD_POOL_SIZE !== undefined) {
+  if (
+    !Number.isNaN(sigeAutoBroadPoolSize) &&
+    process.env.OPENCROW_SMART_SIGE_AUTO_BROAD_POOL_SIZE !== undefined
+  ) {
     sigeAutoEnv.broadPoolSize = sigeAutoBroadPoolSize;
   }
   if (process.env.OPENCROW_SMART_SIGE_AUTO_CADENCE) {
     sigeAutoEnv.cadence = process.env.OPENCROW_SMART_SIGE_AUTO_CADENCE;
   }
   const sigeAutoMaxConcurrent = Number(process.env.OPENCROW_SMART_SIGE_AUTO_MAX_CONCURRENT ?? "");
-  if (!Number.isNaN(sigeAutoMaxConcurrent) && process.env.OPENCROW_SMART_SIGE_AUTO_MAX_CONCURRENT !== undefined) {
+  if (
+    !Number.isNaN(sigeAutoMaxConcurrent) &&
+    process.env.OPENCROW_SMART_SIGE_AUTO_MAX_CONCURRENT !== undefined
+  ) {
     sigeAutoEnv.maxConcurrent = sigeAutoMaxConcurrent;
   }
   const sigeAutoMemoryWriteback = boolEnv("OPENCROW_SMART_SIGE_AUTO_MEMORY_WRITEBACK");
@@ -151,17 +148,31 @@ function applyEnvOverrides(
   const outcomeMemoryWriteBack = boolEnv("OPENCROW_SMART_OUTCOME_MEMORY_WRITEBACK");
   if (outcomeMemoryWriteBack !== undefined) outcomeMemoryEnv.writeBack = outcomeMemoryWriteBack;
   const outcomeMemoryReadAtSynthesis = boolEnv("OPENCROW_SMART_OUTCOME_MEMORY_READ_AT_SYNTHESIS");
-  if (outcomeMemoryReadAtSynthesis !== undefined) outcomeMemoryEnv.readAtSynthesis = outcomeMemoryReadAtSynthesis;
-  const outcomeMemoryReinforceCap = Number(process.env.OPENCROW_SMART_OUTCOME_MEMORY_REINFORCE_CAP ?? "");
-  if (!Number.isNaN(outcomeMemoryReinforceCap) && process.env.OPENCROW_SMART_OUTCOME_MEMORY_REINFORCE_CAP !== undefined) {
+  if (outcomeMemoryReadAtSynthesis !== undefined)
+    outcomeMemoryEnv.readAtSynthesis = outcomeMemoryReadAtSynthesis;
+  const outcomeMemoryReinforceCap = Number(
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_REINFORCE_CAP ?? "",
+  );
+  if (
+    !Number.isNaN(outcomeMemoryReinforceCap) &&
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_REINFORCE_CAP !== undefined
+  ) {
     outcomeMemoryEnv.reinforceCap = outcomeMemoryReinforceCap;
   }
   const outcomeMemoryAvoidCap = Number(process.env.OPENCROW_SMART_OUTCOME_MEMORY_AVOID_CAP ?? "");
-  if (!Number.isNaN(outcomeMemoryAvoidCap) && process.env.OPENCROW_SMART_OUTCOME_MEMORY_AVOID_CAP !== undefined) {
+  if (
+    !Number.isNaN(outcomeMemoryAvoidCap) &&
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_AVOID_CAP !== undefined
+  ) {
     outcomeMemoryEnv.avoidCap = outcomeMemoryAvoidCap;
   }
-  const outcomeMemorySearchLimit = Number(process.env.OPENCROW_SMART_OUTCOME_MEMORY_SEARCH_LIMIT ?? "");
-  if (!Number.isNaN(outcomeMemorySearchLimit) && process.env.OPENCROW_SMART_OUTCOME_MEMORY_SEARCH_LIMIT !== undefined) {
+  const outcomeMemorySearchLimit = Number(
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_SEARCH_LIMIT ?? "",
+  );
+  if (
+    !Number.isNaN(outcomeMemorySearchLimit) &&
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_SEARCH_LIMIT !== undefined
+  ) {
     outcomeMemoryEnv.searchLimit = outcomeMemorySearchLimit;
   }
 
@@ -172,23 +183,44 @@ function applyEnvOverrides(
   const graphReasoningEnabled = boolEnv("OPENCROW_SMART_GRAPH_REASONING_ENABLED");
   if (graphReasoningEnabled !== undefined) graphReasoningEnv.enabled = graphReasoningEnabled;
   const graphReasoningMaxHops = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_HOPS ?? "");
-  if (!Number.isNaN(graphReasoningMaxHops) && process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_HOPS !== undefined) {
+  if (
+    !Number.isNaN(graphReasoningMaxHops) &&
+    process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_HOPS !== undefined
+  ) {
     graphReasoningEnv.maxHops = graphReasoningMaxHops;
   }
   const graphReasoningMaxPaths = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_PATHS ?? "");
-  if (!Number.isNaN(graphReasoningMaxPaths) && process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_PATHS !== undefined) {
+  if (
+    !Number.isNaN(graphReasoningMaxPaths) &&
+    process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_PATHS !== undefined
+  ) {
     graphReasoningEnv.maxPaths = graphReasoningMaxPaths;
   }
-  const graphReasoningSearchLimit = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_SEARCH_LIMIT ?? "");
-  if (!Number.isNaN(graphReasoningSearchLimit) && process.env.OPENCROW_SMART_GRAPH_REASONING_SEARCH_LIMIT !== undefined) {
+  const graphReasoningSearchLimit = Number(
+    process.env.OPENCROW_SMART_GRAPH_REASONING_SEARCH_LIMIT ?? "",
+  );
+  if (
+    !Number.isNaN(graphReasoningSearchLimit) &&
+    process.env.OPENCROW_SMART_GRAPH_REASONING_SEARCH_LIMIT !== undefined
+  ) {
     graphReasoningEnv.searchLimit = graphReasoningSearchLimit;
   }
-  const graphReasoningMinDegree = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_MIN_DEGREE ?? "");
-  if (!Number.isNaN(graphReasoningMinDegree) && process.env.OPENCROW_SMART_GRAPH_REASONING_MIN_DEGREE !== undefined) {
+  const graphReasoningMinDegree = Number(
+    process.env.OPENCROW_SMART_GRAPH_REASONING_MIN_DEGREE ?? "",
+  );
+  if (
+    !Number.isNaN(graphReasoningMinDegree) &&
+    process.env.OPENCROW_SMART_GRAPH_REASONING_MIN_DEGREE !== undefined
+  ) {
     graphReasoningEnv.minDegree = graphReasoningMinDegree;
   }
-  const graphReasoningMaxDegree = Number(process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_DEGREE ?? "");
-  if (!Number.isNaN(graphReasoningMaxDegree) && process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_DEGREE !== undefined) {
+  const graphReasoningMaxDegree = Number(
+    process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_DEGREE ?? "",
+  );
+  if (
+    !Number.isNaN(graphReasoningMaxDegree) &&
+    process.env.OPENCROW_SMART_GRAPH_REASONING_MAX_DEGREE !== undefined
+  ) {
     graphReasoningEnv.maxDegree = graphReasoningMaxDegree;
   }
 
@@ -197,7 +229,10 @@ function applyEnvOverrides(
   const incumbentEnabled = boolEnv("OPENCROW_SMART_INCUMBENT_EXCLUSION_ENABLED");
   if (incumbentEnabled !== undefined) incumbentExclusionEnv.enabled = incumbentEnabled;
   const incumbentTopN = Number(process.env.OPENCROW_SMART_INCUMBENT_EXCLUSION_TOP_N ?? "");
-  if (!Number.isNaN(incumbentTopN) && process.env.OPENCROW_SMART_INCUMBENT_EXCLUSION_TOP_N !== undefined) {
+  if (
+    !Number.isNaN(incumbentTopN) &&
+    process.env.OPENCROW_SMART_INCUMBENT_EXCLUSION_TOP_N !== undefined
+  ) {
     incumbentExclusionEnv.topN = incumbentTopN;
   }
 
@@ -207,16 +242,29 @@ function applyEnvOverrides(
   if (competabilityEnabled !== undefined) competabilityEnv.enabled = competabilityEnabled;
   const competabilityEnforce = boolEnv("OPENCROW_SMART_COMPETABILITY_ENFORCE_GATE");
   if (competabilityEnforce !== undefined) competabilityEnv.enforceGate = competabilityEnforce;
-  const competabilityReject = Number(process.env.OPENCROW_SMART_COMPETABILITY_REJECT_THRESHOLD ?? "");
-  if (!Number.isNaN(competabilityReject) && process.env.OPENCROW_SMART_COMPETABILITY_REJECT_THRESHOLD !== undefined) {
+  const competabilityReject = Number(
+    process.env.OPENCROW_SMART_COMPETABILITY_REJECT_THRESHOLD ?? "",
+  );
+  if (
+    !Number.isNaN(competabilityReject) &&
+    process.env.OPENCROW_SMART_COMPETABILITY_REJECT_THRESHOLD !== undefined
+  ) {
     competabilityEnv.rejectThreshold = competabilityReject;
   }
-  const competabilitySoft = Number(process.env.OPENCROW_SMART_COMPETABILITY_SOFT_PENALTY_THRESHOLD ?? "");
-  if (!Number.isNaN(competabilitySoft) && process.env.OPENCROW_SMART_COMPETABILITY_SOFT_PENALTY_THRESHOLD !== undefined) {
+  const competabilitySoft = Number(
+    process.env.OPENCROW_SMART_COMPETABILITY_SOFT_PENALTY_THRESHOLD ?? "",
+  );
+  if (
+    !Number.isNaN(competabilitySoft) &&
+    process.env.OPENCROW_SMART_COMPETABILITY_SOFT_PENALTY_THRESHOLD !== undefined
+  ) {
     competabilityEnv.softPenaltyThreshold = competabilitySoft;
   }
   const competabilityTopN = Number(process.env.OPENCROW_SMART_COMPETABILITY_TOP_N_INCUMBENTS ?? "");
-  if (!Number.isNaN(competabilityTopN) && process.env.OPENCROW_SMART_COMPETABILITY_TOP_N_INCUMBENTS !== undefined) {
+  if (
+    !Number.isNaN(competabilityTopN) &&
+    process.env.OPENCROW_SMART_COMPETABILITY_TOP_N_INCUMBENTS !== undefined
+  ) {
     competabilityEnv.topNIncumbents = competabilityTopN;
   }
 
@@ -226,7 +274,10 @@ function applyEnvOverrides(
     builderProfileEnv.capital = process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_CAPITAL;
   }
   const builderTeamSize = Number(process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_TEAM_SIZE ?? "");
-  if (!Number.isNaN(builderTeamSize) && process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_TEAM_SIZE !== undefined) {
+  if (
+    !Number.isNaN(builderTeamSize) &&
+    process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_TEAM_SIZE !== undefined
+  ) {
     builderProfileEnv.teamSize = builderTeamSize;
   }
   if (process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_REGULATORY_APPETITE) {
@@ -250,7 +301,9 @@ function applyEnvOverrides(
   const diversityGuardEnv: Record<string, unknown> = {};
   const diversityGuardEnabled = boolEnv("OPENCROW_SMART_DIVERSITY_GUARD_ENABLED");
   if (diversityGuardEnabled !== undefined) diversityGuardEnv.enabled = diversityGuardEnabled;
-  const diversityGuardShare = Number(process.env.OPENCROW_SMART_DIVERSITY_GUARD_MAX_BUCKET_SHARE ?? "");
+  const diversityGuardShare = Number(
+    process.env.OPENCROW_SMART_DIVERSITY_GUARD_MAX_BUCKET_SHARE ?? "",
+  );
   if (
     !Number.isNaN(diversityGuardShare) &&
     process.env.OPENCROW_SMART_DIVERSITY_GUARD_MAX_BUCKET_SHARE !== undefined
@@ -260,6 +313,95 @@ function applyEnvOverrides(
   if (process.env.OPENCROW_SMART_DIVERSITY_GUARD_BUCKET_BY) {
     diversityGuardEnv.bucketBy = process.env.OPENCROW_SMART_DIVERSITY_GUARD_BUCKET_BY;
   }
+  const diversityGuardSignal = boolEnv("OPENCROW_SMART_DIVERSITY_GUARD_SIGNAL_GUARD");
+  if (diversityGuardSignal !== undefined) diversityGuardEnv.signalGuard = diversityGuardSignal;
+  const diversityGuardSignalShare = Number(
+    process.env.OPENCROW_SMART_DIVERSITY_GUARD_MAX_SIGNAL_SHARE ?? "",
+  );
+  if (
+    !Number.isNaN(diversityGuardSignalShare) &&
+    process.env.OPENCROW_SMART_DIVERSITY_GUARD_MAX_SIGNAL_SHARE !== undefined
+  ) {
+    diversityGuardEnv.maxSignalShare = diversityGuardSignalShare;
+  }
+
+  // OPENCROW_SMART_SEED_DIVERSITY_* overrides for the seed-diversity levers.
+  const seedDiversityEnv: Record<string, unknown> = {};
+  const seedDiversityEnabled = boolEnv("OPENCROW_SMART_SEED_DIVERSITY_ENABLED");
+  if (seedDiversityEnabled !== undefined) seedDiversityEnv.enabled = seedDiversityEnabled;
+  const seedDiversityFocusRotation = boolEnv("OPENCROW_SMART_SEED_DIVERSITY_FOCUS_ROTATION");
+  if (seedDiversityFocusRotation !== undefined) {
+    seedDiversityEnv.focusRotation = seedDiversityFocusRotation;
+  }
+  const seedDiversityFocusSpread = Number(
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_FOCUS_SPREAD ?? "",
+  );
+  if (
+    !Number.isNaN(seedDiversityFocusSpread) &&
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_FOCUS_SPREAD !== undefined
+  ) {
+    seedDiversityEnv.focusSpread = seedDiversityFocusSpread;
+  }
+  const seedDiversityHighOppSlice = Number(
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_HIGH_OPPORTUNITY_SLICE ?? "",
+  );
+  if (
+    !Number.isNaN(seedDiversityHighOppSlice) &&
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_HIGH_OPPORTUNITY_SLICE !== undefined
+  ) {
+    seedDiversityEnv.highOpportunitySlice = seedDiversityHighOppSlice;
+  }
+  const seedDiversityAnchorLookback = Number(
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_RECENT_ANCHOR_LOOKBACK ?? "",
+  );
+  if (
+    !Number.isNaN(seedDiversityAnchorLookback) &&
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_RECENT_ANCHOR_LOOKBACK !== undefined
+  ) {
+    seedDiversityEnv.recentAnchorLookback = seedDiversityAnchorLookback;
+  }
+  const seedDiversityPainLead = boolEnv("OPENCROW_SMART_SEED_DIVERSITY_PAIN_THEMES_LEAD_SUMMARY");
+  if (seedDiversityPainLead !== undefined) {
+    seedDiversityEnv.painThemesLeadSummary = seedDiversityPainLead;
+  }
+  const seedDiversityMaxLeadingThemes = Number(
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_MAX_LEADING_PAIN_THEMES ?? "",
+  );
+  if (
+    !Number.isNaN(seedDiversityMaxLeadingThemes) &&
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_MAX_LEADING_PAIN_THEMES !== undefined
+  ) {
+    seedDiversityEnv.maxLeadingPainThemes = seedDiversityMaxLeadingThemes;
+  }
+  const seedDiversityEchoDownweight = boolEnv(
+    "OPENCROW_SMART_SEED_DIVERSITY_ECHO_CHAMBER_DOWNWEIGHT",
+  );
+  if (seedDiversityEchoDownweight !== undefined) {
+    seedDiversityEnv.echoChamberDownweight = seedDiversityEchoDownweight;
+  }
+  const seedDiversityEchoFactor = Number(
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_ECHO_CHAMBER_FACTOR ?? "",
+  );
+  if (
+    !Number.isNaN(seedDiversityEchoFactor) &&
+    process.env.OPENCROW_SMART_SEED_DIVERSITY_ECHO_CHAMBER_FACTOR !== undefined
+  ) {
+    seedDiversityEnv.echoChamberFactor = seedDiversityEchoFactor;
+  }
+
+  // OPENCROW_SMART_INDEPENDENT_JURY_* overrides for the MAIN-pipeline jury.
+  const independentJuryEnv: Record<string, unknown> = {};
+  const independentJuryEnabled = boolEnv("OPENCROW_SMART_INDEPENDENT_JURY_ENABLED");
+  if (independentJuryEnabled !== undefined) independentJuryEnv.enabled = independentJuryEnabled;
+  const independentJuryWeight = Number(
+    process.env.OPENCROW_SMART_INDEPENDENT_JURY_PENALTY_WEIGHT ?? "",
+  );
+  if (
+    !Number.isNaN(independentJuryWeight) &&
+    process.env.OPENCROW_SMART_INDEPENDENT_JURY_PENALTY_WEIGHT !== undefined
+  ) {
+    independentJuryEnv.penaltyWeight = independentJuryWeight;
+  }
 
   if (
     Object.keys(smartEnv).length > 0 ||
@@ -268,7 +410,9 @@ function applyEnvOverrides(
     Object.keys(graphReasoningEnv).length > 0 ||
     Object.keys(incumbentExclusionEnv).length > 0 ||
     Object.keys(competabilityEnv).length > 0 ||
-    Object.keys(diversityGuardEnv).length > 0
+    Object.keys(diversityGuardEnv).length > 0 ||
+    Object.keys(seedDiversityEnv).length > 0 ||
+    Object.keys(independentJuryEnv).length > 0
   ) {
     const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
     const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
@@ -309,6 +453,14 @@ function applyEnvOverrides(
       const existing = (existingSmart.diversityGuard ?? {}) as Record<string, unknown>;
       smart.diversityGuard = { ...existing, ...diversityGuardEnv };
     }
+    if (Object.keys(seedDiversityEnv).length > 0) {
+      const existing = (existingSmart.seedDiversity ?? {}) as Record<string, unknown>;
+      smart.seedDiversity = { ...existing, ...seedDiversityEnv };
+    }
+    if (Object.keys(independentJuryEnv).length > 0) {
+      const existing = (existingSmart.independentJury ?? {}) as Record<string, unknown>;
+      smart.independentJury = { ...existing, ...independentJuryEnv };
+    }
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }
 
@@ -317,6 +469,10 @@ function applyEnvOverrides(
   // loadConfig() (no DB) and loadConfigWithOverrides() (DB), instead of
   // relying solely on a DB override that only the override-aware loader sees.
   const sigeEnabled = boolEnv("OPENCROW_SIGE_ENABLED");
+  // Autonomous mem0-extraction (`sige-ingestion`) on/off. Set false for
+  // "manual only" SIGE: the `sige` process still runs manual sessions, but the
+  // unsupervised extraction loop is not spawned.
+  const sigeIngestionEnabled = boolEnv("OPENCROW_SIGE_INGESTION_ENABLED");
   const sigeMem0Url = process.env.OPENCROW_SIGE_MEM0_URL;
   // Bearer token for the mem0 sidecar. Reuse the already-shared internal token
   // (the same value compose hands to mem0 as MEM0_API_TOKEN) so the app and the
@@ -331,6 +487,7 @@ function applyEnvOverrides(
   const sigeNeo4jUser = process.env.OPENCROW_SIGE_NEO4J_USER;
   if (
     sigeEnabled !== undefined ||
+    sigeIngestionEnabled !== undefined ||
     sigeMem0Url ||
     sigeMem0Token ||
     sigeNeo4jEnabled !== undefined ||
@@ -339,6 +496,11 @@ function applyEnvOverrides(
   ) {
     const sige = { ...((result.sige ?? {}) as Record<string, unknown>) };
     if (sigeEnabled !== undefined) sige.enabled = sigeEnabled;
+    if (sigeIngestionEnabled !== undefined) {
+      const ingestion = { ...((sige.ingestion ?? {}) as Record<string, unknown>) };
+      ingestion.enabled = sigeIngestionEnabled;
+      sige.ingestion = ingestion;
+    }
     if (sigeMem0Url || sigeMem0Token) {
       const mem0 = { ...((sige.mem0 ?? {}) as Record<string, unknown>) };
       if (sigeMem0Url) mem0.baseUrl = sigeMem0Url;
@@ -365,9 +527,7 @@ function applyEnvOverrides(
   // Opt-in escape hatch (default OFF / fail-closed) that lets the dev-tool exec
   // path run without an active OS sandbox. Exposed as env so a trusted-host
   // deployment can flip it without a config file edit; leave unset to fail closed.
-  const allowUnsandboxedDevTools = boolEnv(
-    "OPENCROW_ALLOW_UNSANDBOXED_DEV_TOOLS",
-  );
+  const allowUnsandboxedDevTools = boolEnv("OPENCROW_ALLOW_UNSANDBOXED_DEV_TOOLS");
   if (
     (toolsSandbox && ["off", "best-effort", "required"].includes(toolsSandbox)) ||
     devToolsNet !== undefined ||
@@ -586,17 +746,19 @@ async function mergeFeatureOverrides(
       }
     } else {
       // Disable by removing the memorySearch key
-      const { memorySearch: _dropped, ...rest } = result as Record<
-        string,
-        unknown
-      > & { memorySearch?: unknown };
+      const { memorySearch: _dropped, ...rest } = result as Record<string, unknown> & {
+        memorySearch?: unknown;
+      };
       result = rest;
     }
   }
 
   if (sigeOverride !== null && typeof sigeOverride === "object") {
     const baseSige = (result.sige ?? {}) as Record<string, unknown>;
-    result = { ...result, sige: deepMergeSigeOverride(baseSige, sigeOverride as Record<string, unknown>) };
+    result = {
+      ...result,
+      sige: deepMergeSigeOverride(baseSige, sigeOverride as Record<string, unknown>),
+    };
   }
 
   // config/competability override → pipelines.ideas.smart.competability. Reuse
@@ -769,10 +931,7 @@ function mergeAgentOverrides(
     }
 
     // Merge DB fields on top of file agent
-    const { _deleted, ...fields } = override.definition as unknown as Record<
-      string,
-      unknown
-    >;
+    const { _deleted, ...fields } = override.definition as unknown as Record<string, unknown>;
     const combined = { ...agent, ...fields, id: agent.id };
     merged.push(agentDefinitionSchema.parse(combined));
   }
@@ -780,8 +939,7 @@ function mergeAgentOverrides(
   // Add DB-only agents
   for (const override of overrides) {
     if (fileAgentIds.has(override.id)) continue;
-    if ("_deleted" in override.definition && override.definition._deleted)
-      continue;
+    if ("_deleted" in override.definition && override.definition._deleted) continue;
     merged.push(agentDefinitionSchema.parse(override.definition));
   }
 
@@ -791,9 +949,7 @@ function mergeAgentOverrides(
 /**
  * Returns merged agents with source annotations for the UI.
  */
-export async function getMergedAgentsWithSource(): Promise<
-  readonly AgentWithSource[]
-> {
+export async function getMergedAgentsWithSource(): Promise<readonly AgentWithSource[]> {
   const base = loadConfig();
   const overrides = await getAgentOverrides();
   const overrideMap = new Map(overrides.map((o) => [o.id, o]));
@@ -810,10 +966,7 @@ export async function getMergedAgentsWithSource(): Promise<
     if ("_deleted" in override.definition && override.definition._deleted) {
       continue;
     }
-    const { _deleted, ...fields } = override.definition as unknown as Record<
-      string,
-      unknown
-    >;
+    const { _deleted, ...fields } = override.definition as unknown as Record<string, unknown>;
     const combined = agentDefinitionSchema.parse({
       ...agent,
       ...fields,
@@ -824,8 +977,7 @@ export async function getMergedAgentsWithSource(): Promise<
 
   for (const override of overrides) {
     if (fileAgentIds.has(override.id)) continue;
-    if ("_deleted" in override.definition && override.definition._deleted)
-      continue;
+    if ("_deleted" in override.definition && override.definition._deleted) continue;
     const parsed = agentDefinitionSchema.parse(override.definition);
     result.push({ ...parsed, _source: "db" });
   }
@@ -836,9 +988,7 @@ export async function getMergedAgentsWithSource(): Promise<
 /**
  * Compute a hash of the merged agent list for optimistic concurrency.
  */
-export function computeMergedAgentHash(
-  agents: readonly AgentDefinition[],
-): string {
+export function computeMergedAgentHash(agents: readonly AgentDefinition[]): string {
   const canonical = JSON.stringify(agents.map((a) => a.id).sort());
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(canonical);

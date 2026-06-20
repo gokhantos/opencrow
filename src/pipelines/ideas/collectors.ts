@@ -46,9 +46,11 @@ import {
   mentionsIncumbent,
   INCUMBENT_DOWNRANK_FACTOR,
 } from "./incumbents";
+import { buildPainSeedSummary, isEchoChamberSignal } from "./collector-focus";
 import type {
   TrendData,
   CategoryTrend,
+  CategoryStat,
   ClusteredPains,
   PainCluster,
   CapabilityScan,
@@ -426,6 +428,17 @@ export async function analyzeAppLandscape(
         topApps: [],
       }));
 
+    // Seed-diversity lever 1: per-category satisfaction stats over the FULL iOS +
+    // Play distribution (not just the <=3.5 trending slice). selectFocusCategories
+    // ranks the high-opportunity head on these and rotates the tail per run.
+    const categoryStats: CategoryStat[] = [...categoryHealth, ...playCategoryHealth]
+      .map((c) => ({
+        category: c.category as string,
+        avgRating: Number(c.avg_rating),
+        complaintRatio: Number(c.negative_reviews) / Math.max(Number(c.positive_reviews), 1),
+      }))
+      .filter((s) => s.category && Number.isFinite(s.avgRating));
+
     // Structured-facet enrichment (gated; DEFAULT OFF, graceful no-op otherwise).
     if (loadConfig().pipelines.ideas.smart.signalFacets) {
       const facetBlock = await buildFacetContext(
@@ -451,6 +464,7 @@ export async function analyzeAppLandscape(
     return {
       risingApps: [],
       trendingCategories,
+      categoryStats,
       summary: summaryLines.join("\n"),
       insights,
       selectedIds: new Map(localSelected) as ReadonlyMap<string, readonly string[]>,
@@ -730,9 +744,37 @@ export async function clusterReviews(
   // LLM insight extraction (graceful degradation on failure)
   const insights = await extractReviewInsights(summaryText, resolvedModel, resolvedProvider);
 
+  // Seed-diversity lever 2: lead pains.summary with the SPECIFIC LLM-extracted
+  // pain themes so the generator's Pass-1 (which consumes pains.summary directly)
+  // seeds on concrete recurring complaints, not the "=== BUSINESS (340
+  // complaints) ===" category headers that dominate the cluster aggregate.
+  // The category aggregate is demoted to clearly-labeled BACKGROUND context.
+  // SECURITY: buildPainSeedSummary does NO sanitization — every scraped field
+  // (theme name/description, affected-app names) is sanitizeForPrompt'd HERE
+  // before it reaches the helper / the prompt.
+  const seedDiversity = loadConfig().pipelines.ideas.smart.seedDiversity;
+  let summary = summaryText;
+  if (
+    seedDiversity.enabled &&
+    seedDiversity.painThemesLeadSummary &&
+    insights?.painThemes?.length
+  ) {
+    const safeThemes = insights.painThemes.map((t) => ({
+      name: sanitizeForPrompt(t.name),
+      description: sanitizeForPrompt(t.description),
+      frequency: t.frequency,
+      affectedApps: t.affectedApps.map((a) => sanitizeForPrompt(a)),
+    }));
+    summary = buildPainSeedSummary(safeThemes, summaryText, seedDiversity.maxLeadingPainThemes);
+    log.info("Seed-diversity lever 2: specific pain themes lead pains.summary", {
+      themes: safeThemes.length,
+      maxLeading: seedDiversity.maxLeadingPainThemes,
+    });
+  }
+
   return {
     clusters: clusters.slice(0, 15),
-    summary: summaryText,
+    summary,
     insights,
     selectedIds: new Map(localSelected) as ReadonlyMap<string, readonly string[]>,
   };
@@ -826,6 +868,18 @@ interface RawCandidate {
   readonly engagement: number;
   /** Recency factor in [0, 1]. */
   readonly recency: number;
+  /**
+   * Seed-diversity lever 3: signals used to detect AI-builder-meta "echo
+   * chamber" candidates (curated meta subreddit + generic agent/LLM-framework
+   * phrases in the github full_name / PH topics / title + description). Such
+   * candidates are DOWN-WEIGHTED (not dropped) in the rank score. Optional —
+   * sources that can't be meta (e.g. news) omit it.
+   */
+  readonly echoChamber?: {
+    readonly subreddit?: string | null;
+    readonly tag?: string | null;
+    readonly text?: string | null;
+  };
   /** Builds the final Capability given the resolved corroboration + velocityNorm. */
   build: (extra: {
     readonly corroborationCount: number;
@@ -935,6 +989,10 @@ export async function scanCapabilities(
             velocity: 0, // ph has no persisted velocity column
             engagement: votes,
             recency: recencyFactor(toNumber(p.first_seen_at), nowSec),
+            echoChamber: {
+              tag: topics.join(" "),
+              text: `${(p.name as string) ?? ""} ${(p.tagline as string) ?? ""} ${(p.description as string) ?? ""}`,
+            },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: `${p.name}: ${p.tagline}`,
               source: "producthunt",
@@ -1001,6 +1059,7 @@ export async function scanCapabilities(
             velocity: vel,
             engagement: points,
             recency: recencyFactor(toNumber(s.updated_at), nowSec),
+            echoChamber: { text: (s.title as string) ?? "" },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: s.title as string,
               source: "hackernews",
@@ -1073,6 +1132,10 @@ export async function scanCapabilities(
             velocity: vel,
             engagement: stars,
             recency: recencyFactor(toNumber(r.updated_at), nowSec),
+            echoChamber: {
+              tag: (r.full_name as string) ?? "",
+              text: `${(r.full_name as string) ?? ""} ${(r.description as string) ?? ""}`,
+            },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: `${r.full_name} (${r.language || "?"})`,
               source: "github",
@@ -1137,6 +1200,10 @@ export async function scanCapabilities(
             velocity: vel,
             engagement: score,
             recency: recencyFactor(toNumber(p.updated_at), nowSec),
+            echoChamber: {
+              subreddit: typeof p.subreddit === "string" ? p.subreddit : null,
+              text: `${(p.title as string) ?? ""} ${(p.selftext as string) ?? ""}`,
+            },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: `r/${p.subreddit}: ${p.title}`,
               source: "reddit",
@@ -1252,6 +1319,7 @@ export async function scanCapabilities(
             velocity: vel,
             engagement: likes,
             recency: recencyFactor(toNumber(t.scraped_at), nowSec),
+            echoChamber: { text: (t.text as string) ?? "" },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: `@${handle}`,
               source: "x",
@@ -1278,6 +1346,12 @@ export async function scanCapabilities(
     } catch (err) {
       log.warn("Corroboration resolution failed; continuing without it", { err });
     }
+
+    // Seed-diversity lever 3: down-weight (not drop) AI-builder-meta "echo
+    // chamber" signals so the capability pool isn't dominated by "build an AI
+    // agent / LLM framework" meta. Mirrors the incumbent down-weight pattern.
+    const echoCfg = smart.seedDiversity;
+    let echoChamberDownweighted = 0;
 
     // ── Per-source: normalize velocity, rank, select top-K, build ───────────
     for (const pool of pools) {
@@ -1314,6 +1388,19 @@ export async function scanCapabilities(
         ) {
           score *= INCUMBENT_DOWNRANK_FACTOR;
         }
+        // Seed-diversity lever 3: an AI-builder-meta candidate (meta subreddit or
+        // generic agent/LLM-framework phrase) is multiplied by echoChamberFactor
+        // (default 0.5) — REDUCED, not eliminated, so it drops in rank but can
+        // still surface and corroborate.
+        if (
+          echoCfg.enabled &&
+          echoCfg.echoChamberDownweight &&
+          c.echoChamber &&
+          isEchoChamberSignal(c.echoChamber)
+        ) {
+          score *= echoCfg.echoChamberFactor;
+          echoChamberDownweighted++;
+        }
         scoreByRow.set(c.id, score);
       }
 
@@ -1336,6 +1423,13 @@ export async function scanCapabilities(
           }),
         );
       }
+    }
+
+    if (echoChamberDownweighted > 0) {
+      log.info("Seed-diversity lever 3: down-weighted AI-builder-meta signals", {
+        downweighted: echoChamberDownweighted,
+        factor: echoCfg.echoChamberFactor,
+      });
     }
   } catch (err) {
     log.warn("Capability scan failed", { err });

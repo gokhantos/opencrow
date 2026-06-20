@@ -7,6 +7,8 @@ import {
   ABSENCE_CONFIDENCE_CAP,
   DEMAND_KIND_WEIGHTS,
   extractDemandKeywords,
+  distinctKeywordHits,
+  DEFAULT_MIN_KEYWORD_HITS,
   aggregateDemand,
   hasCitedDemand,
   demandArtifactSchema,
@@ -96,6 +98,84 @@ describe("extractDemandKeywords", () => {
     expect(extractDemandKeywords({ title: "  ", summary: "the and or" })).toEqual(
       [],
     );
+  });
+
+  test("drops ultra-generic single tokens (genericness stoplist)", () => {
+    // These tokens are too common to indicate topical relevance; on their own
+    // they would match almost any scraped row and inflate the demand count.
+    const kws = extractDemandKeywords({
+      title: "tracking monitor restaurant",
+      summary: "health tracking app that helps everyone every day",
+    });
+    for (const generic of [
+      "tracking",
+      "monitor",
+      "restaurant",
+      "health",
+      "everyone",
+      "every",
+      "day",
+    ]) {
+      expect(kws).not.toContain(generic);
+    }
+  });
+
+  test("keeps a topical phrase even when its parts are generic unigrams", () => {
+    // "glucose monitoring": "monitoring" is generic alone, but the PHRASE is
+    // sharply topical, so the bigram survives while the lone "monitoring" does not.
+    const kws = extractDemandKeywords({
+      title: "glucose monitoring",
+      summary: "glucose monitoring for diabetes; glucose monitoring patterns",
+    });
+    expect(kws).toContain("glucose monitoring");
+    expect(kws).not.toContain("monitoring");
+    expect(kws).toContain("glucose");
+  });
+
+  test("drops a bigram made of two generic words", () => {
+    const kws = extractDemandKeywords({
+      title: "easy login health tracking",
+      summary: "easy login; health tracking",
+    });
+    expect(kws).not.toContain("easy login");
+  });
+});
+
+// ── distinctKeywordHits (RELEVANCE GATE primitive) ───────────────────────────
+
+describe("distinctKeywordHits", () => {
+  const KWS = ["glucose monitoring", "glucose", "diabetes", "insulin"] as const;
+
+  test("counts distinct keywords present, ignores absent ones", () => {
+    // "diabetes" + "insulin" co-occur; "glucose"/"glucose monitoring" absent.
+    expect(distinctKeywordHits("managing diabetes with insulin", KWS)).toBe(2);
+  });
+
+  test("a single non-phrase keyword counts as 1 (below the default gate)", () => {
+    expect(distinctKeywordHits("just some diabetes chatter", KWS)).toBe(1);
+    expect(1).toBeLessThan(DEFAULT_MIN_KEYWORD_HITS);
+  });
+
+  test("a multi-word phrase match counts as strong co-occurrence (>=2)", () => {
+    // The phrase alone clears the default gate — its parts already co-occurred.
+    const hits = distinctKeywordHits("review of glucose monitoring tools", KWS);
+    expect(hits).toBeGreaterThanOrEqual(DEFAULT_MIN_KEYWORD_HITS);
+  });
+
+  test("a repeated keyword does not inflate the hit count", () => {
+    expect(distinctKeywordHits("diabetes diabetes diabetes", KWS)).toBe(1);
+  });
+
+  test("returns 0 for empty haystack or empty keywords", () => {
+    expect(distinctKeywordHits("", KWS)).toBe(0);
+    expect(distinctKeywordHits("diabetes", [])).toBe(0);
+  });
+
+  test("phraseWeight is configurable", () => {
+    // Isolate the phrase contribution with a single-phrase keyword set.
+    const phraseOnly = ["staff scheduling"] as const;
+    expect(distinctKeywordHits("staff scheduling tool", phraseOnly, 1)).toBe(1);
+    expect(distinctKeywordHits("staff scheduling tool", phraseOnly, 3)).toBe(3);
   });
 });
 
@@ -259,16 +339,45 @@ describe("hasCitedDemand", () => {
     const art = aggregateDemand([ev({ kind: "funding_news", count: 10 })]);
     expect(hasCitedDemand(art)).toBe(true);
   });
+
+  test("review_complaint evidence counts as cited demand (escapes the cap)", () => {
+    const art = aggregateDemand([
+      ev({ kind: "review_complaint", count: 6, quote: "this app is broken" }),
+    ]);
+    expect(art.score).toBeGreaterThan(ABSENCE_SCORE_CAP);
+    expect(hasCitedDemand(art)).toBe(true);
+  });
+
+  test("hn_intent evidence counts as cited demand (escapes the cap)", () => {
+    const art = aggregateDemand([
+      ev({ kind: "hn_intent", count: 6, quote: "is there a tool for X" }),
+    ]);
+    expect(art.score).toBeGreaterThan(ABSENCE_SCORE_CAP);
+    expect(hasCitedDemand(art)).toBe(true);
+  });
 });
 
 // ── schema / shape guards ────────────────────────────────────────────────────
 
 describe("schemas", () => {
-  test("DEMAND_EVIDENCE_KINDS covers the four documented kinds", () => {
+  test("DEMAND_EVIDENCE_KINDS covers the documented kinds", () => {
     const kinds: string[] = [...DEMAND_EVIDENCE_KINDS];
     expect(kinds.sort()).toEqual(
-      ["funding_news", "hiring", "reddit_intent", "search_trend"].sort(),
+      [
+        "funding_news",
+        "hiring",
+        "hn_intent",
+        "reddit_intent",
+        "review_complaint",
+        "search_trend",
+      ].sort(),
     );
+  });
+
+  test("every kind has a positive weight", () => {
+    for (const kind of DEMAND_EVIDENCE_KINDS) {
+      expect(DEMAND_KIND_WEIGHTS[kind]).toBeGreaterThan(0);
+    }
   });
 
   test("aggregateDemand output validates against demandArtifactSchema", () => {

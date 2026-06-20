@@ -51,8 +51,12 @@ describe("smartConfigSchema", () => {
         enabled: true,
         redditIntent: true,
         fundingSignal: true,
+        reviewComplaint: true,
+        hnIntent: true,
+        phSupply: true,
         externalTrends: false,
         minMatches: 2,
+        minKeywordHits: 2,
       },
       sige: {
         independentJudge: true,
@@ -120,8 +124,46 @@ describe("smartConfigSchema", () => {
         enabled: true,
         maxBucketShare: 0.5,
         bucketBy: "archetype",
+        signalGuard: true,
+        maxSignalShare: 0.34,
+      },
+      seedDiversity: {
+        enabled: true,
+        focusRotation: true,
+        focusSpread: 8,
+        highOpportunitySlice: 4,
+        recentAnchorLookback: 40,
+        painThemesLeadSummary: true,
+        maxLeadingPainThemes: 15,
+        echoChamberDownweight: true,
+        echoChamberFactor: 0.5,
+      },
+      independentJury: {
+        enabled: true,
+        penaltyWeight: 0.7,
       },
     });
+  });
+
+  test("seed-diversity levers default ON (pure-logic, attacks seed monoculture)", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.seedDiversity.enabled).toBe(true);
+    expect(parsed.seedDiversity.focusRotation).toBe(true);
+    expect(parsed.seedDiversity.painThemesLeadSummary).toBe(true);
+    expect(parsed.seedDiversity.echoChamberDownweight).toBe(true);
+    expect(parsed.seedDiversity.echoChamberFactor).toBe(0.5);
+  });
+
+  test("seed-diversity numeric bounds + echo factor range are enforced", () => {
+    expect(() => smartConfigSchema.parse({ seedDiversity: { echoChamberFactor: -0.1 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ seedDiversity: { echoChamberFactor: 1.1 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ seedDiversity: { focusSpread: 0 } })).toThrow();
+    const parsed = smartConfigSchema.parse({
+      seedDiversity: { enabled: false, focusRotation: false, echoChamberFactor: 0.25 },
+    });
+    expect(parsed.seedDiversity.enabled).toBe(false);
+    expect(parsed.seedDiversity.focusRotation).toBe(false);
+    expect(parsed.seedDiversity.echoChamberFactor).toBe(0.25);
   });
 
   test("Layer C incumbent exclusion defaults ON (pure-logic safe)", () => {
@@ -139,11 +181,13 @@ describe("smartConfigSchema", () => {
     expect(parsed.competability.softPenaltyThreshold).toBe(2.5);
   });
 
-  test("within-run diversity guard defaults ON (archetype, 0.5 share)", () => {
+  test("within-run diversity guard defaults ON (archetype, 0.5 share, signal guard 0.34)", () => {
     const parsed = smartConfigSchema.parse({});
     expect(parsed.diversityGuard.enabled).toBe(true);
     expect(parsed.diversityGuard.maxBucketShare).toBe(0.5);
     expect(parsed.diversityGuard.bucketBy).toBe("archetype");
+    expect(parsed.diversityGuard.signalGuard).toBe(true);
+    expect(parsed.diversityGuard.maxSignalShare).toBe(0.34);
   });
 
   test("diversity guard bounds + enum are enforced", () => {
@@ -157,6 +201,8 @@ describe("smartConfigSchema", () => {
       enabled: false,
       maxBucketShare: 0.3,
       bucketBy: "category",
+      signalGuard: true,
+      maxSignalShare: 0.34,
     });
   });
 
@@ -206,17 +252,14 @@ describe("smartConfigSchema", () => {
   test("signalImportanceFloor defaults to low and accepts the bucket enum", () => {
     expect(smartConfigSchema.parse({}).signalImportanceFloor).toBe("low");
     for (const floor of ["noise", "low", "medium", "high"] as const) {
-      expect(
-        smartConfigSchema.parse({ signalImportanceFloor: floor })
-          .signalImportanceFloor,
-      ).toBe(floor);
+      expect(smartConfigSchema.parse({ signalImportanceFloor: floor }).signalImportanceFloor).toBe(
+        floor,
+      );
     }
   });
 
   test("signalImportanceFloor rejects values outside the bucket enum", () => {
-    expect(() =>
-      smartConfigSchema.parse({ signalImportanceFloor: "critical" }),
-    ).toThrow();
+    expect(() => smartConfigSchema.parse({ signalImportanceFloor: "critical" })).toThrow();
   });
 
   test("pure-logic flags default ON", () => {
@@ -270,10 +313,7 @@ describe("giantConfigSchema", () => {
   });
 
   test("default weights sum to 1.0", () => {
-    const sum = Object.values(GIANT_DEFAULT_WEIGHTS).reduce(
-      (acc, w) => acc + w,
-      0,
-    );
+    const sum = Object.values(GIANT_DEFAULT_WEIGHTS).reduce((acc, w) => acc + w, 0);
     expect(sum).toBeCloseTo(1, 10);
   });
 
@@ -324,9 +364,7 @@ describe("sigeHardeningConfigSchema", () => {
   });
 
   test("default judgeModels match exported SIGE_DEFAULT_JUDGE_MODELS", () => {
-    expect(sigeHardeningConfigSchema.parse({}).judgeModels).toEqual([
-      ...SIGE_DEFAULT_JUDGE_MODELS,
-    ]);
+    expect(sigeHardeningConfigSchema.parse({}).judgeModels).toEqual([...SIGE_DEFAULT_JUDGE_MODELS]);
   });
 
   test("honors explicit overrides on every field", () => {
@@ -338,18 +376,14 @@ describe("sigeHardeningConfigSchema", () => {
       deepTier: false,
     });
     expect(parsed.independentJudge).toBe(false);
-    expect(parsed.judgeModels).toEqual([
-      { provider: "anthropic", model: "claude-sonnet-4-6" },
-    ]);
+    expect(parsed.judgeModels).toEqual([{ provider: "anthropic", model: "claude-sonnet-4-6" }]);
     expect(parsed.dissentWeight).toBe(0.4);
     expect(parsed.convergenceVetoThreshold).toBe(0.7);
     expect(parsed.deepTier).toBe(false);
   });
 
   test("rejects judgeModels missing provider/model", () => {
-    expect(() =>
-      sigeHardeningConfigSchema.parse({ judgeModels: [{ provider: "x" }] }),
-    ).toThrow();
+    expect(() => sigeHardeningConfigSchema.parse({ judgeModels: [{ provider: "x" }] })).toThrow();
   });
 
   test("is reachable via the documented smart.sige access path", () => {
@@ -392,24 +426,14 @@ describe("tasteConfigSchema", () => {
     expect(() => tasteConfigSchema.parse({ exemplarCount: 0 })).toThrow();
     expect(() => tasteConfigSchema.parse({ exemplarCount: 13 })).toThrow();
     expect(tasteConfigSchema.parse({ exemplarCount: 1 }).exemplarCount).toBe(1);
-    expect(tasteConfigSchema.parse({ exemplarCount: 12 }).exemplarCount).toBe(
-      12,
-    );
+    expect(tasteConfigSchema.parse({ exemplarCount: 12 }).exemplarCount).toBe(12);
   });
 
   test("goldenMinHumanLabels accepts zero and positive integers", () => {
-    expect(tasteConfigSchema.parse({ goldenMinHumanLabels: 0 }).goldenMinHumanLabels).toBe(
-      0,
-    );
-    expect(
-      tasteConfigSchema.parse({ goldenMinHumanLabels: 25 }).goldenMinHumanLabels,
-    ).toBe(25);
-    expect(() =>
-      tasteConfigSchema.parse({ goldenMinHumanLabels: -1 }),
-    ).toThrow();
-    expect(() =>
-      tasteConfigSchema.parse({ goldenMinHumanLabels: 1.5 }),
-    ).toThrow();
+    expect(tasteConfigSchema.parse({ goldenMinHumanLabels: 0 }).goldenMinHumanLabels).toBe(0);
+    expect(tasteConfigSchema.parse({ goldenMinHumanLabels: 25 }).goldenMinHumanLabels).toBe(25);
+    expect(() => tasteConfigSchema.parse({ goldenMinHumanLabels: -1 })).toThrow();
+    expect(() => tasteConfigSchema.parse({ goldenMinHumanLabels: 1.5 })).toThrow();
   });
 
   test("honors explicit overrides on every field", () => {
@@ -448,18 +472,12 @@ describe("tasteConfigSchema", () => {
 describe("pipelines.ideas.smart backward compatibility", () => {
   test("ideasPipelineConfigSchema yields smart defaults when empty", () => {
     expect(ideasPipelineConfigSchema.parse({}).smart.rerankTopK).toBe(6);
-    expect(ideasPipelineConfigSchema.parse(undefined).smart.sigeValuation).toBe(
-      false,
-    );
+    expect(ideasPipelineConfigSchema.parse(undefined).smart.sigeValuation).toBe(false);
   });
 
   test("pipelinesConfigSchema yields ideas.smart defaults when empty", () => {
-    expect(pipelinesConfigSchema.parse({}).ideas.smart.adaptiveCollection).toBe(
-      true,
-    );
-    expect(pipelinesConfigSchema.parse(undefined).ideas.smart.rerankFetchK).toBe(
-      30,
-    );
+    expect(pipelinesConfigSchema.parse({}).ideas.smart.adaptiveCollection).toBe(true);
+    expect(pipelinesConfigSchema.parse(undefined).ideas.smart.rerankFetchK).toBe(30);
   });
 
   test("full config without pipelines still validates with smart defaults", () => {

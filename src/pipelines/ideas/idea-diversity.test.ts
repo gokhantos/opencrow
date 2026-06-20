@@ -3,8 +3,12 @@ import type { Archetype } from "./giant";
 import {
   computeDiversityReport,
   DEFAULT_MAX_BUCKET_SHARE,
+  normalizeAnchorFingerprint,
+  resolveSeedBuckets,
   selectDiverse,
   selectDiverseBy,
+  selectDiverseByKeys,
+  selectDiverseBySignals,
   UNKNOWN_BUCKET,
 } from "./idea-diversity";
 import type { GeneratedIdeaCandidate } from "./types";
@@ -341,5 +345,266 @@ describe("immutability", () => {
     const snapshot = [...cands];
     selectDiverse(cands, { maxIdeas: 2, maxBucketShare: 0.5, bucketBy: "archetype" });
     expect(cands).toEqual(snapshot);
+  });
+});
+
+// ── Signal/seed key derivation: resolveSeedBuckets ───────────────────────────
+
+describe("resolveSeedBuckets — key derivation", () => {
+  test("prefers cited supportingSignalIds (lowercased, deduped, prefixed)", () => {
+    const c = candidate({
+      title: "x",
+      supportingSignalIds: ["HN_3", "hn_3", "producthunt_1"],
+    });
+    expect([...resolveSeedBuckets(c)].sort()).toEqual(["sig:hn_3", "sig:producthunt_1"]);
+  });
+
+  test("falls back to normalized trendIntersection fingerprint when no signal ids", () => {
+    const c = candidate({
+      title: "x",
+      trendIntersection: "Trending AI + Pain scheduling + Capability calendar",
+    });
+    expect(resolveSeedBuckets(c)).toEqual(["anchor:ai calendar scheduling"]);
+  });
+
+  test("near-identical anchors collapse to the same fingerprint", () => {
+    const a = candidate({ title: "a", trendIntersection: "AI scheduling, calendar" });
+    const b = candidate({
+      title: "b",
+      trendIntersection: "Calendar — AI Scheduling!!!",
+    });
+    expect(resolveSeedBuckets(a)).toEqual(resolveSeedBuckets(b));
+  });
+
+  test("falls back to segment when no signal ids and no anchor", () => {
+    const c = candidate({ title: "x", segment: "devtools" });
+    expect(resolveSeedBuckets(c)).toEqual(["seg:devtools"]);
+  });
+
+  test("returns [] when nothing identifies a seed (unconstrained)", () => {
+    expect(resolveSeedBuckets(candidate({ title: "x" }))).toEqual([]);
+  });
+
+  test("empty signal-id strings are ignored; falls through to anchor", () => {
+    const c = candidate({
+      title: "x",
+      supportingSignalIds: ["", "   "],
+      trendIntersection: "AI calendar",
+    });
+    expect(resolveSeedBuckets(c)).toEqual(["anchor:ai calendar"]);
+  });
+});
+
+describe("normalizeAnchorFingerprint", () => {
+  test("strips template stop-tokens and 1-char noise, keeps 2-char domain tokens, sorts", () => {
+    // Template words (trending/pain/capability) and single-char placeholders
+    // (X, Y) drop; the 2-char domain acronym "ai" survives.
+    expect(normalizeAnchorFingerprint("Trending AI + Pain X + Capability Y")).toBe("ai");
+    expect(normalizeAnchorFingerprint("Trending healthcare and scheduling")).toBe(
+      "healthcare scheduling",
+    );
+  });
+  test("all-noise / empty anchor => empty string", () => {
+    expect(normalizeAnchorFingerprint("")).toBe("");
+    expect(normalizeAnchorFingerprint("the and for")).toBe("");
+  });
+});
+
+// ── Signal-overlap selector: selectDiverseByKeys / selectDiverseBySignals ─────
+
+describe("selectDiverseByKeys — set-membership overlap cap", () => {
+  test("signal-overlap cap defers excess ideas sharing a signal over cap", () => {
+    // 6 items, maxIdeas 6 won't engage (pool == slice). Use a pool > slice.
+    const items = [
+      { id: "a", keys: ["s1"] },
+      { id: "b", keys: ["s1"] },
+      { id: "c", keys: ["s1"] }, // 3rd s1 -> over cap (cap=ceil(4*0.34)=2)
+      { id: "d", keys: ["s1"] }, // 4th s1 -> over cap
+      { id: "e", keys: ["s2"] },
+      { id: "f", keys: ["s3"] },
+    ];
+    const kept = selectDiverseByKeys(items, {
+      maxIdeas: 4,
+      maxKeyShare: 0.34, // cap = ceil(4*0.34) = 2
+      resolveKeys: (i) => i.keys,
+    });
+    expect(kept.length).toBe(4); // anti-starvation: slice size preserved
+    // Only 2 of the s1-sharing items admitted under the cap before back-fill;
+    // back-fill then adds 2 deferred s1 items to fill the slice -> here e,f admit
+    // first by cap, so the kept set is a,b (s1 cap) + e + f.
+    const ids = kept.map((k) => k.id);
+    expect(ids).toContain("a");
+    expect(ids).toContain("b");
+    expect(ids).toContain("e");
+    expect(ids).toContain("f");
+    // c and d (3rd/4th s1) were deferred, not admitted in the capped pass.
+    expect(ids).not.toContain("c");
+    expect(ids).not.toContain("d");
+  });
+
+  test("anti-starvation: back-fills deferred items so output never shrinks", () => {
+    // All 5 items share one signal; cap is 2, slice is 4. Back-fill must still
+    // reach 4 by re-admitting deferred items.
+    const items = Array.from({ length: 5 }, (_, i) => ({ id: `i${i}`, keys: ["only"] }));
+    const kept = selectDiverseByKeys(items, {
+      maxIdeas: 4,
+      maxKeyShare: 0.34,
+      resolveKeys: (i) => i.keys,
+    });
+    expect(kept.length).toBe(4);
+    // First-4 input order preserved (deterministic, stable).
+    expect(kept.map((k) => k.id)).toEqual(["i0", "i1", "i2", "i3"]);
+  });
+
+  test("items with NO keys are unconstrained and admitted in order", () => {
+    const items = [
+      { id: "a", keys: [] as string[] },
+      { id: "b", keys: [] as string[] },
+      { id: "c", keys: [] as string[] },
+      { id: "d", keys: ["s"] },
+      { id: "e", keys: ["s"] },
+    ];
+    const kept = selectDiverseByKeys(items, {
+      maxIdeas: 4,
+      maxKeyShare: 0.34, // cap=2 for "s"
+      resolveKeys: (i) => i.keys,
+    });
+    expect(kept.length).toBe(4);
+    expect(kept.map((k) => k.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  test("maxIdeas <= 0 => [] ; pool <= slice => returned whole", () => {
+    const items = [{ id: "a", keys: ["s"] }];
+    expect(selectDiverseByKeys(items, { maxIdeas: 0, maxKeyShare: 0.5, resolveKeys: (i) => i.keys })).toEqual([]);
+    expect(
+      selectDiverseByKeys(items, { maxIdeas: 4, maxKeyShare: 0.5, resolveKeys: (i) => i.keys }),
+    ).toEqual(items);
+  });
+
+  test("does not mutate the input", () => {
+    const items = [
+      { id: "a", keys: ["s"] },
+      { id: "b", keys: ["s"] },
+      { id: "c", keys: ["s"] },
+    ];
+    const snapshot = [...items];
+    selectDiverseByKeys(items, { maxIdeas: 2, maxKeyShare: 0.5, resolveKeys: (i) => i.keys });
+    expect(items).toEqual(snapshot);
+  });
+});
+
+describe("selectDiverseBySignals — candidate signal guard", () => {
+  function sig(title: string, ids: readonly string[]): GeneratedIdeaCandidate {
+    return candidate({ title, supportingSignalIds: ids });
+  }
+
+  test("caps a single source signal's share of the kept set (defers reskins)", () => {
+    // 6 candidates all citing one seed s1 + a distinct second seed each.
+    const cands = [
+      sig("a", ["s1", "p1"]),
+      sig("b", ["s1", "p2"]),
+      sig("c", ["s1", "p3"]),
+      sig("d", ["s1", "p4"]),
+      sig("e", ["s2", "p5"]),
+      sig("f", ["s3", "p6"]),
+    ];
+    const kept = selectDiverseBySignals(cands, { maxIdeas: 6, maxSignalShare: 0.34 });
+    // pool (6) == slice (6) -> returned whole. Use maxIdeas < pool to engage.
+    expect(kept.length).toBe(6);
+
+    const kept2 = selectDiverseBySignals(cands, { maxIdeas: 4, maxSignalShare: 0.34 });
+    // cap for s1 = ceil(4*0.34)=2 -> at most 2 of a..d (s1) admitted in capped pass.
+    const s1count = kept2.filter((c) => (c.supportingSignalIds ?? []).includes("s1")).length;
+    expect(kept2.length).toBe(4);
+    // s1 share capped at 2 in the capped pass; e (s2) + f (s3) fill the rest.
+    expect(s1count).toBeLessThanOrEqual(2);
+    expect(kept2.map((c) => c.title)).toContain("e");
+    expect(kept2.map((c) => c.title)).toContain("f");
+  });
+
+  test("falls back to trendIntersection fingerprint when no signal ids", () => {
+    const cands = [
+      candidate({ title: "a", trendIntersection: "AI scheduling calendar" }),
+      candidate({ title: "b", trendIntersection: "Calendar AI Scheduling" }), // same fp
+      candidate({ title: "c", trendIntersection: "AI scheduling calendar" }), // same fp
+      candidate({ title: "d", trendIntersection: "fintech invoicing" }),
+      candidate({ title: "e", trendIntersection: "healthcare triage" }),
+    ];
+    const kept = selectDiverseBySignals(cands, { maxIdeas: 4, maxSignalShare: 0.34 });
+    expect(kept.length).toBe(4);
+    // cap for the shared anchor fp = ceil(4*0.34)=2 -> at most 2 of a,b,c admitted
+    // in the capped pass; d + e fill in.
+    const sharedFp = kept.filter((c) =>
+      normalizeAnchorFingerprint(c.trendIntersection) === "ai calendar scheduling",
+    ).length;
+    expect(sharedFp).toBeLessThanOrEqual(2);
+    expect(kept.map((c) => c.title)).toContain("d");
+    expect(kept.map((c) => c.title)).toContain("e");
+  });
+
+  test("composes with the archetype guard (apply both, signal after archetype)", () => {
+    // 6-candidate POOL, slice 4 (pool > slice so the share caps engage — this
+    // mirrors the pipeline wiring, which feeds the guards a pool larger than
+    // maxIdeas). 4 share signal s1 across 3 archetypes; 2 are distinct.
+    const pool = [
+      candidate({ title: "a", archetype: "hair-on-fire", supportingSignalIds: ["s1"] }),
+      candidate({ title: "b", archetype: "hard-fact", supportingSignalIds: ["s1"] }),
+      candidate({ title: "c", archetype: "future-vision", supportingSignalIds: ["s1"] }),
+      candidate({ title: "d", archetype: "hair-on-fire", supportingSignalIds: ["s1"] }),
+      candidate({ title: "e", archetype: "hard-fact", supportingSignalIds: ["s2"] }),
+      candidate({ title: "f", archetype: "future-vision", supportingSignalIds: ["s3"] }),
+    ];
+    // Archetype guard (share 0.5, maxIdeas 4 -> cap 2 per archetype) keeps a
+    // diverse-by-archetype 4 — but s1 can still dominate (different archetypes).
+    const afterArchetype = selectDiverse(pool, {
+      maxIdeas: 4,
+      maxBucketShare: 0.5,
+      bucketBy: "archetype",
+    });
+    expect(afterArchetype.length).toBe(4);
+    // Compose the signal guard over a pool seeded by the archetype picks first,
+    // followed by the remaining pool as back-fill — exactly the pipeline wiring.
+    const archetypeKept = new Set(afterArchetype);
+    const signalPool = [...afterArchetype, ...pool.filter((c) => !archetypeKept.has(c))];
+    const afterBoth = selectDiverseBySignals(signalPool, {
+      maxIdeas: 4,
+      maxSignalShare: 0.34, // s1 capped at ceil(4*0.34)=2
+    });
+    expect(afterBoth.length).toBe(4); // anti-starvation holds through composition
+    const s1count = afterBoth.filter((c) => (c.supportingSignalIds ?? []).includes("s1")).length;
+    expect(s1count).toBeLessThanOrEqual(2);
+    // The distinct-signal alternatives were pulled in to dilute the s1 monoculture.
+    expect(afterBoth.map((c) => c.title)).toContain("e");
+    expect(afterBoth.map((c) => c.title)).toContain("f");
+  });
+
+  test("anti-starvation: never shrinks below slice even when all share one signal", () => {
+    const cands = Array.from({ length: 5 }, (_, i) => sig(`i${i}`, ["only"]));
+    const kept = selectDiverseBySignals(cands, { maxIdeas: 4, maxSignalShare: 0.34 });
+    expect(kept.length).toBe(4);
+  });
+});
+
+// ── Report: dominant-signal metrics ──────────────────────────────────────────
+
+describe("computeDiversityReport — dominant signal", () => {
+  test("reports dominant source signal + share (membership counts)", () => {
+    const cands = [
+      candidate({ title: "a", supportingSignalIds: ["s1"] }),
+      candidate({ title: "b", supportingSignalIds: ["s1"] }),
+      candidate({ title: "c", supportingSignalIds: ["s2"] }),
+      candidate({ title: "d", supportingSignalIds: ["s1", "s3"] }),
+    ];
+    const report = computeDiversityReport(cands);
+    expect(report.dominantSignal).toBe("sig:s1"); // in 3 of 4 ideas
+    expect(report.dominantSignalShare).toBeCloseTo(3 / 4, 6);
+    expect(report.distinctSignals).toBe(3); // s1, s2, s3
+  });
+
+  test("empty pool => dominantSignal '' , share 0", () => {
+    const report = computeDiversityReport([]);
+    expect(report.dominantSignal).toBe("");
+    expect(report.dominantSignalShare).toBe(0);
+    expect(report.distinctSignals).toBe(0);
   });
 });

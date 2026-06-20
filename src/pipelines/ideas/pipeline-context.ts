@@ -222,6 +222,35 @@ export async function buildSaturatedThemes(memoryManager?: MemoryManager | null)
   }
 }
 
+/**
+ * Seed-diversity lever 1 helper: the distinct categories that RECENT generated
+ * ideas have anchored on. selectFocusCategories de-prioritizes these in its
+ * rotated tail so consecutive runs don't keep re-anchoring on the same corners
+ * of the category distribution. COMPLEMENTS buildSaturatedThemes() (which mines
+ * saturated THEME phrases, not store categories).
+ *
+ * Pure read-only; degrades to [] on any error so the caller's rotation falls
+ * back to the un-penalized seeded order.
+ */
+export async function loadRecentlyAnchoredCategories(limit = 40): Promise<readonly string[]> {
+  if (limit <= 0) return [];
+  try {
+    const db = getDb();
+    const rows = (await db`
+      SELECT DISTINCT category
+      FROM generated_ideas
+      WHERE pipeline_run_id IS NOT NULL
+        AND category IS NOT NULL AND category != ''
+        AND COALESCE(pipeline_stage, 'idea') != 'archived'
+      ORDER BY category
+      LIMIT ${limit}
+    `) as Array<{ category: string }>;
+    return rows.map((r) => r.category).filter((c): c is string => Boolean(c));
+  } catch {
+    return [];
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Exemplar fetchers
 // ─────────────────────────────────────────────────────────────────────────────
