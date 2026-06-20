@@ -1,4 +1,5 @@
 // src/cli/native/qdrant.ts
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,7 +7,12 @@ import { spawnSync } from "node:child_process";
 import type { NativePaths } from "./paths.ts";
 import { QDRANT_LABEL } from "./paths.ts";
 import { buildInfraPlist } from "./plist.ts";
-import { QDRANT_VERSION, qdrantDownloadUrl, renderQdrantConfig } from "./qdrant-config.ts";
+import {
+  QDRANT_VERSION,
+  QDRANT_SHA256_AARCH64,
+  qdrantDownloadUrl,
+  renderQdrantConfig,
+} from "./qdrant-config.ts";
 
 function plistPath(label: string): string {
   return path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
@@ -26,7 +32,14 @@ async function downloadBinary(p: NativePaths): Promise<void> {
   const tmp = path.join(os.tmpdir(), "qdrant.tar.gz");
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Qdrant download failed: ${res.status} ${url}`);
-  await fs.writeFile(tmp, Buffer.from(await res.arrayBuffer()));
+  const buf = Buffer.from(await res.arrayBuffer());
+  const digest = crypto.createHash("sha256").update(buf).digest("hex");
+  if (digest !== QDRANT_SHA256_AARCH64) {
+    throw new Error(
+      `Qdrant tarball checksum mismatch: expected ${QDRANT_SHA256_AARCH64}, got ${digest}`,
+    );
+  }
+  await fs.writeFile(tmp, buf);
   await fs.mkdir(p.bin, { recursive: true });
   const tar = spawnSync("tar", ["-xzf", tmp, "-C", p.bin, "qdrant"], {
     stdio: "inherit",

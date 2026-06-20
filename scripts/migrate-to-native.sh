@@ -19,7 +19,7 @@ require_running() {
 echo "==> 1/3 Postgres: dump from container, restore into native"
 require_running opencrow-postgres-1
 docker exec opencrow-postgres-1 pg_dump -U opencrow -d opencrow --no-owner --no-privileges \
-  | "${PGBIN}/psql" "postgres://opencrow:opencrow@127.0.0.1:5432/opencrow"
+  | PGPASSWORD=opencrow "${PGBIN}/psql" -h 127.0.0.1 -p 5432 -U opencrow -d opencrow
 
 echo "==> 2/3 Qdrant: stop native, copy storage, restart"
 require_running opencrow-qdrant-1

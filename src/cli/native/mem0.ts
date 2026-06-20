@@ -43,6 +43,7 @@ export async function provisionMem0(
   }
 
   await fs.writeFile(p.mem0EnvFile, renderMem0Env(p, secrets), { mode: 0o600 });
+  await fs.chmod(p.mem0EnvFile, 0o600);
 
   // Wrapper sources the env file (chmod 600), then execs uvicorn — keeps secrets
   // out of the world-readable plist while still being a single ProgramArguments.
@@ -56,6 +57,7 @@ exec "${venvUvicorn}" app:app --host 127.0.0.1 --port 8050
 `,
     { mode: 0o700 },
   );
+  await fs.chmod(wrapper, 0o700);
 
   const plist = buildInfraPlist({
     label: MEM0_LABEL,
