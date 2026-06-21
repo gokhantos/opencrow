@@ -638,20 +638,20 @@ function PipelineCard({
           </div>
         </div>
 
+        {/* Never disabled: a pipeline can be launched again while prior runs
+            are still in flight — concurrent runs are independent (each POST
+            creates its own run row). isRunning is only an in-flight hint. */}
         <button
-          disabled={isRunning}
           onClick={() => onRun(pipeline.id)}
           className={cn(
             "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors shrink-0",
-            isRunning
-              ? "bg-bg-3 text-faint cursor-not-allowed"
-              : "bg-accent text-white cursor-pointer hover:bg-accent/80",
+            "bg-accent text-white cursor-pointer hover:bg-accent/80",
           )}
         >
           {isRunning ? (
             <>
               <Loader2 size={14} className="animate-spin" />
-              Running...
+              Run again
             </>
           ) : (
             <>
