@@ -59,6 +59,12 @@ export function buildFastProfile(
   return {
     ...DEFAULT_SIGE_SESSION_CONFIG,
     provider,
+    // BOTH model fields must be the routed model: `agentModel` drives the expert
+    // agents, while `model` drives game-formulation + signal-synthesis. Leaving
+    // `model` at the default `claude-sonnet-4-6` while `provider` is the routed
+    // (e.g. alibaba) one sent a Claude id to the wrong API → "400: Model not
+    // exist" → every autonomous run crashed at game_formulation.
+    model,
     agentModel: model,
     expertRounds: 2,
     socialRounds: 2,
