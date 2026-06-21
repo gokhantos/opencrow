@@ -69,6 +69,30 @@ export const ALWAYS_REJECT_OVERALL = 1.5;
 /** Default top-N incumbents the heuristic pre-filter checks idea text against. */
 export const DEFAULT_TOP_N_INCUMBENTS = 100;
 
+/**
+ * Default HARD-VETO threshold (per-dimension, RAW score). A RAW moat score at or
+ * above this on ANY {@link DEFAULT_HARD_VETO_DIMENSIONS} dimension is fatal —
+ * the idea is hard-rejected regardless of the composite/overall and regardless of
+ * any builder-profile discount. Default 4 (on the 0..5 scale).
+ *
+ * This is the "uncompetable for a solo/bootstrapped builder" backstop: ideas that
+ * INHERENTLY require regulation/licensing, heavy capital, physical logistics, or a
+ * network-effect cold-start are excluded as an OBJECTIVE property of the market,
+ * not a function of how the idea is framed or how much funding the builder has.
+ */
+export const DEFAULT_HARD_VETO_THRESHOLD = 4;
+
+/**
+ * Default FATAL moat-dimension set for the hard veto: all four dimensions. A RAW
+ * score >= {@link DEFAULT_HARD_VETO_THRESHOLD} on ANY of these vetoes the idea.
+ */
+export const DEFAULT_HARD_VETO_DIMENSIONS: readonly CompetabilityDimension[] = [
+  "regulated",
+  "capital",
+  "logistics",
+  "networkEffect",
+];
+
 // ── Moat-keyword heuristic vocabulary ────────────────────────────────────────
 
 /**
@@ -276,6 +300,74 @@ export function decideCompetability(
   }
 
   return { pass: true, soft: false, reason: `overall ${overall} >= ${soft}` };
+}
+
+// ── Hard per-dimension veto (PURE, RAW score, overall-independent) ─────────────
+
+/** Tunable parameters for {@link hardVetoCompetability}. */
+export interface HardVetoOptions {
+  /**
+   * RAW per-dimension score at or above which a fatal dimension vetoes the idea
+   * (default {@link DEFAULT_HARD_VETO_THRESHOLD}).
+   */
+  readonly threshold?: number;
+  /**
+   * The fatal moat-dimension set (default {@link DEFAULT_HARD_VETO_DIMENSIONS} =
+   * all four). A RAW score >= `threshold` on ANY of these vetoes the idea.
+   */
+  readonly dimensions?: readonly CompetabilityDimension[];
+}
+
+/** Outcome of the hard per-dimension veto. */
+export interface HardVetoDecision {
+  /** true ⇒ a fatal dimension breached the threshold; the idea must be rejected (when enforcing). */
+  readonly vetoed: boolean;
+  /** The dimension that triggered the veto (the first breach), or null when none. */
+  readonly dimension: CompetabilityDimension | null;
+  /** The RAW score of the triggering dimension, or null when none. */
+  readonly value: number | null;
+  /** Human-readable reason naming the dimension + value, or "" when not vetoed. */
+  readonly reason: string;
+}
+
+/**
+ * HARD per-dimension veto — a non-compensatory backstop that fires INDEPENDENTLY
+ * of the composite/overall score.
+ *
+ * CRITICAL — RAW, not discounted: this MUST be evaluated against the RAW /
+ * objective incumbent-moat dimensions (the market's inherent requirement — what
+ * {@link parseCompetability} produces), NOT the builder-profile-discounted
+ * (effective) dimensions. "Ideas which REQUIRE regulation / heavy capital /
+ * physical logistics / a network-effect cold-start" is an OBJECTIVE property of
+ * the market, independent of the builder's funding or appetite. The existing
+ * {@link decideCompetability} runs on the EFFECTIVE (discounted) score; this veto
+ * is intentionally a SEPARATE check the call sites run on the RAW score, so it
+ * cannot be discounted away.
+ *
+ * Vetoes when ANY fatal dimension's RAW score >= `threshold` (default 4). All four
+ * dimensions are fatal by default. PURE — no IO; returns the FIRST breach so the
+ * reason is deterministic.
+ */
+export function hardVetoCompetability(
+  rawScore: CompetabilityScore,
+  options: HardVetoOptions = {},
+): HardVetoDecision {
+  const threshold = options.threshold ?? DEFAULT_HARD_VETO_THRESHOLD;
+  const dimensions = options.dimensions ?? DEFAULT_HARD_VETO_DIMENSIONS;
+
+  for (const dim of dimensions) {
+    const value = clampScore(rawScore.dimensions[dim]);
+    if (value >= threshold) {
+      return {
+        vetoed: true,
+        dimension: dim,
+        value,
+        reason: `hard-veto: ${dim}=${value} >= ${threshold} (uncompetable moat for a solo builder)`,
+      };
+    }
+  }
+
+  return { vetoed: false, dimension: null, value: null, reason: "" };
 }
 
 // ── Persisted scorecard shape (PURE builder) ──────────────────────────────────

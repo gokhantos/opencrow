@@ -69,6 +69,12 @@ export const competabilityOverrideSchema = z
     rejectThreshold: z.number().min(0).max(5),
     softPenaltyThreshold: z.number().min(0).max(5),
     topNIncumbents: z.number().int().min(1).max(1000),
+    hardVeto: z.boolean(),
+    hardVetoThreshold: z.number().int().min(1).max(5),
+    hardVetoDimensions: z
+      .array(z.enum(["regulated", "capital", "logistics", "networkEffect"]))
+      // disabling the veto must go through `hardVeto: false`, not an empty list.
+      .min(1),
     builderProfile: builderProfileOverrideSchema,
   })
   .partial()

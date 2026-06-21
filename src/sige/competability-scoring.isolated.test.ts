@@ -67,6 +67,9 @@ function config(overrides: Partial<CompetabilityConfig> = {}): CompetabilityConf
     rejectThreshold: 2,
     softPenaltyThreshold: 2.5,
     topNIncumbents: 100,
+    hardVeto: true,
+    hardVetoThreshold: 4,
+    hardVetoDimensions: ["regulated", "capital", "logistics", "networkEffect"],
     // Default = solo bootstrapper = identity transform, so these SIGE gate tests
     // assert the same behavior as before builder profiles existed.
     builderProfile: {
@@ -210,5 +213,68 @@ describe("gateSigeIdeasOnCompetability", () => {
     });
     expect(r.dropped).toHaveLength(1);
     expect(r.dropped[0]!.gated).toBe(true);
+  });
+
+  it("HARD-VETOES a regulated idea even when overall is high (composite gate would keep it)", async () => {
+    // regulated=4 raw, but overall=4.5 — the composite gate alone would PASS this;
+    // the hard per-dimension veto kills it regardless of the high overall.
+    scriptedText = JSON.stringify([
+      {
+        id: "idea-1",
+        dimensions: { capital: 1, networkEffect: 1, logistics: 1, regulated: 4 },
+        overall: 4.5,
+        rationale: "needs a banking license",
+      },
+    ]);
+    const r = await gateSigeIdeasOnCompetability({
+      ideas: [idea({ id: "idea-1", title: "A neobank for freelancers" })],
+      config: config({ enforceGate: true }),
+      model: "claude-sonnet-4-6",
+    });
+    expect(r.kept).toHaveLength(0);
+    expect(r.dropped).toHaveLength(1);
+    expect(r.dropped[0]!.gated).toBe(true);
+    expect(r.dropped[0]!.reason).toContain("hard-veto: regulated=4");
+  });
+
+  it("hard veto is SHADOW (kept) when not enforcing, but still flagged + reasoned", async () => {
+    scriptedText = JSON.stringify([
+      {
+        id: "idea-1",
+        dimensions: { capital: 5, networkEffect: 1, logistics: 1, regulated: 1 },
+        overall: 4.5,
+        rationale: "heavy capex",
+      },
+    ]);
+    const r = await gateSigeIdeasOnCompetability({
+      ideas: [idea({ id: "idea-1", title: "A robotics fulfillment rig" })],
+      config: config({ enforceGate: false }),
+      model: "claude-sonnet-4-6",
+    });
+    // Shadow mode: kept, but flagged gated with the veto reason persisted.
+    expect(r.dropped).toHaveLength(0);
+    expect(r.kept).toHaveLength(1);
+    expect(r.kept[0]!.gated).toBe(true);
+    expect(r.kept[0]!.reason).toContain("hard-veto: capital=5");
+  });
+
+  it("hardVeto:false disables the per-dimension veto (composite gate still applies)", async () => {
+    // regulated=4, high overall — with the veto OFF this PASSES (composite only).
+    scriptedText = JSON.stringify([
+      {
+        id: "idea-1",
+        dimensions: { capital: 1, networkEffect: 1, logistics: 1, regulated: 4 },
+        overall: 4.5,
+        rationale: "regulated but veto disabled",
+      },
+    ]);
+    const r = await gateSigeIdeasOnCompetability({
+      ideas: [idea({ id: "idea-1", title: "A compliance tool" })],
+      config: config({ enforceGate: true, hardVeto: false }),
+      model: "claude-sonnet-4-6",
+    });
+    expect(r.dropped).toHaveLength(0);
+    expect(r.kept).toHaveLength(1);
+    expect(r.kept[0]!.gated).toBe(false);
   });
 });

@@ -1037,6 +1037,20 @@ export const competabilityConfigSchema = z
     softPenaltyThreshold: z.number().min(0).max(5).default(2.5),
     // Top-N incumbents the cheap heuristic pre-filter checks idea text against.
     topNIncumbents: z.number().int().min(1).max(1000).default(100),
+    // HARD per-dimension veto. A RAW (objective, profile-INDEPENDENT) moat score
+    // at or above hardVetoThreshold on ANY hardVetoDimensions dimension is fatal
+    // — the idea is hard-rejected regardless of overall and of builder-profile
+    // discounts. Like enforceGate, it only ACTS when the gate is enforcing
+    // (shadow/log-only otherwise). Default ON; default threshold 4; default
+    // dimensions = all four uncompetable-for-a-solo-builder moats.
+    hardVeto: z.boolean().default(true),
+    hardVetoThreshold: z.number().int().min(1).max(5).default(4),
+    hardVetoDimensions: z
+      .array(z.enum(["regulated", "capital", "logistics", "networkEffect"]))
+      // .min(1): an empty array would silently disable the veto — disabling must
+      // go through the explicit `hardVeto: false` flag, not a footgun empty list.
+      .min(1)
+      .default(["regulated", "capital", "logistics", "networkEffect"]),
     // The builder the gate is evaluated for. Default = solo bootstrapper =
     // identity transform, so the gate behaves exactly as before.
     builderProfile: builderProfileConfigSchema,
@@ -1047,6 +1061,9 @@ export const competabilityConfigSchema = z
     rejectThreshold: 2,
     softPenaltyThreshold: 2.5,
     topNIncumbents: 100,
+    hardVeto: true,
+    hardVetoThreshold: 4,
+    hardVetoDimensions: ["regulated", "capital", "logistics", "networkEffect"],
     builderProfile: {
       capital: "bootstrap",
       teamSize: 1,
@@ -1352,6 +1369,14 @@ const SMART_IDEAS_DEFAULTS = {
     rejectThreshold: 2,
     softPenaltyThreshold: 2.5,
     topNIncumbents: 100,
+    hardVeto: true,
+    hardVetoThreshold: 4,
+    hardVetoDimensions: [
+      "regulated",
+      "capital",
+      "logistics",
+      "networkEffect",
+    ] as ("regulated" | "capital" | "logistics" | "networkEffect")[],
     builderProfile: {
       capital: "bootstrap",
       teamSize: 1,
