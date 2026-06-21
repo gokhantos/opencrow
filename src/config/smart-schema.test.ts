@@ -149,6 +149,12 @@ describe("smartConfigSchema", () => {
         model: "",
       },
       deepDevelopCount: 6,
+      stratifiedIntake: {
+        enabled: true,
+        perBucketCap: 8,
+        totalCap: 90,
+        fetchLimit: 100,
+      },
     });
   });
 

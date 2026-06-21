@@ -36,6 +36,7 @@ import {
   computeRankScore,
   obscurityFromEngagement,
   selectRanked,
+  selectStratified,
   lookupLearnedCredibility,
   parseMakers,
   parseTopics,
@@ -72,6 +73,7 @@ export {
   lookupLearnedCredibility,
   NEUTRAL_LEARNED_CREDIBILITY,
   selectRanked,
+  selectStratified,
   parseJsonArray,
   parseMakers,
   parseTopics,
@@ -898,6 +900,12 @@ export async function scanCapabilities(
   const resolvedProvider = provider ?? "agent-sdk";
   const smart = loadConfig().pipelines.ideas.smart;
   const adaptive = smart.adaptiveCollection;
+  const strat = smart.stratifiedIntake;
+  // Derive windowed top/midtier slice sizes from fetchLimit so the config value
+  // is the uniform per-source window across ALL source types. Default fetchLimit=100
+  // yields topSlice=30, midtierSlice=70 — identical to the previous hard-coded values.
+  const topSlice = Math.max(1, Math.round(strat.fetchLimit * (COLLECTOR_TOP_SLICE / COLLECTOR_FETCH_LIMIT)));
+  const midtierSlice = Math.max(1, strat.fetchLimit - topSlice);
   const incumbentCfg = smart.incumbentExclusion;
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -929,7 +937,7 @@ export async function scanCapabilities(
 
   try {
     // ── Product Hunt ──────────────────────────────────────────────────────────
-    // Fetch 50 rows so we have enough fresh ones after filtering consumed.
+    // Fetch fetchLimit rows so we have enough fresh ones after filtering consumed.
     const cutoff30d = nowSec - 30 * 24 * 3600;
     // Layer A: TOP slice by engagement UNION a MID-TIER fresh window (rows ranked
     // below the top slice, ordered by recency) so the long-tail surfaces. One
@@ -944,12 +952,12 @@ export async function scanCapabilities(
       )
       (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
               makers_json, topics_json, first_seen_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
               makers_json, topics_json, first_seen_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY first_seen_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY first_seen_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset to ensure variation across runs
@@ -959,7 +967,7 @@ export async function scanCapabilities(
                makers_json, topics_json, first_seen_at
         FROM ph_products
         ORDER BY (votes_count + comments_count * 3) DESC
-        LIMIT 50
+        LIMIT ${strat.fetchLimit}
         OFFSET floor(random() * 10)::int
       `) as Array<Record<string, unknown>>;
     }
@@ -1024,12 +1032,12 @@ export async function scanCapabilities(
       )
       (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
               points_velocity, updated_at, feed_type
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
               points_velocity, updated_at, feed_type
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1089,11 +1097,11 @@ export async function scanCapabilities(
         WHERE stars_today > 0
       )
       (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset if no active trending data
@@ -1102,7 +1110,7 @@ export async function scanCapabilities(
         SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
         FROM github_repos
         ORDER BY stars DESC
-        LIMIT 50
+        LIMIT ${strat.fetchLimit}
         OFFSET floor(random() * 10)::int
       `) as Array<Record<string, unknown>>;
     }
@@ -1166,12 +1174,12 @@ export async function scanCapabilities(
       )
       (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
               top_comments_json, flair, score_velocity, updated_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
               top_comments_json, flair, score_velocity, updated_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1228,7 +1236,7 @@ export async function scanCapabilities(
     const articlesRaw = (await db`
       SELECT id, title, url, source_name, summary, scraped_at
       FROM news_articles WHERE scraped_at >= ${cutoff72h}
-      ORDER BY scraped_at DESC LIMIT 50
+      ORDER BY scraped_at DESC LIMIT ${strat.fetchLimit}
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1285,12 +1293,12 @@ export async function scanCapabilities(
       )
       (SELECT id, author_username, author_verified, text, likes, retweets, views,
               likes_velocity, scraped_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, author_username, author_verified, text, likes, retweets, views,
               likes_velocity, scraped_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY scraped_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY scraped_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1353,15 +1361,23 @@ export async function scanCapabilities(
     const echoCfg = smart.seedDiversity;
     let echoChamberDownweighted = 0;
 
-    // ── Per-source: normalize velocity, rank, select top-K, build ───────────
+    // ── Phase 1: per-source velocity normalization + scoring ────────────────
+    // Velocity normalization is per-source by design (each source has its own
+    // velocity range). We compute velNorm per-pool and merge into a single map
+    // so that the union-level selection pass below can look up any candidate.
+    const velNormByRow = new Map<string, number>();
+    const scoreByRow = new Map<string, number>();
+
     for (const pool of pools) {
-      const velNormByRow = normalizeVelocities(
+      const poolVelNorm = normalizeVelocities(
         pool.candidates.map((c) => ({ id: c.id, velocity: c.velocity })),
       );
+      for (const [id, norm] of poolVelNorm) {
+        velNormByRow.set(id, norm);
+      }
 
       // Score each candidate ONCE (jitter included) so the sort key and the
       // persisted rankScore stay consistent.
-      const scoreByRow = new Map<string, number>();
       for (const c of pool.candidates) {
         // Learned per-source posterior (optional; neutral no-op when absent).
         const learnedCredibility = lookupLearnedCredibility(
@@ -1372,7 +1388,7 @@ export async function scanCapabilities(
         );
         let score = computeRankScore({
           credibility: c.credibility,
-          velocityNorm: velNormByRow.get(c.id) ?? 0,
+          velocityNorm: poolVelNorm.get(c.id) ?? 0,
           corroborationCount: corroborationByRowId.get(c.id) ?? 1,
           recency: c.recency,
           // Layer A: inverse-popularity niche bonus from raw engagement.
@@ -1382,10 +1398,7 @@ export async function scanCapabilities(
         // Layer C: a capability signal whose entity name prominently matches a
         // top-N incumbent is strong-down-ranked (not dropped) so it cannot seed
         // the head of the pool but can still corroborate further down.
-        if (
-          incumbentSet.size > 0 &&
-          mentionsIncumbent(c.entity.name ?? null, incumbentSet)
-        ) {
+        if (incumbentSet.size > 0 && mentionsIncumbent(c.entity.name ?? null, incumbentSet)) {
           score *= INCUMBENT_DOWNRANK_FACTOR;
         }
         // Seed-diversity lever 3: an AI-builder-meta candidate (meta subreddit or
@@ -1403,26 +1416,56 @@ export async function scanCapabilities(
         }
         scoreByRow.set(c.id, score);
       }
+    }
 
-      const { selected, selectedIds } = selectRanked(
-        pool.candidates,
-        new Set<string>(), // already filtered to fresh above
-        (c) => c.id,
-        pool.target,
-        (c) => scoreByRow.get(c.id) ?? 0,
-        adaptive,
-      );
-      registerSelected(pool.table, selectedIds);
+    // ── Phase 2: cross-pool stratified selection (or legacy per-pool path) ───
+    // STAGE 1 — stratified intake: select across the union of all pool candidates
+    // using a single cross-pool pass that caps each `${table}:${signalType}`
+    // bucket at `perBucketCap`, so no single source/signalType can dominate.
+    // The legacy per-pool path is preserved behind strat.enabled=false.
+    const unionCandidates = pools.flatMap((p) => p.candidates);
+    const totalTarget = pools.reduce((sum, p) => sum + p.target, 0);
 
-      for (const c of selected) {
-        capabilities.push(
-          c.build({
-            corroborationCount: corroborationByRowId.get(c.id) ?? 1,
-            velocityNorm: velNormByRow.get(c.id) ?? 0,
-            rankScore: scoreByRow.get(c.id) ?? 0,
-          }),
+    const chosen = strat.enabled
+      ? selectStratified(unionCandidates, {
+          idOf: (c) => c.id,
+          bucketOf: (c) => `${c.table}:${c.signalType}`,
+          scoreOf: (c) => scoreByRow.get(c.id) ?? 0,
+          perBucketCap: strat.perBucketCap,
+          totalCap: Math.min(strat.totalCap, totalTarget),
+        }).selected
+      : // Legacy per-pool path preserved for reversibility (strat.enabled=false).
+        pools.flatMap(
+          (pool) =>
+            selectRanked(
+              pool.candidates,
+              new Set<string>(), // already filtered to fresh above
+              (c) => c.id,
+              pool.target,
+              (c) => scoreByRow.get(c.id) ?? 0,
+              adaptive,
+            ).selected,
         );
-      }
+
+    // Register selected ids per table (preserves the localSelected accounting).
+    const byTable = new Map<string, string[]>();
+    for (const c of chosen) {
+      const list = byTable.get(c.table) ?? [];
+      list.push(c.id);
+      byTable.set(c.table, list);
+    }
+    for (const [table, ids] of byTable) {
+      registerSelected(table, ids);
+    }
+
+    for (const c of chosen) {
+      capabilities.push(
+        c.build({
+          corroborationCount: corroborationByRowId.get(c.id) ?? 1,
+          velocityNorm: velNormByRow.get(c.id) ?? 0,
+          rankScore: scoreByRow.get(c.id) ?? 0,
+        }),
+      );
     }
 
     if (echoChamberDownweighted > 0) {

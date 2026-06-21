@@ -1091,6 +1091,24 @@ export const diversityGuardConfigSchema = z
   });
 export type DiversityGuardConfig = z.infer<typeof diversityGuardConfigSchema>;
 
+// STAGE 1 — broad stratified intake. Caps how much any single
+// (source kind × signalType) bucket may occupy in the collector candidate
+// pool, so one hot source/signalType cannot monopolize the seeds feeding
+// BOTH funnels. Pure selection; default ON, fully reversible.
+export const stratifiedIntakeConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    // Max candidates any single `${kind}:${signalType}` bucket may contribute.
+    perBucketCap: z.number().int().min(1).max(100).default(8),
+    // Hard ceiling on the stratified pool size returned to the funnel.
+    totalCap: z.number().int().min(1).max(500).default(90),
+    // Per-source raw fetch window (total rows pulled before ranking/stratifying);
+    // split ~30/70 top/midtier for windowed sources.
+    fetchLimit: z.number().int().min(10).max(500).default(100),
+  })
+  .default({ enabled: true, perBucketCap: 8, totalCap: 90, fetchLimit: 100 });
+export type StratifiedIntakeConfig = z.infer<typeof stratifiedIntakeConfigSchema>;
+
 // MAIN-pipeline independent jury. `quality_score` is otherwise a pure
 // pass-through of the giant composite emitted by the SAME LLM that wrote the
 // idea (Pass-3 self-critique) — a self-serving grade with no independent check.
@@ -1243,6 +1261,10 @@ export const smartConfigSchema = z.object({
   // Stage 3 deep-develop count: how many DIVERSE sketches the synthesizer
   // deep-develops when shallowIdeation is on (the new neck width). ~5-6.
   deepDevelopCount: z.number().int().min(1).max(20).default(6),
+  // STAGE 1 — broad stratified intake: balanced cross-bucket collector pool.
+  // Default ON, pure-logic, fully reversible. Fully defaulted ->
+  // backward-compatible.
+  stratifiedIntake: stratifiedIntakeConfigSchema,
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -1367,6 +1389,7 @@ const SMART_IDEAS_DEFAULTS = {
     model: "",
   },
   deepDevelopCount: 6,
+  stratifiedIntake: { enabled: true, perBucketCap: 8, totalCap: 90, fetchLimit: 100 },
 } as const;
 
 export const ideasPipelineConfigSchema = z

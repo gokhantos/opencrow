@@ -204,3 +204,114 @@ describe("isEchoChamberSignal", () => {
     expect(score(candidates[0]!)).toBeCloseTo(0.5, 10);
   });
 });
+
+// ── Task 5 regression: focusRotation pain-pick wiring ────────────────────────
+// Verifies that the selectFocusCategories helper (wired via seedDiversity.focusRotation
+// in pipeline.ts) prevents the pain-pick from collapsing into a monoculture.
+// Two properties must hold:
+//   1. HIGH-OPPORTUNITY HEAD is STABLE across seeds (no monoculture of a lucky tail).
+//   2. ROTATED TAIL differs between runs with distinct seeds (no anchored monoculture).
+
+describe("focusRotation regression — pain-pick non-monoculture", () => {
+  // A distribution that mirrors real production shape: 2 clearly acute categories,
+  // followed by a long mid-tail of reasonable-but-not-great ones.
+  const PROD_LIKE_STATS: readonly CategoryStat[] = [
+    { category: "Navigation", avgRating: 2.1, complaintRatio: 5.0 },
+    { category: "Health & Fitness", avgRating: 2.6, complaintRatio: 3.5 },
+    { category: "Finance", avgRating: 3.1, complaintRatio: 2.0 },
+    { category: "Business", avgRating: 3.3, complaintRatio: 1.8 },
+    { category: "Education", avgRating: 3.5, complaintRatio: 1.5 },
+    { category: "Travel", avgRating: 3.7, complaintRatio: 1.2 },
+    { category: "Productivity", avgRating: 3.8, complaintRatio: 1.1 },
+    { category: "Food & Drink", avgRating: 3.9, complaintRatio: 1.0 },
+    { category: "Entertainment", avgRating: 4.0, complaintRatio: 0.9 },
+    { category: "Sports", avgRating: 4.1, complaintRatio: 0.8 },
+    { category: "Lifestyle", avgRating: 4.2, complaintRatio: 0.7 },
+    { category: "Photo & Video", avgRating: 4.3, complaintRatio: 0.6 },
+  ];
+
+  test("high-opportunity head is stable regardless of rotation seed", () => {
+    // The 2-category head (lowest-rated) must be identical no matter which seed
+    // the run uses — acuteness is objective, not luck of the draw.
+    const seeds = [1, 42, 999, 1_000_001];
+    const heads = seeds.map(
+      (seed) =>
+        selectFocusCategories({
+          stats: PROD_LIKE_STATS,
+          spread: 6,
+          highOpportunitySlice: 2,
+          rotationSeed: seed,
+        }).slice(0, 2),
+    );
+    for (const head of heads) {
+      expect(head).toEqual(["Navigation", "Health & Fitness"]);
+    }
+  });
+
+  test("rotated tail differs across distinct run seeds (no monoculture)", () => {
+    // With 10 tail candidates and spread=6 (4 tail slots), the probability of two
+    // independent runs choosing the same 4 by chance is negligible — if they
+    // always match, focusRotation is broken/unwired.
+    const pickTail = (seed: number): readonly string[] =>
+      selectFocusCategories({
+        stats: PROD_LIKE_STATS,
+        spread: 6,
+        highOpportunitySlice: 2,
+        rotationSeed: seed,
+      }).slice(2);
+
+    const tailA = pickTail(100);
+    const tailB = pickTail(200);
+    const tailC = pickTail(300);
+
+    // At least one pair of runs must differ in their tail selection.
+    const allIdentical =
+      JSON.stringify(tailA) === JSON.stringify(tailB) &&
+      JSON.stringify(tailB) === JSON.stringify(tailC);
+    expect(allIdentical).toBe(false);
+  });
+
+  test("all-head spread (spread === highOpportunitySlice) is stable — no tail to rotate", () => {
+    // When the spread equals the head slice, every slot is a high-opportunity pick.
+    // The result must be purely opportunity-ordered, identical across seeds.
+    const base = selectFocusCategories({
+      stats: PROD_LIKE_STATS,
+      spread: 2,
+      highOpportunitySlice: 2,
+      rotationSeed: 1,
+    });
+    const other = selectFocusCategories({
+      stats: PROD_LIKE_STATS,
+      spread: 2,
+      highOpportunitySlice: 2,
+      rotationSeed: 9_999_999,
+    });
+    expect(base).toEqual(["Navigation", "Health & Fitness"]);
+    expect(base).toEqual(other);
+  });
+
+  test("recentlyAnchored pushes saturated categories out of the rotated tail", () => {
+    // Anchor 9 of the 10 tail categories — only "Sports" is fresh.
+    // The 3-slot result (2 head + 1 tail) must include "Sports".
+    const anchored = [
+      "Finance",
+      "Business",
+      "Education",
+      "Travel",
+      "Productivity",
+      "Food & Drink",
+      "Entertainment",
+      "Lifestyle",
+      "Photo & Video",
+    ];
+    const out = selectFocusCategories({
+      stats: PROD_LIKE_STATS,
+      spread: 3,
+      highOpportunitySlice: 2,
+      rotationSeed: 7,
+      recentlyAnchored: anchored,
+    });
+    // Head: Navigation + Health & Fitness; tail: Sports (the only un-anchored one).
+    expect(out).toEqual(["Navigation", "Health & Fitness", "Sports"]);
+  });
+});
