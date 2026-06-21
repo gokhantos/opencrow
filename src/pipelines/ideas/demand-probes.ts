@@ -28,29 +28,40 @@ import {
   aggregateDemand,
   distinctKeywordHits,
   matchesKeyword,
-  keywordPrefilterTerm,
-  DEFAULT_MIN_KEYWORD_HITS,
   type DemandArtifact,
   type DemandCandidateText,
   type DemandEvidence,
   type DemandProbe,
   type DemandProbeOptions,
 } from "./demand";
+// Shared probe helpers live in a LEAF module to break the demand-probes ↔
+// semantic-demand-probe init cycle. Re-exported below so existing
+// `from "./demand-probes"` importers keep working unchanged.
+import {
+  asText,
+  buildKeywordFilter,
+  queryKeywords,
+  quoteAround,
+  resolveOpts,
+  toCount,
+} from "./demand-probe-helpers";
 import { SEMANTIC_PROBE_NAME, semanticDemandProbe } from "./semantic-demand-probe";
 import { DEMAND_INTENT_MARKERS } from "./demand-intent-markers";
 
+// Re-export the shared helpers so `./demand-probes` keeps its prior public
+// surface (any existing `import { ... } from "./demand-probes"` still resolves).
+export {
+  asText,
+  buildKeywordFilter,
+  queryKeywords,
+  quoteAround,
+  resolveOpts,
+  toCount,
+} from "./demand-probe-helpers";
+
 const logger = createLogger("ideas:demand");
 
-// ── Defaults ──────────────────────────────────────────────────────────────────
-
-/** Default look-back window for demand evidence: 180 days (buyer-intent is slow). */
-const DEFAULT_WINDOW_SEC = 180 * 24 * 3600;
-/** Default row scan ceiling per probe. */
-const DEFAULT_LIMIT = 60;
-/** Max distinct keywords actually queried (cheaper, sharper). */
-const MAX_QUERY_KEYWORDS = 8;
-/** Trim quotes to keep evidence compact and auditable. */
-const QUOTE_MAX_LEN = 240;
+// ── Intent / funding markers ───────────────────────────────────────────────────
 
 /**
  * Reddit / HN / X demand-INTENT phrases. A row only counts as STRONG buyer-intent
@@ -78,65 +89,6 @@ const FUNDING_PATTERNS: readonly string[] = [
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Lever 1/3 defaults (mirror smart.demand schema; used when opts omit them). */
-const DEFAULT_WEAK_INTENT_FACTOR = 0.35;
-const DEFAULT_WEAK_INTENT_MIN_ENGAGEMENT = 1.5;
-
-/** Clamp + default the probe window/limit/relevance-gate + fuzzy/weak options. */
-export function resolveOpts(opts: DemandProbeOptions): {
-  windowSec: number;
-  limit: number;
-  minKeywordHits: number;
-  fuzzy: boolean;
-  weakIntent: boolean;
-  weakIntentFactor: number;
-  weakIntentMinEngagement: number;
-} {
-  const windowSec =
-    typeof opts.windowSec === "number" && opts.windowSec > 0
-      ? Math.floor(opts.windowSec)
-      : DEFAULT_WINDOW_SEC;
-  const limit =
-    typeof opts.limit === "number" && opts.limit > 0
-      ? Math.floor(opts.limit)
-      : DEFAULT_LIMIT;
-  const minKeywordHits =
-    typeof opts.minKeywordHits === "number" && opts.minKeywordHits >= 1
-      ? Math.floor(opts.minKeywordHits)
-      : DEFAULT_MIN_KEYWORD_HITS;
-  // Fuzzy + weak-intent default ON (the recall fix); each reversible per-flag.
-  const fuzzy = opts.fuzzyMatch !== false;
-  const weakIntent = opts.weakIntent !== false;
-  const weakIntentFactor =
-    typeof opts.weakIntentFactor === "number" &&
-    opts.weakIntentFactor >= 0 &&
-    opts.weakIntentFactor <= 1
-      ? opts.weakIntentFactor
-      : DEFAULT_WEAK_INTENT_FACTOR;
-  const weakIntentMinEngagement =
-    typeof opts.weakIntentMinEngagement === "number" &&
-    opts.weakIntentMinEngagement >= 1
-      ? opts.weakIntentMinEngagement
-      : DEFAULT_WEAK_INTENT_MIN_ENGAGEMENT;
-  return {
-    windowSec,
-    limit,
-    minKeywordHits,
-    fuzzy,
-    weakIntent,
-    weakIntentFactor,
-    weakIntentMinEngagement,
-  };
-}
-
-/** Take the top-N keywords actually worth querying (cap cost, keep determinism). */
-export function queryKeywords(keywords: readonly string[]): readonly string[] {
-  return keywords
-    .map((k) => k.trim().toLowerCase())
-    .filter((k) => k.length >= 3)
-    .slice(0, MAX_QUERY_KEYWORDS);
-}
 
 /**
  * Find the first candidate keyword present in `haystack`. Uses fuzzy lexical
@@ -200,59 +152,6 @@ function intentRowCount(
   if (!o.weakIntent) return null;
   if (engagement < o.weakIntentMinEngagement) return null;
   return Number((engagement * o.weakIntentFactor).toFixed(3));
-}
-
-/** Build a compact, verbatim quote around the matched marker for auditability. */
-export function quoteAround(text: string, marker: string): string {
-  const collapsed = text.replace(/\s+/g, " ").trim();
-  const idx = collapsed.toLowerCase().indexOf(marker.toLowerCase());
-  if (idx < 0) return collapsed.slice(0, QUOTE_MAX_LEN);
-  const start = Math.max(0, idx - 60);
-  return collapsed.slice(start, start + QUOTE_MAX_LEN).trim();
-}
-
-/** Coerce an unknown DB cell to a trimmed string (empty when absent). */
-export function asText(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-/**
- * Build a parameterized "any keyword appears in any of these columns" SQL filter.
- *
- * Bun 1.3.14 cannot bind `ILIKE ANY` / `= ANY` over a `db(arr)` array, so we
- * compose the OR-filter explicitly: each keyword becomes a `%kw%` parameter and
- * each (column × keyword) pair an `ILIKE $N` clause. The KEYWORD TEXT is ALWAYS
- * a bound parameter (never string-concatenated into SQL) — injection-safe. Only
- * the static column identifiers and `$N` placeholders are concatenated, and the
- * columns come from a fixed allow-list at each call site (never user input).
- *
- * Returns the SQL boolean expression (e.g. `(title ILIKE $1 OR content ILIKE $1
- * OR title ILIKE $2 OR ...)`) and the ordered `%kw%` params to pass to
- * `db.unsafe(sql, params)`. `startIndex` lets callers reserve leading params
- * (e.g. the window cutoff) before the keyword params.
- */
-export function buildKeywordFilter(
-  columns: readonly string[],
-  keywords: readonly string[],
-  startIndex: number,
-  fuzzy = true,
-): { clause: string; params: readonly string[] } {
-  const params: string[] = [];
-  const orParts: string[] = [];
-  let idx = startIndex;
-  for (const kw of keywords) {
-    // Prefilter on the STEM body (e.g. "scheduling" → "%schedul%") so the cheap
-    // ILIKE candidate filter is recall-safe across morphological variants; the
-    // precise stem/boundary/synonym gate runs in code per row. The keyword text
-    // is ALWAYS a bound parameter (never concatenated) — injection-safe.
-    params.push(`%${keywordPrefilterTerm(kw, fuzzy)}%`);
-    const placeholder = `$${idx}`;
-    for (const col of columns) {
-      orParts.push(`${col} ILIKE ${placeholder}`);
-    }
-    idx += 1;
-  }
-  return { clause: `(${orParts.join(" OR ")})`, params };
 }
 
 // ── redditIntentProbe ─────────────────────────────────────────────────────────
@@ -1010,12 +909,4 @@ export async function enrichDemand(
     });
     return aggregateDemand([], baseAggregateOpts);
   }
-}
-
-// ── Small numeric coercion (local, DB cells are unknown) ───────────────────────
-
-/** Coerce an unknown DB numeric cell to a finite non-negative number. */
-export function toCount(value: unknown): number {
-  const n = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(n) ? n : 0;
 }
