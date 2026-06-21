@@ -13,6 +13,7 @@ import {
   reportToMarkdown,
   DEFAULT_SIGE_SESSION_CONFIG,
   selectFrontiersToDevelop,
+  selectFrontiersForDeepDevelopment,
 } from "./run";
 import type { SigeReport } from "./types";
 import type { Frontier } from "./discovery/frontier-discovery";
@@ -415,5 +416,149 @@ describe("selectFrontiersToDevelop", () => {
 
     expect(frontiers).toEqual(frontiersCopy);
     expect(scored).toEqual(scoredCopy);
+  });
+});
+
+// ── selectFrontiersForDeepDevelopment (the on/off/fallback WIRING branches) ───
+//
+// These cover the autonomous selection DECISION (the reversibility guarantee),
+// NOT the pure selector above. I/O is injected via `deps` — no `mock.module`.
+
+type SelectOpts = Parameters<typeof selectFrontiersForDeepDevelopment>[1];
+type SelectDeps = Parameters<typeof selectFrontiersForDeepDevelopment>[2];
+
+function makeSelectOpts(overrides: Partial<SelectOpts> = {}): SelectOpts {
+  return {
+    shallowEnabled: true,
+    batchSize: 10,
+    model: "",
+    deepDevelopCount: 6,
+    maxBucketShare: 0.5,
+    maxDeepFrontiers: 2,
+    ...overrides,
+  };
+}
+
+// A deps double whose lookupSaturation is never expected to fire (the helper
+// only calls runShallow); runShallow is supplied per-test.
+function makeSelectDeps(
+  runShallow: SelectDeps["runShallow"],
+): SelectDeps {
+  return {
+    runShallow,
+    lookupSaturation: async () => "",
+  };
+}
+
+describe("selectFrontiersForDeepDevelopment", () => {
+  test("shallowEnabled=false → master's score-diverse selectDiverseBy (NOT a raw slice), no ideation", async () => {
+    // Discovery order is f1,f2,f3 but scores are f3>f2>f1, and f1/f2 SHARE a
+    // theme. master's selection sorts by score desc then caps each theme bucket
+    // at 50% → picks f3 (top score) + f1 (the other theme). A raw
+    // `slice(0, 2)` would have returned [f1, f2] in discovery order — proving
+    // the OFF path is the score-diverse selection, not a slice.
+    const frontiers: readonly Frontier[] = [
+      makeFrontier("f1", "Alpha", { score: 0.5 }),
+      makeFrontier("f2", "Alpha", { score: 0.7 }),
+      makeFrontier("f3", "Beta", { score: 0.9 }),
+    ];
+    let shallowCalled = false;
+    const deps = makeSelectDeps(async () => {
+      shallowCalled = true;
+      return [];
+    });
+
+    const out = await selectFrontiersForDeepDevelopment(
+      frontiers,
+      makeSelectOpts({ shallowEnabled: false, maxDeepFrontiers: 2 }),
+      deps,
+    );
+
+    // Score-sorted: f3(0.9), f2(0.7), f1(0.5). perBucketCap = ceil(2*0.5)=1:
+    // f3(Beta) admitted, f2(Alpha) admitted → length 2, stop. Equal to master's
+    // `selectDiverseBy([...].sort(desc), { maxIdeas: 2, maxBucketShare: 0.5,
+    // resolveBucket: theme })`.
+    expect(out.map((f) => f.id)).toEqual(["f3", "f2"]);
+    expect(shallowCalled).toBe(false);
+  });
+
+  test("ON + non-empty scored across distinct buckets → diversity-selected, bucket-capped frontiers", async () => {
+    const frontiers: readonly Frontier[] = [
+      makeFrontier("f1", "Alpha"),
+      makeFrontier("f2", "Beta"),
+      makeFrontier("f3", "Gamma"),
+      makeFrontier("f4", "Delta"),
+    ];
+    // Three top sketches share ONE bucket; one alternative bucket exists. The
+    // maxBucketShare cap must pull the diverse frontier up over a same-bucket one.
+    const deps = makeSelectDeps(async () => [
+      makeScored("f1", "productivity", 0.95),
+      makeScored("f2", "productivity", 0.9),
+      makeScored("f3", "productivity", 0.85),
+      makeScored("f4", "health", 0.8),
+    ]);
+
+    const out = await selectFrontiersForDeepDevelopment(
+      frontiers,
+      makeSelectOpts({ deepDevelopCount: 2, maxBucketShare: 0.5 }),
+      deps,
+    );
+
+    const ids = out.map((f) => f.id);
+    // Multiple DISTINCT frontiers, capped by bucket: perBucketCap = ceil(2*0.5)=1
+    // → one "productivity" (f1) + the diverse "health" (f4).
+    expect(ids).toEqual(["f1", "f4"]);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  test("ON + runShallow returns [] → degrades to master's score-diverse selection", async () => {
+    // Same score-discriminating fixture as the OFF test: score-sorted +
+    // bucket-capped, NOT a discovery-order slice.
+    const frontiers: readonly Frontier[] = [
+      makeFrontier("f1", "Alpha", { score: 0.5 }),
+      makeFrontier("f2", "Alpha", { score: 0.7 }),
+      makeFrontier("f3", "Beta", { score: 0.9 }),
+    ];
+    const deps = makeSelectDeps(async () => []);
+
+    const out = await selectFrontiersForDeepDevelopment(
+      frontiers,
+      makeSelectOpts({ maxDeepFrontiers: 2 }),
+      deps,
+    );
+
+    expect(out.map((f) => f.id)).toEqual(["f3", "f2"]);
+  });
+
+  test("ON + runShallow throws → caught, degrades to master's score-diverse selection", async () => {
+    const frontiers: readonly Frontier[] = [
+      makeFrontier("f1", "Alpha", { score: 0.5 }),
+      makeFrontier("f2", "Alpha", { score: 0.7 }),
+      makeFrontier("f3", "Beta", { score: 0.9 }),
+    ];
+    const deps = makeSelectDeps(async () => {
+      throw new Error("cheap-model exploded");
+    });
+
+    const out = await selectFrontiersForDeepDevelopment(
+      frontiers,
+      makeSelectOpts({ maxDeepFrontiers: 2 }),
+      deps,
+    );
+
+    expect(out.map((f) => f.id)).toEqual(["f3", "f2"]);
+  });
+
+  test("does not mutate the input frontiers", async () => {
+    const frontiers: readonly Frontier[] = [
+      makeFrontier("f1", "Alpha"),
+      makeFrontier("f2", "Beta"),
+    ];
+    const frontiersCopy = [...frontiers];
+    const deps = makeSelectDeps(async () => [makeScored("f1", "health", 0.9)]);
+
+    await selectFrontiersForDeepDevelopment(frontiers, makeSelectOpts(), deps);
+
+    expect(frontiers).toEqual(frontiersCopy);
   });
 });
