@@ -93,9 +93,24 @@ describe("sigeAutoOverrideSchema", () => {
     expect(r.success).toBe(false);
   });
 
-  it("rejects maxDeepFrontiers above the hard cap of 3", () => {
-    const r = sigeAutoOverrideSchema.safeParse({ maxDeepFrontiers: 4 });
+  it("rejects maxDeepFrontiers above the hard cap of 8", () => {
+    const r = sigeAutoOverrideSchema.safeParse({ maxDeepFrontiers: 9 });
     expect(r.success).toBe(false);
+  });
+
+  it("accepts maxDeepFrontiers=8 (new max)", () => {
+    const r = sigeAutoOverrideSchema.safeParse({ maxDeepFrontiers: 8 });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects broadFrontierCap above 8", () => {
+    const r = sigeAutoOverrideSchema.safeParse({ broadFrontierCap: 9 });
+    expect(r.success).toBe(false);
+  });
+
+  it("accepts broadFrontierCap=4", () => {
+    const r = sigeAutoOverrideSchema.safeParse({ broadFrontierCap: 4 });
+    expect(r.success).toBe(true);
   });
 
   it("rejects broadPoolSize above 200", () => {

@@ -39,6 +39,7 @@ import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collect
 import { getConsumedIds, markConsumed } from "./consumption";
 import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
 import { selectWithNoveltyReserve } from "./generate-wide";
+import { selectDiverseBy } from "./idea-diversity";
 import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
 import { insertIdea } from "../../sources/ideas/store";
@@ -298,6 +299,7 @@ export async function runAutonomousSige(
       () =>
         discoverFrontiers(corpus, mem0, {
           broadPoolSize: sigeAutoConfig.broadPoolSize,
+          broadFrontierCap: sigeAutoConfig.broadFrontierCap,
           maxDeepFrontiers: sigeAutoConfig.maxDeepFrontiers,
           userId,
           signal: runSignal,
@@ -334,7 +336,17 @@ export async function runAutonomousSige(
     // `mapDeepGameRankedToCandidate` on its `rankedIdeas`, producing true expert-game
     // valuation for the depth stage. Until then, the depth stage and breadth stage
     // provide equivalent signal quality; the value is the frontier's scoped seedText.
-    const topFrontiers = discovery.frontiers.slice(0, sigeAutoConfig.maxDeepFrontiers);
+    // Select a DIVERSE subset of frontiers to deep-develop. Sort by score desc
+    // first, then apply selectDiverseBy to cap any single theme at 50% of the
+    // selected set — prevents one-theme monoculture when maxDeepFrontiers > 1.
+    const topFrontiers = selectDiverseBy(
+      [...discovery.frontiers].sort((a, b) => b.score - a.score),
+      {
+        maxIdeas: sigeAutoConfig.maxDeepFrontiers,
+        maxBucketShare: 0.5,
+        resolveBucket: (f) => f.theme,
+      },
+    );
     const deepCandidates: GeneratedIdeaCandidate[] = [];
 
     for (let i = 0; i < topFrontiers.length; i++) {

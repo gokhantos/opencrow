@@ -53,7 +53,8 @@ export const sigeAutoOverrideSchema = z
   .object({
     enabled: z.boolean().optional(),
     cadence: z.enum(["manual", "daily"]).optional(),
-    maxDeepFrontiers: z.number().int().min(1).max(3).optional(),
+    maxDeepFrontiers: z.number().int().min(1).max(8).optional(),
+    broadFrontierCap: z.number().int().min(1).max(8).optional(),
     broadPoolSize: z.number().int().min(1).max(200).optional(),
     maxConcurrent: z.number().int().min(1).max(1).optional(),
     memoryWriteback: z.boolean().optional(),
@@ -107,6 +108,7 @@ export function createConfigSigeRoutes(): Hono {
             enabled: sigeAuto.enabled,
             cadence: sigeAuto.cadence,
             maxDeepFrontiers: sigeAuto.maxDeepFrontiers,
+            broadFrontierCap: sigeAuto.broadFrontierCap,
             broadPoolSize: sigeAuto.broadPoolSize,
             maxConcurrent: sigeAuto.maxConcurrent,
             memoryWriteback: sigeAuto.memoryWriteback,

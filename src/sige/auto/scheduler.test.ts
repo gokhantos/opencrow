@@ -57,6 +57,7 @@ function makeConfig(overrides: Partial<SigeAutoConfig> = {}): SigeAutoConfig {
   return {
     enabled: true,
     maxDeepFrontiers: 1,
+    broadFrontierCap: 8,
     broadPoolSize: 50,
     cadence: "daily",
     maxConcurrent: 1,
