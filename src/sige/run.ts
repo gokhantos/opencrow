@@ -37,9 +37,16 @@ import {
 } from "./cross-write";
 import type { CollectorContext } from "../pipelines/ideas/collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "../pipelines/ideas/collectors";
+import type { BroadCorpus, DiscoverFrontiersOptions, DiscoveryResult, Frontier } from "./discovery/frontier-discovery";
+import { discoverFrontiers, extractSaturatedThemeKeys } from "./discovery/frontier-discovery";
+import { frontiersToThemeCandidates } from "./discovery/frontier-sketch";
 import { selectDiverseBy } from "../pipelines/ideas/idea-diversity";
-import type { BroadCorpus, DiscoverFrontiersOptions, DiscoveryResult } from "./discovery/frontier-discovery";
-import { discoverFrontiers } from "./discovery/frontier-discovery";
+import {
+  defaultShallowIdeationDeps,
+  runShallowIdeation,
+  type ScoredSketch,
+  type ThemeCandidate,
+} from "../pipelines/ideas/shallow-ideation";
 import { applyIncentives, computeIncentives } from "./incentives";
 import { generateReport } from "./report-agent";
 import { enrichSeedWithProjectData } from "./seed-enricher";
@@ -240,6 +247,151 @@ export async function runSession(
   }
 }
 
+/** Tunables for {@link selectFrontiersToDevelop}. */
+interface SelectFrontiersOptions {
+  /** How many diverse frontiers to deep-develop (the new neck width). */
+  readonly deepDevelopCount: number;
+  /** Share ceiling (0..1) any single theme bucket may occupy in the kept set. */
+  readonly maxBucketShare: number;
+}
+
+/**
+ * Map ranked shallow-ideation sketches back to a DIVERSE subset of frontiers to
+ * deep-develop. PURE (no I/O): applies `selectDiverseBy` over the scored sketches
+ * — bucketed by the candidate's theme `kind` (falling back to its title) so
+ * near-duplicate themes collapse into one bucket — then resolves each kept sketch
+ * to its originating {@link Frontier} by `candidate.id`. Order follows the
+ * diversity-selected sketch order; unmatched ids and duplicate frontiers are
+ * dropped. Never mutates the inputs.
+ */
+export function selectFrontiersToDevelop(
+  frontiers: readonly Frontier[],
+  scored: readonly ScoredSketch[],
+  options: SelectFrontiersOptions,
+): readonly Frontier[] {
+  const byId = new Map(frontiers.map((f) => [f.id, f] as const));
+  const selected = selectDiverseBy(scored, {
+    maxIdeas: options.deepDevelopCount,
+    maxBucketShare: options.maxBucketShare,
+    resolveBucket: (s) => s.candidate.kind ?? s.candidate.title,
+  });
+
+  const out: Frontier[] = [];
+  const seen = new Set<string>();
+  for (const sketch of selected) {
+    const frontier = byId.get(sketch.candidate.id);
+    if (frontier === undefined) continue;
+    if (seen.has(frontier.id)) continue;
+    seen.add(frontier.id);
+    out.push(frontier);
+  }
+  return out;
+}
+
+/** Tunables for {@link selectFrontiersForDeepDevelopment} (pulled from config). */
+interface SelectForDeepDevelopmentOptions {
+  /** Stage-2 shallow ideation toggle. OFF ⇒ byte-identical legacy slice. */
+  readonly shallowEnabled: boolean;
+  /** Candidates per cheap-model batch (only used when ON). */
+  readonly batchSize: number;
+  /** Optional cheap-model override id from `shallowIdeation.model` config. */
+  readonly model: string;
+  /** Diverse neck width to deep-develop when ON (`smart.deepDevelopCount`). */
+  readonly deepDevelopCount: number;
+  /** Share ceiling any single theme bucket may occupy when ON. */
+  readonly maxBucketShare: number;
+  /** Legacy slice width: top-N frontiers by discovery order (OFF / fallback). */
+  readonly maxDeepFrontiers: number;
+}
+
+/**
+ * Injected I/O for {@link selectFrontiersForDeepDevelopment}. Lets the wiring
+ * branches be unit-tested WITHOUT `mock.module`: a fake `runShallow` /
+ * `lookupSaturation` drives the on/empty/throw paths deterministically. The
+ * production factory ({@link defaultSelectForDeepDevelopmentDeps}) builds
+ * `runShallow` from `defaultShallowIdeationDeps` + `runShallowIdeation`,
+ * preserving today's exact behavior.
+ */
+interface SelectForDeepDevelopmentDeps {
+  /** Run shallow ideation over the candidates; returns ranked scored sketches. */
+  readonly runShallow: (
+    candidates: readonly ThemeCandidate[],
+  ) => Promise<readonly ScoredSketch[]>;
+  /** Fetch the saturated-themes block (used by the default `runShallow`). */
+  readonly lookupSaturation: () => Promise<string>;
+}
+
+/**
+ * Build the production deps: `runShallow` resolves the cheap model via
+ * `defaultShallowIdeationDeps` (model-routing seam) and runs `runShallowIdeation`,
+ * with novelty grounded in the pipeline's existing saturated-themes signal. This
+ * is the exact wiring the inline autonomous path used before extraction.
+ */
+function defaultSelectForDeepDevelopmentDeps(
+  opts: SelectForDeepDevelopmentOptions,
+): SelectForDeepDevelopmentDeps {
+  const lookupSaturation = async (): Promise<string> => {
+    const keys = await extractSaturatedThemeKeys();
+    return keys.map((k) => `- "${k}" theme`).join("\n");
+  };
+  return {
+    lookupSaturation,
+    runShallow: async (candidates) => {
+      const deps = await defaultShallowIdeationDeps({
+        batchSize: opts.batchSize,
+        lookupSaturation,
+        model: opts.model,
+      });
+      return runShallowIdeation(candidates, deps);
+    },
+  };
+}
+
+/**
+ * Decide which frontiers to deep-develop. REVERSIBILITY GUARANTEE:
+ *   - `shallowEnabled === false` ⇒ returns master's exact selection: score-sorted
+ *     `selectDiverseBy` capped at `maxDeepFrontiers` (theme-bucketed at 50% share),
+ *     byte-equivalent to master's diverse frontier selection — no I/O, no ideation.
+ *   - ON ⇒ map frontiers → ThemeCandidates, run shallow ideation, then:
+ *       · non-empty scored ⇒ diversity-select via {@link selectFrontiersToDevelop};
+ *       · empty scored     ⇒ degrade to that same legacy selection;
+ *       · any throw        ⇒ caught and degraded to that same legacy selection.
+ *
+ * The only I/O is the injected `deps.runShallow`, so the four branches are
+ * unit-testable without `mock.module`. Never mutates the inputs.
+ */
+export async function selectFrontiersForDeepDevelopment(
+  frontiers: readonly Frontier[],
+  opts: SelectForDeepDevelopmentOptions,
+  deps: SelectForDeepDevelopmentDeps,
+): Promise<readonly Frontier[]> {
+  // OFF / fallback path == master's exact selection: score-sorted
+  // `selectDiverseBy` capped at `maxDeepFrontiers`, theme-bucketed at 50% share.
+  // (Not a raw `.slice` — keeps the OFF path byte-equivalent to master's
+  // diverse frontier selection.)
+  const legacyTop = (): readonly Frontier[] =>
+    selectDiverseBy([...frontiers].sort((a, b) => b.score - a.score), {
+      maxIdeas: opts.maxDeepFrontiers,
+      maxBucketShare: 0.5,
+      resolveBucket: (f) => f.theme,
+    });
+  if (!opts.shallowEnabled) return legacyTop();
+
+  try {
+    const candidates = frontiersToThemeCandidates(frontiers);
+    const scored = await deps.runShallow(candidates);
+    return scored.length
+      ? selectFrontiersToDevelop(frontiers, scored, {
+          deepDevelopCount: opts.deepDevelopCount,
+          maxBucketShare: opts.maxBucketShare,
+        })
+      : legacyTop();
+  } catch (err) {
+    log.warn("autonomous: shallow ideation failed — falling back to legacy slice", { err });
+    return legacyTop();
+  }
+}
+
 /**
  * Autonomous (seedless) SIGE run: frontier discovery → per-frontier depth game.
  *
@@ -312,26 +464,35 @@ async function runAutonomousSession(
     return;
   }
 
-  // Select a DIVERSE subset of frontiers to deep-develop. Sort by score desc
-  // first, then apply selectDiverseBy to cap any single theme at 50% of the
-  // selected set — prevents collapsing into one-theme monoculture when
-  // maxDeepFrontiers > 1. With maxDeepFrontiers=1 this is equivalent to top-1.
-  const topFrontiers = selectDiverseBy(
-    [...discovery.frontiers].sort((a, b) => b.score - a.score),
-    {
-      maxIdeas: sigeAutoConfig.maxDeepFrontiers,
-      maxBucketShare: 0.5,
-      resolveBucket: (f) => f.theme,
-    },
+  // Select the frontiers to deep-develop. Default (shallowIdeation OFF) keeps
+  // master's exact behavior: score-sorted `selectDiverseBy` capped at
+  // `maxDeepFrontiers` (theme-bucketed at 50% share). When ON, ideate cheaply
+  // over ALL frontiers and diversity-select a few — so size (pool-share) never
+  // decides; novelty + spread do. Any failure degrades to that same legacy
+  // selection so the path is fully reversible. The decision (and its fallbacks)
+  // lives in the unit-tested `selectFrontiersForDeepDevelopment`.
+  const selectOpts: SelectForDeepDevelopmentOptions = {
+    shallowEnabled: smartConfig.shallowIdeation.enabled,
+    batchSize: smartConfig.shallowIdeation.batchSize,
+    model: smartConfig.shallowIdeation.model,
+    deepDevelopCount: smartConfig.deepDevelopCount,
+    maxBucketShare: smartConfig.diversityGuard.maxBucketShare,
+    maxDeepFrontiers: sigeAutoConfig.maxDeepFrontiers,
+  };
+  const toDevelop = await selectFrontiersForDeepDevelopment(
+    discovery.frontiers,
+    selectOpts,
+    defaultSelectForDeepDevelopmentDeps(selectOpts),
   );
 
   log.info("autonomous: running depth game on top frontiers", {
     sessionId,
-    topFrontiers: topFrontiers.length,
+    topFrontiers: toDevelop.length,
     broadPool: discovery.candidates.length,
+    shallowIdeation: smartConfig.shallowIdeation.enabled,
   });
 
-  for (const frontier of topFrontiers) {
+  for (const frontier of toDevelop) {
     if (signal.aborted) break;
     log.info("autonomous: depth game for frontier", {
       sessionId,
