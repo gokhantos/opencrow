@@ -1258,8 +1258,23 @@ export const stratifiedIntakeConfigSchema = z
     // Per-source raw fetch window (total rows pulled before ranking/stratifying);
     // split ~30/70 top/midtier for windowed sources.
     fetchLimit: z.number().int().min(10).max(500).default(100),
+    // What the stratified bucket key is keyed on.
+    //  - "signalCategory" (default, hybrid): enriched rows bucket on their
+    //    LLM-extracted theme (`${category}:${table}`); un-enriched rows fall
+    //    back to the legacy source/sub-source key (`${signalType}:${table}`),
+    //    so low enrichment coverage degrades to ~today's source stratification
+    //    rather than collapsing into one bucket.
+    //  - "signalType" (legacy): every row buckets on the exact pre-theme key
+    //    (`${table}:${signalType}`). Reversible escape hatch.
+    bucketBy: z.enum(["signalType", "signalCategory"]).default("signalCategory"),
   })
-  .default({ enabled: true, perBucketCap: 8, totalCap: 90, fetchLimit: 100 });
+  .default({
+    enabled: true,
+    perBucketCap: 8,
+    totalCap: 90,
+    fetchLimit: 100,
+    bucketBy: "signalCategory",
+  });
 export type StratifiedIntakeConfig = z.infer<typeof stratifiedIntakeConfigSchema>;
 
 // MAIN-pipeline independent jury. `quality_score` is otherwise a pure
@@ -1418,6 +1433,14 @@ export const smartConfigSchema = z.object({
   // Default ON, pure-logic, fully reversible. Fully defaulted ->
   // backward-compatible.
   stratifiedIntake: stratifiedIntakeConfigSchema,
+  // Outer deadline for the entire synthesis runStep (Pass-1 intersections +
+  // Pass-2 deep-develop + Pass-3 critique + competability + demand + jury).
+  // The per-call 210 s LLM timeout (createCallDeadline) already bounds
+  // individual hangs; this caps the TOTAL step so a legitimately-slow but
+  // progressing run with a capable/slow model (e.g. deepseek-v4-pro, ~12 min)
+  // is not killed by the generic 12-min DEFAULT_STEP_DEADLINE_MS.
+  // Default: 25 min. Min: 5 min. Max: 60 min.
+  synthesisDeadlineMs: z.number().int().min(300_000).max(3_600_000).default(1_500_000),
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -1558,7 +1581,15 @@ const SMART_IDEAS_DEFAULTS = {
     model: "",
   },
   deepDevelopCount: 6,
-  stratifiedIntake: { enabled: true, perBucketCap: 8, totalCap: 90, fetchLimit: 100 },
+  stratifiedIntake: {
+    enabled: true,
+    perBucketCap: 8,
+    totalCap: 90,
+    fetchLimit: 100,
+    bucketBy: "signalCategory",
+  },
+  // 25 min: generous outer bound for the multi-LLM synthesis step.
+  synthesisDeadlineMs: 1_500_000,
 } as const;
 
 export const ideasPipelineConfigSchema = z
