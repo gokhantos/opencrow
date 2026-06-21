@@ -163,7 +163,7 @@ function tokenizeTitle(title: string): readonly string[] {
  * @returns Clamped value in [1, DEFAULT_MAX_FRONTIERS].
  */
 export function resolveClusterCap(configuredCap?: number): number {
-  return Math.min(configuredCap ?? DEFAULT_MAX_FRONTIERS, DEFAULT_MAX_FRONTIERS);
+  return Math.min(Math.max(1, configuredCap ?? DEFAULT_MAX_FRONTIERS), DEFAULT_MAX_FRONTIERS);
 }
 
 export function clusterIntoFrontiers(

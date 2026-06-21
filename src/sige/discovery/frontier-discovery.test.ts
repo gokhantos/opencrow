@@ -416,7 +416,6 @@ describe("scoreFrontiers", () => {
   });
 });
 
-
 // ── resolveClusterCap ────────────────────────────────────────────────────────
 
 describe("resolveClusterCap", () => {
@@ -438,6 +437,14 @@ describe("resolveClusterCap", () => {
 
   test("returns 1 for configured cap of 1 (minimum)", () => {
     expect(resolveClusterCap(1)).toBe(1);
+  });
+
+  test("clamps to 1 when configured cap is 0 (floor guard)", () => {
+    expect(resolveClusterCap(0)).toBe(1);
+  });
+
+  test("clamps to 1 when configured cap is negative", () => {
+    expect(resolveClusterCap(-5)).toBe(1);
   });
 });
 

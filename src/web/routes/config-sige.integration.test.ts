@@ -61,6 +61,7 @@ interface SigeConfigData {
     readonly cadence: string;
     readonly maxDeepFrontiers: number;
     readonly broadPoolSize: number;
+    readonly broadFrontierCap: number;
     readonly maxConcurrent: number;
     readonly memoryWriteback: boolean;
     readonly source: string;
@@ -96,6 +97,7 @@ describe("GET /config/sige", () => {
     // No override rows after cleanup → both subtrees source from config.
     expect(body.data.core.source).toBe("config");
     expect(body.data.auto.source).toBe("config");
+    expect(body.data.auto.broadFrontierCap).toBe(8);
   });
 
   it("autonomous SIGE defaults to manual-only (enabled false)", async () => {
