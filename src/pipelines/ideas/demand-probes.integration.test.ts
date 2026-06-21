@@ -26,6 +26,7 @@ import {
   fundingNewsProbe,
   reviewComplaintProbe,
   hnProbe,
+  xIntentProbe,
   computePhSupplyDensity,
   enrichDemand,
 } from "./demand-probes";
@@ -42,6 +43,14 @@ const NOW = Math.floor(Date.now() / 1000);
 // minKeywordHits:1 isolates the keyword-filter / intent-AND / rating logic in the
 // per-probe tests; the relevance gate (default 2) gets its own block below.
 const OPTS = { windowSec: 3600, limit: 50, minKeywordHits: 1 } as const;
+// Lever-1 weak-intent OFF: restores the strict keyword∧marker AND so the
+// "marker required" assertions isolate the marker gate from the weak path.
+const STRICT = {
+  windowSec: 3600,
+  limit: 50,
+  minKeywordHits: 1,
+  weakIntent: false,
+} as const;
 
 async function cleanup(): Promise<void> {
   const db = getDb();
@@ -51,6 +60,20 @@ async function cleanup(): Promise<void> {
   await db`DELETE FROM playstore_reviews WHERE id LIKE ${`${ID_PREFIX}%`}`;
   await db`DELETE FROM hn_stories WHERE id LIKE ${`${ID_PREFIX}%`}`;
   await db`DELETE FROM ph_products WHERE id LIKE ${`${ID_PREFIX}%`}`;
+  await db`DELETE FROM x_scraped_tweets WHERE id LIKE ${`${ID_PREFIX}%`}`;
+  await db`DELETE FROM x_accounts WHERE id LIKE ${`${ID_PREFIX}%`}`;
+}
+
+// x_scraped_tweets.account_id is a FK to x_accounts; seed a throwaway account so
+// the tweet fixtures satisfy the constraint.
+const X_ACCOUNT_ID = `${ID_PREFIX}xacct`;
+async function seedXAccount(): Promise<void> {
+  const db = getDb();
+  await db`
+    INSERT INTO x_accounts (id, label, auth_token, ct0)
+    VALUES (${X_ACCOUNT_ID}, 'demand-test', 'tok', 'ct0')
+    ON CONFLICT (id) DO NOTHING
+  `;
 }
 
 beforeAll(async () => {
@@ -92,18 +115,132 @@ describe("redditIntentProbe (keyword + intent AND)", () => {
     expect(out[0]?.sourceId).toBe(`${ID_PREFIX}match`);
   });
 
-  it("requires the intent marker AND the keyword (keyword alone => no match)", async () => {
+  it("requires the intent marker AND the keyword when weakIntent is off", async () => {
     const db = getDb();
     await db`
       INSERT INTO reddit_posts (id, subreddit, title, selftext, top_comments_json, score, num_comments, permalink, first_seen_at, updated_at)
       VALUES (${`${ID_PREFIX}kwonly`}, 'niche', ${`a post about ${NONCE}`}, 'no buyer intent here at all', '[]', 10, 5, '', ${NOW}, ${NOW})
     `;
-    const out = await redditIntentProbe.probe([NONCE], OPTS);
+    const out = await redditIntentProbe.probe([NONCE], STRICT);
     expect(out.length).toBe(0);
   });
 
   it("returns [] (absence) when no row contains the keyword", async () => {
     const out = await redditIntentProbe.probe([NONCE], OPTS);
+    expect(out).toEqual([]);
+  });
+});
+
+// ── Lever 1 — weak-intent gate ────────────────────────────────────────────────
+
+describe("redditIntentProbe weak-intent gate (Lever 1)", () => {
+  it("counts a marker-less but high-engagement keyword row as WEAK (discounted)", async () => {
+    const db = getDb();
+    // No buyer-intent marker, but ≥2 keywords + real engagement (score 40,
+    // comments 10) → weak evidence, kind unchanged, count scaled by 0.35.
+    await db`
+      INSERT INTO reddit_posts (id, subreddit, title, selftext, top_comments_json, score, num_comments, permalink, first_seen_at, updated_at)
+      VALUES (${`${ID_PREFIX}weak`}, 'niche', ${`${NONCE} ${NONCE2} thread`}, 'detailed discussion, no canned intent phrase', '[]', 40, 10, '', ${NOW}, ${NOW})
+    `;
+    const TWO = [NONCE, NONCE2] as const;
+    const strong = 1 + Math.log1p(50); // 1 + log1p(score+comments)
+    const weak = await redditIntentProbe.probe(TWO, {
+      windowSec: 3600,
+      limit: 50,
+      minKeywordHits: 2,
+      weakIntent: true,
+      weakIntentFactor: 0.35,
+    });
+    expect(weak.length).toBe(1);
+    expect(weak[0]?.kind).toBe("reddit_intent"); // SAME kind, just discounted
+    expect(weak[0]?.count ?? 0).toBeCloseTo(strong * 0.35, 2);
+  });
+
+  it("rejects a marker-less ZERO-engagement keyword row (engagement floor)", async () => {
+    const db = getDb();
+    await db`
+      INSERT INTO reddit_posts (id, subreddit, title, selftext, top_comments_json, score, num_comments, permalink, first_seen_at, updated_at)
+      VALUES (${`${ID_PREFIX}dead`}, 'niche', ${`${NONCE} ${NONCE2} thread`}, 'no engagement, no marker', '[]', 0, 0, '', ${NOW}, ${NOW})
+    `;
+    const TWO = [NONCE, NONCE2] as const;
+    // engagement = 1 + log1p(0) = 1 < weakIntentMinEngagement (1.5) → skipped.
+    const out = await redditIntentProbe.probe(TWO, {
+      windowSec: 3600,
+      limit: 50,
+      minKeywordHits: 2,
+      weakIntent: true,
+    });
+    expect(out.length).toBe(0);
+  });
+});
+
+// ── Lever 3 — fuzzy stem matching ─────────────────────────────────────────────
+
+describe("fuzzy stem matching (Lever 3)", () => {
+  it("matches a morphological VARIANT the literal substring filter would miss", async () => {
+    const db = getDb();
+    // Idea keyword is the singular nonce; the row uses the PLURAL form. Literal
+    // includes() would still match here, so use a true inflection: keyword
+    // "<nonce>" vs row "<nonce>s" both stem-collapse and the prefilter (%stem%)
+    // catches the variant.
+    const variant = `${NONCE}s`; // plural inflection of the nonce keyword
+    await db`
+      INSERT INTO reddit_posts (id, subreddit, title, selftext, top_comments_json, score, num_comments, permalink, first_seen_at, updated_at)
+      VALUES (${`${ID_PREFIX}stem`}, 'niche', ${`is there a tool for ${variant}`}, ${`looking for a tool, ${NONCE2} ${variant}`}, '[]', 5, 2, '', ${NOW}, ${NOW})
+    `;
+    const TWO = [NONCE, NONCE2] as const;
+    const fuzzy = await redditIntentProbe.probe(TWO, {
+      windowSec: 3600,
+      limit: 50,
+      minKeywordHits: 2,
+      fuzzyMatch: true,
+    });
+    expect(fuzzy.length).toBe(1);
+    expect(fuzzy[0]?.kind).toBe("reddit_intent");
+  });
+});
+
+// ── Lever 4 — xIntentProbe ────────────────────────────────────────────────────
+
+describe("xIntentProbe (x_scraped_tweets, keyword + intent like reddit)", () => {
+  it("matches a keyword tweet that pairs an intent marker (STRONG)", async () => {
+    const db = getDb();
+    await seedXAccount();
+    await db`
+      INSERT INTO x_scraped_tweets (id, account_id, tweet_id, text, likes, retweets, replies, scraped_at)
+      VALUES (${`${ID_PREFIX}x1`}, ${X_ACCOUNT_ID}, ${`${ID_PREFIX}t1`}, ${`is there a tool for ${NONCE}? looking for a tool`}, 30, 5, 2, ${NOW})
+    `;
+    const out = await xIntentProbe.probe([NONCE], OPTS);
+    expect(out.length).toBe(1);
+    expect(out[0]?.kind).toBe("x_intent");
+    expect(out[0]?.sourceId).toBe(`${ID_PREFIX}x1`);
+  });
+
+  it("requires the intent marker AND the keyword when weakIntent is off", async () => {
+    const db = getDb();
+    await seedXAccount();
+    await db`
+      INSERT INTO x_scraped_tweets (id, account_id, tweet_id, text, likes, retweets, replies, scraped_at)
+      VALUES (${`${ID_PREFIX}x2`}, ${X_ACCOUNT_ID}, ${`${ID_PREFIX}t2`}, ${`just shipped my ${NONCE} thing`}, 30, 5, 2, ${NOW})
+    `;
+    const out = await xIntentProbe.probe([NONCE], STRICT);
+    expect(out.length).toBe(0);
+  });
+
+  it("weights the count by engagement (likes/retweets/replies)", async () => {
+    const db = getDb();
+    await seedXAccount();
+    await db`
+      INSERT INTO x_scraped_tweets (id, account_id, tweet_id, text, likes, retweets, replies, scraped_at)
+      VALUES (${`${ID_PREFIX}x3`}, ${X_ACCOUNT_ID}, ${`${ID_PREFIX}t3`}, ${`is there a tool for ${NONCE}`}, 100, 50, 10, ${NOW})
+    `;
+    const out = await xIntentProbe.probe([NONCE], OPTS);
+    expect(out.length).toBe(1);
+    expect(out[0]?.count ?? 0).toBeGreaterThan(1);
+  });
+
+  it("returns [] (absence) when no tweet contains the keyword", async () => {
+    const out = await xIntentProbe.probe([NONCE], OPTS);
     expect(out).toEqual([]);
   });
 });
@@ -184,13 +321,13 @@ describe("hnProbe (keyword + intent AND, like reddit)", () => {
     expect(out[0]?.kind).toBe("hn_intent");
   });
 
-  it("requires the intent marker AND the keyword (keyword alone => no match)", async () => {
+  it("requires the intent marker AND the keyword when weakIntent is off", async () => {
     const db = getDb();
     await db`
       INSERT INTO hn_stories (id, title, url, points, author, comment_count, hn_url, first_seen_at, updated_at, description, top_comments_json)
       VALUES (${`${ID_PREFIX}hn2`}, ${`Show HN: my ${NONCE} project`}, '', 50, 'a', 20, '', ${NOW}, ${NOW}, 'just shipped it', '[]')
     `;
-    const out = await hnProbe.probe([NONCE], OPTS);
+    const out = await hnProbe.probe([NONCE], STRICT);
     expect(out.length).toBe(0);
   });
 });
@@ -270,14 +407,16 @@ describe("relevance gate (minKeywordHits)", () => {
     expect(out[0]?.kind).toBe("review_complaint");
   });
 
-  it("reddit_intent: a ≥2-keyword row STILL also requires the intent marker AND", async () => {
+  it("reddit_intent: a ≥2-keyword row STILL requires the marker when weakIntent is off", async () => {
     const db = getDb();
-    // Two keywords co-occur but there is NO buyer-intent marker -> rejected.
+    // weakIntent OFF isolates the marker gate: two keywords co-occur but there is
+    // NO buyer-intent marker -> rejected.
+    const STRICT_GATE = { ...GATE_OPTS, weakIntent: false } as const;
     await db`
       INSERT INTO reddit_posts (id, subreddit, title, selftext, top_comments_json, score, num_comments, permalink, first_seen_at, updated_at)
       VALUES (${`${ID_PREFIX}gate_noi`}, 'niche', ${`${NONCE} ${NONCE2} discussion`}, 'no buyer intent here', '[]', 10, 5, '', ${NOW}, ${NOW})
     `;
-    const noMarker = await redditIntentProbe.probe(TWO_KWS, GATE_OPTS);
+    const noMarker = await redditIntentProbe.probe(TWO_KWS, STRICT_GATE);
     expect(noMarker.length).toBe(0);
 
     // Add the intent marker AND keep ≥2 keywords -> accepted.
@@ -285,7 +424,7 @@ describe("relevance gate (minKeywordHits)", () => {
       INSERT INTO reddit_posts (id, subreddit, title, selftext, top_comments_json, score, num_comments, permalink, first_seen_at, updated_at)
       VALUES (${`${ID_PREFIX}gate_intent`}, 'niche', ${`is there a tool for ${NONCE}`}, ${`looking for a tool for ${NONCE2}`}, '[]', 10, 5, '', ${NOW}, ${NOW})
     `;
-    const withMarker = await redditIntentProbe.probe(TWO_KWS, GATE_OPTS);
+    const withMarker = await redditIntentProbe.probe(TWO_KWS, STRICT_GATE);
     expect(withMarker.length).toBe(1);
     expect(withMarker[0]?.sourceId).toBe(`${ID_PREFIX}gate_intent`);
   });

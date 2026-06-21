@@ -26,6 +26,7 @@
  */
 
 import { z } from "zod";
+import { demandSynonymsFor } from "./demand-intent-markers";
 
 // ── Demand evidence kinds ─────────────────────────────────────────────────────
 
@@ -48,6 +49,9 @@ export const DEMAND_EVIDENCE_KINDS = [
   // to the lexical+intent probes and pinned demand at the absence cap. Softer,
   // fuzzier evidence than an explicit intent marker (see DEMAND_KIND_WEIGHTS).
   "semantic_corpus",
+  // An X/Twitter post pairing the keyword WITH a buyer-intent marker — organic
+  // intent from a third social surface, same semantics as reddit_intent.
+  "x_intent",
 ] as const;
 
 export type DemandEvidenceKind = (typeof DEMAND_EVIDENCE_KINDS)[number];
@@ -147,6 +151,9 @@ export const DEMAND_KIND_WEIGHTS: Readonly<Record<DemandEvidenceKind, number>> =
   // it lifts genuinely-niche ideas off the absence floor without letting purely
   // topical chatter masquerade as buyer intent. Engagement still scales `count`.
   semantic_corpus: 0.8,
+  // X/Twitter post pairs a keyword with a buyer-intent marker — same buyer-intent
+  // semantics and strength as the reddit-intent signal it mirrors.
+  x_intent: 1.0,
 };
 
 /** Confidence saturates as evidence volume + source diversity grow. */
@@ -275,6 +282,176 @@ function isTopicalUnigram(token: string, minLen: number): boolean {
   return isSalient(token, minLen) && !DEMAND_GENERIC_STOPWORDS.has(token);
 }
 
+// ── Fuzzy lexical matching (Lever 3 — PURE, deterministic, no deps) ────────────
+
+/** Minimum token length below which no suffix stripping is applied (safety). */
+const STEM_MIN_LEN = 4;
+
+/**
+ * Conservative, deterministic suffix-stripping stemmer — NOT a full Porter
+ * stemmer. The goal is recall on common morphological variants
+ * (schedule/schedules/scheduling/scheduled/scheduler) WITHOUT the over-stemming
+ * that collapses distinct lexemes (the classic "billing" → "bill" trap).
+ *
+ * Rules, applied to a lowercased alpha token, in order, each guarded by a length
+ * floor so short words are never mangled:
+ *   - `-ing` / `-ed`  → strip (running → runn..; we then also drop a trailing
+ *     doubled consonant so "running"→"run", "scheduled"→"schedul")
+ *   - `-tion`         → `-t` (automation → automat ⟂ automate→automat)
+ *   - `-er` / `-or`   → strip ONLY when the remaining stem is long enough
+ *   - `-es` / `-s`    → strip plural (invoices → invoice, boxes → box)
+ *
+ * Deliberately conservative: words shorter than {@link STEM_MIN_LEN}, and stems
+ * that would drop below 3 chars, are left intact. Idempotent on already-stemmed
+ * input. PURE: no IO, same input → same output.
+ */
+export function stemToken(token: string): string {
+  const original = token.toLowerCase();
+  if (original.length < STEM_MIN_LEN || !/^[a-z]+$/.test(original)) {
+    return original;
+  }
+  let t = original;
+
+  // 1. plural -s / -es first, so "reconciliations" → "reconciliation" before the
+  //    -tion rule fires (single pass, idempotent).
+  if (t.endsWith("ies") && t.length > 4) {
+    // "policies" → "poli" + "y" pattern is too aggressive; collapse to "i"-less
+    // stem "polic" instead by just dropping "es" (kept conservative).
+    t = t.slice(0, -2);
+  } else if (t.endsWith("es") && t.length > 4) {
+    t = t.slice(0, -2);
+  } else if (t.endsWith("s") && !t.endsWith("ss") && t.length > 3) {
+    t = t.slice(0, -1);
+  }
+
+  // 2. -tion → -t (automation/automate share the "automat" stem). Guard length.
+  if (t.endsWith("tion") && t.length > 5) {
+    return ensureMinStem(`${t.slice(0, -4)}t`, original);
+  }
+
+  // 3. verb / agent-noun suffixes, then undo consonant doubling so a CVC-doubled
+  //    form ("running") collapses onto its base ("run").
+  if (t.endsWith("ing") && t.length > 5) {
+    t = dropDoubledTail(t.slice(0, -3));
+  } else if (t.endsWith("ed") && t.length > 4) {
+    t = dropDoubledTail(t.slice(0, -2));
+  } else if ((t.endsWith("er") || t.endsWith("or")) && t.length > 5) {
+    t = dropDoubledTail(t.slice(0, -2));
+  }
+
+  // 4. strip a trailing silent -e so the bare base ("schedule") normalizes to the
+  //    same stem as its inflections ("schedules"/"scheduling" → "schedul").
+  if (t.endsWith("e") && t.length > 4) {
+    t = t.slice(0, -1);
+  }
+
+  return ensureMinStem(t, original);
+}
+
+/** Guard: a stem must stay >= 3 chars; otherwise keep the original token. */
+function ensureMinStem(stem: string, original: string): string {
+  return stem.length >= 3 ? stem : original;
+}
+
+/** Collapse a trailing doubled consonant ("schedul"→"schedul", "runn"→"run"). */
+function dropDoubledTail(t: string): string {
+  if (
+    t.length >= 3 &&
+    t[t.length - 1] === t[t.length - 2] &&
+    /[bcdfghjklmnpqrstvwxz]/.test(t[t.length - 1] ?? "")
+  ) {
+    return t.slice(0, -1);
+  }
+  return t;
+}
+
+/** Split a haystack into stemmed word tokens (PURE). */
+function stemmedWords(haystack: string): readonly string[] {
+  return tokenize(haystack).map(stemToken);
+}
+
+/** Whether the stemmed `needleWords` appear as an adjacent run in `hayWords`. */
+function containsStemmedSequence(
+  hayWords: readonly string[],
+  needleWords: readonly string[],
+): boolean {
+  if (needleWords.length === 0) return false;
+  if (needleWords.length === 1) {
+    const w = needleWords[0];
+    return w !== undefined && w.length > 0 && hayWords.includes(w);
+  }
+  for (let i = 0; i + needleWords.length <= hayWords.length; i++) {
+    let ok = true;
+    for (let j = 0; j < needleWords.length; j++) {
+      if (hayWords[i + j] !== needleWords[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `keyword` (a single word or multi-word phrase) is present in
+ * `haystack` under FUZZY-LEXICAL matching:
+ *   - both sides are tokenized and {@link stemToken}-stemmed, so morphological
+ *     variants match (scheduling↔scheduler↔schedules);
+ *   - matching is at WORD BOUNDARIES (token equality), so "cat" does NOT match
+ *     inside "category" — fixing the old `includes()` substring precision bug;
+ *   - a multi-word keyword must match as an ADJACENT stemmed sequence;
+ *   - a narrow curated synonym map ({@link demandSynonymsFor}) expands the
+ *     keyword to accepted variants (payroll↔wages, invoicing↔billing).
+ *
+ * PURE: no IO, deterministic. The synonym map is intentionally tight so recall
+ * gains don't re-open the false-positive hole the relevance gate guards.
+ */
+export function matchesKeyword(haystack: string, keyword: string): boolean {
+  if (!haystack || !keyword) return false;
+  const hayWords = stemmedWords(haystack);
+  if (hayWords.length === 0) return false;
+
+  // The keyword itself, plus its curated synonyms, are each tried as a candidate.
+  const candidates = [keyword, ...demandSynonymsFor(keyword)];
+  for (const candidate of candidates) {
+    const needleWords = tokenize(candidate).map(stemToken);
+    if (containsStemmedSequence(hayWords, needleWords)) return true;
+  }
+  return false;
+}
+
+/** Literal (legacy) substring presence — used when fuzzy matching is disabled. */
+function literalContains(lowerHaystack: string, keyword: string): boolean {
+  return keyword.length > 0 && lowerHaystack.includes(keyword);
+}
+
+/**
+ * The cheap DB-prefilter LIKE BODY for a keyword: the STEM of its most salient
+ * (longest) word, so a `%stem%` ILIKE recall-filters morphological variants
+ * (`scheduling` → `%schedul%` catches scheduler/schedules) while the precise
+ * stem/boundary/synonym gate runs in code per row. For a multi-word keyword the
+ * head word's stem is used (recall-safe OR-prefilter); for `fuzzy=false` the
+ * verbatim keyword is returned (legacy literal prefilter). PURE.
+ *
+ * The returned value is the INNER text only (no `%` wrappers) — the caller binds
+ * it as a parameter (`%${term}%`), so the keyword text is never concatenated into
+ * SQL (injection-safe).
+ */
+export function keywordPrefilterTerm(keyword: string, fuzzy = true): string {
+  const kw = keyword.trim().toLowerCase();
+  if (!kw) return kw;
+  if (!fuzzy) return kw;
+  const words = kw.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length === 0) return kw;
+  // Pick the longest word (most distinctive) and stem it for the LIKE body.
+  let head = words[0] ?? kw;
+  for (const w of words) {
+    if (w.length > head.length) head = w;
+  }
+  return stemToken(head);
+}
+
 /**
  * RELEVANCE-GATE primitive — count how many DISTINCT candidate keywords co-occur
  * in `haystack`, so a probe can require ≥ N before treating the document as
@@ -295,6 +472,7 @@ export function distinctKeywordHits(
   haystack: string,
   keywords: readonly string[],
   phraseWeight = 2,
+  fuzzy = true,
 ): number {
   if (!haystack || keywords.length === 0) return 0;
   const lower = haystack.toLowerCase();
@@ -303,7 +481,12 @@ export function distinctKeywordHits(
   for (const raw of keywords) {
     const kw = raw.toLowerCase();
     if (!kw || seen.has(kw)) continue;
-    if (!lower.includes(kw)) continue;
+    // Fuzzy (default): stem + word-boundary + curated synonyms. Literal
+    // (fuzzy=false): legacy substring, restoring the pre-Lever-3 behavior.
+    const present = fuzzy
+      ? matchesKeyword(haystack, kw)
+      : literalContains(lower, kw);
+    if (!present) continue;
     seen.add(kw);
     // A space => multi-word phrase; weight it as strong co-occurrence.
     hits += kw.includes(" ") ? Math.max(1, Math.floor(phraseWeight)) : 1;
@@ -576,6 +759,32 @@ export interface DemandProbeOptions {
    * "tracking" / "restaurant" / "monitor". Default {@link DEFAULT_MIN_KEYWORD_HITS}.
    */
   readonly minKeywordHits?: number;
+  /**
+   * Lever 3 — FUZZY LEXICAL MATCHING. When true (default), keyword matching uses
+   * {@link matchesKeyword} (stem + word-boundary + curated synonyms) so
+   * morphological variants and near-synonyms count. When false, matching falls
+   * back to legacy literal substring, restoring the pre-Lever-3 behavior. The
+   * word-boundary precision fix is part of the fuzzy path; flipping this off is a
+   * full revert of Lever 3 for that probe.
+   */
+  readonly fuzzyMatch?: boolean;
+  /**
+   * Lever 1 — WEAK-INTENT gate. When true (default), a row that clears the
+   * relevance gate and names a keyword but lacks a buyer-intent marker still
+   * counts as WEAK demand evidence (same kind, count scaled by
+   * {@link weakIntentFactor}) provided its engagement-weighted count reaches
+   * {@link weakIntentMinEngagement}. When false, only marker-paired rows count
+   * (today's strict behavior).
+   */
+  readonly weakIntent?: boolean;
+  /** Multiplier applied to a WEAK (marker-less) row's count. Default 0.35, in 0..1. */
+  readonly weakIntentFactor?: number;
+  /**
+   * Minimum engagement-weighted count a marker-less row must reach to qualify as
+   * weak evidence (`1 + log1p(score+comments)`). Default 1.5 (≥ ~1 upvote/comment
+   * of community signal). Guards against dead, zero-engagement keyword mentions.
+   */
+  readonly weakIntentMinEngagement?: number;
 }
 
 /**
