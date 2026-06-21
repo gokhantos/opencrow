@@ -284,6 +284,148 @@ export function selectRanked<T>(
   return { selected, selectedIds: selected.map(idExtractor) };
 }
 
+/**
+ * Theme-Stratified Intake (Component 3) — derive the stratified bucket key for a
+ * collector candidate, honoring the `stratifiedIntake.bucketBy` flag.
+ *
+ *  - "signalType" (legacy): the exact pre-theme key `${table}:${signalType}` —
+ *    spreads the pool across sources and sub-sources only.
+ *  - "signalCategory" (default, hybrid): an enriched row (its LLM-extracted
+ *    `category` is present and not "unknown") buckets on its THEME,
+ *    `${category}:${table}`, so a hot theme can't monopolize the seeds; an
+ *    un-enriched row falls back to the legacy source/sub-source key
+ *    `${signalType}:${table}` (NOT a single "uncategorized" bucket), so the
+ *    un-enriched tail keeps today's source spread until enrichment coverage
+ *    grows.
+ *
+ * Pure and side-effect-free so the key derivation is unit-testable in isolation.
+ */
+export function stratifiedBucketKey(
+  c: { readonly table: string; readonly signalType: string; readonly category: string },
+  bucketBy: "signalType" | "signalCategory",
+): string {
+  if (bucketBy === "signalType") {
+    return `${c.table}:${c.signalType}`;
+  }
+  const enriched = Boolean(c.category) && c.category !== "unknown";
+  return enriched ? `${c.category}:${c.table}` : `${c.signalType}:${c.table}`;
+}
+
+/**
+ * STAGE 1 — quota-based cross-bucket selection. Globally ranks rows by score,
+ * then admits them while capping each bucket at `perBucketCap`, until `totalCap`
+ * is reached. Anti-starvation: if buckets exhaust before `totalCap`, back-fill
+ * the highest-scored deferred rows so the result never shrinks below
+ * `min(totalCap, rows.length)`. Pure; mirrors selectDiverseBy's guarantees.
+ */
+export function selectStratified<T>(
+  rows: readonly T[],
+  opts: {
+    readonly idOf: (row: T) => string;
+    readonly bucketOf: (row: T) => string;
+    readonly scoreOf: (row: T) => number;
+    readonly perBucketCap: number;
+    readonly totalCap: number;
+  },
+): { readonly selected: readonly T[]; readonly selectedIds: readonly string[] } {
+  const { idOf, bucketOf, scoreOf, perBucketCap, totalCap } = opts;
+  if (totalCap <= 0 || rows.length === 0) return { selected: [], selectedIds: [] };
+
+  // Global rank, stable by original index for determinism.
+  const ordered = [...rows]
+    .map((row, i) => ({ row, i, s: scoreOf(row) }))
+    .sort((a, b) => b.s - a.s || a.i - b.i)
+    .map((x) => x.row);
+
+  // Compute natural bucket sizes (needed for anti-starvation dominant detection).
+  const naturalSizes = new Map<string, number>();
+  for (const row of rows) {
+    const b = bucketOf(row);
+    naturalSizes.set(b, (naturalSizes.get(b) ?? 0) + 1);
+  }
+
+  // Find the "dominant" bucket (largest natural pool). Used to prevent the
+  // dominant from flooding the backfill phase when alternatives exist.
+  let dominantBucket = "";
+  let dominantSize = -1;
+  for (const [b, size] of naturalSizes) {
+    if (size > dominantSize) {
+      dominantSize = size;
+      dominantBucket = b;
+    }
+  }
+  const hasTrueAlternatives = naturalSizes.size > 1;
+
+  // Build per-bucket queues (highest score first).
+  const bucketQueues = new Map<string, T[]>();
+  for (const row of ordered) {
+    const bucket = bucketOf(row);
+    const q = bucketQueues.get(bucket);
+    if (q !== undefined) {
+      q.push(row);
+    } else {
+      bucketQueues.set(bucket, [row]);
+    }
+  }
+
+  // Phase 1 — round-robin across active buckets: in each round take one row per
+  // bucket until each bucket hits perBucketCap or is exhausted, or totalCap reached.
+  const counts = new Map<string, number>();
+  const admitted: T[] = [];
+
+  let anyAdmitted = true;
+  while (anyAdmitted && admitted.length < totalCap) {
+    anyAdmitted = false;
+    // Active = rows left AND under cap. Sort by next-row score desc for determinism.
+    const activeBuckets = [...bucketQueues.entries()]
+      .filter(([b, q]) => q.length > 0 && (counts.get(b) ?? 0) < perBucketCap)
+      .sort((a, b) => {
+        const sa = a[1][0] !== undefined ? scoreOf(a[1][0]) : -Infinity;
+        const sb = b[1][0] !== undefined ? scoreOf(b[1][0]) : -Infinity;
+        return sb - sa;
+      });
+
+    for (const [bucket, queue] of activeBuckets) {
+      if (admitted.length >= totalCap) break;
+      const next = queue.shift();
+      if (next === undefined) continue;
+      counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+      admitted.push(next);
+      anyAdmitted = true;
+    }
+  }
+
+  // Phase 2 — anti-starvation backfill: fill remaining slots from non-dominant
+  // buckets so small alternative pools contribute their full natural rows.
+  // When multiple buckets exist the dominant's cap is absolute; when only one
+  // bucket exists (no alternatives) backfill from it past the cap to avoid
+  // shrinking the output below min(totalCap, rows.length).
+  if (admitted.length < totalCap) {
+    if (hasTrueAlternatives) {
+      // Multi-bucket: fill from every non-dominant bucket's remaining rows.
+      const nonDominantRemaining = [...bucketQueues.entries()]
+        .filter(([b]) => b !== dominantBucket)
+        .flatMap(([, q]) => q)
+        .sort((a, b) => scoreOf(b) - scoreOf(a));
+
+      for (const row of nonDominantRemaining) {
+        if (admitted.length >= totalCap) break;
+        admitted.push(row);
+      }
+      // Dominant cap is enforced — no further backfill from dominant.
+    } else {
+      // Single-bucket: backfill from dominant past per-bucket cap.
+      const dominantRemaining = bucketQueues.get(dominantBucket) ?? [];
+      for (const row of dominantRemaining) {
+        if (admitted.length >= totalCap) break;
+        admitted.push(row);
+      }
+    }
+  }
+
+  return { selected: admitted, selectedIds: admitted.map(idOf) };
+}
+
 // ── Structured-field promotion (best-effort JSON parsing, never throws) ───────
 
 /** Safe JSON parse of a text column to an array; never throws → []. */

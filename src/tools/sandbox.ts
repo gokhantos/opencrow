@@ -199,7 +199,7 @@ export function assertSandboxPosture(mode: SandboxMode): {
 /**
  * Fail-closed posture check for dev tools that inherently execute
  * workspace-authored, attacker-controllable code (run_tests, validate_code's
- * lint/typecheck/test steps, git_operations). The OS sandbox is the boundary
+ * lint/typecheck/test steps). The OS sandbox is the boundary
  * that contains that code; when it is NOT in effect these tools would execute
  * arbitrary code directly on the host.
  *

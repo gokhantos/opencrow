@@ -18,6 +18,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # dotenv environment variable files
 .env
+.env.bak*
 .env.development.local
 .env.test.local
 .env.production.local
@@ -45,6 +46,10 @@ opencrow.db
 opencrow.db-wal
 opencrow.db-shm
 data/
+# Exception: committed canonical-mapping data for the Neo4j graph maintenance
+# script (scripts/canonicalize-neo4j-graph.py needs these at --apply time).
+!scripts/data/
+!scripts/data/**
 src/news/scraper/.venv/
 
 # Playwright MCP
@@ -54,3 +59,8 @@ src/news/scraper/.venv/
 # Playwright e2e artifacts
 playwright-report/
 test-results/
+
+# Python (mem0 sidecar) build artifacts
+__pycache__/
+*.pyc
+.venv/

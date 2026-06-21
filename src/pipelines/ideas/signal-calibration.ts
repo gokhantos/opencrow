@@ -377,11 +377,6 @@ let cache: CacheEntry | null = null;
 /** Cache TTL: calibration shifts slowly; recompute at most once per interval. */
 const CALIBRATION_TTL_MS = 5 * 60_000;
 
-/** Reset the in-memory calibration cache. Exposed for tests + manual refresh. */
-export function clearSignalCalibrationCache(): void {
-  cache = null;
-}
-
 /**
  * Load the current signal calibration, gated on `signalRanking` (layered on
  * `signalFacets`) and cached for {@link CALIBRATION_TTL_MS}.

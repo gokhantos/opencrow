@@ -40,7 +40,10 @@ export function resolveManifest(
     },
   ];
 
-  // SIGE process only if sige section is present and enabled
+  // SIGE idea-generation ENGINE — only when the sige section is present and
+  // enabled. This is the expensive, now manual-only path: manual sessions are
+  // executed by this process's poll loop, and the autonomous idea scheduler is
+  // gated separately by smart.sigeAuto.enabled (default OFF).
   if (config.sige !== undefined && config.sige.enabled) {
     builtins.push({
       name: "sige",
@@ -57,10 +60,20 @@ export function resolveManifest(
       // Disable IPC hung-detection for sige; crash/exit-based restart still applies.
       heartbeat: { enabled: false },
     });
+  }
 
+  // DATA INGESTION — the continuous mem0 entity/relation extraction loop that
+  // keeps the shared knowledge corpus fresh. A first-class DOMAIN, fully
+  // INDEPENDENT of the `sige` section: the mem0 knowledge it populates is read by
+  // BOTH the generation pipeline (graph-reasoning) AND SIGE, so it runs whether or
+  // not the (expensive, manual-only) SIGE idea engine is enabled — and even when
+  // the `sige` section is absent entirely. It carries its own mem0 connection
+  // (config.ingestion.mem0). Default ON; set config.ingestion.enabled = false to
+  // stop this autonomous loop.
+  if (config.ingestion?.enabled !== false) {
     builtins.push({
-      name: "sige-ingestion",
-      entry: "src/entries/sige-ingestion.ts",
+      name: "ingestion",
+      entry: "src/entries/ingestion.ts",
       restartPolicy: "always",
       maxRestarts: 10,
       restartWindowSec: 300,

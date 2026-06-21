@@ -17,6 +17,7 @@ import { chat } from "../../agent/chat";
 import type { ConversationMessage } from "../../agent/types";
 import { createLogger } from "../../logger";
 import { UNTRUSTED_PREAMBLE } from "../../sige/untrusted";
+import type { ModelProvider } from "../../store/model-routing";
 import type { IdeaCategory } from "../types";
 import type {
   TrendData,
@@ -35,6 +36,7 @@ import {
   buildCompetabilityPersisted,
   parseCompetability,
   heuristicMoatFlags,
+  hardVetoCompetability,
   type CompetabilityScore,
 } from "./competability";
 import {
@@ -64,10 +66,12 @@ import {
   parseJsonFromResponse,
   sanitizeForPrompt,
 } from "./synthesizer";
+import { chunkIntersections, mergeWithCap } from "./overgen-chunking";
 import {
   CATEGORY_CONTEXT,
   GIANT_RUBRIC_PROMPT,
   SCHLEP_INSTRUCTION,
+  NEVER_GENERATE_BLOCK,
   antiExemplarSection,
   buildExistingIdeasContext,
   buildInsightsSection,
@@ -90,6 +94,9 @@ export async function discoverIntersections(
   model: string,
   chainOfEvidence: boolean,
   segmentDirective = "",
+  graphDirective = "",
+  // REQUIRED routed provider (no Claude default) — see buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly IntersectionHypothesis[]> {
   const insightsSection = buildInsightsSection(trends, pains, capabilities, chainOfEvidence);
   // SEED diversity steering (learned from past verdicts, flag-gated upstream).
@@ -100,10 +107,16 @@ export async function discoverIntersections(
   // segments (not a single new one) so the pool the cap balances is multi-segment.
   // Empty string → prompt is byte-identical to today.
   const diversitySection = segmentDirective ? `${segmentDirective}\n\n` : "";
+  // SEED graph-reasoning steering (multi-hop opportunity paths from the Neo4j
+  // graph, flag-gated upstream). Injected right after the diversity directive so
+  // both shape WHICH intersections are surfaced before the source insights. The
+  // directive is already sanitized + untrusted-fenced. Empty string → prompt is
+  // byte-identical to today.
+  const graphSection = graphDirective ? `${graphDirective}\n\n` : "";
 
   const prompt = `You have structured market intelligence from three sources. Find the non-obvious intersections.
 
-${diversitySection}${insightsSection}
+${diversitySection}${graphSection}${insightsSection}
 
 Generate 15-20 intersection hypotheses. Each hypothesis should represent a SPECIFIC opportunity where:
 - A real pain or gap in the market (from the landscape/review data) meets
@@ -129,7 +142,7 @@ signalStrength is 0.0-1.0: how strongly the data supports this intersection (not
   ];
 
   const response = await chat(messages, {
-    ...buildChatOptions(model),
+    ...buildChatOptions(model, provider),
     systemPrompt: "You are a product opportunity spotter. Find non-obvious intersections between market pain points and new capabilities. Output only valid JSON arrays.",
   });
 
@@ -156,6 +169,10 @@ export async function developIdeas(
   chainOfEvidence: boolean,
   antiExemplars = "",
   outcomeMemory = "",
+  // REQUIRED routed provider (no Claude default). This is the SINGLE-IDEA
+  // fallback target for the wide path: it MUST inherit the same routed provider
+  // the wide pass used, never silently jump to Claude — see buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const intersectionLines = topIntersections.map((h, i) =>
     `${i + 1}. "${h.title}"\n   Pain: ${h.painSignal}\n   Capability: ${h.capabilitySignal}\n   Market: ${h.marketSignal}\n   Hypothesis: ${h.hypothesis}\n   Signal strength: ${h.signalStrength.toFixed(2)}`,
@@ -190,6 +207,8 @@ DIVERSITY REQUIREMENT (CRITICAL):
 ${CATEGORY_CONTEXT[category]}
 
 ${SCHLEP_INSTRUCTION}
+
+${NEVER_GENERATE_BLOCK}
 
 === VALIDATED INTERSECTION HYPOTHESES (ranked by signal strength) ===
 ${intersectionLines}
@@ -241,7 +260,7 @@ Return ONLY a JSON array of ${topIntersections.length} ideas:
   ];
 
   const response = await chat(messages, {
-    ...buildChatOptions(model),
+    ...buildChatOptions(model, provider),
     systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a product strategist turning validated market opportunities into concrete product ideas. Output only valid JSON arrays.`,
   });
 
@@ -258,7 +277,7 @@ Return ONLY a JSON array of ${topIntersections.length} ideas:
 
     const retryResponse = await chat(
       [{ role: "user", content: retryPrompt, timestamp: Date.now() }],
-      { ...buildChatOptions(model), systemPrompt: "Output only valid JSON. No other text." },
+      { ...buildChatOptions(model, provider), systemPrompt: "Output only valid JSON. No other text." },
     );
 
     candidates = parseJsonFromResponse<GeneratedIdeaCandidate[]>(retryResponse.text, []);
@@ -307,17 +326,14 @@ export async function developIdeasWide(
   generateWide: GenerateWideConfig,
   antiExemplars = "",
   outcomeMemory = "",
+  // REQUIRED routed provider (no Claude default) — see buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly GeneratedIdeaCandidate[]> {
-  const intersectionLines = topIntersections
-    .map(
-      (h, i) =>
-        `${i + 1}. "${h.title}"\n   Pain: ${h.painSignal}\n   Capability: ${h.capabilitySignal}\n   Market: ${h.marketSignal}\n   Hypothesis: ${h.hypothesis}\n   Signal strength: ${h.signalStrength.toFixed(2)}`,
-    )
-    .join("\n\n");
-
   const seedsPer = generateWide.seedsPerIntersection;
   // Plan the segment spread over the FULL over-generated target so the pool spans
-  // opportunity spaces (multiSegment only — empty block otherwise).
+  // opportunity spaces (multiSegment only — empty block otherwise). Planned over
+  // the FULL intersection set (not per-chunk) so segment diversity spans the
+  // whole pool; the same spread text is reused in every chunk's prompt.
   const target = Math.min(
     topIntersections.length * seedsPer,
     generateWide.maxCandidates,
@@ -345,7 +361,22 @@ export async function developIdeasWide(
 
   const existingIdeasContext = await buildExistingIdeasContext();
 
-  const prompt = `You are developing validated market intersection hypotheses into a DIVERSE DISTRIBUTION of concrete product ideas (Verbalized Sampling).
+  // Build the prompt + issue ONE chat call for a single chunk of intersections,
+  // returning that chunk's parsed candidates. Byte-identical in shape to the
+  // legacy single-call output (same prompt template, system prompt, output cap,
+  // and parse/seed→candidate path) so only the INPUT slice differs per chunk —
+  // downstream dedupe/select/critique is unaffected.
+  const developChunk = async (
+    chunk: readonly IntersectionHypothesis[],
+  ): Promise<readonly GeneratedIdeaCandidate[]> => {
+    const intersectionLines = chunk
+      .map(
+        (h, i) =>
+          `${i + 1}. "${h.title}"\n   Pain: ${h.painSignal}\n   Capability: ${h.capabilitySignal}\n   Market: ${h.marketSignal}\n   Hypothesis: ${h.hypothesis}\n   Signal strength: ${h.signalStrength.toFixed(2)}`,
+      )
+      .join("\n\n");
+
+    const prompt = `You are developing validated market intersection hypotheses into a DIVERSE DISTRIBUTION of concrete product ideas (Verbalized Sampling).
 
 OVER-GENERATION REQUIREMENT (CRITICAL):
 - For EACH hypothesis below, propose ${seedsPer} DISTINCT product ideas — not one. Cover genuinely different angles, buyers, and wedges for the same underlying signals.
@@ -359,6 +390,8 @@ DIVERSITY REQUIREMENT (CRITICAL):
 ${CATEGORY_CONTEXT[category]}
 
 ${SCHLEP_INSTRUCTION}
+
+${NEVER_GENERATE_BLOCK}
 ${segmentSpread}
 
 === VALIDATED INTERSECTION HYPOTHESES (ranked by signal strength) ===
@@ -407,40 +440,74 @@ Return ONLY a JSON array of {idea, probability} seeds (${seedsPer} per hypothesi
   }
 ]`;
 
-  const messages: ConversationMessage[] = [
-    { role: "user", content: prompt, timestamp: Date.now() },
-  ];
+    const messages: ConversationMessage[] = [
+      { role: "user", content: prompt, timestamp: Date.now() },
+    ];
 
-  const response = await chat(messages, {
-    ...buildChatOptions(model),
-    // Over-generating N seeds per intersection is a large response; the default
-    // 16k output cap truncates the JSON array mid-stream. Raise the budget and
-    // pair it with the truncation-tolerant parser below so the pool never
-    // silently collapses to the single-idea fallback.
-    maxOutputTokens: 32000,
-    systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a product strategist emitting a DIVERSE DISTRIBUTION of grounded product ideas via Verbalized Sampling. Each idea is a {idea, probability} pair. Output only a valid JSON array.`,
-  });
+    const response = await chat(messages, {
+      ...buildChatOptions(model, provider),
+      // Over-generating N seeds per chunk is still a large response; the default
+      // 16k output cap truncates the JSON array mid-stream. Raise the budget and
+      // pair it with the truncation-tolerant parser below so the pool never
+      // silently collapses.
+      maxOutputTokens: 32000,
+      // Defense-in-depth: give each chunk call slightly more than the default
+      // 210s LLM deadline. Chunking is the primary fix (each call now stays in
+      // the proven ~90s regime); this just avoids a borderline chunk tipping
+      // over the global default.
+      callTimeoutMs: 240_000,
+      systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a product strategist emitting a DIVERSE DISTRIBUTION of grounded product ideas via Verbalized Sampling. Each idea is a {idea, probability} pair. Output only a valid JSON array.`,
+    });
 
-  log.info("Pass 2 (wide over-generation) raw response", {
-    length: response.text.length,
-    preview: response.text.slice(0, 200),
-  });
+    log.info("Pass 2 (wide over-generation) chunk raw response", {
+      chunkSize: chunk.length,
+      length: response.text.length,
+      preview: response.text.slice(0, 200),
+    });
 
-  // Truncation-tolerant: recover every complete element even if the array was
-  // cut off at the token cap (standard parse would yield 0 and force fallback).
-  const parsed = parseJsonArrayLenient(response.text);
-  const seeds = parseVerbalizedSeeds(parsed, generateWide.maxCandidates);
+    // Truncation-tolerant: recover every complete element even if the array was
+    // cut off at the token cap (standard parse would yield 0).
+    const parsed = parseJsonArrayLenient(response.text);
+    const seeds = parseVerbalizedSeeds(parsed, generateWide.maxCandidates);
 
-  const candidates = seeds
-    .map((seed) =>
-      seedToCandidate(seed, category, generateWide.multiSegment, chainOfEvidence),
-    )
-    // Drop empty-title noise (a seed with no idea payload is unusable).
-    .filter((c) => c.title.trim().length > 0)
-    .slice(0, generateWide.maxCandidates);
+    return seeds
+      .map((seed) =>
+        seedToCandidate(seed, category, generateWide.multiSegment, chainOfEvidence),
+      )
+      // Drop empty-title noise (a seed with no idea payload is unusable).
+      .filter((c) => c.title.trim().length > 0);
+  };
+
+  // Chunk the intersections so each call stays in the proven ~5k-output / ~90s
+  // regime instead of asking ONE call for ~30 dense ideas (which timed out at
+  // 210s on every run). Issue one chat per chunk; a slow/failed chunk is caught,
+  // logged, and skipped so it only costs that chunk — the outer fallback in
+  // synthesizer.ts still fires when EVERY chunk yields nothing (length === 0).
+  const chunks = chunkIntersections(topIntersections, generateWide.chunkSize);
+  const perChunkCandidates: GeneratedIdeaCandidate[][] = [];
+  let collected = 0;
+
+  for (const chunk of chunks) {
+    // Cap is a HARD ceiling across the concatenated total: once reached, stop
+    // issuing further chunk calls (no point spending tokens we will truncate).
+    if (collected >= generateWide.maxCandidates) break;
+    try {
+      const chunkCandidates = await developChunk(chunk);
+      perChunkCandidates.push([...chunkCandidates]);
+      collected += chunkCandidates.length;
+    } catch (chunkErr) {
+      log.warn("Over-generation chunk failed, continuing with remaining chunks", {
+        chunkSize: chunk.length,
+        err: chunkErr,
+      });
+    }
+  }
+
+  const candidates = mergeWithCap(perChunkCandidates, generateWide.maxCandidates);
 
   log.info("Pass 2 (wide) complete", {
-    seeds: seeds.length,
+    chunks: chunks.length,
+    chunkSize: generateWide.chunkSize,
     candidates: candidates.length,
     seedsPerIntersection: seedsPer,
     multiSegment: generateWide.multiSegment,
@@ -490,14 +557,21 @@ export async function critiqueIdeas(
   model: string,
   giant: GiantConfig,
   antiExemplars = "",
-  competability?: CompetabilityConfig,
+  // Explicit `| undefined` (not optional `?`) so the trailing REQUIRED `provider`
+  // is allowed and any un-threaded caller is a compile error. The sole caller
+  // (synthesizeFromTrends) already passes all of these positionally.
+  competability: CompetabilityConfig | undefined,
   incumbentSet: ReadonlySet<string> = new Set<string>(),
-  audit?: {
-    /** Pipeline run id stamped on each audit decision row (nullable). */
-    readonly pipelineRunId?: string | null;
-    /** Epoch SECONDS the decisions were made (caller supplies via `now()`). */
-    readonly decidedAt: number;
-  },
+  audit:
+    | {
+        /** Pipeline run id stamped on each audit decision row (nullable). */
+        readonly pipelineRunId?: string | null;
+        /** Epoch SECONDS the decisions were made (caller supplies via `now()`). */
+        readonly decidedAt: number;
+      }
+    | undefined,
+  // REQUIRED routed provider (no Claude default) — see buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const competabilityOn = competability?.enabled === true;
   // The builder the gate is evaluated for. Defaults to the solo bootstrapper
@@ -602,7 +676,7 @@ Return ONLY a JSON array with one entry per idea (in the same order):
   ];
 
   const response = await chat(messages, {
-    ...buildChatOptions(model),
+    ...buildChatOptions(model, provider),
     // The GIANT critique scales with the (over-generated) pool: one scorecard per
     // candidate, each ~7 scores + 7 evidence strings + a whyNow array + verdict.
     // With generate-wide ON (default, up to maxCandidates ideas) the default 16k
@@ -765,6 +839,32 @@ Return ONLY a JSON array with one entry per idea (in the same order):
         effectiveOverall = effective.overall;
         competabilityGated = !decision.pass;
         competabilityReason = decision.reason;
+
+        // HARD per-dimension veto — evaluated on the RAW (profile-INDEPENDENT)
+        // moat score, so an inherently-uncompetable market (regulation / heavy
+        // capital / physical logistics / network-effect cold-start) is killed
+        // regardless of the overall AND regardless of any builder-profile
+        // discount. Independent backstop; only ACTS when enforcing (shadow
+        // otherwise), mirroring the composite gate below.
+        if (competability?.hardVeto !== false) {
+          const veto = hardVetoCompetability(competabilityScore, {
+            threshold: competability?.hardVetoThreshold,
+            dimensions: competability?.hardVetoDimensions,
+          });
+          if (veto.vetoed) {
+            competabilityGated = true;
+            competabilityReason = competabilityReason
+              ? `${veto.reason}; ${competabilityReason}`
+              : veto.reason;
+            log.info("Idea HARD-VETOED by competability gate (uncompetable moat)", {
+              title: candidate.title,
+              dimension: veto.dimension,
+              rawScore: veto.value,
+              threshold: competability?.hardVetoThreshold ?? 4,
+              enforced: enforceCompetabilityGate,
+            });
+          }
+        }
       }
       // The heuristic can ALSO flag an obvious uncompetable shell even when the
       // LLM was lenient — treat that as a gate too.
@@ -918,11 +1018,14 @@ export async function singlePassSynthesis(input: {
   readonly category: IdeaCategory;
   readonly maxIdeas: number;
   readonly model: string;
+  /** REQUIRED routed provider (no Claude default) — see buildChatOptions. */
+  readonly provider: ModelProvider;
   readonly validatedExemplars?: string;
   readonly antiExemplars?: string;
   readonly outcomeMemory?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
+  const provider: ModelProvider = input.provider;
 
   const saturatedSection = saturatedThemes
     ? `\nPREVIOUSLY GENERATED (avoid these themes):\n${saturatedThemes}`
@@ -945,6 +1048,8 @@ Your job: Find opportunities where existing apps FAIL to deliver what users clea
 ${CATEGORY_CONTEXT[category]}
 
 ${SCHLEP_INSTRUCTION}
+
+${NEVER_GENERATE_BLOCK}
 
 === APP LANDSCAPE (4000+ apps across 28 categories — satisfaction scores, what they offer) ===
 ${sanitizeForPrompt(trends.summary || "No landscape data")}
@@ -985,7 +1090,7 @@ Generate ${maxIdeas} ideas. Return ONLY a JSON array:
   ];
 
   const response = await chat(messages, {
-    ...buildChatOptions(model),
+    ...buildChatOptions(model, provider),
     systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a JSON API. You ONLY output valid JSON arrays. No markdown, no explanations, no preamble. Start your response with [ and end with ].`,
   });
 
@@ -1002,7 +1107,7 @@ Generate ${maxIdeas} ideas. Return ONLY a JSON array:
 
     const retryResponse = await chat(
       [{ role: "user", content: retryPrompt, timestamp: Date.now() }],
-      { ...buildChatOptions(model), systemPrompt: "Output only valid JSON. No other text." },
+      { ...buildChatOptions(model, provider), systemPrompt: "Output only valid JSON. No other text." },
     );
 
     candidates = parseJsonFromResponse<GeneratedIdeaCandidate[]>(retryResponse.text, []);

@@ -245,6 +245,50 @@ describe("Internal server — self-only process control enforcement", () => {
     });
   });
 
+  // Regression: dashboard-triggered SIGE/pipeline runs execute in-process under
+  // `web`, so their caller identity is literally "web". A naive self-match
+  // (caller === target === "web") previously let such a run restart `web`,
+  // killing itself in an unbreakable loop. An agent caller must NOT be able to
+  // act on a shared infrastructure process even when it looks like self.
+  describe("protected shared infrastructure (restart-loop regression)", () => {
+    test("web caller is rejected when restarting web (the loop)", async () => {
+      const { status, body } = await request(
+        "POST",
+        "/internal/processes/web/restart",
+        { [CALLER_PROCESS_HEADER]: "web" },
+      );
+      expect(status).toBe(403);
+      const err = (body as Record<string, unknown>).error as string;
+      expect(err).toContain("web");
+      expect(err).toContain("operator");
+    });
+
+    test("web caller is rejected when stopping web", async () => {
+      const { status } = await request("POST", "/internal/processes/web/stop", {
+        [CALLER_PROCESS_HEADER]: "web",
+      });
+      expect(status).toBe(403);
+    });
+
+    test("cron caller is rejected when restarting cron (self-match attempt)", async () => {
+      const { status } = await request(
+        "POST",
+        "/internal/processes/cron/restart",
+        { [CALLER_PROCESS_HEADER]: "cron" },
+      );
+      expect(status).toBe(403);
+    });
+
+    test("operator (no caller header) can still restart web", async () => {
+      const { status, body } = await request(
+        "POST",
+        "/internal/processes/web/restart",
+      );
+      expect(status).toBe(200);
+      expect((body as Record<string, unknown>).ok).toBe(true);
+    });
+  });
+
   describe("auth guard", () => {
     test("rejects request with no bearer token", async () => {
       const req = new Request(
@@ -316,5 +360,43 @@ describe("decideSelfOnlyProcessControl (real exported function)", () => {
     expect(decideSelfOnlyProcessControl("", "web", "restart")).toEqual({
       allowed: true,
     });
+  });
+
+  test("denies agent self-restart of web (the restart loop) with 403", () => {
+    const result = decideSelfOnlyProcessControl("web", "web", "restart");
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.status).toBe(403);
+      expect(result.error).toContain("web");
+      expect(result.error).toContain("operator");
+    }
+  });
+
+  test("denies agent caller acting on protected processes (web, cron, core)", () => {
+    for (const target of ["web", "cron", "core"]) {
+      const result = decideSelfOnlyProcessControl(target, target, "stop");
+      expect(result.allowed).toBe(false);
+    }
+  });
+
+  test("still allows operator (no header) to control protected processes", () => {
+    for (const target of ["web", "cron", "core"]) {
+      expect(
+        decideSelfOnlyProcessControl(undefined, target, "restart"),
+      ).toEqual({ allowed: true });
+    }
+  });
+
+  test("non-protected agent self-restart is still allowed", () => {
+    expect(
+      decideSelfOnlyProcessControl("agent:default", "agent:default", "restart"),
+    ).toEqual({ allowed: true });
+    expect(
+      decideSelfOnlyProcessControl(
+        "scraper:hackernews",
+        "scraper:hackernews",
+        "restart",
+      ),
+    ).toEqual({ allowed: true });
   });
 });

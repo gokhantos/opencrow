@@ -10,7 +10,21 @@ export interface Mem0Memory {
   readonly memory: string;
   readonly score?: number;
   readonly metadata?: Record<string, unknown>;
+  /**
+   * Server-promoted creation timestamp (ISO string), read from the response's
+   * TOP-LEVEL `created_at`. The self-hosted mem0 server lifts `created_at` out of
+   * the stored metadata into a dedicated top-level field, so it is NOT present in
+   * `metadata` on a search/getAll response.
+   */
   readonly createdAt?: string;
+  /**
+   * Server-promoted agent id, read from the response's TOP-LEVEL `agent_id`. The
+   * server moves the `agent_id` we wrote into `metadata` up to a dedicated
+   * top-level column and STRIPS it from `metadata` on the way back — so consumers
+   * that need it (e.g. the memory backend's hit→SearchResult mapper) must read it
+   * from here, not from `metadata`.
+   */
+  readonly agentId?: string;
 }
 
 export interface Mem0Relation {
@@ -51,6 +65,9 @@ interface Mem0ApiMemory {
   score?: number;
   metadata?: Record<string, unknown>;
   created_at?: string;
+  // The server promotes `agent_id` out of metadata to a top-level field on
+  // search/getAll responses (and strips it from `metadata`).
+  agent_id?: string;
 }
 
 interface Mem0ApiRelation {
@@ -78,6 +95,7 @@ function mapMemory(m: Mem0ApiMemory): Mem0Memory {
     score: m.score,
     metadata: m.metadata,
     createdAt: m.created_at,
+    agentId: m.agent_id,
   };
 }
 
@@ -281,12 +299,17 @@ export class Mem0Client {
     readonly userId: string;
     readonly metadata?: Record<string, unknown>;
     readonly enableGraph?: boolean;
+    // When false, the sidecar stores the content verbatim (no LLM fact
+    // extraction). Omitted → the sidecar preserves mem0's default (True), so
+    // the request body is byte-identical to before this field existed.
+    readonly infer?: boolean;
   }): Promise<Mem0AddResult> {
     const body = {
       messages: [{ role: "user", content: params.content }],
       user_id: params.userId,
       metadata: params.metadata ?? {},
       enable_graph: params.enableGraph ?? true,
+      ...(params.infer !== undefined ? { infer: params.infer } : {}),
     };
 
     let res: Mem0ApiAddResponse | undefined;
@@ -317,9 +340,10 @@ export class Mem0Client {
     readonly items: readonly { readonly content: string; readonly metadata?: Record<string, unknown> }[];
     readonly userId: string;
     readonly enableGraph?: boolean;
+    readonly infer?: boolean;
     readonly maxConcurrent?: number;
   }): Promise<void> {
-    const { items, userId, enableGraph, maxConcurrent = 3 } = params;
+    const { items, userId, enableGraph, infer, maxConcurrent = 3 } = params;
 
     if (items.length === 0) return;
 
@@ -334,6 +358,7 @@ export class Mem0Client {
             userId,
             metadata: item.metadata,
             enableGraph,
+            infer,
           }),
         ),
       );

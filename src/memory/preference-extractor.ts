@@ -297,35 +297,6 @@ export async function getActivePreferences(): Promise<UserPreference[]> {
   }));
 }
 
-export async function getPreferenceStats(): Promise<{
-  totalPreferences: number;
-  byType: Record<string, number>;
-  averageConfidence: number;
-}> {
-  const db = getDb();
-
-  const totalResult = await db<{ total: number; avg_confidence: number }[]>`
-    SELECT COUNT(*) as total, AVG(confidence) as avg_confidence
-    FROM user_preferences
-    WHERE is_active = TRUE
-  `;
-
-  const byTypeResult = await db<{ preference_type: string; count: number }[]>`
-    SELECT preference_type, COUNT(*) as count
-    FROM user_preferences
-    WHERE is_active = TRUE
-    GROUP BY preference_type
-  `;
-
-  return {
-    totalPreferences: totalResult[0]?.total ?? 0,
-    byType: Object.fromEntries(
-      byTypeResult.map((r) => [r.preference_type, r.count]),
-    ),
-    averageConfidence: totalResult[0]?.avg_confidence || 0,
-  };
-}
-
 export function formatPreferencesForPrompt(
   preferences: UserPreference[],
 ): string {

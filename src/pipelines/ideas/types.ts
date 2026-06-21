@@ -61,12 +61,28 @@ export interface TrendData {
   readonly summary: string;
   readonly insights?: LandscapeInsight;
   /**
+   * Seed-diversity (fix #2): per-category satisfaction stats over the FULL
+   * category distribution (not just the <=3.5 trending slice). Drives lever-1
+   * focus-category rotation in pipeline.ts via selectFocusCategories(). Optional
+   * so older cached results / the failure path stay backward-compatible.
+   */
+  readonly categoryStats?: readonly CategoryStat[];
+  /**
    * B7 — IDs selected by the landscape collector, keyed by source table.
    * Embedded in the result so they survive runStep cache replay (the work()
    * function is not re-run on replay, but the cached result is returned and
    * pipeline.ts merges these IDs into the run-level selected map).
    */
   readonly selectedIds?: ReadonlyMap<string, readonly string[]>;
+}
+
+/** Per-category satisfaction stats used by lever-1 focus-category rotation. */
+export interface CategoryStat {
+  readonly category: string;
+  /** Average review rating (1..5). Lower = more pain. */
+  readonly avgRating: number;
+  /** negative / max(positive, 1) — higher = more acute. */
+  readonly complaintRatio: number;
 }
 
 // ── Pain Point Clustering ───────────────────────────────────────────────

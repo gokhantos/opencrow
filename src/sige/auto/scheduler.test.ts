@@ -10,8 +10,47 @@
  * - stop(): prevents further ticks
  */
 import { describe, test, expect } from "bun:test";
-import { cadenceToIntervalMs, createAutonomousSigeScheduler, type AutoTickResult } from "./scheduler";
+import {
+  buildFastProfile,
+  cadenceToIntervalMs,
+  createAutonomousSigeScheduler,
+  type AutoTickResult,
+} from "./scheduler";
 import type { SigeAutoConfig } from "../../config/schema";
+
+// ── buildFastProfile ──────────────────────────────────────────────────────────
+
+describe("buildFastProfile", () => {
+  test("threads BOTH provider and model from the route into the session config", () => {
+    // Regression: previously only `model` was applied, leaving the default
+    // `anthropic` provider — so a routed alibaba model was sent to Anthropic's
+    // API and every autonomous run failed.
+    const profile = buildFastProfile("alibaba", "deepseek-v4-flash");
+    expect(profile.provider).toBe("alibaba");
+    expect(profile.agentModel).toBe("deepseek-v4-flash");
+  });
+
+  test("sets BOTH model and agentModel to the routed model (provider-consistent)", () => {
+    // Regression: buildFastProfile set only agentModel, leaving config.model as
+    // the default `claude-sonnet-4-6`. game-formulation + signal-synthesis use
+    // config.model + config.provider, so a Claude model id was sent to the
+    // routed (alibaba) provider → "400: Model not exist" → every autonomous SIGE
+    // run crashed at game_formulation before producing ideas.
+    const profile = buildFastProfile("alibaba", "deepseek-v4-flash");
+    expect(profile.model).toBe("deepseek-v4-flash");
+    expect(profile.model).not.toBe("claude-sonnet-4-6");
+    // model and agentModel must agree so every consumer hits the same provider.
+    expect(profile.model).toBe(profile.agentModel);
+  });
+
+  test("applies the trimmed expert/social round counts", () => {
+    const profile = buildFastProfile("anthropic", "claude-haiku-4-5");
+    expect(profile.provider).toBe("anthropic");
+    expect(profile.agentModel).toBe("claude-haiku-4-5");
+    expect(profile.expertRounds).toBe(2);
+    expect(profile.socialRounds).toBe(2);
+  });
+});
 
 // ── cadenceToIntervalMs ───────────────────────────────────────────────────────
 
@@ -31,11 +70,13 @@ function makeConfig(overrides: Partial<SigeAutoConfig> = {}): SigeAutoConfig {
   return {
     enabled: true,
     maxDeepFrontiers: 1,
+    broadFrontierCap: 8,
     broadPoolSize: 50,
     cadence: "daily",
     maxConcurrent: 1,
     memoryWriteback: false,
     perRunCostCeilingUsd: 0,
+    semanticFrontiers: { enabled: true, similarityThreshold: 0.67 },
     ...overrides,
   };
 }

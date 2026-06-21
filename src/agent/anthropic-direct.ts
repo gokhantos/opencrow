@@ -71,7 +71,27 @@ const DEFAULT_MODEL_METADATA: ModelMetadata = {
   outputPerMillion: 15,
 };
 
-function resolveModelMetadata(modelId: string): ModelMetadata {
+/**
+ * Fallback model id used when a caller dispatches an Anthropic call with a
+ * missing/empty `model`. A bad caller (e.g. a SIGE session whose persisted
+ * config predates a `model` field) must never crash the provider with an
+ * opaque `undefined.toLowerCase()` TypeError; it falls back to this documented
+ * default with a warn so the misconfiguration is visible in logs. Kept in sync
+ * with the cheapest current Sonnet-tier id in MODEL_METADATA.
+ */
+const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
+
+/**
+ * Resolve per-model metadata, failing safe on a missing/empty id. `modelId` is
+ * typed `string` at the boundary, but a stale persisted config can still thread
+ * `undefined`/`""` here at runtime; guard explicitly rather than letting
+ * `.toLowerCase()` throw.
+ */
+export function resolveModelMetadata(modelId: string | undefined): ModelMetadata {
+  if (!modelId) {
+    log.warn("Missing model id — using conservative default metadata", { modelId });
+    return DEFAULT_MODEL_METADATA;
+  }
   const id = modelId.toLowerCase();
   for (const [prefix, meta] of MODEL_METADATA) {
     if (id.startsWith(prefix)) return meta;
@@ -216,15 +236,24 @@ async function getApiKey(): Promise<string> {
 
 // ─── Model Builder ───────────────────────────────────────────────────────────
 
-function buildModel(modelId: string): Model<"anthropic-messages"> {
+export function buildModel(modelId: string | undefined): Model<"anthropic-messages"> {
+  // Fail safe on a missing/empty id: never send `model: undefined` to the
+  // Anthropic API (which would 400) — fall back to a documented default with a
+  // warn so the misconfigured caller is visible in logs.
+  const resolvedId = modelId || DEFAULT_MODEL_ID;
+  if (!modelId) {
+    log.warn("Missing model id — falling back to default Anthropic model", {
+      fallbackModel: resolvedId,
+    });
+  }
   // Source window / output cap / cost from per-model metadata so non-Sonnet
   // usage is accounted correctly instead of pinned to Sonnet 200K/16K/$3/$15.
-  const meta = resolveModelMetadata(modelId);
+  const meta = resolveModelMetadata(resolvedId);
   const inputPerToken = meta.inputPerMillion;
   const outputPerToken = meta.outputPerMillion;
   return {
-    id: modelId,
-    name: modelId,
+    id: resolvedId,
+    name: resolvedId,
     api: "anthropic-messages",
     provider: "anthropic",
     baseUrl: "https://api.anthropic.com",

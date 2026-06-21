@@ -1,12 +1,9 @@
 import type { ToolDefinition, ToolResult, ToolCategory } from "./types";
 import type { MemoryManager } from "../memory/types";
-import {
-  getRecentArticles,
-  getCalendarEventsFiltered,
-} from "../sources/news/store";
-import type { NewsArticle, CalendarEvent } from "../sources/news/types";
+import { getRecentArticles } from "../sources/news/store";
+import type { NewsArticle } from "../sources/news/types";
 import { createSemanticSearchTool } from "./search-factory";
-import { getNumber, getString, getEnum } from "./input-helpers";
+import { getNumber, getEnum } from "./input-helpers";
 
 function formatArticle(a: NewsArticle, i: number): string {
   const date = a.published_at || new Date(a.scraped_at * 1000).toISOString();
@@ -14,71 +11,7 @@ function formatArticle(a: NewsArticle, i: number): string {
   return `${i + 1}. [${a.source_name}] ${a.title}\n  Date: ${date}\n  URL: ${a.url}${snippet}`;
 }
 
-function formatCalendarEvent(e: CalendarEvent, i: number): string {
-  return [
-    `${i + 1}. ${e.event_name}`,
-    `  Country: ${e.country || "N/A"} | Currency: ${e.currency || "N/A"} | Importance: ${e.importance || "N/A"}`,
-    `  Date: ${e.event_datetime || "N/A"}`,
-    `  Actual: ${e.actual || "-"} | Forecast: ${e.forecast || "-"} | Previous: ${e.previous || "-"}`,
-  ].join("\n");
-}
-
 const NEWS_SOURCES = ["cryptopanic", "cointelegraph", "reuters", "investing_news"] as const;
-
-function createGetCalendarTool(): ToolDefinition {
-  return {
-    name: "get_calendar",
-    description:
-      "Retrieve economic calendar events (GDP, CPI, interest rate decisions, employment data, etc.). Shows actual vs forecast vs previous values.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: {
-          type: "number",
-          description: "Max events to return (default 20, max 50).",
-        },
-        importance: {
-          type: "string",
-          enum: ["low", "medium", "high"],
-          description: "Filter by importance level.",
-        },
-        currency: {
-          type: "string",
-          description: 'Filter by currency code (e.g. "USD", "EUR").',
-        },
-      },
-      required: [],
-    },
-    categories: ["research"] as readonly ToolCategory[],
-    async execute(input): Promise<ToolResult> {
-      const limit = getNumber(input, "limit", { defaultVal: 20, min: 1, max: 50 });
-      const importance = getEnum(input, "importance", ["low", "medium", "high"] as const);
-      const currency = getString(input, "currency");
-
-      try {
-        const events = await getCalendarEventsFiltered({
-          limit,
-          importance,
-          currency,
-        });
-
-        if (events.length === 0) {
-          return {
-            output: "No calendar events found matching the criteria.",
-            isError: false,
-          };
-        }
-
-        const header = `Economic Calendar (${events.length} events):\n`;
-        const rows = events.map(formatCalendarEvent);
-        return { output: header + rows.join("\n\n"), isError: false };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { output: `Error retrieving calendar: ${msg}`, isError: true };
-      }
-    },
-  };
-}
 
 function createGetNewsDigestTool(): ToolDefinition {
   return {
@@ -150,10 +83,7 @@ function createGetNewsDigestTool(): ToolDefinition {
 export function createNewsTools(
   memoryManager: MemoryManager | null,
 ): readonly ToolDefinition[] {
-  const tools: ToolDefinition[] = [
-    createGetCalendarTool(),
-    createGetNewsDigestTool(),
-  ];
+  const tools: ToolDefinition[] = [createGetNewsDigestTool()];
 
   if (memoryManager) {
     tools.unshift(

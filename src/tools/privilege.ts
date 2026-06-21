@@ -3,7 +3,7 @@
  *
  * OpenCrow agents ingest untrusted scraped/channel content, so a prompt-injection
  * that reaches the model must NOT be able to reach high-impact primitives (shell,
- * file writes, process control, agent CRUD, db writes/reads, git). This module is
+ * file writes, process control, sub-agent spawn, db writes/reads). This module is
  * the single source of truth for which tools are dangerous and which an agent gets
  * by default.
  *
@@ -11,7 +11,7 @@
  *  - HIGH-IMPACT tools are NEVER granted implicitly. Even an agent with
  *    toolFilter.mode === "all" does NOT get them unless they are explicitly
  *    listed in toolFilter.tools.
- *  - ADMIN tools (a subset of high-impact: agent CRUD, sub-agent spawn, process
+ *  - ADMIN tools (a subset of high-impact: sub-agent spawn, process
  *    control) are likewise excluded from any implicit grant.
  *  - The default tool filter is a conservative allowlist of read / research /
  *    memory / read-only scraper-and-search tools.
@@ -36,17 +36,14 @@ export const HIGH_IMPACT_TOOLS: ReadonlySet<string> = new Set([
   "cron_trigger",
   "spawn_agent",
   "db_query",
-  "manage_agent",
-  "git_operations",
 ]);
 
 /**
  * Admin tools — a strict subset of HIGH_IMPACT that mutate the platform's own
- * control surface (agents, sub-agents, processes). These are excluded from any
- * implicit grant and are the primary monotonicity targets for manage_agent.
+ * control surface (sub-agents, processes). These are excluded from any
+ * implicit grant.
  */
 export const ADMIN_TOOLS: ReadonlySet<string> = new Set([
-  "manage_agent",
   "spawn_agent",
   "process_manage",
   "self_restart",
@@ -182,7 +179,7 @@ export function isToolGranted(filter: ToolFilter, name: string): boolean {
 
 /**
  * The set of high-impact tools an agent is explicitly granted (allowlist only).
- * Used for privilege-monotonicity checks in manage_agent.
+ * Used for privilege-monotonicity checks on agent config mutations.
  */
 export function grantedHighImpactTools(filter: ToolFilter): ReadonlySet<string> {
   if (filter.mode !== "allowlist") return new Set();

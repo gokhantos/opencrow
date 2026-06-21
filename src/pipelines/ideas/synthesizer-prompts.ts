@@ -36,10 +36,27 @@ import {
 // the templated "X for Y app" clones that pattern-match a top-ideas list but
 // have no moat. Injected into both generation prompts (Pass 2 + single-pass).
 export const SCHLEP_INSTRUCTION = `SCHLEP & DEFENSIBILITY (CRITICAL):
-- Prefer HARD, UNGLAMOROUS, DEFENSIBLE ideas — the unsexy "schlep" work most builders avoid (gnarly integrations, regulated workflows, ops/back-office, vertical depth, data plumbing). The hard part IS the moat.
-- A fast-follower should NOT be able to copy the core in ~6 months. Reward counter-positioning and accruable advantages (proprietary data, hard-won integrations, trust/compliance, deep workflow lock-in).
+- Prefer HARD, UNGLAMOROUS, DEFENSIBLE ideas — the unsexy "schlep" work most builders avoid (gnarly integrations, deep vertical workflows, ops/back-office software, data plumbing). The hard part IS the moat — but it must be a SOFTWARE / DATA / INTEGRATION / WORKFLOW moat, NOT regulation, capital, logistics, or a network effect.
+- A fast-follower should NOT be able to copy the core in ~6 months. Reward counter-positioning and accruable advantages (proprietary data, hard-won integrations, deep workflow lock-in).
 - PENALIZE templated "X for Y app" clones, thin ChatGPT wrappers, and ideas a weekend hacker reproduces. If it would appear on a generic "top AI app ideas" list, it is too obvious.
 - Anchor every idea in an ACUTE problem a nameable user wants solved NOW (a painkiller, not a vitamin) and a DATED "why now" shift — not "AI is hot" hand-waving.`;
+
+// ── Hard NEVER-GENERATE block (shared by generation + critique) ─────────────
+//
+// The generation-time half of the "uncompetable for a solo/bootstrapped builder"
+// exclusion (the gate in competability.ts is the runtime backstop). Steers the
+// model to NEVER PROPOSE ideas whose core REQUIRES regulation/licensing, heavy
+// capital, physical logistics/field-ops, or a network-effect cold-start — the
+// four moat families a solo builder cannot win in v1. Injected into BOTH
+// generation prompts alongside SCHLEP_INSTRUCTION. Exported so a test can assert
+// its presence in the assembled prompts.
+export const NEVER_GENERATE_BLOCK = `NEVER GENERATE — UNCOMPETABLE FOR A SOLO/BOOTSTRAPPED BUILDER (HARD RULE):
+Do NOT propose any idea whose CORE requires any of these four families. They are out of scope for a solo builder, no matter how acute the pain:
+- REGULATED / LICENSED: banking, neobank, lending, insurance, brokerage/securities, money transmission, KYC/AML-bound fintech, healthcare needing HIPAA/FDA/clinical standing, telehealth-as-provider, pharmacy/pharma, legal practice, cannabis, gambling.
+- HIGH CAPITAL / CAPEX: hardware, devices, robotics, deep-tech/biotech, subsidized unit economics, content-licensing/streaming catalogs, large upfront inventory or infrastructure.
+- PHYSICAL LOGISTICS / FIELD-OPS: food/grocery/parcel delivery, last-mile, courier, fulfillment, warehousing, ride-hail, fleets, on-the-ground service networks.
+- NETWORK-EFFECT / COLD-START: two-sided marketplaces worthless until both sides reach critical mass, social networks, dating apps, gig marketplaces — anything with no standalone v1 value.
+If an idea's ONLY moat is regulatory capture, capital intensity, physical logistics, or a network effect, DISCARD it — a solo builder cannot win it in v1.`;
 
 // ── Category Context ─────────────────────────────────────────────────────
 
@@ -53,7 +70,7 @@ WHAT MAKES A GREAT MOBILE APP IDEA:
 - Has a "10x moment" — a specific use case where it's 10x better than the current workaround
 - Revenue model works at mobile scale (freemium, subscription, or transaction-based)
 
-NOTE: B2B, vertical, ops/back-office, and devtools ideas are WELCOME when they have a deep, defensible wedge — do not discourage them. A gnarly integration or regulated workflow is often the moat, not a reason to avoid.
+NOTE: B2B, vertical, ops/back-office, and devtools ideas are WELCOME when they have a deep, defensible wedge — do not discourage them. A gnarly integration or hard-won data/workflow depth is often the moat, not a reason to avoid.
 
 AVOID: ideas that need a two-sided marketplace to even function (chicken-and-egg with no seed side), thin clones with no defensible wedge.`,
 

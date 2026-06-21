@@ -1,9 +1,10 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, it } from "bun:test";
 import {
   computeRankScore,
   learnedCredibilityMultiplier,
   lookupLearnedCredibility,
   NEUTRAL_LEARNED_CREDIBILITY,
+  selectStratified,
 } from "./collector-ranking";
 import { credibilityKey } from "./credibility";
 
@@ -183,5 +184,68 @@ describe("computeRankScore — niche-bonus de-bias", () => {
     const s = computeRankScore({ credibility: 1, velocityNorm: 1, recency: 1, corroborationCount: 8 }, noJitter);
     expect(s).toBeGreaterThanOrEqual(0);
     expect(s).toBeLessThanOrEqual(1);
+  });
+});
+
+// ── selectStratified ─────────────────────────────────────────────────────────
+
+type Row = { id: string; bucket: string; score: number };
+const opts = (perBucketCap: number, totalCap: number) => ({
+  idOf: (r: Row) => r.id,
+  bucketOf: (r: Row) => r.bucket,
+  scoreOf: (r: Row) => r.score,
+  perBucketCap,
+  totalCap,
+});
+
+describe("selectStratified", () => {
+  it("caps any single bucket to perBucketCap when alternatives exist", () => {
+    const rows: Row[] = [
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `a${i}`, bucket: "A", score: 100 - i })),
+      ...Array.from({ length: 5 }, (_, i) => ({ id: `b${i}`, bucket: "B", score: 50 - i })),
+    ];
+    const { selected } = selectStratified(rows, opts(3, 100));
+    const fromA = selected.filter((r) => r.bucket === "A").length;
+    expect(fromA).toBe(3); // bucket A capped, even though it had the top 10 scores
+    expect(selected.filter((r) => r.bucket === "B").length).toBe(5);
+  });
+
+  it("ranks within bucket by score (highest kept)", () => {
+    const rows: Row[] = [
+      { id: "a-lo", bucket: "A", score: 1 },
+      { id: "a-hi", bucket: "A", score: 99 },
+      { id: "b", bucket: "B", score: 5 },
+    ];
+    const { selectedIds } = selectStratified(rows, opts(1, 100));
+    expect(selectedIds).toContain("a-hi");
+    expect(selectedIds).not.toContain("a-lo");
+  });
+
+  it("anti-starvation: backfills above the cap to reach totalCap when only one bucket exists", () => {
+    const rows: Row[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `a${i}`,
+      bucket: "A",
+      score: 100 - i,
+    }));
+    const { selected } = selectStratified(rows, opts(3, 6));
+    expect(selected.length).toBe(6); // never shrink below min(totalCap, available)
+  });
+
+  it("respects totalCap", () => {
+    const rows: Row[] = [
+      ...Array.from({ length: 5 }, (_, i) => ({ id: `a${i}`, bucket: "A", score: 100 - i })),
+      ...Array.from({ length: 5 }, (_, i) => ({ id: `b${i}`, bucket: "B", score: 50 - i })),
+    ];
+    const { selected } = selectStratified(rows, opts(4, 4));
+    expect(selected.length).toBe(4);
+  });
+
+  it("is a no-op-shaped passthrough when rows <= totalCap and no bucket exceeds cap", () => {
+    const rows: Row[] = [
+      { id: "a", bucket: "A", score: 1 },
+      { id: "b", bucket: "B", score: 2 },
+    ];
+    const { selected } = selectStratified(rows, opts(8, 90));
+    expect(selected.length).toBe(2);
   });
 });

@@ -310,11 +310,21 @@ function estimateRawSignalCount(enrichedSeed: string): number {
 
 // ─── Public: synthesizeSignals ────────────────────────────────────────────────
 
+/**
+ * Default model for signal synthesis when the caller threads no model. A SIGE
+ * session whose persisted config predates a `model` field (loaded raw by
+ * `rowToSession`) can surface `options.model === undefined` here; rather than
+ * dispatch `model: undefined` into the provider (which crashed the Anthropic
+ * path with an opaque TypeError), we default to a sane Sonnet-tier id and warn.
+ * Mirrors the existing `provider` default below.
+ */
+const DEFAULT_SYNTHESIS_MODEL = "claude-sonnet-4-6";
+
 export async function synthesizeSignals(
   enrichedSeed: string,
   options: {
-    readonly model: string;
-    readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
+    readonly model?: string;
+    readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic" | "opencode";
   },
 ): Promise<SynthesizedSignals> {
   const messages: readonly ConversationMessage[] = [
@@ -325,9 +335,20 @@ export async function synthesizeSignals(
     },
   ];
 
+  // Resolve the model explicitly so we never dispatch `model: undefined`. An
+  // empty/missing model is a caller misconfiguration (e.g. a stale persisted
+  // SIGE config); fall back with a warn rather than crashing the provider.
+  const model = options.model || DEFAULT_SYNTHESIS_MODEL;
+  if (!options.model) {
+    log.warn("Signal synthesis called without a model — falling back to default", {
+      fallbackModel: model,
+    });
+  }
+  const provider = options.provider ?? "anthropic";
+
   log.info("Synthesizing signals from enriched seed", {
-    model: options.model,
-    provider: options.provider ?? "anthropic",
+    model,
+    provider,
     seedLength: enrichedSeed.length,
     estimatedSignals: estimateRawSignalCount(enrichedSeed),
   });
@@ -337,8 +358,8 @@ export async function synthesizeSignals(
   try {
     const response = await chat(messages, {
       systemPrompt: SYSTEM_PROMPT,
-      model: options.model,
-      provider: options.provider ?? "anthropic",
+      model,
+      provider,
     });
     responseText = response.text;
   } catch (err) {

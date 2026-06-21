@@ -65,8 +65,6 @@ function chatKey(channel: string, chatId: string): string {
   return `${channel}:${chatId}`;
 }
 
-export { createProgressTracker } from "./activity-log";
-
 export function createRouter(routerConfig: RouterConfig) {
   const activeAgents = new Map<string, string>();
   /** Tracks in-flight chat() calls so /clear can cancel them. */

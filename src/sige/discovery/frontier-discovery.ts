@@ -17,6 +17,7 @@
 
 import { getErrorMessage } from "../../lib/error-serialization";
 import { createLogger } from "../../logger";
+import { cosineSimilarity } from "../../pipelines/ideas/deep-search-rerank";
 import { extractThemesByNgrams } from "../../pipelines/ideas/pipeline";
 import type { CapabilityScan, ClusteredPains, TrendData } from "../../pipelines/ideas/types";
 import { getDb } from "../../store/db";
@@ -84,6 +85,11 @@ export interface FrontierScoringContext {
 export interface DiscoverFrontiersOptions {
   readonly broadPoolSize?: number;
   readonly maxDeepFrontiers?: number;
+  /** Cap on how many frontier clusters to form in the broad-pool phase.
+   *  Decoupled from maxDeepFrontiers so we can always discover a large pool
+   *  (for diversity) even when only deep-developing 1–2 frontiers.
+   *  Defaults to DEFAULT_MAX_FRONTIERS (8). */
+  readonly broadFrontierCap?: number;
   readonly userId?: string;
   readonly config?: SigeSessionConfig;
   readonly deepNovelty?: boolean;
@@ -147,6 +153,20 @@ function tokenizeTitle(title: string): readonly string[] {
  * from pool share; scoreFrontiers fills novelty + final score). Capped at
  * `maxFrontiers`.
  */
+/**
+ * Resolve how many frontier clusters to form during the discovery broad-pool
+ * phase. We always discover the FULL configurable pool so the selection step
+ * has enough diversity candidates to draw from, regardless of how many will
+ * actually be deep-developed (maxDeepFrontiers).
+ *
+ * @param configuredCap - operator-set cap (e.g. broadFrontierCap from sigeAuto).
+ *   When omitted, defaults to DEFAULT_MAX_FRONTIERS.
+ * @returns Clamped value in [1, DEFAULT_MAX_FRONTIERS].
+ */
+export function resolveClusterCap(configuredCap?: number): number {
+  return Math.min(Math.max(1, configuredCap ?? DEFAULT_MAX_FRONTIERS), DEFAULT_MAX_FRONTIERS);
+}
+
 export function clusterIntoFrontiers(
   candidates: readonly DivergentCandidate[],
   opts?: { readonly maxFrontiers?: number; readonly minClusterSize?: number },
@@ -210,6 +230,139 @@ export function clusterIntoFrontiers(
     if (residual.length >= minClusterSize) {
       frontiers.push(buildFrontier("emerging", ["emerging"], residual, residual.length / total));
     }
+  }
+
+  return frontiers;
+}
+
+// ─── Semantic (embedding-based) clustering ────────────────────────────────────
+
+/** Max chars embedded per candidate (mirrors the rerank/probe budget). */
+const SEMANTIC_EMBED_TEXT_MAX_LEN = 512;
+/** Default cosine floor for joining an existing semantic cluster. */
+const DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD = 0.62;
+
+/** Minimal embedder seam — structurally satisfied by EmbeddingProvider. */
+export interface FrontierEmbedder {
+  embed(texts: readonly string[]): Promise<Float32Array[]>;
+}
+
+/** Incremental running-mean centroid. PURE w.r.t. inputs (returns a new array). */
+function meanCentroid(prev: Float32Array, count: number, next: Float32Array): Float32Array {
+  const n = Math.min(prev.length, next.length);
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    // new mean = old mean + (sample - old mean) / newCount
+    out[i] = (prev[i] ?? 0) + ((next[i] ?? 0) - (prev[i] ?? 0)) / (count + 1);
+  }
+  return out;
+}
+
+interface SemanticCluster {
+  centroid: Float32Array;
+  readonly memberIdx: number[];
+}
+
+/**
+ * Cluster broad candidates into frontiers by SEMANTIC (embedding) similarity.
+ *
+ * Greedy nearest-centroid threshold clustering — deterministic and stable in
+ * input order, no external deps. Distinct themes form even when titles share no
+ * words (the lexical {@link clusterIntoFrontiers} collapses those into one
+ * residual frontier), giving the downstream #261 diversity-select real
+ * frontiers to diversify.
+ *
+ * Order of decisions per candidate vector:
+ *   - if clusters exist AND best cosine >= threshold → join the best cluster;
+ *   - else if cluster count < maxFrontiers → start a new cluster;
+ *   - else (capped) → join the nearest cluster regardless of threshold.
+ * No candidate is ever dropped — there is no residual-only collapse.
+ *
+ * PURE w.r.t. inputs (no mutation of `candidates`); the only I/O is the injected
+ * `embedder.embed`. Frontiers carry neutral novelty (scoreFrontiers refines it).
+ */
+export async function clusterIntoFrontiersSemantic(
+  candidates: readonly DivergentCandidate[],
+  embedder: FrontierEmbedder,
+  opts: {
+    readonly maxFrontiers: number;
+    readonly similarityThreshold: number;
+    readonly minClusterSize?: number;
+  },
+): Promise<readonly Frontier[]> {
+  const maxFrontiers = Math.max(1, opts.maxFrontiers);
+  const threshold =
+    Number.isFinite(opts.similarityThreshold)
+      ? opts.similarityThreshold
+      : DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD;
+  // minClusterSize defaults to 1: we WANT many frontiers (singletons feed
+  // diversity), so small clusters are never merged or dropped. Accepted for API
+  // parity with the lexical clusterer; intentionally not used to prune here.
+  void (opts.minClusterSize ?? 1);
+
+  const usable = candidates.filter((c) => c.title.trim().length > 0);
+  if (usable.length === 0) return [];
+
+  // One text per candidate; consistent treatment for all (title. summary),
+  // truncated so a long summary can't dominate the embed budget.
+  const texts = usable.map((c) =>
+    `${c.title}. ${c.summary}`.slice(0, SEMANTIC_EMBED_TEXT_MAX_LEN),
+  );
+  const vectors = await embedder.embed(texts);
+  if (vectors.length !== usable.length) {
+    // Caller (discoverFrontiers) treats a count mismatch as a failure and falls
+    // back to lexical; signal it explicitly rather than producing partial junk.
+    throw new Error(
+      `semantic frontier embed returned ${vectors.length} vectors for ${usable.length} candidates`,
+    );
+  }
+
+  const total = usable.length;
+  const clusters: SemanticCluster[] = [];
+
+  for (let i = 0; i < usable.length; i++) {
+    const vec = vectors[i]!;
+    let best = -1;
+    let bestSim = Number.NEGATIVE_INFINITY;
+    for (let c = 0; c < clusters.length; c++) {
+      const sim = cosineSimilarity(clusters[c]!.centroid, vec);
+      if (sim > bestSim) {
+        bestSim = sim;
+        best = c;
+      }
+    }
+
+    if (clusters.length > 0 && bestSim >= threshold) {
+      const cluster = clusters[best]!;
+      cluster.centroid = meanCentroid(cluster.centroid, cluster.memberIdx.length, vec);
+      cluster.memberIdx.push(i);
+    } else if (clusters.length < maxFrontiers) {
+      clusters.push({ centroid: new Float32Array(vec), memberIdx: [i] });
+    } else {
+      // Capped — never drop a candidate; fold into the nearest cluster.
+      const cluster = clusters[best]!;
+      cluster.centroid = meanCentroid(cluster.centroid, cluster.memberIdx.length, vec);
+      cluster.memberIdx.push(i);
+    }
+  }
+
+  const frontiers: Frontier[] = [];
+  for (const cluster of clusters) {
+    const members = cluster.memberIdx.map((idx) => usable[idx]!);
+    // Theme label = medoid title: the member whose vector is closest to the
+    // cluster centroid (most representative), trimmed.
+    let medoidIdx = cluster.memberIdx[0]!;
+    let medoidSim = Number.NEGATIVE_INFINITY;
+    for (const idx of cluster.memberIdx) {
+      const sim = cosineSimilarity(cluster.centroid, vectors[idx]!);
+      if (sim > medoidSim) {
+        medoidSim = sim;
+        medoidIdx = idx;
+      }
+    }
+    const medoidTitle = usable[medoidIdx]!.title.trim();
+    const themeKeys = tokenizeTitle(medoidTitle);
+    frontiers.push(buildFrontier(medoidTitle, themeKeys, members, members.length / total));
   }
 
   return frontiers;
@@ -367,6 +520,100 @@ export async function extractSaturatedThemeKeys(
   }
 }
 
+// ─── Embedder construction ────────────────────────────────────────────────────
+
+/**
+ * Build the configured (Ollama / OpenRouter) embedding provider for semantic
+ * frontier clustering, using the SAME config + apiKey resolution the ideas
+ * pipeline's semantic demand probe uses. Returns null when no provider can be
+ * constructed (e.g. OpenRouter without a key) so the caller falls back to
+ * lexical clustering. Never throws.
+ */
+async function buildFrontierEmbedder(): Promise<FrontierEmbedder | null> {
+  try {
+    const { loadConfig } = await import("../../config/loader");
+    const { getSecret } = await import("../../config/secrets");
+    const { embeddingsConfigSchema } = await import("../../config/schema");
+    const { getOverride } = await import("../../store/config-overrides");
+    const { createEmbeddingProviderFromConfig } = await import("../../memory/embeddings");
+
+    const override = await getOverride("features", "embeddings");
+    const cfg = embeddingsConfigSchema.parse(override ?? loadConfig().embeddings ?? {});
+    const apiKey =
+      (await getSecret("OPENROUTER_API_KEY")) ??
+      (await getSecret("VOYAGE_API_KEY")) ??
+      undefined;
+    return createEmbeddingProviderFromConfig(cfg, apiKey) ?? null;
+  } catch (err) {
+    log.warn("buildFrontierEmbedder failed — semantic clustering disabled", {
+      err: getErrorMessage(err),
+    });
+    return null;
+  }
+}
+
+/**
+ * Read the `smart.sigeAuto.semanticFrontiers` flag block from app config.
+ * Returns `{ enabled: false }` on any failure so the caller falls back to the
+ * byte-identical lexical path. Never throws.
+ */
+async function loadSemanticFrontiersFlag(): Promise<{
+  readonly enabled: boolean;
+  readonly similarityThreshold: number;
+}> {
+  try {
+    const { loadConfig } = await import("../../config/loader");
+    const sf = loadConfig().pipelines.ideas.smart.sigeAuto.semanticFrontiers;
+    return { enabled: sf.enabled, similarityThreshold: sf.similarityThreshold };
+  } catch (err) {
+    log.warn("loadSemanticFrontiersFlag failed — semantic clustering disabled", {
+      err: getErrorMessage(err),
+    });
+    return { enabled: false, similarityThreshold: 0.62 };
+  }
+}
+
+/**
+ * Cluster the broad pool, preferring semantic (embedding) clustering when
+ * enabled and falling back to lexical n-gram clustering on any failure.
+ *
+ * Fallback triggers: flag OFF, no embedder, embed throws, or a vector/candidate
+ * count mismatch (surfaced as a throw inside clusterIntoFrontiersSemantic).
+ * When the flag is OFF this is byte-identical to the prior direct call to
+ * clusterIntoFrontiers — no embedder is built and no behavior changes.
+ */
+async function clusterBroadPool(
+  broadPool: readonly DivergentCandidate[],
+  clusterCap: number,
+): Promise<readonly Frontier[]> {
+  const semantic = await loadSemanticFrontiersFlag();
+  if (!semantic.enabled) {
+    return clusterIntoFrontiers(broadPool, { maxFrontiers: clusterCap });
+  }
+
+  try {
+    const embedder = await buildFrontierEmbedder();
+    if (!embedder) {
+      log.warn("semantic frontiers enabled but no embedder — falling back to lexical");
+      return clusterIntoFrontiers(broadPool, { maxFrontiers: clusterCap });
+    }
+    const frontiers = await clusterIntoFrontiersSemantic(broadPool, embedder, {
+      maxFrontiers: clusterCap,
+      similarityThreshold: semantic.similarityThreshold,
+    });
+    log.info("semantic frontier clustering complete", {
+      broadPool: broadPool.length,
+      frontiers: frontiers.length,
+    });
+    return frontiers;
+  } catch (err) {
+    log.warn("semantic frontier clustering failed — falling back to lexical", {
+      err: getErrorMessage(err),
+    });
+    return clusterIntoFrontiers(broadPool, { maxFrontiers: clusterCap });
+  }
+}
+
 // ─── Orchestration ─────────────────────────────────────────────────────────────
 
 /**
@@ -408,17 +655,17 @@ export async function discoverFrontiers(
       return { candidates: [], frontiers: [] };
     }
 
-    // Generate a small headroom above maxDeepFrontiers so scoreFrontiers has
-    // enough candidates to rank before we slice to the caller's limit.
-    // Cap at DEFAULT_MAX_FRONTIERS (8) as an absolute ceiling.
-    // Previously: Math.max(maxDeepFrontiers, 8) — that forced 8× Mem0 probes
-    // when maxDeepFrontiers=1, which is 8× the intended cost.
-    const requestedDepth = opts.maxDeepFrontiers ?? 1;
-    const clusterCap = Math.min(Math.max(requestedDepth, 3), DEFAULT_MAX_FRONTIERS);
+    // Always discover a full-sized frontier pool so the downstream selection
+    // step (selectDiverseBy) has enough diversity candidates to draw from,
+    // regardless of how many will actually be deep-developed (maxDeepFrontiers).
+    // broadFrontierCap (default: DEFAULT_MAX_FRONTIERS) decouples discovery
+    // breadth from deep-develop depth.
+    const clusterCap = resolveClusterCap(opts.broadFrontierCap);
 
-    const clustered = clusterIntoFrontiers(broadPool, {
-      maxFrontiers: clusterCap,
-    });
+    // Semantic (embedding) clustering when smart.sigeAuto.semanticFrontiers is
+    // enabled; falls back to the lexical clusterer on flag-off / no embedder /
+    // embed failure / vector-count mismatch. Flag OFF == prior behavior exactly.
+    const clustered = await clusterBroadPool(broadPool, clusterCap);
 
     const saturatedThemeKeys = opts.saturatedThemeKeys ?? (await extractSaturatedThemeKeys());
 

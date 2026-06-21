@@ -87,32 +87,70 @@ async function checkPostgres(): Promise<CheckResult> {
   }
 }
 
-async function checkQdrant(): Promise<CheckResult> {
-  const env = readEnvVars();
-  const url = env.QDRANT_URL;
-  if (!url) {
-    return {
-      name: "Qdrant",
-      status: "warn",
-      message: "QDRANT_URL not set (vector search disabled)",
-    };
-  }
+export function classifyHttpCheck(name: string, ok: boolean, url: string): CheckResult {
+  if (ok) return { name, status: "pass", message: `Reachable at ${url}` };
+  return {
+    name,
+    status: "fail",
+    message: `Not reachable at ${url}`,
+    repair: "opencrow native up",
+  };
+}
 
+async function checkQdrant(): Promise<CheckResult> {
   try {
-    const res = await fetch(`${url}/healthz`, {
+    const res = await fetch("http://127.0.0.1:6333/healthz", {
       signal: AbortSignal.timeout(3000),
     });
-    return res.ok
-      ? { name: "Qdrant", status: "pass", message: "Healthy" }
-      : { name: "Qdrant", status: "fail", message: `HTTP ${res.status}` };
+    return classifyHttpCheck("Qdrant", res.ok, "http://127.0.0.1:6333");
   } catch {
+    return classifyHttpCheck("Qdrant", false, "http://127.0.0.1:6333");
+  }
+}
+
+async function checkMem0(): Promise<CheckResult> {
+  try {
+    const res = await fetch("http://127.0.0.1:8050/docs", {
+      signal: AbortSignal.timeout(3000),
+    });
+    return classifyHttpCheck("mem0", res.ok, "http://127.0.0.1:8050");
+  } catch {
+    return classifyHttpCheck("mem0", false, "http://127.0.0.1:8050");
+  }
+}
+
+/**
+ * Neo4j is mem0's graph backend. Bolt isn't HTTP, so probe the TCP port rather
+ * than fetch(). Reachability of 127.0.0.1:7687 is the pre-flight signal mem0's
+ * graph init depends on; if it's down, mem0 init fails closed.
+ *
+ * Reachability alone is NOT a security guarantee: a TCP connect to 127.0.0.1
+ * succeeds even when Bolt is bound to 0.0.0.0 (exposed on all interfaces). So we
+ * additionally assert that neo4j.conf explicitly pins the listen addresses to
+ * loopback (defense-in-depth) and warn if it doesn't.
+ */
+async function checkNeo4j(): Promise<CheckResult> {
+  const { probeBolt, confPinsLoopback, activeConfPath, NEO4J_BOLT_HOST, NEO4J_BOLT_PORT } =
+    await import("./native/neo4j.ts");
+  const url = `bolt://${NEO4J_BOLT_HOST}:${NEO4J_BOLT_PORT}`;
+  const ok = await probeBolt(NEO4J_BOLT_HOST, NEO4J_BOLT_PORT, 3000);
+  if (!ok) return classifyHttpCheck("Neo4j", false, url);
+
+  let pinned = false;
+  try {
+    pinned = confPinsLoopback(activeConfPath());
+  } catch {
+    pinned = false;
+  }
+  if (!pinned) {
     return {
-      name: "Qdrant",
-      status: "fail",
-      message: "Connection failed",
-      repair: "Ensure Qdrant is running on the configured URL",
+      name: "Neo4j",
+      status: "warn",
+      message: `Reachable at ${url}, but neo4j.conf does not explicitly pin listen addresses to 127.0.0.1 (relying on the formula default)`,
+      repair: "opencrow native up (pins loopback in neo4j.conf, then restarts)",
     };
   }
+  return { name: "Neo4j", status: "pass", message: `Reachable at ${url} (loopback-pinned)` };
 }
 
 async function checkEnvFile(): Promise<CheckResult> {
@@ -352,9 +390,6 @@ async function checkSigeAutoConfig(): Promise<CheckResult[]> {
 export async function runDoctor(): Promise<void> {
   p.intro(`OpenCrow v${getVersion()} — Health Check`);
 
-  const env = readEnvVars();
-  const hasQdrant = Boolean(env.QDRANT_URL);
-
   const sigeAutoChecks = await checkSigeAutoConfig();
 
   const checks = await Promise.all([
@@ -362,7 +397,9 @@ export async function runDoctor(): Promise<void> {
     checkEnvFile(),
     checkRuntimeTokens(),
     checkPostgres(),
-    ...(hasQdrant ? [checkQdrant()] : []),
+    checkQdrant(),
+    checkNeo4j(),
+    checkMem0(),
     checkService(),
     checkDiskSpace(),
     checkMonitorProbes(),

@@ -1,6 +1,6 @@
-import { getDb } from "../store/db";
 import { createLogger } from "../logger";
 import { loadConfig } from "../config/loader";
+import { getModelRoute } from "../store/model-routing";
 import type { MemorySourceKind } from "./types";
 import { MEMORY_SOURCE_KINDS } from "./types";
 import {
@@ -15,9 +15,6 @@ import {
 } from "./signal-facets";
 
 const log = createLogger("signal-enrichment");
-
-/** Default model used to rank/categorize signals. Cheap on purpose. */
-const DEFAULT_RANK_MODEL = "claude-haiku-4-5";
 
 /**
  * MemorySourceKinds that are NOT scraped market signals. Conversations,
@@ -116,7 +113,7 @@ export interface EnrichSignalItem {
 }
 
 export interface EnrichSignalsOptions {
-  /** Override the ranking model (defaults to Haiku). */
+  /** Override the ranking model (defaults to the `signal.facets` route). */
   readonly model?: string;
   /** Max signals per LLM call. */
   readonly batchSize?: number;
@@ -201,7 +198,9 @@ export async function enrichSignals(
     return { payloads, facets };
   }
 
-  const model = opts.model ?? DEFAULT_RANK_MODEL;
+  // Ranking model defaults to the `signal.facets` route (same process key as
+  // facet extraction); an explicit `opts.model` still overrides it.
+  const model = opts.model ?? (await getModelRoute("signal.facets")).model;
   const extractBatch = opts.extractBatch ?? extractSignalFacetsBatch;
   const persist = opts.persist ?? persistSignalFacets;
 
@@ -275,75 +274,3 @@ export async function enrichSignals(
   return { payloads, facets };
 }
 
-interface SignalRowForBackfill {
-  readonly source_id: string;
-  readonly kind: MemorySourceKind;
-  readonly content: string;
-}
-
-export interface BackfillSignalRankingResult {
-  /** Source rows examined. */
-  readonly scanned: number;
-  /** Source rows that produced a persisted facet profile. */
-  readonly ranked: number;
-}
-
-/**
- * Backfill ranking for EXISTING scraped-signal sources that have no row in
- * `signal_facets` yet. Joins memory_sources → memory_chunks for the text,
- * runs the same batched enrichment, and persists facets. Best-effort and
- * gated on `signalFacets` (with ranking columns filled only when
- * `signalRanking` is on). Returns counts; never throws.
- *
- * NOTE: this writes the signal_facets table only. Qdrant payloads are NOT
- * patched here (existing points may have been semantically deduped); callers
- * that need filterable backfill should re-index or call setPayload separately.
- */
-export async function backfillSignalRanking(
-  limit = 200,
-  opts: EnrichSignalsOptions = {},
-): Promise<BackfillSignalRankingResult> {
-  const gates = opts.gates ?? resolveGates();
-  if (!gates.signalFacets) {
-    return { scanned: 0, ranked: 0 };
-  }
-
-  let rows: readonly SignalRowForBackfill[] = [];
-  try {
-    const db = getDb();
-    const kindArray = `{${SIGNAL_SOURCE_KINDS.join(",")}}`;
-    rows = (await db`
-      SELECT s.id AS source_id, s.kind AS kind,
-             string_agg(c.content, '\n\n' ORDER BY c.chunk_index) AS content
-      FROM memory_sources s
-      JOIN memory_chunks c ON c.source_id = s.id
-      LEFT JOIN signal_facets f ON f.source_id = s.id
-      WHERE s.kind = ANY(${kindArray}::text[])
-        AND f.id IS NULL
-      GROUP BY s.id, s.kind
-      ORDER BY MIN(s.created_at) DESC
-      LIMIT ${Math.max(1, limit)}
-    `) as SignalRowForBackfill[];
-  } catch (error) {
-    log.error("Backfill query failed (non-fatal)", { error });
-    return { scanned: 0, ranked: 0 };
-  }
-
-  if (rows.length === 0) {
-    return { scanned: 0, ranked: 0 };
-  }
-
-  const items: EnrichSignalItem[] = rows
-    .filter((r) => typeof r.content === "string" && r.content.trim().length > 0)
-    .map((r) => ({ id: r.source_id, kind: r.kind, text: r.content }));
-
-  const { facets } = await enrichSignals(items, { ...opts, gates });
-  const ranked = [...facets.values()].filter(Boolean).length;
-
-  log.info("Backfilled signal ranking", {
-    scanned: rows.length,
-    ranked,
-  });
-
-  return { scanned: rows.length, ranked };
-}

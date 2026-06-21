@@ -15,6 +15,7 @@ import { createLogger } from "../../logger";
 import { loadConfig } from "../../config/loader";
 import type { SmartIdeasConfig } from "../../config/schema";
 import type { Mem0Client } from "../../sige/knowledge/mem0-client";
+import type { ModelProvider } from "../../store/model-routing";
 import { insightForge, panoramaSearch } from "../../sige/memory/retrieval-modes";
 import { sanitizeScrapedField, wrapUntrusted } from "../../sige/untrusted";
 import {
@@ -180,6 +181,14 @@ export function prioritizeByRanking(
  */
 export interface DeepSearchOptions {
   readonly model?: string;
+  /**
+   * Provider for the LLM listwise reranker. REQUIRED — threaded from the routed
+   * `pipeline.generator` provider so a non-Anthropic route (e.g. alibaba)
+   * dispatches the rerank call to that provider. No Claude default: a missing
+   * provider used to fall through to "anthropic" in buildChatOptions, silently
+   * billing the user's Claude OAuth.
+   */
+  readonly provider: ModelProvider;
   readonly rerankEmbedder?: CrossEncoderEmbedder;
   readonly mem0?: Mem0Client;
   readonly userId?: string;
@@ -331,7 +340,13 @@ async function rerankHits(
       return ranked.map((c) => c.hit);
     }
     if (options?.model) {
-      const ranked = await llmListwiseRerank(theme, candidates, topK, options.model);
+      const ranked = await llmListwiseRerank(
+        theme,
+        candidates,
+        topK,
+        options.model,
+        options.provider,
+      );
       return ranked.map((c) => c.hit);
     }
     return hits.slice(0, topK);

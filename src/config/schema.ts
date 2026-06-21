@@ -47,9 +47,7 @@ export const agentConfigSchema = z.object({
   model: z.string().default("claude-sonnet-4-6"),
   systemPrompt: z
     .string()
-    .default(
-      "You are OpenCrow, a helpful personal AI assistant. Be concise and direct.",
-    ),
+    .default("You are OpenCrow, a helpful personal AI assistant. Be concise and direct."),
   retry: retryConfigSchema,
   compaction: compactionConfigSchema,
   failover: failoverConfigSchema,
@@ -83,9 +81,7 @@ export const agentDefinitionSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   default: z.boolean().optional(),
-  provider: z
-    .enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"])
-    .optional(),
+  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"]).optional(),
   model: z.string().optional(),
   systemPrompt: z.string().optional(),
   maxIterations: z.number().int().min(1).optional(),
@@ -233,7 +229,7 @@ export const toolsConfigSchema = z.object({
   devToolsAllowNetwork: z.boolean().default(false),
   /**
    * Opt-in escape hatch that lets the dev-tool exec path (run_tests AND
-   * validate_code's lint/typecheck/test steps, plus git_operations) run even
+   * validate_code's lint/typecheck/test steps) run even
    * when the OS sandbox is NOT active — i.e. sandbox mode "off", or
    * "best-effort" on a host with no sandbox mechanism.
    *
@@ -262,6 +258,20 @@ export const internalApiConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).default(48081),
   host: z.string().default("127.0.0.1"),
 });
+
+/**
+ * Global browser-tooling toggle. Historically `OPENCROW_BROWSER_ENABLED` was
+ * written to `config.browser.enabled` by the env loader but had no schema field,
+ * so the schema parse silently dropped it (per-agent `mcpServers.browser` is the
+ * runtime switch). The field is defined here so the value can survive the parse
+ * and be DB-driven via the `config/server` override (`browserEnabled`). Default
+ * false matches the prior behavior (env only ever set it true).
+ */
+export const browserConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+  })
+  .default({ enabled: false });
 
 export const cronConfigSchema = z.object({
   defaultTimeoutSeconds: z.number().int().min(1).default(300),
@@ -310,9 +320,7 @@ export const monitorConfigSchema = z
   });
 
 export const postgresConfigSchema = z.object({
-  url: z
-    .string()
-    .default("postgres://opencrow:opencrow@127.0.0.1:5432/opencrow"),
+  url: z.string().default("postgres://opencrow:opencrow@127.0.0.1:5432/opencrow"),
   max: z.number().int().min(1).max(100).default(20),
 });
 
@@ -349,9 +357,21 @@ export const embeddingsConfigSchema = z
     batchSize: 64,
   });
 
+/**
+ * Selectable memory storage backend. `qdrant` is the live default (Postgres +
+ * Qdrant + FTS); `mem0` is reserved for the planned phase-2 backend and is not
+ * implemented yet — the backend factory throws if it is selected.
+ */
+export const memoryBackendKindSchema = z.enum(["qdrant", "mem0"]).default("qdrant");
+
 export const memorySearchConfigSchema = z.object({
+  backend: memoryBackendKindSchema,
   autoIndex: z.boolean().default(true),
   shared: z.boolean().default(true),
+  // mem0 backend only: the shared `user_id` used for the scraped-signal pool
+  // when `shared` is true. Distinct from SIGE's sige-global/sige-ideas userIds.
+  // Ignored by the qdrant backend.
+  mem0SharedUserId: z.string().default("opencrow-shared"),
   vectorWeight: z.number().min(0).max(1).default(0.7),
   textWeight: z.number().min(0).max(1).default(0.3),
   defaultLimit: z.number().int().min(1).default(5),
@@ -423,6 +443,93 @@ export const scraperProcessesConfigSchema = z
     scraperIds: [],
   });
 
+// ─── Reddit corpus de-bias ───────────────────────────────────────────────────
+// Controls WHICH subreddits the reddit scraper fetches, applying a curated
+// end-user/vertical-pain allowlist and an echo-chamber+crypto denylist at
+// ingestion time. This is orthogonal to the existing echoChamberDownweight
+// lever (which re-ranks already-ingested posts) — this gate drops echo-chamber
+// content BEFORE it reaches the DB.
+//
+// allowlist  — scraped unconditionally (curated end-user pain subs).
+// denylist   — dropped at ingestion from EVERY path (home feed, subreddit
+//              feeds, subscriptions). Case-insensitive.
+// includeSubscriptions — when true, the account's own subscriptions are
+//              merged into the allowlist AFTER denylist filtering. Default
+//              false (subscriptions are the echo chamber; use the curated list).
+const DEFAULT_REDDIT_ALLOWLIST = [
+  "freelance",
+  "smallbusiness",
+  "Entrepreneur",
+  "gamedev",
+  "personalfinance",
+  "productivity",
+  "ADHD",
+  "parenting",
+  "restaurateurs",
+  "RealEstate",
+  "nonprofit",
+  "Accounting",
+  "sysadmin",
+  "msp",
+  "legaladvice",
+  "Etsy",
+  "ecommerce",
+  "smallbusinessUK",
+  "Construction",
+  "dentistry",
+  "nursing",
+  "teachers",
+  "freelanceWriters",
+  "weddingplanning",
+  "SomebodyMakeThis",
+  "AppIdeas",
+  "Lightbulb",
+] as const;
+
+const DEFAULT_REDDIT_DENYLIST = [
+  "vibecoding",
+  "ClaudeCode",
+  "ClaudeAI",
+  "ChatGPT",
+  "Anthropic",
+  "DeepSeek",
+  "PromptEngineering",
+  "VibeCodeDevs",
+  "aiagents",
+  "midjourney",
+  "openclaw",
+  "LocalLLaMA",
+  "MachineLearning",
+  "ArtificialInteligence",
+  "OpenAI",
+  "singularity",
+  "ChatGPTCoding",
+  "cursor",
+  "ChatGPTPro",
+  "CryptoCurrency",
+  "Bitcoin",
+  "ethereum",
+  "defi",
+  "CryptoTechnology",
+  "CryptoMarkets",
+] as const;
+
+export const redditCorpusConfigSchema = z
+  .object({
+    // Curated list of end-user/vertical-pain subreddits to scrape explicitly.
+    allowlist: z.array(z.string()).default([...DEFAULT_REDDIT_ALLOWLIST]),
+    // Echo-chamber + crypto subs to drop at ingestion (all paths, case-insensitive).
+    denylist: z.array(z.string()).default([...DEFAULT_REDDIT_DENYLIST]),
+    // When true, the account's own subscriptions are merged AFTER denylist
+    // filtering. Default false — subscriptions are the echo chamber.
+    includeSubscriptions: z.boolean().default(false),
+  })
+  .default({
+    allowlist: [...DEFAULT_REDDIT_ALLOWLIST],
+    denylist: [...DEFAULT_REDDIT_DENYLIST],
+    includeSubscriptions: false,
+  });
+
 export const processesConfigSchema = z
   .object({
     static: z.array(processSpecSchema).default([]),
@@ -463,25 +570,98 @@ export const rateLimitConfigSchema = z
   })
   .optional();
 
+// ─── Ingestion (data ingestion → mem0) ─────────────────────────────────────────
+//
+// Data ingestion is SHARED infrastructure, NOT a SIGE-only concern: the mem0
+// knowledge it populates is read by BOTH the generation pipeline (graph-reasoning
+// in the synthesizer) AND SIGE. It is therefore a first-class top-level domain,
+// independent of `config.sige`. The continuous extraction loop (the `ingestion`
+// process) reads scraped Postgres rows on a timer and writes them to mem0 with
+// credibility scoring + dedup.
+//
+// It is an LLM-bound loop that burns mem0 quota with no operator in the loop.
+// Default ON so existing deployments are unchanged. Set `enabled: false` to stop
+// the autonomous loop entirely; SIGE and the pipeline keep running and read
+// whatever corpus already exists.
+//
+// `mem0` is ingestion's OWN connection config (same shape/defaults as sige.mem0).
+// Both point at the same shared mem0 instance — that is intentional; the duplicate
+// is the connection config, not the instance, so ingestion has zero dependency on
+// the `sige` domain.
+export const ingestionConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    mem0: z
+      .object({
+        baseUrl: z.string().url().default("http://127.0.0.1:8050"),
+        userId: z.string().default("sige-global"),
+        // Shared bearer token sent on every /v1/memories/* request to the mem0
+        // sidecar (which has no upstream auth). Optional so a tokenless dev run
+        // still boots. Sourced from env in the loader (reuses OPENCROW_INTERNAL_TOKEN).
+        apiToken: z.string().optional(),
+      })
+      .default({
+        baseUrl: "http://127.0.0.1:8050",
+        userId: "sige-global",
+      }),
+    // How many records may be ingested per calendar day (cost ceiling). Runtime-
+    // tunable at finer grain via the `maxRecordsPerDay` config_override.
+    maxRecordsPerDay: z.number().int().min(1).default(3_000),
+    // Rows fetched per source per cycle.
+    batchSize: z.number().int().min(1).default(20),
+    // Gap between ingestion cycles (run-then-reschedule).
+    pollIntervalMs: z.number().int().min(1_000).default(5 * 60 * 1_000),
+    // Minimum trimmed content length to pass the quality gate.
+    minContentLength: z.number().int().min(1).default(40),
+  })
+  .default({
+    enabled: true,
+    mem0: { baseUrl: "http://127.0.0.1:8050", userId: "sige-global" },
+    maxRecordsPerDay: 3_000,
+    batchSize: 20,
+    pollIntervalMs: 5 * 60 * 1_000,
+    minContentLength: 40,
+  });
+
 export const sigeConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  mem0: z.object({
-    baseUrl: z.string().url().default("http://127.0.0.1:8050"),
-    userId: z.string().default("sige-global"),
-    // Dedicated userId for idea-outcome memories (separate namespace from raw
-    // signals so per-segment metadata filters stay clean).
-    ideasUserId: z.string().default("sige-ideas"),
-    // Shared bearer token sent on every /v1/memories/* request to the mem0
-    // sidecar (which has no upstream auth; GHSA-jfv9-68m5-gjjr). Optional so a
-    // tokenless dev run still boots — the sidecar then rejects with 503 and SIGE
-    // degrades gracefully via the client circuit breaker. Sourced from env in
-    // the loader (reuses OPENCROW_INTERNAL_TOKEN, already shared with mem0).
-    apiToken: z.string().optional(),
-  }).default({
-    baseUrl: "http://127.0.0.1:8050",
-    userId: "sige-global",
-    ideasUserId: "sige-ideas",
-  }),
+  mem0: z
+    .object({
+      baseUrl: z.string().url().default("http://127.0.0.1:8050"),
+      userId: z.string().default("sige-global"),
+      // Dedicated userId for idea-outcome memories (separate namespace from raw
+      // signals so per-segment metadata filters stay clean).
+      ideasUserId: z.string().default("sige-ideas"),
+      // Shared bearer token sent on every /v1/memories/* request to the mem0
+      // sidecar (which has no upstream auth; GHSA-jfv9-68m5-gjjr). Optional so a
+      // tokenless dev run still boots — the sidecar then rejects with 503 and SIGE
+      // degrades gracefully via the client circuit breaker. Sourced from env in
+      // the loader (reuses OPENCROW_INTERNAL_TOKEN, already shared with mem0).
+      apiToken: z.string().optional(),
+    })
+    .default({
+      baseUrl: "http://127.0.0.1:8050",
+      userId: "sige-global",
+      ideasUserId: "sige-ideas",
+    }),
+  // Read-only Bolt connection to the SAME Neo4j instance mem0 writes its graph
+  // store to (no ETL). Powers the multi-hop "opportunity paths" graph-reasoning
+  // directive. Default OFF — no driver is loaded and no connection is dialed
+  // until enabled. The password is NOT here: it is resolved via
+  // getSecret("NEO4J_PASSWORD") so it never lands in config/logs.
+  neo4j: z
+    .object({
+      enabled: z.boolean().default(false),
+      boltUrl: z.string().default("bolt://127.0.0.1:7687"),
+      user: z.string().default("neo4j"),
+      queryTimeoutMs: z.number().int().min(100).max(60_000).default(5_000),
+    })
+    .default({
+      enabled: false,
+      boltUrl: "bolt://127.0.0.1:7687",
+      user: "neo4j",
+      queryTimeoutMs: 5_000,
+    }),
   simulation: z
     .object({
       expertRounds: z.number().int().min(1).max(10).default(4),
@@ -518,7 +698,7 @@ export const sigeConfigSchema = z.object({
       coalitionStabilityWeight: 0.1,
       signalCredibilityWeight: 0.1,
     }),
-  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic"]).default("anthropic"),
+  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"]).default("anthropic"),
   model: z.string().default("claude-sonnet-4-6"),
   agentModel: z.string().default("claude-sonnet-4-6"),
   workflow: z
@@ -568,9 +748,7 @@ export const giantConfigSchema = z
         acuteProblem: z.number().default(GIANT_DEFAULT_WEIGHTS.acuteProblem),
         whyNow: z.number().default(GIANT_DEFAULT_WEIGHTS.whyNow),
         demand: z.number().default(GIANT_DEFAULT_WEIGHTS.demand),
-        nonObviousness: z
-          .number()
-          .default(GIANT_DEFAULT_WEIGHTS.nonObviousness),
+        nonObviousness: z.number().default(GIANT_DEFAULT_WEIGHTS.nonObviousness),
         defensibility: z.number().default(GIANT_DEFAULT_WEIGHTS.defensibility),
         marketShape: z.number().default(GIANT_DEFAULT_WEIGHTS.marketShape),
         founderFit: z.number().default(GIANT_DEFAULT_WEIGHTS.founderFit),
@@ -602,6 +780,10 @@ export const generateWideConfigSchema = z
     multiSegment: z.boolean().default(true),
     // Flag-gated merge of the SIGE divergent-generation pool. OFF by default.
     sigeDivergent: z.boolean().default(false),
+    // Over-generation is split into chunks of this many intersections, one chat
+    // call each, so no single call asks for ~30 dense ideas (which timed out at
+    // 210s). Each chunk stays in the proven ~5k-output / ~90s regime.
+    chunkSize: z.number().int().min(1).max(20).default(2),
   })
   .default({
     overGenerate: true,
@@ -609,7 +791,35 @@ export const generateWideConfigSchema = z
     maxCandidates: 40,
     multiSegment: true,
     sigeDivergent: false,
+    chunkSize: 2,
   });
+
+// Stage 2 "broad-shallow ideation" (Funnel Breadth Redesign). Ideate cheaply over
+// MANY candidate themes (one one-line sketch each, batched on a small/cheap model)
+// then diversity-select a few for deep-development. FULLY REVERSIBLE: `enabled`
+// false → the synthesizer keeps today's narrow top-10 neck. Defaults are
+// conservative so cost stays bounded (candidateCount × one cheap line, batched).
+export const shallowIdeationConfigSchema = z
+  .object({
+    // Master switch. Default OFF for a first ship — flip to broaden the funnel
+    // without a code change. See the design doc §4 (reversibility is the hard
+    // requirement; default-on is the judgment call, left OFF here).
+    enabled: z.boolean().default(false),
+    // How many candidate themes to ideate over (raises the ≤10 neck). ~30.
+    candidateCount: z.number().int().min(4).max(120).default(30),
+    // Candidates per cheap-model sketch call (batching keeps the call count low).
+    batchSize: z.number().int().min(1).max(50).default(10),
+    // Optional cheap-model id override. Empty → resolve via model-routing
+    // (`sige.fast-agent`, Haiku-class). NEVER the deep `pipeline.generator`.
+    model: z.string().default(""),
+  })
+  .default({
+    enabled: false,
+    candidateCount: 30,
+    batchSize: 10,
+    model: "",
+  });
+export type ShallowIdeationConfig = z.infer<typeof shallowIdeationConfigSchema>;
 
 // Phase 2 "demand-side grounding": give every idea an external truth source so
 // the GIANT demand / why-now axes score on CITED buyer-intent extracted
@@ -625,30 +835,71 @@ export const demandConfigSchema = z
     redditIntent: z.boolean().default(true),
     // Funding-mention probe over existing news_articles. Default ON.
     fundingSignal: z.boolean().default(true),
+    // Low-star (<=2★) review-complaint probe over existing appstore_reviews +
+    // playstore_reviews. Internal-DB only, no external call. Default ON.
+    reviewComplaint: z.boolean().default(true),
+    // Hacker News buyer-intent probe over existing hn_stories. Default ON.
+    hnIntent: z.boolean().default(true),
+    // X/Twitter buyer-intent probe over existing x_scraped_tweets. Internal-DB
+    // only, same buyer-intent semantics as reddit. Default ON (Lever 4).
+    xIntent: z.boolean().default(true),
+    // Lever 1 — WEAK-INTENT gate: count a marker-less but high-engagement row
+    // that names the idea as WEAK (discounted) demand in the reddit/HN/X probes.
+    // The full relevance gate + an engagement floor still apply. Default ON.
+    weakIntent: z.boolean().default(true),
+    // Multiplier applied to a WEAK (marker-less) row's engagement count so it
+    // can't masquerade as strong buyer-intent. Default 0.35; bounds 0..1.
+    weakIntentFactor: z.number().min(0).max(1).default(0.35),
+    // Engagement-weighted count (1 + log1p(score+comments)) a marker-less row
+    // must reach to qualify as weak evidence — guards dead, zero-engagement
+    // keyword mentions. Default 1.5 (≈ 1 upvote/comment of signal); bounds ≥ 1.
+    weakIntentMinEngagement: z.number().min(1).default(1.5),
+    // Lever 3 — FUZZY LEXICAL MATCHING (stem + word-boundary + curated synonyms)
+    // so idea variants/synonyms match the corpus. Default ON; false restores the
+    // legacy literal-substring matcher per probe.
+    fuzzyMatch: z.boolean().default(true),
+    // Use keyword-matching ph_products to DISCOUNT whitespace via supplyDensity
+    // (supply, not demand — never affects the demand score). Default ON.
+    phSupply: z.boolean().default(true),
     // Pluggable external search-volume / trends vendor. Default OFF (stubbed).
     externalTrends: z.boolean().default(false),
     // Minimum matched rows before demand evidence is considered corroborated;
     // below this the artifact takes the absence penalty (low score/confidence).
     minMatches: z.number().int().min(1).default(2),
+    // RELEVANCE GATE: minimum number of DISTINCT idea keywords that must co-occur
+    // in a single scraped document before it counts as demand evidence. The DB
+    // keyword-filter (OR) is only a cheap candidate prefilter; this in-code gate
+    // ensures the document is actually ABOUT the idea (not just sharing one
+    // generic word like "tracking"/"restaurant"). 2 = a phrase match, or two
+    // distinct idea terms, is required. Bias toward missing over inflating.
+    minKeywordHits: z.number().int().min(1).default(2),
   })
   .default({
     enabled: true,
     redditIntent: true,
     fundingSignal: true,
+    reviewComplaint: true,
+    hnIntent: true,
+    xIntent: true,
+    weakIntent: true,
+    weakIntentFactor: 0.35,
+    weakIntentMinEngagement: 1.5,
+    fuzzyMatch: true,
+    phSupply: true,
     externalTrends: false,
     minMatches: 2,
+    minKeywordHits: 2,
   });
 
 // Cross-family default jury for the hardened SIGE judge. These models are ONLY
 // instantiated when smart.sigeValuation is ON; any provider without a key is
 // gracefully skipped at runtime. The mix is intentionally multi-family so the
 // independent judge does not share a model lineage with the generators.
-export const SIGE_DEFAULT_JUDGE_MODELS: readonly { provider: string; model: string }[] =
-  [
-    { provider: "anthropic", model: "claude-haiku-4-5" },
-    { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
-    { provider: "alibaba", model: "qwen3.5-plus" },
-  ];
+export const SIGE_DEFAULT_JUDGE_MODELS: readonly { provider: string; model: string }[] = [
+  { provider: "anthropic", model: "claude-haiku-4-5" },
+  { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
+  { provider: "alibaba", model: "qwen3.7-plus" },
+];
 
 // Phase-3 SIGE hardening: an independent, anonymized, multi-family judge with
 // first-class dissent weighting and a convergence veto. Fully defaulted so the
@@ -736,8 +987,12 @@ export const sigeAutoConfigSchema = z
   .object({
     /** Master switch. Must be false (default) until Phase D staged enablement. */
     enabled: z.boolean().default(false),
-    /** Max full expert-game runs per discovery cycle. Hard-capped at 3. */
-    maxDeepFrontiers: z.number().int().min(1).max(3).default(1),
+    /** Max full expert-game runs per discovery cycle. Hard-capped at 8. */
+    maxDeepFrontiers: z.number().int().min(1).max(8).default(1),
+    /** Max frontier clusters formed in the broad-pool phase. Hard-capped at 8.
+     *  Decoupled from maxDeepFrontiers: always discover the full pool for
+     *  diversity, even when only deep-developing 1 frontier. */
+    broadFrontierCap: z.number().int().min(1).max(8).default(8),
     /** Max cheap broad-pool candidates from Round-1 generation. Hard-capped at 200. */
     broadPoolSize: z.number().int().min(1).max(200).default(50),
     /** Auto-tick cadence. 'daily' = 86.4M ms; 'manual' = never auto-ticks. */
@@ -752,15 +1007,38 @@ export const sigeAutoConfigSchema = z
      * does NOT cap spending. Do not rely on it as a cost guard.
      */
     perRunCostCeilingUsd: z.number().min(0).default(0),
+    /**
+     * Semantic (embedding-based) frontier clustering. When ON, the broad
+     * divergent pool is clustered by embedding cosine similarity instead of
+     * lexical n-gram title overlap, so distinct themes form even when titles
+     * share no words (the lexical clusterer collapses those into one residual
+     * frontier, starving the diversity-select step). Fallback-safe: flag OFF —
+     * or no embedder / embed failure — reverts to the lexical path exactly.
+     */
+    semanticFrontiers: z
+      .object({
+        enabled: z.boolean().default(true),
+        /**
+         * Cosine floor for joining an existing semantic cluster. Tuned 2026-06-21
+         * against real nomic embeddings of idea text: short same-domain ideas sit
+         * in a compressed ~0.49–0.78 cosine band (within≈cross-archetype), so the
+         * original 0.62 collapsed everything into ONE frontier. 0.67 yields ~4–5
+         * distinct frontiers; 0.69+ over-splits past the cluster cap.
+         */
+        similarityThreshold: z.number().min(0).max(1).default(0.67),
+      })
+      .default({ enabled: true, similarityThreshold: 0.67 }),
   })
   .default({
     enabled: false,
     maxDeepFrontiers: 1,
+    broadFrontierCap: 8,
     broadPoolSize: 50,
     cadence: "daily",
     maxConcurrent: 1,
     memoryWriteback: false,
     perRunCostCeilingUsd: 0,
+    semanticFrontiers: { enabled: true, similarityThreshold: 0.67 },
   });
 export type SigeAutoConfig = z.infer<typeof sigeAutoConfigSchema>;
 
@@ -798,6 +1076,43 @@ export const outcomeMemoryConfigSchema = z
   });
 export type OutcomeMemoryConfig = z.infer<typeof outcomeMemoryConfigSchema>;
 
+// Multi-hop graph reasoning: a bounded "opportunity paths" directive traversed
+// from the live Neo4j graph (the mem0 graph store) and injected at Pass-1 seed
+// discovery as GUIDANCE. Default OFF — gated together with sige.neo4j.enabled so
+// neither flag alone constructs a client; degrades to "" on any failure, leaving
+// the default seed prompt byte-identical. The traversal caps below are bound as
+// $params into the read-only Cypher (no code change to tune).
+export const graphReasoningConfigSchema = z
+  .object({
+    // Master switch for the feature. Read-only + degrade-to-empty, but kept OFF
+    // by default until the live graph is validated.
+    enabled: z.boolean().default(false),
+    // Max hops (path length) in a returned opportunity path. Default 2: on the
+    // current (undirected, hub-heavy) graph, 3-hop traversal is too slow and
+    // times out; bump only with an index + perf validation.
+    maxHops: z.number().int().min(2).max(6).default(2),
+    // Max paths rendered into the directive (also the query LIMIT).
+    maxPaths: z.number().int().min(1).max(20).default(8),
+    // How many seed (pain) nodes to expand from.
+    searchLimit: z.number().int().min(1).max(100).default(25),
+    // Lower degree bound on the seed node (skips one-off leaf noise).
+    minDegree: z.number().int().min(1).max(1000).default(3),
+    // Upper degree bound on EVERY path node. Default 200: excludes the mega-hubs
+    // (app_store 750 / play_store 565 / sige-global 1163 — also stoplisted) while
+    // keeping legitimate popular-app nodes (facebook ~120, roblox ~154). 60 was
+    // too low and filtered out all real paths.
+    maxDegree: z.number().int().min(1).max(5000).default(200),
+  })
+  .default({
+    enabled: false,
+    maxHops: 2,
+    maxPaths: 8,
+    searchLimit: 25,
+    minDegree: 3,
+    maxDegree: 200,
+  });
+export type GraphReasoningConfig = z.infer<typeof graphReasoningConfigSchema>;
+
 // Layer C "incumbent exclusion": drop / down-rank collector signals that
 // prominently name a top-N charted (or high-review-count) app. PURE-logic + safe,
 // so it defaults ON (matching adaptiveCollection). Disabling it reverts the
@@ -813,9 +1128,7 @@ export const incumbentExclusionConfigSchema = z
     enabled: true,
     topN: 100,
   });
-export type IncumbentExclusionConfig = z.infer<
-  typeof incumbentExclusionConfigSchema
->;
+export type IncumbentExclusionConfig = z.infer<typeof incumbentExclusionConfigSchema>;
 
 // Layer B "competability / moat gate": penalize ideas whose market sits behind a
 // moat a small/solo builder cannot overcome (the inverse of GIANT defensibility).
@@ -866,6 +1179,20 @@ export const competabilityConfigSchema = z
     softPenaltyThreshold: z.number().min(0).max(5).default(2.5),
     // Top-N incumbents the cheap heuristic pre-filter checks idea text against.
     topNIncumbents: z.number().int().min(1).max(1000).default(100),
+    // HARD per-dimension veto. A RAW (objective, profile-INDEPENDENT) moat score
+    // at or above hardVetoThreshold on ANY hardVetoDimensions dimension is fatal
+    // — the idea is hard-rejected regardless of overall and of builder-profile
+    // discounts. Like enforceGate, it only ACTS when the gate is enforcing
+    // (shadow/log-only otherwise). Default ON; default threshold 4; default
+    // dimensions = all four uncompetable-for-a-solo-builder moats.
+    hardVeto: z.boolean().default(true),
+    hardVetoThreshold: z.number().int().min(1).max(5).default(4),
+    hardVetoDimensions: z
+      .array(z.enum(["regulated", "capital", "logistics", "networkEffect"]))
+      // .min(1): an empty array would silently disable the veto — disabling must
+      // go through the explicit `hardVeto: false` flag, not a footgun empty list.
+      .min(1)
+      .default(["regulated", "capital", "logistics", "networkEffect"]),
     // The builder the gate is evaluated for. Default = solo bootstrapper =
     // identity transform, so the gate behaves exactly as before.
     builderProfile: builderProfileConfigSchema,
@@ -876,6 +1203,9 @@ export const competabilityConfigSchema = z
     rejectThreshold: 2,
     softPenaltyThreshold: 2.5,
     topNIncumbents: 100,
+    hardVeto: true,
+    hardVetoThreshold: 4,
+    hardVetoDimensions: ["regulated", "capital", "logistics", "networkEffect"],
     builderProfile: {
       capital: "bootstrap",
       teamSize: 1,
@@ -902,13 +1232,129 @@ export const diversityGuardConfigSchema = z
     // Which candidate field defines a bucket. Archetype is the canonical
     // monoculture axis; category is the free-text fallback.
     bucketBy: z.enum(["archetype", "category"]).default("archetype"),
+    // SIGNAL/SEED guard: caps how many ideas a SINGLE source signal (seed) may
+    // spawn, on TOP of the archetype/category cap above. Attacks "one seed, many
+    // reskins" — the archetype guard alone lets one signal seed many ideas that
+    // happen to land in different archetypes. Composed AFTER the bucket guard.
+    signalGuard: z.boolean().default(true),
+    // Share ceiling (0..1) any single source signal may occupy in the kept set.
+    // ~0.34 => one signal seeds at most ⌈maxIdeas·0.34⌉ ideas (2 of 5, 3 of 8).
+    maxSignalShare: z.number().min(0).max(1).default(0.34),
   })
   .default({
     enabled: true,
     maxBucketShare: 0.5,
     bucketBy: "archetype",
+    signalGuard: true,
+    maxSignalShare: 0.34,
   });
 export type DiversityGuardConfig = z.infer<typeof diversityGuardConfigSchema>;
+
+// STAGE 1 — broad stratified intake. Caps how much any single
+// (source kind × signalType) bucket may occupy in the collector candidate
+// pool, so one hot source/signalType cannot monopolize the seeds feeding
+// BOTH funnels. Pure selection; default ON, fully reversible.
+export const stratifiedIntakeConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    // Max candidates any single `${kind}:${signalType}` bucket may contribute.
+    perBucketCap: z.number().int().min(1).max(100).default(8),
+    // Hard ceiling on the stratified pool size returned to the funnel.
+    totalCap: z.number().int().min(1).max(500).default(90),
+    // Per-source raw fetch window (total rows pulled before ranking/stratifying);
+    // split ~30/70 top/midtier for windowed sources.
+    fetchLimit: z.number().int().min(10).max(500).default(100),
+    // What the stratified bucket key is keyed on.
+    //  - "signalCategory" (default, hybrid): enriched rows bucket on their
+    //    LLM-extracted theme (`${category}:${table}`); un-enriched rows fall
+    //    back to the legacy source/sub-source key (`${signalType}:${table}`),
+    //    so low enrichment coverage degrades to ~today's source stratification
+    //    rather than collapsing into one bucket.
+    //  - "signalType" (legacy): every row buckets on the exact pre-theme key
+    //    (`${table}:${signalType}`). Reversible escape hatch.
+    bucketBy: z.enum(["signalType", "signalCategory"]).default("signalCategory"),
+  })
+  .default({
+    enabled: true,
+    perBucketCap: 8,
+    totalCap: 90,
+    fetchLimit: 100,
+    bucketBy: "signalCategory",
+  });
+export type StratifiedIntakeConfig = z.infer<typeof stratifiedIntakeConfigSchema>;
+
+// MAIN-pipeline independent jury. `quality_score` is otherwise a pure
+// pass-through of the giant composite emitted by the SAME LLM that wrote the
+// idea (Pass-3 self-critique) — a self-serving grade with no independent check.
+// This runs the existing cross-family jury (jury.ts) on the MAIN (non-SIGE)
+// path and blends its verdict into quality under a ONE-SIDED min-lean rule: the
+// jury may only PENALIZE a self-inflated idea, never inflate one. It costs LLM
+// calls, so the flag cleanly disables it; it shares the SIGE `judgeModels`
+// panel definition (no duplication) and is a graceful no-op when no judge key
+// is configured. The SIGE valuation path runs its OWN jury, so exactly one jury
+// pass runs per run (the pipeline gates this off when SIGE valuation is on).
+export const independentJuryConfigSchema = z
+  .object({
+    // Master switch. Default ON. Disabling skips the jury LLM calls entirely.
+    enabled: z.boolean().default(true),
+    // Min-lean penalty weight λ. The maximum fraction of the (giant − jury) gap
+    // a UNANIMOUS jury can close; a split jury penalizes proportionally less.
+    // 0 disables the pull (no penalty); 1 pulls fully to a confident jury.
+    penaltyWeight: z.number().min(0).max(1).default(0.7),
+  })
+  .default({
+    enabled: true,
+    penaltyWeight: 0.7,
+  });
+export type IndependentJuryConfig = z.infer<typeof independentJuryConfigSchema>;
+
+// SEED-DIVERSITY: attacks generation-seed MONOCULTURE at the SOURCE (the
+// collectors), upstream of the within-run diversityGuard. Three levers:
+//   1. focusRotation — rotate WHICH review categories seed the run (keep a
+//      high-opportunity head, rotate the tail by a per-run seed, avoid
+//      recently-anchored categories) instead of always the same lowest-rated set.
+//   2. painThemesLeadSummary — lead the pain seed with the SPECIFIC LLM-extracted
+//      pain themes so a concrete recurring complaint (not the bare store-category
+//      name) is the primary pain seed reaching the generator prompt.
+//   3. echoChamberDownweight — down-weight (not drop) AI-builder-meta capability
+//      signals so the funnel isn't dominated by "build an AI agent" echo chamber.
+// All levers default ON, pure-logic (no external calls). Fully defaulted ->
+// backward-compatible.
+export const seedDiversityConfigSchema = z
+  .object({
+    // Master switch for all three levers. Default ON.
+    enabled: z.boolean().default(true),
+    // Lever 1: rotate focus categories across runs (vs. always the lowest-rated).
+    focusRotation: z.boolean().default(true),
+    // Total focus categories to feed clusterReviews.
+    focusSpread: z.number().int().min(1).max(40).default(8),
+    // How many of those come from the genuine high-opportunity head (lowest
+    // avgRating / most acute complaint ratio). The remainder are rotated.
+    highOpportunitySlice: z.number().int().min(0).max(40).default(4),
+    // How many recent generated_ideas.category rows to treat as "anchored" and
+    // de-prioritize in the rotated tail.
+    recentAnchorLookback: z.number().int().min(0).max(500).default(40),
+    // Lever 2: lead pains.summary with specific LLM pain themes.
+    painThemesLeadSummary: z.boolean().default(true),
+    // Max specific pain themes rendered ahead of the category aggregate.
+    maxLeadingPainThemes: z.number().int().min(1).max(50).default(15),
+    // Lever 3: down-weight AI-builder-meta capability signals.
+    echoChamberDownweight: z.boolean().default(true),
+    // Multiplier applied to a meta signal's rank score (REDUCE, not eliminate).
+    echoChamberFactor: z.number().min(0).max(1).default(0.5),
+  })
+  .default({
+    enabled: true,
+    focusRotation: true,
+    focusSpread: 8,
+    highOpportunitySlice: 4,
+    recentAnchorLookback: 40,
+    painThemesLeadSummary: true,
+    maxLeadingPainThemes: 15,
+    echoChamberDownweight: true,
+    echoChamberFactor: 0.5,
+  });
+export type SeedDiversityConfig = z.infer<typeof seedDiversityConfigSchema>;
 
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
@@ -926,9 +1372,7 @@ export const smartConfigSchema = z.object({
   // scraped signals. Layered on top of signalFacets; default OFF.
   signalRanking: z.boolean().default(false),
   // Retrieval filter floor for ranked-signal importance buckets.
-  signalImportanceFloor: z
-    .enum(["noise", "low", "medium", "high"])
-    .default("low"),
+  signalImportanceFloor: z.enum(["noise", "low", "medium", "high"]).default("low"),
   // Pure-logic improvements: safe, default ON (they change default idea
   // output by design but add no external calls).
   adaptiveCollection: z.boolean().default(true), // velocity/credibility/corroboration ordering
@@ -959,6 +1403,10 @@ export const smartConfigSchema = z.object({
   // Phase 6 "outcome memory": verdict write-back + synthesis-time guidance via
   // mem0. Both flags now default ON — the REINFORCE/AVOID learning loop is live.
   outcomeMemory: outcomeMemoryConfigSchema,
+  // Multi-hop graph reasoning: bounded "opportunity paths" directive at Pass-1.
+  // Default OFF (gated together with sige.neo4j.enabled). Fully defaulted ->
+  // backward-compatible.
+  graphReasoning: graphReasoningConfigSchema,
   // Layer C "incumbent exclusion": drop/down-rank collector signals that name a
   // top-N incumbent. Pure-logic + safe — default ON. Fully defaulted ->
   // backward-compatible.
@@ -971,6 +1419,34 @@ export const smartConfigSchema = z.object({
   // kept set so the funnel can't collapse into one monoculture. Default ON,
   // pure-logic. Fully defaulted -> backward-compatible.
   diversityGuard: diversityGuardConfigSchema,
+  // SEED diversity: attack generation-seed monoculture at the collectors
+  // (focus-category rotation + specific-pain-theme lead + echo-chamber
+  // down-weight). Default ON, pure-logic. Fully defaulted -> backward-compatible.
+  seedDiversity: seedDiversityConfigSchema,
+  // MAIN-pipeline independent jury: blend a cross-family jury verdict into
+  // quality_score under a one-sided min-lean penalty so quality is not a pure
+  // self-grade. Default ON; gracefully no-ops without a judge key. Fully
+  // defaulted -> backward-compatible.
+  independentJury: independentJuryConfigSchema,
+  // Stage 2 "broad-shallow ideation": cheap one-line sketch over many candidate
+  // themes → diversity-select a few. Default OFF (reversible). Fully defaulted ->
+  // backward-compatible: when off, the synthesizer keeps today's narrow neck.
+  shallowIdeation: shallowIdeationConfigSchema,
+  // Stage 3 deep-develop count: how many DIVERSE sketches the synthesizer
+  // deep-develops when shallowIdeation is on (the new neck width). ~5-6.
+  deepDevelopCount: z.number().int().min(1).max(20).default(6),
+  // STAGE 1 — broad stratified intake: balanced cross-bucket collector pool.
+  // Default ON, pure-logic, fully reversible. Fully defaulted ->
+  // backward-compatible.
+  stratifiedIntake: stratifiedIntakeConfigSchema,
+  // Outer deadline for the entire synthesis runStep (Pass-1 intersections +
+  // Pass-2 deep-develop + Pass-3 critique + competability + demand + jury).
+  // The per-call 210 s LLM timeout (createCallDeadline) already bounds
+  // individual hangs; this caps the TOTAL step so a legitimately-slow but
+  // progressing run with a capable/slow model (e.g. deepseek-v4-pro, ~12 min)
+  // is not killed by the generic 12-min DEFAULT_STEP_DEADLINE_MS.
+  // Default: 25 min. Min: 5 min. Max: 60 min.
+  synthesisDeadlineMs: z.number().int().min(300_000).max(3_600_000).default(1_500_000),
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -996,13 +1472,23 @@ const SMART_IDEAS_DEFAULTS = {
     maxCandidates: 40,
     multiSegment: true,
     sigeDivergent: false,
+    chunkSize: 2,
   },
   demand: {
     enabled: true,
     redditIntent: true,
     fundingSignal: true,
+    reviewComplaint: true,
+    hnIntent: true,
+    xIntent: true,
+    weakIntent: true,
+    weakIntentFactor: 0.35,
+    weakIntentMinEngagement: 1.5,
+    fuzzyMatch: true,
+    phSupply: true,
     externalTrends: false,
     minMatches: 2,
+    minKeywordHits: 2,
   },
   sige: {
     independentJudge: true,
@@ -1023,11 +1509,13 @@ const SMART_IDEAS_DEFAULTS = {
   sigeAuto: {
     enabled: false,
     maxDeepFrontiers: 1,
+    broadFrontierCap: 8,
     broadPoolSize: 50,
     cadence: "daily",
     maxConcurrent: 1,
     memoryWriteback: false,
     perRunCostCeilingUsd: 0,
+    semanticFrontiers: { enabled: true, similarityThreshold: 0.67 },
   },
   outcomeMemory: {
     writeBack: true,
@@ -1035,6 +1523,14 @@ const SMART_IDEAS_DEFAULTS = {
     reinforceCap: 5,
     avoidCap: 5,
     searchLimit: 12,
+  },
+  graphReasoning: {
+    enabled: false,
+    maxHops: 2,
+    maxPaths: 8,
+    searchLimit: 25,
+    minDegree: 3,
+    maxDegree: 200,
   },
   incumbentExclusion: {
     enabled: true,
@@ -1046,6 +1542,14 @@ const SMART_IDEAS_DEFAULTS = {
     rejectThreshold: 2,
     softPenaltyThreshold: 2.5,
     topNIncumbents: 100,
+    hardVeto: true,
+    hardVetoThreshold: 4,
+    hardVetoDimensions: [
+      "regulated",
+      "capital",
+      "logistics",
+      "networkEffect",
+    ] as ("regulated" | "capital" | "logistics" | "networkEffect")[],
     builderProfile: {
       capital: "bootstrap",
       teamSize: 1,
@@ -1058,7 +1562,40 @@ const SMART_IDEAS_DEFAULTS = {
     enabled: true,
     maxBucketShare: 0.5,
     bucketBy: "archetype",
+    signalGuard: true,
+    maxSignalShare: 0.34,
   },
+  seedDiversity: {
+    enabled: true,
+    focusRotation: true,
+    focusSpread: 8,
+    highOpportunitySlice: 4,
+    recentAnchorLookback: 40,
+    painThemesLeadSummary: true,
+    maxLeadingPainThemes: 15,
+    echoChamberDownweight: true,
+    echoChamberFactor: 0.5,
+  },
+  independentJury: {
+    enabled: true,
+    penaltyWeight: 0.7,
+  },
+  shallowIdeation: {
+    enabled: false,
+    candidateCount: 30,
+    batchSize: 10,
+    model: "",
+  },
+  deepDevelopCount: 6,
+  stratifiedIntake: {
+    enabled: true,
+    perBucketCap: 8,
+    totalCap: 90,
+    fetchLimit: 100,
+    bucketBy: "signalCategory",
+  },
+  // 25 min: generous outer bound for the multi-LLM synthesis step.
+  synthesisDeadlineMs: 1_500_000,
 } as const;
 
 export const ideasPipelineConfigSchema = z
@@ -1082,8 +1619,7 @@ export const pipelinesConfigSchema = z
 export const opencrowConfigSchema = z.object({
   agent: agentConfigSchema.default({
     model: "claude-sonnet-4-6",
-    systemPrompt:
-      "You are OpenCrow, a helpful personal AI assistant. Be concise and direct.",
+    systemPrompt: "You are OpenCrow, a helpful personal AI assistant. Be concise and direct.",
     retry: { attempts: 3, minDelayMs: 500, maxDelayMs: 30000, jitter: 0.15 },
     compaction: {
       maxContextTokens: 180_000,
@@ -1111,6 +1647,7 @@ export const opencrowConfigSchema = z.object({
     port: 48081,
     host: "127.0.0.1",
   }),
+  browser: browserConfigSchema.default({ enabled: false }),
   tools: toolsConfigSchema.default({
     allowedDirectories: [DEFAULT_AGENT_WORKSPACE],
     blockedCommands: [...DEFAULT_BLOCKED_COMMANDS],
@@ -1139,6 +1676,10 @@ export const opencrowConfigSchema = z.object({
   rateLimit: rateLimitConfigSchema,
   memoryEviction: memoryEvictionConfigSchema.optional(),
   sige: sigeConfigSchema.optional(),
+  // Data ingestion → mem0. Top-level (shared infra), independent of `sige`.
+  ingestion: ingestionConfigSchema,
+  // Reddit corpus de-bias: curated allowlist + echo-chamber/crypto denylist.
+  redditCorpus: redditCorpusConfigSchema,
   pipelines: pipelinesConfigSchema.default({
     ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
   }),
@@ -1154,8 +1695,10 @@ export type CompactionConfig = z.infer<typeof compactionConfigSchema>;
 export type FailoverConfig = z.infer<typeof failoverConfigSchema>;
 export type ToolsConfig = z.infer<typeof toolsConfigSchema>;
 export type WebConfig = z.infer<typeof webConfigSchema>;
+export type BrowserConfig = z.infer<typeof browserConfigSchema>;
 export type CronConfig = z.infer<typeof cronConfigSchema>;
 export type MemorySearchConfig = z.infer<typeof memorySearchConfigSchema>;
+export type MemoryBackendKind = z.infer<typeof memoryBackendKindSchema>;
 export type PostgresConfig = z.infer<typeof postgresConfigSchema>;
 export type QdrantConfig = z.infer<typeof qdrantConfigSchema>;
 export type EmbeddingsConfig = z.infer<typeof embeddingsConfigSchema>;
@@ -1164,9 +1707,7 @@ export type ObservationsConfig = z.infer<typeof observationsConfigSchema>;
 export type ProcessSpec = z.infer<typeof processSpecSchema>;
 export type ProcessesConfig = z.infer<typeof processesConfigSchema>;
 export type AgentProcessesConfig = z.infer<typeof agentProcessesConfigSchema>;
-export type ScraperProcessesConfig = z.infer<
-  typeof scraperProcessesConfigSchema
->;
+export type ScraperProcessesConfig = z.infer<typeof scraperProcessesConfigSchema>;
 export type MonitorConfig = z.infer<typeof monitorConfigSchema>;
 export type MonitorThresholds = z.infer<typeof monitorThresholdsSchema>;
 export type ModelParams = z.infer<typeof modelParamsSchema>;
@@ -1174,6 +1715,7 @@ export type RateLimitConfig = z.infer<typeof rateLimitConfigSchema>;
 export type RateLimitPerSenderConfig = z.infer<typeof rateLimitPerSenderSchema>;
 export type MemoryEvictionConfig = z.infer<typeof memoryEvictionConfigSchema>;
 export type SigeConfig = z.infer<typeof sigeConfigSchema>;
+export type IngestionConfig = z.infer<typeof ingestionConfigSchema>;
 export type SmartIdeasConfig = z.infer<typeof smartConfigSchema>;
 export type GiantConfig = z.infer<typeof giantConfigSchema>;
 export type GenerateWideConfig = z.infer<typeof generateWideConfigSchema>;
@@ -1182,5 +1724,6 @@ export type SigeHardeningConfig = z.infer<typeof sigeHardeningConfigSchema>;
 export type TasteConfig = z.infer<typeof tasteConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;
+export type RedditCorpusConfig = z.infer<typeof redditCorpusConfigSchema>;
 // SigeAutoConfig and OutcomeMemoryConfig are also exported directly from their
 // schema declarations above.

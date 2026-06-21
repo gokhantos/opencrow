@@ -2,14 +2,17 @@ import { test, expect, describe } from "bun:test";
 import {
   parseCompetability,
   decideCompetability,
+  hardVetoCompetability,
   heuristicMoatFlags,
   buildCompetabilityPersisted,
   candidateCompetabilityPersisted,
   persistedToCandidateCompetability,
   type CompetabilityScore,
+  type CompetabilityDimension,
   ALWAYS_REJECT_OVERALL,
   DEFAULT_REJECT_THRESHOLD,
   DEFAULT_SOFT_PENALTY_THRESHOLD,
+  DEFAULT_HARD_VETO_THRESHOLD,
 } from "./competability";
 import { buildIncumbentSet } from "./incumbents";
 
@@ -102,6 +105,104 @@ describe("decideCompetability", () => {
     const s = score({ overall: 3 });
     expect(decideCompetability(s, { rejectThreshold: 3.5 }).pass).toBe(false);
     expect(decideCompetability(s, { rejectThreshold: 2 }).pass).toBe(true);
+  });
+});
+
+describe("hardVetoCompetability", () => {
+  const FATAL: readonly CompetabilityDimension[] = [
+    "regulated",
+    "capital",
+    "logistics",
+    "networkEffect",
+  ];
+
+  // A high overall (4.5) proves the veto fires INDEPENDENTLY of the composite —
+  // a passing overall must NOT rescue an idea with a fatal raw dimension.
+  function withDim(
+    dim: CompetabilityDimension,
+    value: number,
+  ): CompetabilityScore {
+    return score({
+      dimensions: { capital: 1, networkEffect: 1, logistics: 1, regulated: 1, [dim]: value },
+      overall: 4.5,
+    });
+  }
+
+  for (const dim of FATAL) {
+    test(`${dim} at raw ${DEFAULT_HARD_VETO_THRESHOLD} vetoes even when overall is high (4.5)`, () => {
+      const v = hardVetoCompetability(withDim(dim, DEFAULT_HARD_VETO_THRESHOLD));
+      expect(v.vetoed).toBe(true);
+      expect(v.dimension).toBe(dim);
+      expect(v.value).toBe(DEFAULT_HARD_VETO_THRESHOLD);
+      expect(v.reason).toContain(`${dim}=${DEFAULT_HARD_VETO_THRESHOLD}`);
+    });
+
+    test(`${dim} at raw 5 vetoes`, () => {
+      const v = hardVetoCompetability(withDim(dim, 5));
+      expect(v.vetoed).toBe(true);
+      expect(v.dimension).toBe(dim);
+      expect(v.value).toBe(5);
+    });
+
+    test(`${dim} at raw 3 (below threshold) is NOT vetoed`, () => {
+      const v = hardVetoCompetability(withDim(dim, 3));
+      expect(v.vetoed).toBe(false);
+      expect(v.dimension).toBeNull();
+      expect(v.value).toBeNull();
+      expect(v.reason).toBe("");
+    });
+  }
+
+  test("all four families are fatal at the default threshold (none escapes)", () => {
+    for (const dim of FATAL) {
+      expect(hardVetoCompetability(withDim(dim, 4)).vetoed).toBe(true);
+    }
+  });
+
+  test("an idea with all dims at raw 3 (overall low) is NOT vetoed", () => {
+    const v = hardVetoCompetability(
+      score({
+        dimensions: { capital: 3, networkEffect: 3, logistics: 3, regulated: 3 },
+        overall: 1,
+      }),
+    );
+    expect(v.vetoed).toBe(false);
+  });
+
+  test("respects a custom threshold", () => {
+    const s = withDim("regulated", 3);
+    expect(hardVetoCompetability(s, { threshold: 3 }).vetoed).toBe(true);
+    expect(hardVetoCompetability(s, { threshold: 4 }).vetoed).toBe(false);
+  });
+
+  test("respects a custom fatal-dimension subset (non-fatal dims ignored)", () => {
+    // Only `capital` is fatal here; a regulated==5 idea is NOT vetoed.
+    const regulatedHeavy = withDim("regulated", 5);
+    expect(
+      hardVetoCompetability(regulatedHeavy, { dimensions: ["capital"] }).vetoed,
+    ).toBe(false);
+    // But a capital==5 idea IS vetoed under the same subset.
+    expect(
+      hardVetoCompetability(withDim("capital", 5), { dimensions: ["capital"] }).vetoed,
+    ).toBe(true);
+  });
+
+  test("returns the FIRST breaching dimension deterministically", () => {
+    // capital precedes networkEffect in the default order; both breach.
+    const v = hardVetoCompetability(
+      score({
+        dimensions: { capital: 5, networkEffect: 5, logistics: 1, regulated: 1 },
+        overall: 1,
+      }),
+    );
+    expect(v.dimension).toBe("capital");
+  });
+
+  test("is PURE — does not mutate its input score", () => {
+    const s = withDim("logistics", 4);
+    const snapshot = JSON.stringify(s);
+    hardVetoCompetability(s);
+    expect(JSON.stringify(s)).toBe(snapshot);
   });
 });
 

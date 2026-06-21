@@ -73,6 +73,14 @@ function smartConfig() {
       avoidCap: 3,
       searchLimit: 10,
     },
+    graphReasoning: {
+      enabled: false,
+      maxHops: 3,
+      maxPaths: 8,
+      searchLimit: 25,
+      minDegree: 3,
+      maxDegree: 60,
+    },
     sigeValuation: false,
     sigeAuto: { broadPoolSize: 20, maxDeepFrontiers: 1, memoryWriteback: false },
   };
@@ -168,7 +176,7 @@ beforeEach(() => {
 
 describe("discoverIntersections — SEED directive injection", () => {
   test("directive present in seed prompt when supplied", async () => {
-    await discoverIntersections(trends, pains, capabilities, "model-x", false, DIRECTIVE);
+    await discoverIntersections(trends, pains, capabilities, "model-x", false, DIRECTIVE, "", "alibaba");
     expect(capturedPrompts.length).toBe(1);
     expect(capturedPrompts[0]).toContain("SEGMENT DIVERSITY (learned from past runs)");
     expect(capturedPrompts[0]).toContain("BALANCED SPREAD");
@@ -177,13 +185,13 @@ describe("discoverIntersections — SEED directive injection", () => {
   });
 
   test("no directive in seed prompt when empty string (byte-identical seed)", async () => {
-    await discoverIntersections(trends, pains, capabilities, "model-x", false, "");
+    await discoverIntersections(trends, pains, capabilities, "model-x", false, "", "", "alibaba");
     expect(capturedPrompts.length).toBe(1);
     expect(capturedPrompts[0]).not.toContain("SEGMENT DIVERSITY");
   });
 
-  test("default arg (omitted) injects nothing", async () => {
-    await discoverIntersections(trends, pains, capabilities, "model-x", false);
+  test("empty directive injects nothing (provider still required)", async () => {
+    await discoverIntersections(trends, pains, capabilities, "model-x", false, "", "", "alibaba");
     expect(capturedPrompts[0]).not.toContain("SEGMENT DIVERSITY");
   });
 });
@@ -198,6 +206,7 @@ describe("synthesizeFromTrends — directive gated on readAtSynthesis", () => {
     category: "general" as never,
     maxIdeas: 5,
     model: "model-x",
+    provider: "alibaba" as const,
   };
 
   test("readAtSynthesis ON → directive reaches the Pass-1 prompt", async () => {

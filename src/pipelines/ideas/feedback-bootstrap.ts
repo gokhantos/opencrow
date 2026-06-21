@@ -672,11 +672,6 @@ let cache: CacheEntry | null = null;
 /** Cache TTL: axis weights shift slowly; recompute at most once per interval. */
 const CALIBRATION_TTL_MS = 5 * 60_000;
 
-/** Reset the in-memory weight-calibration cache. Exposed for tests + refresh. */
-export function clearGiantWeightCache(): void {
-  cache = null;
-}
-
 /**
  * Load the current GIANT axis weights, gated behind
  * `smart.taste.calibrateGiantWeights` and cached for {@link CALIBRATION_TTL_MS}.

@@ -178,12 +178,8 @@ const TOOL_CATEGORY_OVERRIDES: Record<string, string> = {
   validate_code: "development",
   run_tests: "development",
   deploy: "development",
-  git_operations: "development",
 
   // Communication
-  web_fetch: "system",
-  agent_templates: "system",
-  manage_agent: "system",
   self_restart: "system",
 };
 

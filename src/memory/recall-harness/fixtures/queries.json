@@ -1,0 +1,20 @@
+{
+  "queries": [
+    "how do I make a slow PostgreSQL query faster",
+    "why does Postgres pick a sequential scan instead of an index",
+    "approximate nearest neighbor search for embeddings",
+    "combining keyword and semantic search for retrieval",
+    "how to keep search results diverse and avoid duplicates",
+    "what happens if I change my embedding model dimensions",
+    "autoscaling pods under bursty traffic",
+    "rolling back a bad production deploy instantly",
+    "protecting a service from a failing downstream dependency",
+    "defending an LLM against prompt injection from scraped content",
+    "grounding model answers in retrieved documents",
+    "keeping a long agent conversation within the token limit",
+    "how to get a crisp crust on homemade bread",
+    "why is my espresso shot sour",
+    "what causes earthquakes along fault lines",
+    "how do black holes form"
+  ]
+}

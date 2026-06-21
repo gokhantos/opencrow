@@ -12,6 +12,7 @@ import {
 import { scrapeRedditFeed, enrichPostsWithComments, type RawRedditPost } from "./reddit-scraper";
 import { getErrorMessage } from "../../lib/error-serialization";
 import { loadScraperIntervalMs } from "../scraper-config";
+import { redditCorpusConfigSchema, type RedditCorpusConfig } from "../../config/schema";
 
 const log = createLogger("reddit-scraper");
 
@@ -84,7 +85,14 @@ function rowsToPostsForIndex(
 
 export function createRedditScraper(config?: {
   memoryManager?: MemoryManager;
+  // Corpus de-bias config. Defaults to schema defaults (curated allowlist +
+  // echo-chamber denylist) when not provided, so the caller only needs to pass
+  // this when overriding from the app-level redditCorpus config.
+  redditCorpus?: RedditCorpusConfig;
 }): RedditScraper {
+  // Resolve corpus config once at construction time. Zod defaults fill in the
+  // curated allowlist + denylist so the caller can pass a partial or nothing.
+  const corpusConfig: RedditCorpusConfig = config?.redditCorpus ?? redditCorpusConfigSchema.parse({});
   let timer: ReturnType<typeof setInterval> | null = null;
   const running = new Set<string>();
 
@@ -95,7 +103,7 @@ export function createRedditScraper(config?: {
     // Stage 1: Fetch posts and persist immediately (survives restarts)
     let posts: readonly RawPost[];
     try {
-      posts = await scrapeRedditFeed(cookiesJson) as RawPost[];
+      posts = await scrapeRedditFeed(cookiesJson, corpusConfig) as RawPost[];
     } catch (err) {
       const msg = getErrorMessage(err);
       log.warn("Reddit scrape failed", { accountId, error: msg });

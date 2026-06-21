@@ -382,7 +382,8 @@ opencrow version    # Show version info
 ### Prerequisites
 
 - [Bun](https://bun.sh) runtime
-- Docker (for PostgreSQL, Qdrant)
+- **macOS (native path):** Homebrew — `postgresql@17` and `python@3.11`; [Ollama](https://ollama.com) for embeddings
+- **Linux / server path:** Docker (PostgreSQL + Qdrant run in containers)
 - Claude Agent SDK credentials (`~/.claude/.credentials.json`)
 
 ### Install
@@ -408,6 +409,31 @@ OPENCROW_WEB_PORT=48080                  # Web UI port
 ```
 
 ### Start services
+
+#### Native macOS (default local)
+
+Install prerequisites via Homebrew and pull the embeddings model:
+
+```bash
+brew install postgresql@17 python@3.11
+ollama pull nomic-embed-text
+```
+
+Provision and start all four services (Postgres, Qdrant, mem0, app) via launchd:
+
+```bash
+bun run src/cli.ts native up
+```
+
+Verify everything is healthy:
+
+```bash
+bun run src/cli.ts doctor
+```
+
+#### Docker (Linux server deploy)
+
+For a Linux server or any non-macOS host, use Docker Compose instead:
 
 ```bash
 docker compose up -d    # PostgreSQL + Qdrant

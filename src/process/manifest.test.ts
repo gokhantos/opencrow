@@ -119,31 +119,73 @@ describe("resolveManifest", () => {
     expect(specs.find((s) => s.name === "cron")?.heartbeat).toBeUndefined();
   });
 
-  test("registers sige-ingestion with IPC hung-detection disabled when sige enabled", () => {
-    const config = makeConfig({
-      processes: { static: [] },
-      sige: { enabled: true } as OpenCrowConfig["sige"],
-    });
+  test("registers ingestion with IPC hung-detection disabled by default", () => {
+    // Ingestion is a first-class domain, independent of `sige`. It defaults ON
+    // (config.ingestion.enabled !== false) and runs even without a sige section.
+    const config = makeConfig({ processes: { static: [] } });
     const specs = resolveManifest(config, []);
-    const ingestion = specs.find((s) => s.name === "sige-ingestion");
+    const ingestion = specs.find((s) => s.name === "ingestion");
     expect(ingestion).toBeDefined();
-    expect(ingestion?.entry).toBe("src/entries/sige-ingestion.ts");
+    expect(ingestion?.entry).toBe("src/entries/ingestion.ts");
     expect(ingestion?.heartbeat?.enabled).toBe(false);
   });
 
-  test("omits sige-ingestion when sige disabled", () => {
+  test("omits ingestion when config.ingestion.enabled === false", () => {
     const config = makeConfig({
+      processes: { static: [] },
+      ingestion: { enabled: false } as OpenCrowConfig["ingestion"],
+    });
+    const specs = resolveManifest(config, []);
+    expect(specs.some((s) => s.name === "ingestion")).toBe(false);
+  });
+
+  test("includes ingestion when config.ingestion.enabled === true", () => {
+    const config = makeConfig({
+      processes: { static: [] },
+      ingestion: { enabled: true } as OpenCrowConfig["ingestion"],
+    });
+    const specs = resolveManifest(config, []);
+    expect(specs.some((s) => s.name === "ingestion")).toBe(true);
+  });
+
+  test("runs ingestion INDEPENDENTLY of the sige idea engine", () => {
+    // Decoupled: ingestion keeps the shared corpus fresh whether or not SIGE is
+    // enabled (or even present). The `sige` process is gated only on sige.enabled.
+    const sigeDisabled = makeConfig({
       processes: { static: [] },
       sige: { enabled: false } as OpenCrowConfig["sige"],
     });
-    const specs = resolveManifest(config, []);
-    expect(specs.some((s) => s.name === "sige-ingestion")).toBe(false);
+    const sigeDisabledSpecs = resolveManifest(sigeDisabled, []);
+    expect(sigeDisabledSpecs.some((s) => s.name === "sige")).toBe(false);
+    expect(sigeDisabledSpecs.some((s) => s.name === "ingestion")).toBe(true);
+
+    const sigeEnabled = makeConfig({
+      processes: { static: [] },
+      sige: { enabled: true } as OpenCrowConfig["sige"],
+    });
+    const sigeEnabledSpecs = resolveManifest(sigeEnabled, []);
+    expect(sigeEnabledSpecs.some((s) => s.name === "sige")).toBe(true);
+    expect(sigeEnabledSpecs.some((s) => s.name === "ingestion")).toBe(true);
   });
 
-  test("omits sige-ingestion when sige section absent", () => {
+  test("omits ingestion when explicitly disabled even with sige enabled", () => {
+    const config = makeConfig({
+      processes: { static: [] },
+      sige: { enabled: true } as OpenCrowConfig["sige"],
+      ingestion: { enabled: false } as OpenCrowConfig["ingestion"],
+    });
+    const specs = resolveManifest(config, []);
+    // sige itself still runs so manual sessions execute via its poll loop.
+    expect(specs.some((s) => s.name === "sige")).toBe(true);
+    // The autonomous extraction loop must NOT be spawned.
+    expect(specs.some((s) => s.name === "ingestion")).toBe(false);
+  });
+
+  test("runs ingestion even when the sige section is absent", () => {
     const config = makeConfig({ processes: { static: [] } });
     const specs = resolveManifest(config, []);
-    expect(specs.some((s) => s.name === "sige-ingestion")).toBe(false);
+    expect(specs.some((s) => s.name === "sige")).toBe(false);
+    expect(specs.some((s) => s.name === "ingestion")).toBe(true);
   });
 
   test("spawns agent processes for agents with telegram tokens", () => {

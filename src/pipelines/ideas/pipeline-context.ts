@@ -19,6 +19,7 @@ import type { SmartIdeasConfig, TasteConfig } from "../../config/schema";
 import type { SigeConfig } from "../../config/schema";
 import { getIdeasByStage } from "../../sources/ideas/store";
 import { getDb } from "../../store/db";
+import type { ModelProvider } from "../../store/model-routing";
 import { credibilityKey, getSourceCredibility } from "./credibility";
 import type { DeepSearchOptions, ValidatedExemplar } from "./synthesizer";
 import { buildValidatedExemplars } from "./synthesizer";
@@ -221,6 +222,35 @@ export async function buildSaturatedThemes(memoryManager?: MemoryManager | null)
   }
 }
 
+/**
+ * Seed-diversity lever 1 helper: the distinct categories that RECENT generated
+ * ideas have anchored on. selectFocusCategories de-prioritizes these in its
+ * rotated tail so consecutive runs don't keep re-anchoring on the same corners
+ * of the category distribution. COMPLEMENTS buildSaturatedThemes() (which mines
+ * saturated THEME phrases, not store categories).
+ *
+ * Pure read-only; degrades to [] on any error so the caller's rotation falls
+ * back to the un-penalized seeded order.
+ */
+export async function loadRecentlyAnchoredCategories(limit = 40): Promise<readonly string[]> {
+  if (limit <= 0) return [];
+  try {
+    const db = getDb();
+    const rows = (await db`
+      SELECT DISTINCT category
+      FROM generated_ideas
+      WHERE pipeline_run_id IS NOT NULL
+        AND category IS NOT NULL AND category != ''
+        AND COALESCE(pipeline_stage, 'idea') != 'archived'
+      ORDER BY category
+      LIMIT ${limit}
+    `) as Array<{ category: string }>;
+    return rows.map((r) => r.category).filter((c): c is string => Boolean(c));
+  } catch {
+    return [];
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Exemplar fetchers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -387,9 +417,11 @@ export function buildDeepSearchOptions(
   model: string,
   smart: SmartIdeasConfig,
   sigeConfig: SigeConfig | undefined,
+  // REQUIRED routed provider (no Claude default) — threaded into the rerank call.
+  provider: ModelProvider,
 ): DeepSearchOptions {
   if (!smart.knowledgeGraphRetrieval) {
-    return { model };
+    return { model, provider };
   }
 
   const baseUrl = sigeConfig?.mem0.baseUrl ?? "http://127.0.0.1:8050";
@@ -397,10 +429,10 @@ export function buildDeepSearchOptions(
   const apiToken = sigeConfig?.mem0.apiToken;
 
   try {
-    return { model, mem0: new Mem0Client({ baseUrl, apiToken }), userId };
+    return { model, provider, mem0: new Mem0Client({ baseUrl, apiToken }), userId };
   } catch (err) {
     log.warn("Failed to build Mem0 client for graph retrieval — skipping graph branch", { err });
-    return { model };
+    return { model, provider };
   }
 }
 

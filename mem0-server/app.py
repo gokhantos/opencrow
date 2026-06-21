@@ -10,10 +10,21 @@ mem0 SDK instance wired to:
   - extraction   : Ollama   (host-native, via the OpenAI-compatible /v1 endpoint)
 
 This deliberately mirrors the client's request/response contract so no TypeScript
-client changes are needed. The `enable_graph` flag in request bodies is accepted and
-ignored — graph extraction is always on server-side because a graph_store is configured.
+client changes are needed.
+
+Two Memory instances back the ADD path, differing only in whether a graph_store is
+configured (same Qdrant collection / embedder / llm otherwise):
+  - `_memory`          — graph_store configured → graph extraction ON (SIGE writes).
+  - `_memory_nograph`  — no graph_store → graph phase skipped → ~embedding-latency
+                         fast (agent-memory writes, the Qdrant→mem0 migration path).
+The `enable_graph` flag in ADD request bodies is now HONORED: `enable_graph: false`
+routes the write to the graph-less instance; unset/true keeps the graph-on instance
+so SIGE's behavior is byte-identical. Reads (search/get_all/delete) always run on
+`_memory`; because both instances share the SAME Qdrant collection, graph-less writes
+are still returned by the existing search path (scoped by user_id).
 """
 import os
+import re
 import logging
 import secrets
 import time
@@ -21,10 +32,187 @@ import time
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
-from mem0 import Memory
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("mem0-sidecar")
+
+
+# ─── CRITICAL: neutralize mem0's per-call PostHog telemetry (thread leak) ───────
+# mem0 0.1.118's `mem0.memory.telemetry.capture_event` constructs a BRAND-NEW
+# `AnonymousTelemetry()` on EVERY call, which constructs a brand-new `Posthog`
+# client, which starts a daemon `Consumer` thread in its constructor and is never
+# `.shutdown()`/`.close()`'d. mem0 calls `capture_event` on every add / search /
+# get / _create_memory (per verbatim chunk on infer:false writes), so each write
+# permanently leaks ~1 live OS thread. The Consumer's `run()` is `while
+# self.running:` and `self.running` only flips on `pause()` (called from
+# `shutdown()`), so the thread never exits — a TRUE unbounded leak, not a
+# transient spike. Under a high-volume backfill the sidecar's thread count climbs
+# monotonically until it hits `ulimit -u` (4000) and the runtime raises
+# "can't start new thread", then even /health fails.
+#
+# `MEM0_TELEMETRY=false` does NOT fix this: that flag only sets
+# `posthog.disabled = True`, which gates *sending* — the Consumer thread is still
+# started in `Posthog.__init__` regardless (measured: 50 AnonymousTelemetry() with
+# MEM0_TELEMETRY=false still leaked 50+ threads). The robust fix is to stop the
+# per-call client construction entirely: replace `capture_event` /
+# `capture_client_event` with no-ops, and neuter `AnonymousTelemetry` so neither
+# the module-level `client_telemetry` singleton nor any stray construction can
+# spawn a Posthog Consumer.
+#
+# This is patched BEFORE `from mem0 import Memory` so that when `mem0.memory.main`
+# / `mem0.proxy.main` do `from mem0.memory.telemetry import capture_event` (a
+# by-name binding at import time), they bind the no-op. We also overwrite the name
+# in already-loaded mem0 namespaces defensively in case import order ever changes.
+# Self-hosted OpenCrow has no use for mem0's anonymous usage analytics, so dropping
+# them is purely upside. The vector/graph/embedder/LLM paths are untouched — only
+# the analytics side-channel is removed.
+def _disable_mem0_telemetry() -> None:
+    try:
+        import mem0.memory.telemetry as _tel
+    except Exception as err:  # noqa: BLE001 — never block startup on telemetry
+        log.warning("could not load mem0 telemetry module to disable it: %s", err)
+        return
+
+    def _noop_capture_event(*_args, **_kwargs) -> None:
+        return None
+
+    def _noop_capture_client_event(*_args, **_kwargs) -> None:
+        return None
+
+    # 1) Replace the functions at their source so any LATER by-name import binds
+    #    the no-op.
+    _tel.capture_event = _noop_capture_event
+    _tel.capture_client_event = _noop_capture_client_event
+
+    # 1b) CRITICAL: `mem0.memory.main` (and possibly `mem0.proxy.main`) is already
+    #     imported transitively by `import mem0` BEFORE this runs, and it did
+    #     `from mem0.memory.telemetry import capture_event` — a by-name binding
+    #     that captured the ORIGINAL function. Patching `_tel.capture_event` alone
+    #     does not update that already-bound copy, so the hot call sites
+    #     (`_create_memory`, `add`, `search`, …) would still construct a Posthog
+    #     client per call. Overwrite the by-name binding in every loaded module
+    #     that holds one.
+    import sys
+
+    for _mod in list(sys.modules.values()):
+        if _mod is None or getattr(_mod, "__name__", "").startswith("mem0") is False:
+            continue
+        if getattr(_mod, "capture_event", None) is not None:
+            _mod.capture_event = _noop_capture_event
+        if getattr(_mod, "capture_client_event", None) is not None:
+            _mod.capture_client_event = _noop_capture_client_event
+
+    # 2) Neuter the class so the module-level `client_telemetry` singleton (already
+    #    constructed at import of this module) and any stray construction can never
+    #    start a Posthog Consumer thread. We null out the posthog client and make
+    #    capture_event/close no-ops on every instance.
+    class _InertTelemetry:  # noqa: D401 — drop-in inert replacement
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.posthog = None
+            self.user_id = "disabled"
+
+        def capture_event(self, *_a, **_k) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    _tel.AnonymousTelemetry = _InertTelemetry
+    # The already-built singleton may hold a live Posthog client (1 thread).
+    # Shut it down so we don't even leak that one, then replace it.
+    try:
+        existing = getattr(_tel, "client_telemetry", None)
+        if existing is not None and getattr(existing, "posthog", None) is not None:
+            existing.posthog.shutdown()
+    except Exception:  # noqa: BLE001 — best-effort cleanup
+        pass
+    _tel.client_telemetry = _InertTelemetry()
+
+    log.info("mem0 telemetry disabled (no per-call PostHog client / thread leak)")
+
+
+_disable_mem0_telemetry()
+
+from mem0 import Memory  # noqa: E402 — imported AFTER telemetry is neutralized
+
+
+# ─── CRITICAL: make the Ollama embedder tolerate over-context chunks ────────────
+# mem0 0.1.118's `OllamaEmbedding.embed` calls the ollama-python client's LEGACY
+# `Client.embeddings(model=..., prompt=text)` → Ollama's deprecated
+# `POST /api/embeddings`. That path passes NO `options` and NO `truncate`, and —
+# verified against the live sidecar's Ollama — the legacy endpoint IGNORES
+# `options.num_ctx` and HARD-ERRORS (HTTP 500 "the input length exceeds the
+# context length") whenever a chunk's token count exceeds nomic-embed-text's
+# loaded context. nomic's modelfile loads a 2048-token context by default, so
+# dense content (reddit/markdown/URL-heavy) blows past it in ~4.5k chars. This
+# broke (a) the Qdrant→mem0 backfill (failed mid-run) and (b) every live SIGE /
+# agent-memory write of a dense chunk — both embed through this same code path.
+#
+# mem0 0.1.118 exposes NO config passthrough for `num_ctx`/`truncate`/endpoint
+# (the embedder config block only accepts model / ollama_base_url /
+# embedding_dims), so this cannot be fixed by config alone. We instead replace
+# `OllamaEmbedding.embed` with a drop-in that calls the MODERN
+# `Client.embed(model, input, truncate=True, options={"num_ctx": …})` →
+# `POST /api/embed`, which (verified live):
+#   - HONORS `options.num_ctx` (raise the window to nomic's supported 8192, so
+#     chunks up to ~8192 tokens embed with ZERO data loss — the 4,503-char
+#     reddit chunk fits fully), and
+#   - HONORS `truncate=True` (safety net: a genuinely huge >8192-token input is
+#     truncated to the window instead of erroring — lossy only for pathological
+#     inputs, but it NEVER 500s).
+# `num_ctx` alone is insufficient (a 28k-char input still exceeds 8192 tokens →
+# 400) and `truncate` alone keeps only 2048 tokens; combining both maximizes
+# fidelity while guaranteeing no error. This mirrors the OpenCrow Qdrant path
+# (`src/memory/embeddings.ts`), which already tolerates these same chunks because
+# Ollama's OpenAI-compatible `/v1/embeddings` truncates by default.
+#
+# Patched at the CLASS level, so it applies identically to BOTH Memory instances
+# (graph-on SIGE writes and graph-off agent-memory writes share the one embedder
+# class) — SIGE's graph path is otherwise byte-identical. The output (a list of
+# floats) and the EmbeddingBase contract are unchanged, so mem0's vector-store
+# and dimension handling are unaffected.
+def _patch_ollama_embedder_context() -> None:
+    try:
+        from mem0.embeddings.ollama import OllamaEmbedding
+    except Exception as err:  # noqa: BLE001 — never block startup on the patch
+        log.warning("could not patch Ollama embedder context: %s", err)
+        return
+
+    # Read directly (not via _int_env, which is defined later in this module —
+    # this patch runs at import time, right after `from mem0 import Memory`).
+    try:
+        num_ctx = int(os.environ.get("MEM0_EMBED_NUM_CTX", "8192"))
+    except (TypeError, ValueError):
+        num_ctx = 8192
+
+    def embed(self, text, memory_action=None):  # type: ignore[no-untyped-def]
+        # Modern /api/embed: honors num_ctx + truncate (legacy /api/embeddings
+        # ignores both and 500s on over-context input). truncate=True is the
+        # never-error guarantee; num_ctx=8192 keeps full fidelity up to nomic's
+        # supported ceiling so realistic chunks lose nothing.
+        response = self.client.embed(
+            model=self.config.model,
+            input=text,
+            truncate=True,
+            options={"num_ctx": num_ctx},
+        )
+        # /api/embed returns {"embeddings": [[...]]} (batched), vs legacy
+        # /api/embeddings' {"embedding": [...]}. We embed a single string, so the
+        # vector is embeddings[0]; fall back to the legacy key defensively.
+        embeddings = response.get("embeddings")
+        if embeddings:
+            return embeddings[0]
+        return response["embedding"]
+
+    OllamaEmbedding.embed = embed
+    log.info(
+        "Ollama embedder patched: /api/embed with num_ctx=%d + truncate "
+        "(no 500 on over-context chunks)",
+        num_ctx,
+    )
+
+
+_patch_ollama_embedder_context()
 
 
 # ─── Optional: disable hosted "reasoning"/thinking on the extraction LLM ───────
@@ -73,6 +261,137 @@ def _maybe_disable_thinking() -> None:
 
 
 _maybe_disable_thinking()
+
+
+# ─── Write-time relationship-type normalization (UPPERCASE canonical) ──────────
+# mem0 0.1.118's graph write path LOWERCASES every extracted relationship before
+# the Neo4j MERGE. In `mem0/memory/graph_memory.py`,
+# `MemoryGraph._remove_spaces_from_entities` does (≈ line 612):
+#
+#     item["relationship"] = sanitize_relationship_for_cypher(
+#         item["relationship"].lower().replace(" ", "_"))
+#
+# so every fresh graph edge lands lowercase (e.g. `complained_about`, `uses`,
+# `available_on`). But the mem0↔Neo4j graph is meant to be canonicalized to
+# UPPERCASE rel types: SIGE's REL_WHITELIST (src/sige/knowledge/neo4j-client.ts)
+# is UPPERCASE-only. Canonicalization currently runs ONLY as a weekly launchd
+# backfill (`ai.opencrow.canonicalize`, Sun 04:00, scripts/canonicalize-neo4j-
+# graph.py) with NO write-time enforcement, so the graph re-drifts to lowercase
+# within hours of each run.
+#
+# This patch enforces UPPERCASE AT WRITE so the graph is stored canonical at
+# rest, the weekly --refine has a near-zero rel-type tail, and other graph
+# consumers see canonical types. It complements (does not replace) the read-side
+# case-insensitive fix in neo4j-client.ts (`toUpper(type(r)) IN $relWhitelist`,
+# PR #247) — the two are defense-in-depth.
+#
+# Mechanism: wrap `sanitize_relationship_for_cypher` so its return value is
+# upper-cased. Because line 612 calls it as the OUTERMOST transform building the
+# final `item["relationship"]`, upper-casing its output guarantees every written
+# rel type is UPPERCASE canonical:
+#   "complained about" → .lower() → "complained_about"
+#                      → sanitize → "complained_about"
+#                      → .upper() → "COMPLAINED_ABOUT".
+# Deterministic, NO LLM call, fail-safe.
+#
+# SCOPE: relationship TYPES only. Node/entity labels (e.g. `function`,
+# `source_file`) are a SEPARATE axis — SIGE reads rels, not labels — and are left
+# to the weekly canonicalizer; we do NOT touch them, nor the vector/embedder/LLM/
+# Qdrant paths, the dual graph-on/graph-less design, or the response-shape
+# helpers (`_normalize_relation`/`_flatten_relations`).
+# Any char that is NOT a valid UNQUOTED Cypher identifier char. mem0 interpolates
+# the relationship straight into `MERGE (s)-[r:{relationship}]->(d)` with NO
+# backticks, so the rel type MUST be `[A-Za-z_][A-Za-z0-9_]*` or Neo4j raises a
+# SyntaxError and the WHOLE graph write 500s. mem0's `sanitize_relationship_for_
+# cypher` char-map misses some chars (notably `-` / ASCII `.`), so e.g. an
+# extracted "Postgres-only" → `IS_POSTGRES-ONLY` → `[r:IS_POSTGRES-ONLY]` →
+# `Invalid input '-'`. We coerce to a guaranteed-valid identifier as a backstop.
+_INVALID_REL_CHARS = re.compile(r"[^A-Za-z0-9_]")
+
+
+def _canonicalize_rel_type(s: str) -> str:
+    """Canonical rel-type form written to Neo4j: UPPERCASE, valid Cypher id.
+
+    UPPERCASE (matches SIGE's REL_WHITELIST) + coerced to a valid unquoted
+    Cypher relationship-type identifier: every non-`[A-Za-z0-9_]` char (hyphen,
+    ASCII period, etc. that mem0's own sanitizer leaves through) → `_`, runs of
+    `_` collapsed and trimmed, a leading digit prefixed with `_` (an identifier
+    cannot start with a digit), and an empty result falls back to `RELATED_TO`.
+    Pure string transform, no mem0 dependency — independently unit-testable.
+    """
+    out = _INVALID_REL_CHARS.sub("_", str(s).upper())
+    out = re.sub(r"_+", "_", out).strip("_")
+    if out and out[0].isdigit():
+        out = "_" + out
+    return out or "RELATED_TO"
+
+
+def _uppercase_relationship(orig):  # type: ignore[no-untyped-def]
+    """Wrap a `sanitize_relationship_for_cypher`-shaped fn to UPPERCASE its output."""
+
+    def wrapped(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return _canonicalize_rel_type(orig(*args, **kwargs))
+
+    # Tag so a re-import of this module never double-wraps (idempotent).
+    wrapped._reltype_upper_wrapped = True  # type: ignore[attr-defined]
+    return wrapped
+
+
+def _enable_reltype_write_normalization() -> None:
+    """Rebind `sanitize_relationship_for_cypher` to UPPERCASE its result.
+
+    `mem0/memory/graph_memory.py` does `from mem0.memory.utils import
+    sanitize_relationship_for_cypher` at import, so the name is bound INTO the
+    `graph_memory` module namespace. Line 612 resolves the call against THAT
+    module global — so rebinding `mem0.memory.graph_memory.sanitize_relationship_
+    for_cypher` is what actually takes effect at write time. We also rebind the
+    original home (`mem0.memory.utils`) for completeness. We explicitly import
+    `graph_memory` here because `from mem0 import Memory` does not eagerly load it
+    (it's imported lazily when a graph-enabled Memory is built); importing it now
+    forces the binding to exist before we patch it.
+
+    Fail-safe: if a future mem0 lays this out differently and the symbol is
+    missing, we WARN and continue — the read-side toUpper fix still covers
+    correctness if this no-ops. Never crash sidecar startup over it.
+    """
+    try:
+        import mem0.memory.graph_memory as _gm
+        import mem0.memory.utils as _utils
+    except Exception as err:  # noqa: BLE001 — best-effort; never block startup
+        log.warning(
+            "could not load mem0 graph modules for rel-type write normalization: %s",
+            err,
+        )
+        return
+
+    patched_any = False
+    for _mod in (_gm, _utils):
+        fn = getattr(_mod, "sanitize_relationship_for_cypher", None)
+        if fn is None:
+            log.warning(
+                "rel-type write normalization: sanitize_relationship_for_cypher "
+                "missing on %s (mem0 internals changed?) — skipping",
+                getattr(_mod, "__name__", _mod),
+            )
+            continue
+        if getattr(fn, "_reltype_upper_wrapped", False):
+            # Already wrapped (module re-imported) — idempotent no-op.
+            patched_any = True
+            continue
+        _mod.sanitize_relationship_for_cypher = _uppercase_relationship(fn)
+        patched_any = True
+
+    if patched_any:
+        # Distinctive string for deploy verification (greppable in startup logs).
+        log.info("graph rel-type write normalization active (UPPERCASE at write)")
+    else:
+        log.warning(
+            "graph rel-type write normalization NOT applied "
+            "(symbol missing on both modules) — relying on read-side toUpper fix"
+        )
+
+
+_enable_reltype_write_normalization()
 
 
 # ─── Inbound auth ───────────────────────────────────────────────────────────
@@ -184,7 +503,13 @@ def _build_llm_config() -> dict:
     }
 
 
-def build_config() -> dict:
+def _build_base_config() -> dict:
+    """
+    Everything shared by the graph-on and graph-less Memory instances: the SAME
+    Qdrant collection (so a graph-less write is visible to the existing search
+    path), embedder, and extraction llm. Deliberately omits `graph_store` — each
+    caller adds it (or not) to select whether mem0 runs its graph phase.
+    """
     return {
         "vector_store": {
             "provider": "qdrant",
@@ -195,7 +520,6 @@ def build_config() -> dict:
                 "embedding_model_dims": EMBED_DIMS,
             },
         },
-        "graph_store": _build_graph_config(),
         "llm": _build_llm_config(),
         "embedder": {
             "provider": "ollama",
@@ -210,8 +534,29 @@ def build_config() -> dict:
     }
 
 
+def build_config() -> dict:
+    """Graph-ON config (SIGE writes). Unchanged behavior: adds the graph_store."""
+    return {**_build_base_config(), "graph_store": _build_graph_config()}
+
+
+def build_config_nograph() -> dict:
+    """
+    Graph-OFF config (agent-memory writes). Identical vector_store/embedder/llm as
+    build_config(), but NO graph_store, so mem0 sets enable_graph=False and skips
+    the always-on entity/relation extraction LLM call (the measured ~7.4s/write).
+    Same Qdrant collection_name as the graph-on instance, so writes here remain
+    findable by the existing graph-on search path.
+    """
+    return _build_base_config()
+
+
 # ─── mem0 init (retry so the sidecar tolerates Qdrant/Neo4j boot ordering) ──────
+# Two instances against the SAME Qdrant collection:
+#   _memory          — graph_store configured → graph extraction ON  (SIGE).
+#   _memory_nograph  — no graph_store → graph phase skipped → fast    (agent mem).
+# Both init off-thread with retry so /health serves "initializing" during boot.
 _memory: Memory | None = None
+_memory_nograph: Memory | None = None
 
 
 def get_memory() -> Memory:
@@ -219,6 +564,15 @@ def get_memory() -> Memory:
     if _memory is None:
         raise HTTPException(status_code=503, detail="mem0 not initialized yet")
     return _memory
+
+
+def get_memory_nograph() -> Memory:
+    global _memory_nograph
+    if _memory_nograph is None:
+        raise HTTPException(
+            status_code=503, detail="mem0 (graph-less) not initialized yet"
+        )
+    return _memory_nograph
 
 
 def init_memory_with_retry(attempts: int = 30, delay_s: float = 3.0) -> None:
@@ -234,6 +588,26 @@ def init_memory_with_retry(attempts: int = 30, delay_s: float = 3.0) -> None:
             log.warning("mem0 init failed (attempt %d/%d): %s", i + 1, attempts, err)
             time.sleep(delay_s)
     log.error("mem0 init exhausted retries: %s", last_err)
+
+
+def init_memory_nograph_with_retry(attempts: int = 30, delay_s: float = 3.0) -> None:
+    global _memory_nograph
+    last_err: Exception | None = None
+    for i in range(attempts):
+        try:
+            _memory_nograph = Memory.from_config(build_config_nograph())
+            log.info("mem0 (graph-less) initialized (attempt %d)", i + 1)
+            return
+        except Exception as err:  # noqa: BLE001 — broad on purpose during boot
+            last_err = err
+            log.warning(
+                "mem0 (graph-less) init failed (attempt %d/%d): %s",
+                i + 1,
+                attempts,
+                err,
+            )
+            time.sleep(delay_s)
+    log.error("mem0 (graph-less) init exhausted retries: %s", last_err)
 
 
 # ─── Response normalization (match the TS client's mapMemory/mapRelation) ───────
@@ -297,14 +671,30 @@ class AddBody(BaseModel):
     messages: list[Message]
     user_id: str
     metadata: dict | None = None
-    enable_graph: bool | None = None  # accepted, ignored (graph always on)
+    # HONORED on the ADD path: False → graph-less instance (skips the ~7.4s graph
+    # extraction LLM call). None/True → graph-on instance (SIGE, byte-identical).
+    enable_graph: bool | None = None
+    # Whether mem0 should run its LLM "fact extraction" phase on the input.
+    # None → preserve mem0's own default (True). The OpenCrow memory backend
+    # passes infer=False to store verbatim chunks (parity with the Qdrant path);
+    # SIGE omits it, so its requests stay byte-identical to before this field.
+    infer: bool | None = None
 
 
 class SearchBody(BaseModel):
     query: str
     user_id: str
     limit: int | None = 30
-    enable_graph: bool | None = None  # accepted, ignored
+    # Search is NOT routed: it always runs on the graph-on `_memory`, which shares
+    # the Qdrant collection with the graph-less instance, so graph-less writes are
+    # still returned (scoped by user_id). enable_graph here only toggles whether
+    # the graph relation lookup is included; accepted as-is.
+    enable_graph: bool | None = None
+    # Optional top-level metadata-equality filters forwarded to mem0.search.
+    # Only passed through when provided, so omitting it yields a byte-identical
+    # call to mem.search(...) as before this field existed. Server-side filter
+    # support is version-dependent; callers also post-filter client-side.
+    filters: dict | None = None
 
 
 app = FastAPI(title="OpenCrow Mem0 Sidecar")
@@ -319,10 +709,12 @@ def _startup() -> None:
             "the sidecar (GHSA-jfv9-68m5-gjjr defense-in-depth)."
         )
     # Init off-thread so the server can serve /health (and report "initializing")
-    # while it retries connecting to Qdrant/Neo4j/Ollama on boot.
+    # while it retries connecting to Qdrant/Neo4j/Ollama on boot. Both instances
+    # init independently; neither blocks startup nor the other.
     import threading
 
     threading.Thread(target=init_memory_with_retry, daemon=True).start()
+    threading.Thread(target=init_memory_nograph_with_retry, daemon=True).start()
 
 
 @app.get("/health")
@@ -332,12 +724,19 @@ def health() -> dict:
 
 @app.post("/v1/memories/", dependencies=[Depends(require_token)])
 def add_memories(body: AddBody) -> dict:
-    mem = get_memory()
+    # Route the write: enable_graph=False → graph-less instance (no graph phase,
+    # ~embedding-latency fast); None/True → graph-on instance, byte-identical to
+    # the pre-split behavior so SIGE is unaffected. Both write the SAME Qdrant
+    # collection, so the graph-on search path still finds graph-less writes.
+    mem = get_memory_nograph() if body.enable_graph is False else get_memory()
     try:
         res = mem.add(
             messages=[m.model_dump() for m in body.messages],
             user_id=body.user_id,
             metadata=body.metadata or {},
+            # Preserve mem0's default (True) when unset — SIGE stays identical;
+            # the memory backend passes False to store verbatim chunks.
+            infer=(body.infer if body.infer is not None else True),
         )
     except Exception as err:  # noqa: BLE001
         log.exception("add failed")
@@ -349,7 +748,17 @@ def add_memories(body: AddBody) -> dict:
 def search_memories(body: SearchBody) -> dict:
     mem = get_memory()
     try:
-        res = mem.search(query=body.query, user_id=body.user_id, limit=body.limit or 30)
+        # Forward metadata filters only when supplied so the no-filter call is
+        # byte-identical to before this field existed.
+        if body.filters is not None:
+            res = mem.search(
+                query=body.query,
+                user_id=body.user_id,
+                limit=body.limit or 30,
+                filters=body.filters,
+            )
+        else:
+            res = mem.search(query=body.query, user_id=body.user_id, limit=body.limit or 30)
     except Exception as err:  # noqa: BLE001
         log.exception("search failed")
         raise HTTPException(status_code=500, detail=str(err)) from err

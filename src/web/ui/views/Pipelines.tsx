@@ -20,7 +20,7 @@ import { apiFetch, resumeRun, resumeInterruptedRuns } from "../api";
 import { usePolledFetch } from "../hooks/usePolledFetch";
 import { relativeTime, formatDuration } from "../lib/format";
 import { cn } from "../lib/cn";
-import { PageHeader, LoadingState, EmptyState } from "../components";
+import { PageHeader, LoadingState, EmptyState, ModelRoutePicker } from "../components";
 import { useToast } from "../components/Toast";
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -638,20 +638,20 @@ function PipelineCard({
           </div>
         </div>
 
+        {/* Never disabled: a pipeline can be launched again while prior runs
+            are still in flight — concurrent runs are independent (each POST
+            creates its own run row). isRunning is only an in-flight hint. */}
         <button
-          disabled={isRunning}
           onClick={() => onRun(pipeline.id)}
           className={cn(
             "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors shrink-0",
-            isRunning
-              ? "bg-bg-3 text-faint cursor-not-allowed"
-              : "bg-accent text-white cursor-pointer hover:bg-accent/80",
+            "bg-accent text-white cursor-pointer hover:bg-accent/80",
           )}
         >
           {isRunning ? (
             <>
               <Loader2 size={14} className="animate-spin" />
-              Running...
+              Run again
             </>
           ) : (
             <>
@@ -796,6 +796,14 @@ export default function Pipelines() {
         count={pipelines.length}
         subtitle="AI-powered idea generation from all your data sources"
       />
+
+      {/* Model Configuration */}
+      <div className="bg-bg-1 border border-border rounded-xl p-5 mb-6 transition-all duration-200 hover:border-border-hover">
+        <div className="text-xs font-semibold uppercase tracking-widest text-accent mb-4 pb-2 border-b border-border">
+          Model Configuration
+        </div>
+        <ModelRoutePicker processKey="pipeline.generator" label="Generator" />
+      </div>
 
       {/* Pipeline Cards */}
       {pipelines.length === 0 ? (

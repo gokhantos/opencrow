@@ -26,6 +26,28 @@ import type { TransactionSQL } from "bun";
 
 const log = createLogger("memory-indexer");
 
+/**
+ * Theme-Stratified Intake (Component 2) — map a signal source `kind` to the
+ * scraped-row table whose `signal_category` column mirrors the batch's
+ * LLM-extracted theme. This is a fixed ALLOW-LIST: the table name is only ever
+ * one of these hardcoded literals (never interpolated from `kind`), so the
+ * write-back below can switch on it and run a fully-static UPDATE per table.
+ * Kinds NOT present here (conversation, note, document, observation, idea,
+ * appstore/playstore variants) have no scraped-row table to mirror onto, so
+ * they get no UPDATE.
+ */
+const SIGNAL_CATEGORY_TABLE: Partial<Record<MemorySourceKind, string>> = {
+  reddit_post: "reddit_posts",
+  hackernews_story: "hn_stories",
+  github_repo: "github_repos",
+  producthunt_product: "ph_products",
+  x_post: "x_scraped_tweets",
+  reuters_news: "news_articles",
+  cointelegraph_news: "news_articles",
+  cryptopanic_news: "news_articles",
+  investingnews_news: "news_articles",
+};
+
 interface IndexerConfig {
   readonly embeddingProvider: EmbeddingProvider | null;
   readonly qdrantClient: QdrantClient | null;
@@ -60,8 +82,11 @@ interface ChunkResult {
  * Flatten an extracted facet profile into Qdrant-payload-safe scalar fields.
  * Returns an empty object when facets are absent (e.g. extraction disabled or
  * failed), so the default payload shape is unchanged.
+ *
+ * Exported so the offline facet-backfill tool builds the exact same payload
+ * shape as the live indexer instead of re-deriving it.
  */
-function facetsToPayload(
+export function facetsToPayload(
   facets: SignalFacets | null,
 ): Record<string, string | number> {
   if (!facets) {
@@ -264,6 +289,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     insertedChunks: readonly ChunkResult[],
     now: number,
     chunks: readonly string[],
+    rowIds: readonly string[],
   ): Promise<void> {
     if (insertedChunks.length === 0) {
       log.debug("All chunks deduplicated at insert time", { sourceId });
@@ -362,7 +388,96 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     // ranking payload onto the stored points. A slow or failing LLM can never
     // stall indexing. Scoped + gated inside maybeEnrichSignal (zero calls when
     // the kind is not a signal or the flags are off).
-    void enrichAndPatch(sourceId, kind, chunks, storedPointIds);
+    void enrichAndPatch(sourceId, kind, chunks, storedPointIds, rowIds);
+  }
+
+  /**
+   * Theme-Stratified Intake (Component 2) — mirror the batch's resolved
+   * `signalCategory` onto the scraped source rows so the collectors can bucket
+   * the seed pool by theme with zero added selection-time reads.
+   *
+   * SQL safety: the target table is chosen from the fixed SIGNAL_CATEGORY_TABLE
+   * allow-list via a switch into a fully-STATIC tagged template per table — the
+   * `kind` is never interpolated into SQL. `category` and `rowIds` are BOUND
+   * params. `rowIds` is bound as a PG array literal cast `::text[]` (mirrors the
+   * sibling search.ts:177/189 text-id ANY() pattern; the 6 target tables all
+   * have `id text`). No-op when the category is empty/"unknown", rowIds is empty,
+   * or the kind has no source table. Wrapped + non-fatal so it can never break
+   * indexing.
+   */
+  async function writeSignalCategory(
+    kind: MemorySourceKind,
+    category: string,
+    rowIds: readonly string[],
+  ): Promise<void> {
+    const table = SIGNAL_CATEGORY_TABLE[kind];
+    if (
+      table === undefined ||
+      rowIds.length === 0 ||
+      !category ||
+      category === "unknown"
+    ) {
+      return;
+    }
+    // The ids are scraped/external (reddit base36, github "owner/repo", news
+    // UUIDs, platform numeric ids) — NOT UUIDs, so we can't reuse assertUuids.
+    // They are joined into a PG array LITERAL string ("{a,b,c}") which Postgres
+    // re-parses element-by-element, so any id containing an array-literal
+    // metacharacter (comma, brace, quote, backslash, whitespace) would corrupt
+    // the parse and target the wrong rows. Drop such ids defensively (they are
+    // not produced by today's id formats); skip the write-back if none survive.
+    const safeIds = rowIds.filter((id) => /^[\w./:@-]+$/.test(id));
+    if (safeIds.length !== rowIds.length) {
+      log.warn("signal_category write-back dropped array-literal-unsafe ids", {
+        kind,
+        table,
+        dropped: rowIds.length - safeIds.length,
+      });
+    }
+    if (safeIds.length === 0) {
+      return;
+    }
+    try {
+      const db = getDb();
+      // PG array literal of the validated text ids, bound as a single ::text[]
+      // param (mirrors search.ts:177/189, minus its UUID assertion since these
+      // ids are intentionally non-UUID).
+      const idArray = `{${safeIds.join(",")}}`;
+      switch (table) {
+        case "reddit_posts":
+          await db`UPDATE reddit_posts SET signal_category = ${category} WHERE id = ANY(${idArray}::text[])`;
+          break;
+        case "hn_stories":
+          await db`UPDATE hn_stories SET signal_category = ${category} WHERE id = ANY(${idArray}::text[])`;
+          break;
+        case "github_repos":
+          await db`UPDATE github_repos SET signal_category = ${category} WHERE id = ANY(${idArray}::text[])`;
+          break;
+        case "ph_products":
+          await db`UPDATE ph_products SET signal_category = ${category} WHERE id = ANY(${idArray}::text[])`;
+          break;
+        case "x_scraped_tweets":
+          await db`UPDATE x_scraped_tweets SET signal_category = ${category} WHERE id = ANY(${idArray}::text[])`;
+          break;
+        case "news_articles":
+          await db`UPDATE news_articles SET signal_category = ${category} WHERE id = ANY(${idArray}::text[])`;
+          break;
+        default:
+          return;
+      }
+      log.debug("Mirrored signal_category onto source rows", {
+        kind,
+        table,
+        category,
+        rows: rowIds.length,
+      });
+    } catch (error) {
+      log.error("signal_category write-back failed (non-fatal)", {
+        kind,
+        table,
+        error,
+      });
+    }
   }
 
   /**
@@ -375,6 +490,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     kind: MemorySourceKind,
     chunks: readonly string[],
     storedPointIds: readonly string[],
+    rowIds: readonly string[],
   ): Promise<void> {
     try {
       const { facets, rankingPayload } = await maybeEnrichSignal(
@@ -382,6 +498,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         kind,
         chunks,
       );
+
+      // Theme-Stratified Intake: mirror the batch category onto the scraped
+      // source rows for theme-bucketing at selection time. Independent of the
+      // Qdrant payload patch below (own try/catch, never throws).
+      if (facets) {
+        await writeSignalCategory(kind, facets.category, rowIds);
+      }
 
       const payloadPatch = {
         ...facetsToPayload(facets),
@@ -425,6 +548,10 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
     kind: MemorySourceKind,
     metadataJson: string,
     chunks: readonly string[],
+    // Scraped-row PKs for this batch (signal kinds only). Threaded to the
+    // enrichment write-back so the batch's signalCategory can be mirrored onto
+    // the source rows. Empty for non-signal kinds (note/idea/observation/...).
+    rowIds: readonly string[] = [],
   ): Promise<string> {
     const db = getDb();
     const sourceId = crypto.randomUUID();
@@ -466,6 +593,7 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         insertedChunks,
         now,
         chunks,
+        rowIds,
       );
     }
 
@@ -488,7 +616,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         return itemChunks.length > 0 ? itemChunks : [text];
       });
 
-      const sourceId = await indexSourceWithChunks(agentId, "x_post", metadataJson, chunks);
+      const sourceId = await indexSourceWithChunks(
+        agentId,
+        "x_post",
+        metadataJson,
+        chunks,
+        tweets.map((t) => t.id),
+      );
 
       log.info("Indexed tweets", {
         agentId,
@@ -536,7 +670,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
           return itemChunks.length > 0 ? itemChunks : [text];
         });
 
-        const sourceId = await indexSourceWithChunks(agentId, kind, metadataJson, chunks);
+        const sourceId = await indexSourceWithChunks(
+          agentId,
+          kind,
+          metadataJson,
+          chunks,
+          group.map((a) => a.id),
+        );
         if (!firstSourceId) firstSourceId = sourceId;
 
         log.info("Indexed news", {
@@ -579,7 +719,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         return itemChunks.length > 0 ? itemChunks : [text];
       });
 
-      const sourceId = await indexSourceWithChunks(agentId, "producthunt_product", metadataJson, chunks);
+      const sourceId = await indexSourceWithChunks(
+        agentId,
+        "producthunt_product",
+        metadataJson,
+        chunks,
+        products.map((p) => p.id),
+      );
 
       log.info("Indexed products", {
         agentId,
@@ -611,7 +757,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         return itemChunks.length > 0 ? itemChunks : [text];
       });
 
-      const sourceId = await indexSourceWithChunks(agentId, "hackernews_story", metadataJson, chunks);
+      const sourceId = await indexSourceWithChunks(
+        agentId,
+        "hackernews_story",
+        metadataJson,
+        chunks,
+        stories.map((s) => s.id),
+      );
 
       log.info("Indexed stories", {
         agentId,
@@ -648,7 +800,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         return itemChunks.length > 0 ? itemChunks : [text];
       });
 
-      const sourceId = await indexSourceWithChunks(agentId, "reddit_post", metadataJson, chunks);
+      const sourceId = await indexSourceWithChunks(
+        agentId,
+        "reddit_post",
+        metadataJson,
+        chunks,
+        posts.map((p) => p.id),
+      );
 
       log.info("Indexed reddit posts", {
         agentId,
@@ -685,7 +843,13 @@ export function createMemoryIndexer(config: IndexerConfig): MemoryIndexer {
         return itemChunks.length > 0 ? itemChunks : [text];
       });
 
-      const sourceId = await indexSourceWithChunks(agentId, "github_repo", metadataJson, chunks);
+      const sourceId = await indexSourceWithChunks(
+        agentId,
+        "github_repo",
+        metadataJson,
+        chunks,
+        repos.map((r) => r.id),
+      );
 
       log.info("Indexed GitHub repos", {
         agentId,

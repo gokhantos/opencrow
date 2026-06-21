@@ -17,11 +17,28 @@ import { Hono } from "hono";
 import { chat } from "../../agent/chat";
 import type { AiProvider, ConversationMessage } from "../../agent/types";
 import { createLogger } from "../../logger";
+import { getSecret } from "../../config/secrets";
 
 const log = createLogger("internal-llm");
 
-const DEFAULT_MODEL = process.env.OPENCROW_INTERNAL_LLM_MODEL ?? "claude-haiku-4-5-20251001";
-const DEFAULT_PROVIDER = (process.env.OPENCROW_INTERNAL_LLM_PROVIDER ?? "agent-sdk") as AiProvider;
+const FALLBACK_MODEL = "claude-haiku-4-5-20251001";
+const FALLBACK_PROVIDER: AiProvider = "agent-sdk";
+
+/**
+ * Resolve the internal-LLM model + provider DB-first (Secrets UI) with env
+ * fallback, then a hardcoded default. Resolved per-request so a config change
+ * takes effect without a restart, mirroring the auth middleware in app.ts.
+ */
+async function resolveInternalLlmConfig(): Promise<{
+  defaultModel: string;
+  defaultProvider: AiProvider;
+}> {
+  const defaultModel =
+    (await getSecret("OPENCROW_INTERNAL_LLM_MODEL")) ?? FALLBACK_MODEL;
+  const defaultProvider = ((await getSecret("OPENCROW_INTERNAL_LLM_PROVIDER")) ??
+    FALLBACK_PROVIDER) as AiProvider;
+  return { defaultModel, defaultProvider };
+}
 
 /**
  * Hard server-side ceiling on output tokens. The internal proxy shares the
@@ -180,6 +197,8 @@ export function createInternalLlmRoutes(): Hono {
         return c.json({ error: { message: "messages is required" } }, 400);
       }
 
+      const { defaultModel, defaultProvider } = await resolveInternalLlmConfig();
+
       const { systemPrompt, conversation } = splitMessages(messages);
       const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
       const jsonMode = body.response_format?.type === "json_object";
@@ -193,7 +212,7 @@ export function createInternalLlmRoutes(): Hono {
       // Hard-cap output tokens and restrict the model to the haiku allowlist.
       const maxOutputTokens = Math.min(body.max_tokens ?? 2000, INTERNAL_MAX_TOKENS);
       const model =
-        body.model && INTERNAL_MODEL_ALLOWLIST.has(body.model) ? body.model : DEFAULT_MODEL;
+        body.model && INTERNAL_MODEL_ALLOWLIST.has(body.model) ? body.model : defaultModel;
 
       let text: string;
       let usage: { inputTokens: number; outputTokens: number } | undefined;
@@ -201,7 +220,7 @@ export function createInternalLlmRoutes(): Hono {
         const res = await chat(conversation, {
           systemPrompt: finalSystem,
           model,
-          provider: DEFAULT_PROVIDER,
+          provider: defaultProvider,
           maxOutputTokens,
           rawSystemPrompt: true,
           usageContext: { channel: "internal", chatId: "mem0", source: "subagent" },
@@ -220,7 +239,7 @@ export function createInternalLlmRoutes(): Hono {
         id: `chatcmpl-${created}`,
         object: "chat.completion",
         created,
-        model: DEFAULT_MODEL,
+        model: defaultModel,
         usage: {
           prompt_tokens: usage?.inputTokens ?? 0,
           completion_tokens: usage?.outputTokens ?? 0,

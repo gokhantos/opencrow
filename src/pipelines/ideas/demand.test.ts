@@ -7,10 +7,14 @@ import {
   ABSENCE_CONFIDENCE_CAP,
   DEMAND_KIND_WEIGHTS,
   extractDemandKeywords,
+  distinctKeywordHits,
+  DEFAULT_MIN_KEYWORD_HITS,
   aggregateDemand,
   hasCitedDemand,
   demandArtifactSchema,
   demandEvidenceSchema,
+  stemToken,
+  matchesKeyword,
   type DemandEvidence,
 } from "./demand";
 
@@ -96,6 +100,197 @@ describe("extractDemandKeywords", () => {
     expect(extractDemandKeywords({ title: "  ", summary: "the and or" })).toEqual(
       [],
     );
+  });
+
+  test("drops ultra-generic single tokens (genericness stoplist)", () => {
+    // These tokens are too common to indicate topical relevance; on their own
+    // they would match almost any scraped row and inflate the demand count.
+    const kws = extractDemandKeywords({
+      title: "tracking monitor restaurant",
+      summary: "health tracking app that helps everyone every day",
+    });
+    for (const generic of [
+      "tracking",
+      "monitor",
+      "restaurant",
+      "health",
+      "everyone",
+      "every",
+      "day",
+    ]) {
+      expect(kws).not.toContain(generic);
+    }
+  });
+
+  test("keeps a topical phrase even when its parts are generic unigrams", () => {
+    // "glucose monitoring": "monitoring" is generic alone, but the PHRASE is
+    // sharply topical, so the bigram survives while the lone "monitoring" does not.
+    const kws = extractDemandKeywords({
+      title: "glucose monitoring",
+      summary: "glucose monitoring for diabetes; glucose monitoring patterns",
+    });
+    expect(kws).toContain("glucose monitoring");
+    expect(kws).not.toContain("monitoring");
+    expect(kws).toContain("glucose");
+  });
+
+  test("drops a bigram made of two generic words", () => {
+    const kws = extractDemandKeywords({
+      title: "easy login health tracking",
+      summary: "easy login; health tracking",
+    });
+    expect(kws).not.toContain("easy login");
+  });
+});
+
+// ── distinctKeywordHits (RELEVANCE GATE primitive) ───────────────────────────
+
+describe("distinctKeywordHits", () => {
+  const KWS = ["glucose monitoring", "glucose", "diabetes", "insulin"] as const;
+
+  test("counts distinct keywords present, ignores absent ones", () => {
+    // "diabetes" + "insulin" co-occur; "glucose"/"glucose monitoring" absent.
+    expect(distinctKeywordHits("managing diabetes with insulin", KWS)).toBe(2);
+  });
+
+  test("a single non-phrase keyword counts as 1 (below the default gate)", () => {
+    expect(distinctKeywordHits("just some diabetes chatter", KWS)).toBe(1);
+    expect(1).toBeLessThan(DEFAULT_MIN_KEYWORD_HITS);
+  });
+
+  test("a multi-word phrase match counts as strong co-occurrence (>=2)", () => {
+    // The phrase alone clears the default gate — its parts already co-occurred.
+    const hits = distinctKeywordHits("review of glucose monitoring tools", KWS);
+    expect(hits).toBeGreaterThanOrEqual(DEFAULT_MIN_KEYWORD_HITS);
+  });
+
+  test("a repeated keyword does not inflate the hit count", () => {
+    expect(distinctKeywordHits("diabetes diabetes diabetes", KWS)).toBe(1);
+  });
+
+  test("returns 0 for empty haystack or empty keywords", () => {
+    expect(distinctKeywordHits("", KWS)).toBe(0);
+    expect(distinctKeywordHits("diabetes", [])).toBe(0);
+  });
+
+  test("phraseWeight is configurable", () => {
+    // Isolate the phrase contribution with a single-phrase keyword set.
+    const phraseOnly = ["staff scheduling"] as const;
+    expect(distinctKeywordHits("staff scheduling tool", phraseOnly, 1)).toBe(1);
+    expect(distinctKeywordHits("staff scheduling tool", phraseOnly, 3)).toBe(3);
+  });
+
+  // Lever 3 — fuzzy matching is inherited by distinctKeywordHits.
+  test("matches morphological variants via stemming (fuzzy on by default)", () => {
+    // "scheduling" keyword should match a row that says "scheduler"/"schedules".
+    const kws = ["scheduling", "overtime"] as const;
+    expect(
+      distinctKeywordHits("the scheduler keeps double-booking overtime", kws),
+    ).toBe(2);
+  });
+
+  test("rejects substring-only matches at word boundaries", () => {
+    // "cat" must NOT match inside "category" — the old includes() bug.
+    expect(distinctKeywordHits("a product category page", ["cat", "page"])).toBe(
+      1,
+    );
+  });
+
+  test("matches curated synonyms (payroll ↔ wages)", () => {
+    const kws = ["payroll", "compliance"] as const;
+    expect(
+      distinctKeywordHits("late wages and compliance headaches", kws),
+    ).toBe(2);
+  });
+
+  test("can be made literal via fuzzyMatch=false (restores old behavior)", () => {
+    // With fuzzy off, "scheduling" no longer matches "scheduler".
+    const kws = ["scheduling", "overtime"] as const;
+    expect(
+      distinctKeywordHits("the scheduler logs overtime", kws, 2, false),
+    ).toBe(1);
+  });
+});
+
+// ── stemToken (Lever 3 — PURE) ───────────────────────────────────────────────
+
+describe("stemToken", () => {
+  test("strips common inflections", () => {
+    expect(stemToken("schedules")).toBe(stemToken("schedule"));
+    expect(stemToken("scheduling")).toBe(stemToken("schedule"));
+    expect(stemToken("scheduled")).toBe(stemToken("schedule"));
+    expect(stemToken("scheduler")).toBe(stemToken("schedule"));
+  });
+
+  test("collapses -es plurals", () => {
+    expect(stemToken("invoices")).toBe(stemToken("invoice"));
+    expect(stemToken("boxes")).toBe(stemToken("box"));
+  });
+
+  test("does NOT over-stem distinct lexemes", () => {
+    // The classic over-stemming trap: "billing" must not collapse to "bill".
+    expect(stemToken("billing")).not.toBe(stemToken("bill"));
+    // Short words are left intact (no stripping below the safety length).
+    expect(stemToken("bed")).toBe("bed");
+    expect(stemToken("red")).toBe("red");
+    expect(stemToken("ring")).toBe("ring");
+  });
+
+  test("is deterministic and idempotent", () => {
+    const once = stemToken("reconciliations");
+    expect(stemToken("reconciliations")).toBe(once);
+    expect(stemToken(once)).toBe(once);
+  });
+
+  test("handles -tion → -t only where safe", () => {
+    // "automation" → "automat" (a real shared stem with "automate").
+    expect(stemToken("automation")).toBe(stemToken("automate"));
+  });
+});
+
+// ── matchesKeyword (Lever 3 — PURE) ──────────────────────────────────────────
+
+describe("matchesKeyword", () => {
+  test("exact word match", () => {
+    expect(matchesKeyword("manual invoice entry", "invoice")).toBe(true);
+  });
+
+  test("morphological variant match (stem)", () => {
+    expect(matchesKeyword("our scheduler is broken", "scheduling")).toBe(true);
+    expect(matchesKeyword("invoices piling up", "invoicing")).toBe(true);
+  });
+
+  test("word-boundary precision — rejects substrings", () => {
+    expect(matchesKeyword("the category list", "cat")).toBe(false);
+    expect(matchesKeyword("schedules slipping", "scheduling")).toBe(true); // stem
+    expect(matchesKeyword("a classic case", "lass")).toBe(false);
+  });
+
+  test("multi-word phrase keyword matches as a boundary phrase", () => {
+    expect(matchesKeyword("staff scheduling tool", "staff scheduling")).toBe(
+      true,
+    );
+    // The phrase parts must be adjacent (stemmed), not scattered.
+    expect(
+      matchesKeyword("staff hate the scheduling form", "staff scheduling"),
+    ).toBe(false);
+  });
+
+  test("curated synonym match", () => {
+    expect(matchesKeyword("we cut wages last month", "payroll")).toBe(true);
+    expect(matchesKeyword("billing disputes everywhere", "invoicing")).toBe(
+      true,
+    );
+  });
+
+  test("no false synonym beyond the curated map", () => {
+    // "payroll" must not match an unrelated word just because both are HR-ish.
+    expect(matchesKeyword("the manager approved it", "payroll")).toBe(false);
+  });
+
+  test("empty inputs are safe", () => {
+    expect(matchesKeyword("", "invoice")).toBe(false);
+    expect(matchesKeyword("invoice", "")).toBe(false);
   });
 });
 
@@ -259,16 +454,47 @@ describe("hasCitedDemand", () => {
     const art = aggregateDemand([ev({ kind: "funding_news", count: 10 })]);
     expect(hasCitedDemand(art)).toBe(true);
   });
+
+  test("review_complaint evidence counts as cited demand (escapes the cap)", () => {
+    const art = aggregateDemand([
+      ev({ kind: "review_complaint", count: 6, quote: "this app is broken" }),
+    ]);
+    expect(art.score).toBeGreaterThan(ABSENCE_SCORE_CAP);
+    expect(hasCitedDemand(art)).toBe(true);
+  });
+
+  test("hn_intent evidence counts as cited demand (escapes the cap)", () => {
+    const art = aggregateDemand([
+      ev({ kind: "hn_intent", count: 6, quote: "is there a tool for X" }),
+    ]);
+    expect(art.score).toBeGreaterThan(ABSENCE_SCORE_CAP);
+    expect(hasCitedDemand(art)).toBe(true);
+  });
 });
 
 // ── schema / shape guards ────────────────────────────────────────────────────
 
 describe("schemas", () => {
-  test("DEMAND_EVIDENCE_KINDS covers the four documented kinds", () => {
+  test("DEMAND_EVIDENCE_KINDS covers the documented kinds", () => {
     const kinds: string[] = [...DEMAND_EVIDENCE_KINDS];
     expect(kinds.sort()).toEqual(
-      ["funding_news", "hiring", "reddit_intent", "search_trend"].sort(),
+      [
+        "funding_news",
+        "hiring",
+        "hn_intent",
+        "reddit_intent",
+        "review_complaint",
+        "search_trend",
+        "semantic_corpus",
+        "x_intent",
+      ].sort(),
     );
+  });
+
+  test("every kind has a positive weight", () => {
+    for (const kind of DEMAND_EVIDENCE_KINDS) {
+      expect(DEMAND_KIND_WEIGHTS[kind]).toBeGreaterThan(0);
+    }
   });
 
   test("aggregateDemand output validates against demandArtifactSchema", () => {

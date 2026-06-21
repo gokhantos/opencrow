@@ -20,6 +20,8 @@ function printHelp(): void {
   w.write(
     "  update                          Pull latest + reinstall + restart\n",
   );
+  w.write("  native up                       Provision + start the native macOS stack\n");
+  w.write("  native restage-mem0             Fast mem0 sidecar redeploy (app.py only, no venv rebuild)\n");
   w.write("  version                         Show version info\n");
   w.write(
     "  service [core|web] <cmd>        Service management (install|reinstall|uninstall|start|stop|restart|status)\n",
@@ -37,6 +39,21 @@ async function main(): Promise<void> {
     case "doctor": {
       const { runDoctor } = await import("./cli/doctor.ts");
       await runDoctor();
+      break;
+    }
+
+    case "native": {
+      const sub = rest[0];
+      if (sub === "up") {
+        const { runNativeUp } = await import("./cli/native/provision.ts");
+        await runNativeUp();
+      } else if (sub === "restage-mem0") {
+        const { runNativeRestageMem0 } = await import("./cli/native/provision.ts");
+        await runNativeRestageMem0();
+      } else {
+        process.stderr.write("Usage: opencrow native <up|restage-mem0>\n");
+        process.exit(1);
+      }
       break;
     }
 

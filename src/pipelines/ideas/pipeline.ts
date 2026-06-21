@@ -22,12 +22,8 @@ import type { MemoryManager } from "../../memory/types";
 import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
-import {
-  findCompletedStep,
-  getPipelineRun,
-  markRunFailed,
-  updatePipelineRun,
-} from "../store";
+import { Neo4jReadClient } from "../../sige/knowledge/neo4j-client";
+import { findCompletedStep, getPipelineRun, markRunFailed, updatePipelineRun } from "../store";
 import { beginRun, endRun } from "../active-runs";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
 import type { CollectorContext } from "./collectors";
@@ -38,8 +34,11 @@ import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
 import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
 import { fetchOutcomeMemoryGuidance } from "./outcome-memory";
+import { fetchGraphReasoningDirective } from "./graph-reasoning";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import { getDb } from "../../store/db";
+import { getModelRoute } from "../../store/model-routing";
+import { resolveGeneratorRoute } from "./generator-route";
 import { annotateOriginality, checkForDuplicates, verifyEvidence } from "./validate";
 import { buildValidatedExemplars, deepSearch, synthesizeFromTrends } from "./synthesizer";
 
@@ -104,16 +103,20 @@ import {
   buildTasteBlocks,
   buildDeepSearchOptions,
   loadCredibilityPosteriors,
+  loadRecentlyAnchoredCategories,
 } from "./pipeline-context";
+import { selectFocusCategories } from "./collector-focus";
 import {
+  candidateJoinId,
   enforceSegmentSpread,
   summarizeSegmentSpread,
   paretoSelect,
   computeSigeConvergenceVeto,
   buildSignalsContext,
+  buildJuryPanel,
   type SigeSignals,
 } from "./pipeline-sige-math";
-import { computeDiversityReport, selectDiverse } from "./idea-diversity";
+import { computeDiversityReport, selectDiverse, selectDiverseBySignals } from "./idea-diversity";
 import {
   applySigeValuation,
   fetchDivergentCandidates,
@@ -125,6 +128,7 @@ import {
   runStorePhase,
   sanitizeError,
 } from "./pipeline-runner";
+import { applyIndependentJuryPenalty } from "./synthesizer-jury";
 import type { GeneratedIdeaCandidate } from "./types";
 
 const log = createLogger("pipeline:ideas");
@@ -157,6 +161,41 @@ export interface PipelineRunResult {
  *
  * Exported so it can be unit-tested without exercising the full pipeline.
  */
+/**
+ * Applies the min-quality filter over `giantSurvivors`, with a non-empty floor:
+ * if the filter would produce an empty set (all competability-passing candidates
+ * scored below `minQualityScore` — typically due to jury penalties), fall back to
+ * the top `min(maxIdeas, giantSurvivors.length)` candidates ranked by qualityScore
+ * desc, logging a structured warning.
+ *
+ * This guarantees a non-empty run whenever competability-passing candidates exist,
+ * without resurrecting competability-GATED (uncompetable) ideas.
+ *
+ * Exported so it can be unit-tested without exercising the full pipeline.
+ */
+export function applyMinQualityFloor(
+  giantSurvivors: readonly GeneratedIdeaCandidate[],
+  minQualityScore: number,
+  maxIdeas: number,
+): readonly GeneratedIdeaCandidate[] {
+  const filtered = giantSurvivors.filter((c) => c.qualityScore >= minQualityScore);
+  if (filtered.length > 0 || giantSurvivors.length === 0) {
+    return filtered;
+  }
+  // All competability-passing candidates are below the threshold (jury penalty
+  // drove scores down). Keep the top `maxIdeas` by qualityScore so the run
+  // produces at least one output rather than silently returning 0 ideas.
+  const sorted = [...giantSurvivors].sort((a, b) => b.qualityScore - a.qualityScore);
+  const kept = sorted.slice(0, maxIdeas);
+  const topQuality = kept[0]?.qualityScore ?? 0;
+  log.warn("Min-quality filter would empty the run; keeping top competability-passing candidates as floor", {
+    kept: kept.length,
+    topQuality,
+    minQualityScore,
+  });
+  return kept;
+}
+
 export function mergeSelectedIds(
   into: Map<string, string[]>,
   ids: ReadonlyMap<string, readonly string[]> | Record<string, readonly string[]> | undefined,
@@ -206,8 +245,27 @@ export async function runIdeasPipeline(
     startedAt: now(),
   });
 
+  // Hoisted so the `finally` can release the shared Neo4j driver regardless of
+  // where the run exits. Stays null unless graph reasoning is enabled (default).
+  let graphClient: Neo4jReadClient | null = null;
+
   try {
-    const model = config.model ?? "claude-sonnet-4-6";
+    // Model-routing is the source of truth for the idea generator's provider AND
+    // model. CRITICAL: model and provider must be resolved as a COUPLED PAIR
+    // from the SAME source — a model id is only valid for its own provider
+    // (e.g. `claude-sonnet-4-6` only on `anthropic`, `glm-5.2` only on
+    // `alibaba`). Resolving them independently (config.model ?? route.model with
+    // config.provider ?? route.provider) can mix a config model with the route's
+    // provider and send the model to the wrong API → "Model not exist". So an
+    // explicit operator override only applies when BOTH model and provider are
+    // set together; otherwise the `pipeline.generator` route (DB-backed, hot
+    // reloaded, dashboard-controlled) supplies BOTH. The provider is threaded
+    // through the synthesizer generation passes into buildChatOptions so a
+    // non-Anthropic route actually dispatches to that provider.
+    const { model, provider } = resolveGeneratorRoute(
+      config,
+      await getModelRoute("pipeline.generator"),
+    );
     const smart = loadConfig().pipelines.ideas.smart;
     const sigeConfig = loadConfig().sige;
     const taste = smart.taste;
@@ -222,6 +280,19 @@ export async function runIdeasPipeline(
         ? new Mem0Client({
             baseUrl: sigeConfig?.mem0.baseUrl ?? "http://127.0.0.1:8050",
             apiToken: sigeConfig?.mem0.apiToken,
+          })
+        : null;
+
+    // ── Graph reasoning: build a read-only Neo4j client ONCE, gated on BOTH the
+    //    feature flag AND the connection flag so neither alone constructs a
+    //    client (and the neo4j-driver import never loads when off — default).
+    const graphReasoningCfg = smart.graphReasoning;
+    graphClient =
+      graphReasoningCfg.enabled && sigeConfig?.neo4j.enabled
+        ? new Neo4jReadClient({
+            boltUrl: sigeConfig.neo4j.boltUrl,
+            user: sigeConfig.neo4j.user,
+            queryTimeoutMs: sigeConfig.neo4j.queryTimeoutMs,
           })
         : null;
 
@@ -272,21 +343,57 @@ export async function runIdeasPipeline(
     const trends = await runStep(
       runId,
       "landscape",
-      () => analyzeAppLandscape(model, collectorCtx),
+      () => analyzeAppLandscape(model, collectorCtx, provider),
       (t) =>
         `${t.trendingCategories.length} underserved categories identified from ${t.summary.split("\n").length} data points${t.insights ? " (with LLM insights)" : ""}`,
     );
 
     // ── Step 2: Cluster reviews (complaints + praises) ────────────────────
-    const focusCategories =
+    // Seed-diversity lever 1: when enabled, ROTATE which categories seed the run
+    // — keep a high-opportunity head (lowest-rated / most acute) but rotate the
+    // tail across the FULL category distribution by a per-run seed, avoiding
+    // categories recent runs already anchored on. Otherwise fall back to the
+    // existing behavior (all <=3.5-rated trending categories). Degrades to the
+    // fallback whenever categoryStats is unavailable (e.g. cached/older result).
+    const seedDiversity = smart.seedDiversity;
+    const fallbackFocus =
       trends.trendingCategories.length > 0
         ? trends.trendingCategories.map((c) => c.category)
         : undefined;
 
+    let focusCategories: readonly string[] | undefined = fallbackFocus;
+    if (
+      seedDiversity.enabled &&
+      seedDiversity.focusRotation &&
+      trends.categoryStats &&
+      trends.categoryStats.length > 0
+    ) {
+      const recentlyAnchored = await loadRecentlyAnchoredCategories(
+        seedDiversity.recentAnchorLookback,
+      );
+      const rotated = selectFocusCategories({
+        stats: trends.categoryStats,
+        spread: seedDiversity.focusSpread,
+        highOpportunitySlice: seedDiversity.highOpportunitySlice,
+        rotationSeed,
+        recentlyAnchored,
+      });
+      if (rotated.length > 0) {
+        focusCategories = rotated;
+        log.info("Seed-diversity lever 1: rotated focus categories", {
+          runId,
+          rotationSeed,
+          focusCategories: rotated,
+          recentlyAnchored: recentlyAnchored.length,
+          fromDistribution: trends.categoryStats.length,
+        });
+      }
+    }
+
     const pains = await runStep(
       runId,
       "reviews",
-      () => clusterReviews(focusCategories, model, collectorCtx),
+      () => clusterReviews(focusCategories, model, collectorCtx, provider),
       (p) =>
         `${p.clusters.length} review clusters across ${[...new Set(p.clusters.map((c) => c.category))].length} categories (complaints + praises)${p.insights ? " (with LLM insights)" : ""}`,
     );
@@ -295,7 +402,7 @@ export async function runIdeasPipeline(
     const capabilities = await runStep(
       runId,
       "capabilities",
-      () => scanCapabilities(model, collectorCtx),
+      () => scanCapabilities(model, collectorCtx, provider),
       (c) =>
         `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
     );
@@ -319,8 +426,7 @@ export async function runIdeasPipeline(
         findCompletedStep(runId, "reviews"),
         findCompletedStep(runId, "capabilities"),
       ]);
-      const hasCollectorCheckpoints =
-        lcCheck.hasOutput || rvCheck.hasOutput || cpCheck.hasOutput;
+      const hasCollectorCheckpoints = lcCheck.hasOutput || rvCheck.hasOutput || cpCheck.hasOutput;
 
       if (hasCollectorCheckpoints) {
         const reason =
@@ -346,7 +452,11 @@ export async function runIdeasPipeline(
         durationMs: nowMs() - startTime,
       };
 
-      await updatePipelineRun(runId, { status: "completed", resultSummary: summary, finishedAt: now() });
+      await updatePipelineRun(runId, {
+        status: "completed",
+        resultSummary: summary,
+        finishedAt: now(),
+      });
       return { runId, summary };
     }
 
@@ -357,7 +467,7 @@ export async function runIdeasPipeline(
         .slice(0, 6)
         .map((c) => `${c.category} mobile app opportunity`);
 
-      const deepSearchOptions = buildDeepSearchOptions(model, smart, sigeConfig);
+      const deepSearchOptions = buildDeepSearchOptions(model, smart, sigeConfig, provider);
 
       deepSearchContext = await runStep(
         runId,
@@ -431,6 +541,24 @@ export async function runIdeasPipeline(
     const outcomeMemory: string = guidance.block;
     const segmentDirective: string = guidance.segmentDirective;
 
+    // ── Graph-reasoning READ hook (gated on BOTH flags, default OFF) ──────────
+    // A single bounded Neo4j traversal → the Pass-1 OPPORTUNITY PATHS directive.
+    // Guarded on graphClient !== null and returns "" on any failure / empty
+    // graph / timeout (fetchGraphReasoningDirective never throws), so a default
+    // run is byte-identical to the pre-feature path.
+    const graphDirective: string =
+      graphReasoningCfg.enabled && graphClient !== null
+        ? await fetchGraphReasoningDirective({
+            client: graphClient,
+            userId: sigeConfig?.mem0.userId ?? "sige-global",
+            maxHops: graphReasoningCfg.maxHops,
+            maxPaths: graphReasoningCfg.maxPaths,
+            searchLimit: graphReasoningCfg.searchLimit,
+            minDegree: graphReasoningCfg.minDegree,
+            maxDegree: graphReasoningCfg.maxDegree,
+          })
+        : "";
+
     const synthesis = await runStep(
       runId,
       "synthesis",
@@ -446,9 +574,11 @@ export async function runIdeasPipeline(
           category: config.category,
           maxIdeas: config.maxIdeas,
           model,
+          provider,
           extraCandidates,
           outcomeMemory,
           segmentDirective,
+          graphDirective,
           // Audit the Pass-3 competability gate against this run, stamped with the
           // shared epoch-seconds `now()` helper (keeps synthesizer clock-free).
           pipelineRunId: runId,
@@ -457,6 +587,12 @@ export async function runIdeasPipeline(
       (s) =>
         `Generated ${s.totalGenerated} idea candidates from trend intersections` +
         (extraCandidates.length > 0 ? ` (incl. ${extraCandidates.length} SIGE-divergent)` : ""),
+      // Synthesis is the slowest step (Pass-1 intersections + Pass-2 deep-develop
+      // + Pass-3 critique + competability + demand + jury). Use the configurable
+      // synthesis deadline (default 25m, tunable 5–60m in Settings → Ideas) so a
+      // legitimately-slow-but-progressing run is not killed by the generic 12m
+      // DEFAULT_STEP_DEADLINE_MS.
+      smart.synthesisDeadlineMs,
     );
 
     // ── Step 6: Validate (3-layer dedup: exact + fuzzy + semantic) ────────
@@ -483,7 +619,10 @@ export async function runIdeasPipeline(
         const annotated = await annotateOriginality(kept, memoryManager, { agentId: AGENT_ID });
         kept = annotated;
         const withPriorArt = annotated.filter((c) => c.nearestProduct !== undefined).length;
-        log.info("generate-wide: originality annotated", { candidates: annotated.length, withPriorArt });
+        log.info("generate-wide: originality annotated", {
+          candidates: annotated.length,
+          withPriorArt,
+        });
       } catch (err) {
         log.warn("Originality annotation failed — proceeding unannotated", { err });
       }
@@ -548,7 +687,16 @@ export async function runIdeasPipeline(
     }
 
     // ── PHASE 2 (demand-side grounding): cited demand enrichment + rescore ──
-    const demandByCandidate = new Map<GeneratedIdeaCandidate, DemandArtifact>();
+    // Keyed by the candidate's normalized-title JOIN id ({@link candidateJoinId}),
+    // NOT by object reference: the demand artifact set here must survive the
+    // GIANT-gate, independent-jury and selection transforms below, all of which
+    // replace each candidate with a NEW immutable object (spread copies). An
+    // object-identity Map would miss for every candidate that passed through one
+    // of those transforms — the bug that left demand_json/demand_score NULL for
+    // all but one idea per run. Title is stable across every transform (none of
+    // them mutate it) and is already the canonical join key used by the jury and
+    // the SIGE-signals map.
+    const demandByCandidate = new Map<string, DemandArtifact>();
     if (smart.demand.enabled && kept.length > 0) {
       try {
         const demandCfg = buildEnrichDemandConfig(smart.demand);
@@ -560,7 +708,7 @@ export async function runIdeasPipeline(
             demandCfg,
           );
           const next = applyDemandRescore(candidate, artifact, effectiveGiant);
-          demandByCandidate.set(next, artifact);
+          demandByCandidate.set(candidateJoinId(next.title), artifact);
           rescored.push(next);
         }
         kept = rescored;
@@ -619,7 +767,36 @@ export async function runIdeasPipeline(
       }
     }
 
-    const qualityFiltered = giantSurvivors.filter((c) => c.qualityScore >= config.minQualityScore);
+    // ── INDEPENDENT JURY (main pipeline): the giant composite that backs
+    // quality_score is emitted by the SAME LLM that wrote the idea (Pass-3
+    // self-critique), so it is self-serving. Run the existing cross-family jury
+    // and pull DOWN any self-inflated quality (one-sided min-lean penalty;
+    // never inflates) BEFORE the min-quality filter + selection, so a skeptical
+    // verdict affects both. DOUBLE-JUDGE GUARD: the SIGE valuation path already
+    // ran its own jury this run (sigeOn), so skip here to run exactly one jury.
+    if (smart.independentJury.enabled && !sigeOn && giantSurvivors.length > 0) {
+      const panel = buildJuryPanel(smart.sige.judgeModels);
+      const { candidates: judged, stats } = await applyIndependentJuryPenalty(
+        giantSurvivors,
+        panel,
+        { lambda: smart.independentJury.penaltyWeight },
+      );
+      giantSurvivors = judged;
+      log.info("Independent jury (main pipeline) summary", {
+        evaluated: giantSurvivors.length,
+        judges: stats.judges,
+        meanAgreement: stats.meanAgreement,
+        penalized: stats.penalized,
+        meanPenalty: stats.meanPenalty,
+        penaltyWeight: smart.independentJury.penaltyWeight,
+      });
+    }
+
+    const qualityFiltered = applyMinQualityFloor(
+      giantSurvivors,
+      config.minQualityScore,
+      config.maxIdeas,
+    );
 
     // ── PHASE 1/3: final selection (Pareto when SIGE on, else novelty-reserve) ──
     let finalSelected: readonly GeneratedIdeaCandidate[] = qualityFiltered;
@@ -649,11 +826,37 @@ export async function runIdeasPipeline(
     // anti-starvation: re-orders the already-sized set, never shrinks it. ────────
     const diversityGuard = smart.diversityGuard;
     if (diversityGuard.enabled) {
-      finalSelected = selectDiverse(finalSelected, {
+      // The guards cap a bucket/signal's SHARE of the kept set, so they must see
+      // a pool LARGER than maxIdeas to have alternatives to swap in (a set already
+      // sized to maxIdeas would short-circuit unchanged). Build that pool by
+      // prefixing the primary-selected set (pareto/novelty/segment picks keep
+      // priority) with the remaining quality-ranked candidates as back-fill
+      // alternatives, de-duplicated by reference.
+      const primary = new Set(finalSelected);
+      const guardPool: readonly GeneratedIdeaCandidate[] = [
+        ...finalSelected,
+        ...qualityFiltered.filter((c) => !primary.has(c)),
+      ];
+      finalSelected = selectDiverse(guardPool, {
         maxIdeas: config.maxIdeas,
         maxBucketShare: diversityGuard.maxBucketShare,
         bucketBy: diversityGuard.bucketBy,
       });
+      // Compose the SIGNAL/SEED guard ON TOP of the archetype guard so a single
+      // source signal cannot seed many near-duplicate "reskins" that merely
+      // differ in archetype. Re-run over the SAME larger pool, seeded by the
+      // archetype-guarded picks first, so it too has alternatives to swap in.
+      if (diversityGuard.signalGuard) {
+        const archetypeKept = new Set(finalSelected);
+        const signalPool: readonly GeneratedIdeaCandidate[] = [
+          ...finalSelected,
+          ...guardPool.filter((c) => !archetypeKept.has(c)),
+        ];
+        finalSelected = selectDiverseBySignals(signalPool, {
+          maxIdeas: config.maxIdeas,
+          maxSignalShare: diversityGuard.maxSignalShare,
+        });
+      }
     }
     const diversityReport = computeDiversityReport(finalSelected, {
       bucketBy: diversityGuard.bucketBy,
@@ -666,6 +869,9 @@ export async function runIdeasPipeline(
       dominantArchetype: diversityReport.dominantArchetype,
       dominantShare: Number(diversityReport.dominantArchetypeShare.toFixed(2)),
       archetypeEntropy: Number(diversityReport.archetypeEntropy.toFixed(2)),
+      distinctSignals: diversityReport.distinctSignals,
+      dominantSignal: diversityReport.dominantSignal,
+      dominantSignalShare: Number(diversityReport.dominantSignalShare.toFixed(2)),
     });
 
     const spread = summarizeSegmentSpread(finalSelected);
@@ -694,9 +900,9 @@ export async function runIdeasPipeline(
     );
 
     // ── Step 7: Store ideas ───────────────────────────────────────────────
-    const runLevelProvenance: readonly ProvenanceEntry[] = [
-      ...mergedSelected.entries(),
-    ].flatMap(([table, selectedIds]) => selectedIds.map((id) => ({ table, id })));
+    const runLevelProvenance: readonly ProvenanceEntry[] = [...mergedSelected.entries()].flatMap(
+      ([table, selectedIds]) => selectedIds.map((id) => ({ table, id })),
+    );
 
     const ideaIds = await runStep(
       runId,
@@ -787,7 +993,11 @@ export async function runIdeasPipeline(
       archetypeEntropy: diversityReport.archetypeEntropy,
     };
 
-    await updatePipelineRun(runId, { status: "completed", resultSummary: summary, finishedAt: now() });
+    await updatePipelineRun(runId, {
+      status: "completed",
+      resultSummary: summary,
+      finishedAt: now(),
+    });
 
     log.info("Pipeline run complete", {
       runId,
@@ -806,6 +1016,8 @@ export async function runIdeasPipeline(
     });
     throw err;
   } finally {
+    // Release the shared Neo4j driver (best-effort, no-op when never connected).
+    await graphClient?.close();
     endRun(runId);
   }
 }

@@ -84,19 +84,6 @@ export async function apiFetch<T>(
   return body as T;
 }
 
-/**
- * Thin wrapper that always validates the response against a zod schema.
- * Prefer this at hot paths so a malformed payload surfaces as a typed
- * {@link ApiError} instead of crashing deep inside a component render.
- */
-export function apiFetchValidated<T>(
-  path: string,
-  schema: ZodType<T>,
-  options: RequestInit = {},
-): Promise<T> {
-  return apiFetch<T>(path, options, { schema });
-}
-
 export function setupChannel(
   id: string,
   input: Record<string, unknown>,

@@ -7,6 +7,7 @@ import {
   opencrowConfigSchema,
   pipelinesConfigSchema,
   SIGE_DEFAULT_JUDGE_MODELS,
+  sigeAutoConfigSchema,
   sigeHardeningConfigSchema,
   smartConfigSchema,
   tasteConfigSchema,
@@ -46,20 +47,30 @@ describe("smartConfigSchema", () => {
         maxCandidates: 40,
         multiSegment: true,
         sigeDivergent: false,
+        chunkSize: 2,
       },
       demand: {
         enabled: true,
         redditIntent: true,
         fundingSignal: true,
+        reviewComplaint: true,
+        hnIntent: true,
+        xIntent: true,
+        weakIntent: true,
+        weakIntentFactor: 0.35,
+        weakIntentMinEngagement: 1.5,
+        fuzzyMatch: true,
+        phSupply: true,
         externalTrends: false,
         minMatches: 2,
+        minKeywordHits: 2,
       },
       sige: {
         independentJudge: true,
         judgeModels: [
           { provider: "anthropic", model: "claude-haiku-4-5" },
           { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
-          { provider: "alibaba", model: "qwen3.5-plus" },
+          { provider: "alibaba", model: "qwen3.7-plus" },
         ],
         dissentWeight: 0.15,
         convergenceVetoThreshold: 0.85,
@@ -77,11 +88,13 @@ describe("smartConfigSchema", () => {
       sigeAuto: {
         enabled: false,
         maxDeepFrontiers: 1,
+        broadFrontierCap: 8,
         broadPoolSize: 50,
         cadence: "daily",
         maxConcurrent: 1,
         memoryWriteback: false,
         perRunCostCeilingUsd: 0,
+        semanticFrontiers: { enabled: true, similarityThreshold: 0.67 },
       },
       outcomeMemory: {
         writeBack: true,
@@ -89,6 +102,14 @@ describe("smartConfigSchema", () => {
         reinforceCap: 5,
         avoidCap: 5,
         searchLimit: 12,
+      },
+      graphReasoning: {
+        enabled: false,
+        maxHops: 2,
+        maxPaths: 8,
+        searchLimit: 25,
+        minDegree: 3,
+        maxDegree: 200,
       },
       incumbentExclusion: {
         enabled: true,
@@ -100,6 +121,9 @@ describe("smartConfigSchema", () => {
         rejectThreshold: 2,
         softPenaltyThreshold: 2.5,
         topNIncumbents: 100,
+        hardVeto: true,
+        hardVetoThreshold: 4,
+        hardVetoDimensions: ["regulated", "capital", "logistics", "networkEffect"],
         builderProfile: {
           capital: "bootstrap",
           teamSize: 1,
@@ -112,8 +136,89 @@ describe("smartConfigSchema", () => {
         enabled: true,
         maxBucketShare: 0.5,
         bucketBy: "archetype",
+        signalGuard: true,
+        maxSignalShare: 0.34,
       },
+      seedDiversity: {
+        enabled: true,
+        focusRotation: true,
+        focusSpread: 8,
+        highOpportunitySlice: 4,
+        recentAnchorLookback: 40,
+        painThemesLeadSummary: true,
+        maxLeadingPainThemes: 15,
+        echoChamberDownweight: true,
+        echoChamberFactor: 0.5,
+      },
+      independentJury: {
+        enabled: true,
+        penaltyWeight: 0.7,
+      },
+      shallowIdeation: {
+        enabled: false,
+        candidateCount: 30,
+        batchSize: 10,
+        model: "",
+      },
+      deepDevelopCount: 6,
+      stratifiedIntake: {
+        enabled: true,
+        perBucketCap: 8,
+        totalCap: 90,
+        fetchLimit: 100,
+        bucketBy: "signalCategory",
+      },
+      synthesisDeadlineMs: 1_500_000,
     });
+  });
+
+  test("seed-diversity levers default ON (pure-logic, attacks seed monoculture)", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.seedDiversity.enabled).toBe(true);
+    expect(parsed.seedDiversity.focusRotation).toBe(true);
+    expect(parsed.seedDiversity.painThemesLeadSummary).toBe(true);
+    expect(parsed.seedDiversity.echoChamberDownweight).toBe(true);
+    expect(parsed.seedDiversity.echoChamberFactor).toBe(0.5);
+  });
+
+  test("seed-diversity numeric bounds + echo factor range are enforced", () => {
+    expect(() => smartConfigSchema.parse({ seedDiversity: { echoChamberFactor: -0.1 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ seedDiversity: { echoChamberFactor: 1.1 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ seedDiversity: { focusSpread: 0 } })).toThrow();
+    const parsed = smartConfigSchema.parse({
+      seedDiversity: { enabled: false, focusRotation: false, echoChamberFactor: 0.25 },
+    });
+    expect(parsed.seedDiversity.enabled).toBe(false);
+    expect(parsed.seedDiversity.focusRotation).toBe(false);
+    expect(parsed.seedDiversity.echoChamberFactor).toBe(0.25);
+  });
+
+  test("Stage 2 shallowIdeation defaults OFF (reversible) with conservative knobs", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.shallowIdeation.enabled).toBe(false);
+    expect(parsed.shallowIdeation.candidateCount).toBe(30);
+    expect(parsed.shallowIdeation.batchSize).toBe(10);
+    expect(parsed.shallowIdeation.model).toBe("");
+    expect(parsed.deepDevelopCount).toBe(6);
+  });
+
+  test("Stage 2 bounds are enforced + overrides honored", () => {
+    expect(() => smartConfigSchema.parse({ shallowIdeation: { candidateCount: 3 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ shallowIdeation: { candidateCount: 121 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ shallowIdeation: { batchSize: 0 } })).toThrow();
+    expect(() => smartConfigSchema.parse({ deepDevelopCount: 0 })).toThrow();
+    expect(() => smartConfigSchema.parse({ deepDevelopCount: 21 })).toThrow();
+    const parsed = smartConfigSchema.parse({
+      shallowIdeation: { enabled: true, candidateCount: 24, batchSize: 8, model: "cheap-x" },
+      deepDevelopCount: 5,
+    });
+    expect(parsed.shallowIdeation).toEqual({
+      enabled: true,
+      candidateCount: 24,
+      batchSize: 8,
+      model: "cheap-x",
+    });
+    expect(parsed.deepDevelopCount).toBe(5);
   });
 
   test("Layer C incumbent exclusion defaults ON (pure-logic safe)", () => {
@@ -131,11 +236,13 @@ describe("smartConfigSchema", () => {
     expect(parsed.competability.softPenaltyThreshold).toBe(2.5);
   });
 
-  test("within-run diversity guard defaults ON (archetype, 0.5 share)", () => {
+  test("within-run diversity guard defaults ON (archetype, 0.5 share, signal guard 0.34)", () => {
     const parsed = smartConfigSchema.parse({});
     expect(parsed.diversityGuard.enabled).toBe(true);
     expect(parsed.diversityGuard.maxBucketShare).toBe(0.5);
     expect(parsed.diversityGuard.bucketBy).toBe("archetype");
+    expect(parsed.diversityGuard.signalGuard).toBe(true);
+    expect(parsed.diversityGuard.maxSignalShare).toBe(0.34);
   });
 
   test("diversity guard bounds + enum are enforced", () => {
@@ -149,6 +256,8 @@ describe("smartConfigSchema", () => {
       enabled: false,
       maxBucketShare: 0.3,
       bucketBy: "category",
+      signalGuard: true,
+      maxSignalShare: 0.34,
     });
   });
 
@@ -175,6 +284,16 @@ describe("smartConfigSchema", () => {
     expect(parsed.sigeAuto.memoryWriteback).toBe(false);
   });
 
+  test("graph reasoning defaults OFF with bounded traversal caps", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.graphReasoning.enabled).toBe(false);
+    expect(parsed.graphReasoning.maxHops).toBe(2);
+    expect(parsed.graphReasoning.maxPaths).toBe(8);
+    expect(parsed.graphReasoning.searchLimit).toBe(25);
+    expect(parsed.graphReasoning.minDegree).toBe(3);
+    expect(parsed.graphReasoning.maxDegree).toBe(200);
+  });
+
   test("signalRanking defaults OFF and is gated on top of signalFacets", () => {
     expect(smartConfigSchema.parse({}).signalRanking).toBe(false);
     const parsed = smartConfigSchema.parse({
@@ -188,17 +307,14 @@ describe("smartConfigSchema", () => {
   test("signalImportanceFloor defaults to low and accepts the bucket enum", () => {
     expect(smartConfigSchema.parse({}).signalImportanceFloor).toBe("low");
     for (const floor of ["noise", "low", "medium", "high"] as const) {
-      expect(
-        smartConfigSchema.parse({ signalImportanceFloor: floor })
-          .signalImportanceFloor,
-      ).toBe(floor);
+      expect(smartConfigSchema.parse({ signalImportanceFloor: floor }).signalImportanceFloor).toBe(
+        floor,
+      );
     }
   });
 
   test("signalImportanceFloor rejects values outside the bucket enum", () => {
-    expect(() =>
-      smartConfigSchema.parse({ signalImportanceFloor: "critical" }),
-    ).toThrow();
+    expect(() => smartConfigSchema.parse({ signalImportanceFloor: "critical" })).toThrow();
   });
 
   test("pure-logic flags default ON", () => {
@@ -222,6 +338,54 @@ describe("smartConfigSchema", () => {
     });
     expect(parsed.sigeValuation).toBe(true);
     expect(parsed.rerankTopK).toBe(12);
+  });
+
+  test("synthesisDeadlineMs defaults to 25 min (1_500_000 ms)", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.synthesisDeadlineMs).toBe(1_500_000);
+  });
+
+  test("synthesisDeadlineMs rejects values below 5 min (300_000 ms)", () => {
+    expect(() => smartConfigSchema.parse({ synthesisDeadlineMs: 299_999 })).toThrow();
+    expect(() => smartConfigSchema.parse({ synthesisDeadlineMs: 0 })).toThrow();
+  });
+
+  test("synthesisDeadlineMs rejects values above 60 min (3_600_000 ms)", () => {
+    expect(() => smartConfigSchema.parse({ synthesisDeadlineMs: 3_600_001 })).toThrow();
+  });
+
+  test("synthesisDeadlineMs accepts values at the min and max boundaries", () => {
+    expect(smartConfigSchema.parse({ synthesisDeadlineMs: 300_000 }).synthesisDeadlineMs).toBe(
+      300_000,
+    );
+    expect(smartConfigSchema.parse({ synthesisDeadlineMs: 3_600_000 }).synthesisDeadlineMs).toBe(
+      3_600_000,
+    );
+  });
+
+  test("synthesisDeadlineMs is reachable via the opencrowConfigSchema access path", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBe(1_500_000);
+  });
+});
+
+describe("sigeAutoConfigSchema", () => {
+  test("maxDeepFrontiers defaults to 1 (selectDiverseBy handles frontier diversity)", () => {
+    const parsed = sigeAutoConfigSchema.parse({});
+    expect(parsed.maxDeepFrontiers).toBe(1);
+  });
+
+  test("maxDeepFrontiers accepts values up to 8", () => {
+    const parsed = sigeAutoConfigSchema.parse({ maxDeepFrontiers: 8 });
+    expect(parsed.maxDeepFrontiers).toBe(8);
+  });
+
+  test("maxDeepFrontiers rejects values above 8", () => {
+    expect(() => sigeAutoConfigSchema.parse({ maxDeepFrontiers: 9 })).toThrow();
+  });
+
+  test("maxDeepFrontiers still enforces minimum of 1", () => {
+    expect(() => sigeAutoConfigSchema.parse({ maxDeepFrontiers: 0 })).toThrow();
   });
 });
 
@@ -252,10 +416,7 @@ describe("giantConfigSchema", () => {
   });
 
   test("default weights sum to 1.0", () => {
-    const sum = Object.values(GIANT_DEFAULT_WEIGHTS).reduce(
-      (acc, w) => acc + w,
-      0,
-    );
+    const sum = Object.values(GIANT_DEFAULT_WEIGHTS).reduce((acc, w) => acc + w, 0);
     expect(sum).toBeCloseTo(1, 10);
   });
 
@@ -301,14 +462,12 @@ describe("sigeHardeningConfigSchema", () => {
     expect(parsed.judgeModels).toEqual([
       { provider: "anthropic", model: "claude-haiku-4-5" },
       { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
-      { provider: "alibaba", model: "qwen3.5-plus" },
+      { provider: "alibaba", model: "qwen3.7-plus" },
     ]);
   });
 
   test("default judgeModels match exported SIGE_DEFAULT_JUDGE_MODELS", () => {
-    expect(sigeHardeningConfigSchema.parse({}).judgeModels).toEqual([
-      ...SIGE_DEFAULT_JUDGE_MODELS,
-    ]);
+    expect(sigeHardeningConfigSchema.parse({}).judgeModels).toEqual([...SIGE_DEFAULT_JUDGE_MODELS]);
   });
 
   test("honors explicit overrides on every field", () => {
@@ -320,18 +479,14 @@ describe("sigeHardeningConfigSchema", () => {
       deepTier: false,
     });
     expect(parsed.independentJudge).toBe(false);
-    expect(parsed.judgeModels).toEqual([
-      { provider: "anthropic", model: "claude-sonnet-4-6" },
-    ]);
+    expect(parsed.judgeModels).toEqual([{ provider: "anthropic", model: "claude-sonnet-4-6" }]);
     expect(parsed.dissentWeight).toBe(0.4);
     expect(parsed.convergenceVetoThreshold).toBe(0.7);
     expect(parsed.deepTier).toBe(false);
   });
 
   test("rejects judgeModels missing provider/model", () => {
-    expect(() =>
-      sigeHardeningConfigSchema.parse({ judgeModels: [{ provider: "x" }] }),
-    ).toThrow();
+    expect(() => sigeHardeningConfigSchema.parse({ judgeModels: [{ provider: "x" }] })).toThrow();
   });
 
   test("is reachable via the documented smart.sige access path", () => {
@@ -374,24 +529,14 @@ describe("tasteConfigSchema", () => {
     expect(() => tasteConfigSchema.parse({ exemplarCount: 0 })).toThrow();
     expect(() => tasteConfigSchema.parse({ exemplarCount: 13 })).toThrow();
     expect(tasteConfigSchema.parse({ exemplarCount: 1 }).exemplarCount).toBe(1);
-    expect(tasteConfigSchema.parse({ exemplarCount: 12 }).exemplarCount).toBe(
-      12,
-    );
+    expect(tasteConfigSchema.parse({ exemplarCount: 12 }).exemplarCount).toBe(12);
   });
 
   test("goldenMinHumanLabels accepts zero and positive integers", () => {
-    expect(tasteConfigSchema.parse({ goldenMinHumanLabels: 0 }).goldenMinHumanLabels).toBe(
-      0,
-    );
-    expect(
-      tasteConfigSchema.parse({ goldenMinHumanLabels: 25 }).goldenMinHumanLabels,
-    ).toBe(25);
-    expect(() =>
-      tasteConfigSchema.parse({ goldenMinHumanLabels: -1 }),
-    ).toThrow();
-    expect(() =>
-      tasteConfigSchema.parse({ goldenMinHumanLabels: 1.5 }),
-    ).toThrow();
+    expect(tasteConfigSchema.parse({ goldenMinHumanLabels: 0 }).goldenMinHumanLabels).toBe(0);
+    expect(tasteConfigSchema.parse({ goldenMinHumanLabels: 25 }).goldenMinHumanLabels).toBe(25);
+    expect(() => tasteConfigSchema.parse({ goldenMinHumanLabels: -1 })).toThrow();
+    expect(() => tasteConfigSchema.parse({ goldenMinHumanLabels: 1.5 })).toThrow();
   });
 
   test("honors explicit overrides on every field", () => {
@@ -430,18 +575,12 @@ describe("tasteConfigSchema", () => {
 describe("pipelines.ideas.smart backward compatibility", () => {
   test("ideasPipelineConfigSchema yields smart defaults when empty", () => {
     expect(ideasPipelineConfigSchema.parse({}).smart.rerankTopK).toBe(6);
-    expect(ideasPipelineConfigSchema.parse(undefined).smart.sigeValuation).toBe(
-      false,
-    );
+    expect(ideasPipelineConfigSchema.parse(undefined).smart.sigeValuation).toBe(false);
   });
 
   test("pipelinesConfigSchema yields ideas.smart defaults when empty", () => {
-    expect(pipelinesConfigSchema.parse({}).ideas.smart.adaptiveCollection).toBe(
-      true,
-    );
-    expect(pipelinesConfigSchema.parse(undefined).ideas.smart.rerankFetchK).toBe(
-      30,
-    );
+    expect(pipelinesConfigSchema.parse({}).ideas.smart.adaptiveCollection).toBe(true);
+    expect(pipelinesConfigSchema.parse(undefined).ideas.smart.rerankFetchK).toBe(30);
   });
 
   test("full config without pipelines still validates with smart defaults", () => {

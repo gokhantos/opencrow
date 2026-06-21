@@ -14,7 +14,7 @@ const log = createLogger("agents:registry");
 /**
  * Fail-closed default: a conservative allowlist (read/research/memory + read-only
  * scraper/search tools), NEVER `mode:"all"`. High-impact tools (bash, write_file,
- * db_query, process_manage, manage_agent, …) are never granted implicitly — an
+ * db_query, process_manage, spawn_agent, …) are never granted implicitly — an
  * agent must list them explicitly in its own toolFilter. See src/tools/privilege.ts.
  */
 const DEFAULT_TOOL_FILTER: ToolFilter = FAIL_CLOSED_DEFAULT_TOOL_FILTER;

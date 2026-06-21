@@ -1,25 +1,10 @@
 import { apiFetch } from "../../api";
 import type {
-  SigeSession,
-  SigeSessionDetail,
   FusedScore,
   PopulationEntry,
-  SessionProgress,
   RoundLedger,
 } from "./types";
 import type { GraphView } from "../../../../sige/knowledge/graph-query";
-
-interface ListSessionsResponse {
-  readonly success: boolean;
-  readonly data: {
-    readonly sessions: readonly SigeSession[];
-  };
-}
-
-interface SessionResponse {
-  readonly success: boolean;
-  readonly data: SigeSessionDetail;
-}
 
 interface CreateSessionResponse {
   readonly success: boolean;
@@ -56,16 +41,6 @@ export interface SigeCreateConfig {
   readonly model?: string;
 }
 
-export async function fetchSessions(): Promise<readonly SigeSession[]> {
-  const res = await apiFetch<ListSessionsResponse>("/api/sige/sessions");
-  return res.data.sessions;
-}
-
-export async function fetchSession(id: string): Promise<SigeSessionDetail> {
-  const res = await apiFetch<SessionResponse>(`/api/sige/sessions/${id}`);
-  return res.data;
-}
-
 export async function createSession(
   seedInput: string,
   config?: SigeCreateConfig,
@@ -98,20 +73,6 @@ export async function fetchPopulationDynamics(
 
 export async function cancelSession(id: string): Promise<void> {
   await apiFetch(`/api/sige/sessions/${id}`, { method: "DELETE" });
-}
-
-interface ProgressResponse {
-  readonly success: boolean;
-  readonly data: SessionProgress;
-}
-
-export async function fetchSessionProgress(
-  id: string,
-): Promise<SessionProgress> {
-  const res = await apiFetch<ProgressResponse>(
-    `/api/sige/sessions/${id}/progress`,
-  );
-  return res.data;
 }
 
 interface GraphResponse {

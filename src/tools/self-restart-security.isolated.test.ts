@@ -139,6 +139,25 @@ describe("process_manage — security branches (isolated)", () => {
     expect(recordedCalls.length).toBe(0);
   });
 
+  // (a2) Self-targeting the shared `web` process → denied before any
+  // control-plane call. This is the restart-loop guard: a SIGE/pipeline run
+  // executing in-process under `web` defaults its target to "web".
+  test("rejects self-restart of the shared web process before any control-plane call", async () => {
+    // Default owner is "web" (no agent/scraper env) → target defaults to "web".
+    installFetch({ data: [] });
+
+    const tool = createSelfRestartTool();
+    const result = await tool.execute({
+      action: "restart",
+      reason: "web-hosted run attempting self-restart",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("shared infrastructure process");
+    // Short-circuits before the list lookup AND the mutating call.
+    expect(recordedCalls.length).toBe(0);
+  });
+
   // (b) Process-list lookup failure → fail closed (no mutating call).
   test("fails closed when the process-list lookup fails", async () => {
     const prev = process.env.OPENCROW_AGENT_ID;

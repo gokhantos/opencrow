@@ -36,8 +36,6 @@ describe("HIGH_IMPACT_TOOLS", () => {
     "cron_trigger",
     "spawn_agent",
     "db_query",
-    "manage_agent",
-    "git_operations",
   ] as const;
 
   for (const name of knownHighImpact) {
@@ -64,7 +62,7 @@ describe("HIGH_IMPACT_TOOLS", () => {
 // ---------------------------------------------------------------------------
 
 describe("ADMIN_TOOLS", () => {
-  const knownAdmin = ["manage_agent", "spawn_agent", "process_manage", "self_restart"] as const;
+  const knownAdmin = ["spawn_agent", "process_manage", "self_restart"] as const;
 
   for (const name of knownAdmin) {
     test(`contains "${name}"`, () => {
@@ -156,11 +154,9 @@ describe("DEFAULT_AGENT_TOOL_ALLOWLIST", () => {
     "process_manage",
     "self_restart",
     "db_query",
-    "manage_agent",
     "spawn_agent",
     "cron",
     "trigger_cron",
-    "git_operations",
   ] as const;
 
   for (const name of forbidden) {
@@ -203,8 +199,8 @@ describe("isHighImpactTool", () => {
     expect(isHighImpactTool("db_query")).toBe(true);
   });
 
-  test("returns true for manage_agent", () => {
-    expect(isHighImpactTool("manage_agent")).toBe(true);
+  test("returns true for process_manage", () => {
+    expect(isHighImpactTool("process_manage")).toBe(true);
   });
 
   test("returns false for read_file", () => {
@@ -225,10 +221,6 @@ describe("isHighImpactTool", () => {
 // ---------------------------------------------------------------------------
 
 describe("isAdminTool", () => {
-  test("returns true for manage_agent", () => {
-    expect(isAdminTool("manage_agent")).toBe(true);
-  });
-
   test("returns true for spawn_agent", () => {
     expect(isAdminTool("spawn_agent")).toBe(true);
   });
@@ -279,10 +271,6 @@ describe("isToolGranted", () => {
       expect(isToolGranted(allFilter, "db_query")).toBe(false);
     });
 
-    test("does NOT grant manage_agent even under mode:all", () => {
-      expect(isToolGranted(allFilter, "manage_agent")).toBe(false);
-    });
-
     test("does NOT grant process_manage even under mode:all", () => {
       expect(isToolGranted(allFilter, "process_manage")).toBe(false);
     });
@@ -293,10 +281,6 @@ describe("isToolGranted", () => {
 
     test("does NOT grant self_restart even under mode:all", () => {
       expect(isToolGranted(allFilter, "self_restart")).toBe(false);
-    });
-
-    test("does NOT grant git_operations even under mode:all", () => {
-      expect(isToolGranted(allFilter, "git_operations")).toBe(false);
     });
 
     test("does NOT grant write_file even under mode:all", () => {
@@ -337,7 +321,7 @@ describe("isToolGranted", () => {
   describe('mode:"allowlist" with explicit high-impact tools', () => {
     const filter: ToolFilter = {
       mode: "allowlist",
-      tools: ["bash", "db_query", "manage_agent", "read_file"],
+      tools: ["bash", "db_query", "spawn_agent", "read_file"],
     };
 
     test("grants bash when explicitly listed", () => {
@@ -348,8 +332,8 @@ describe("isToolGranted", () => {
       expect(isToolGranted(filter, "db_query")).toBe(true);
     });
 
-    test("grants manage_agent when explicitly listed", () => {
-      expect(isToolGranted(filter, "manage_agent")).toBe(true);
+    test("grants spawn_agent when explicitly listed", () => {
+      expect(isToolGranted(filter, "spawn_agent")).toBe(true);
     });
 
     test("grants read_file when listed", () => {
@@ -388,12 +372,8 @@ describe("isToolGranted", () => {
       expect(isToolGranted(blocklistFilter, "db_query")).toBe(false);
     });
 
-    test("does NOT grant manage_agent even if not in blocklist", () => {
-      expect(isToolGranted(blocklistFilter, "manage_agent")).toBe(false);
-    });
-
-    test("does NOT grant git_operations even if not in blocklist", () => {
-      expect(isToolGranted(blocklistFilter, "git_operations")).toBe(false);
+    test("does NOT grant spawn_agent even if not in blocklist", () => {
+      expect(isToolGranted(blocklistFilter, "spawn_agent")).toBe(false);
     });
 
     // Attempts to un-block a high-impact tool via blocklist must fail closed:
@@ -449,12 +429,12 @@ describe("grantedHighImpactTools", () => {
   test("returns only the high-impact tools from a mixed allowlist", () => {
     const filter: ToolFilter = {
       mode: "allowlist",
-      tools: ["bash", "read_file", "db_query", "search_memory", "manage_agent"],
+      tools: ["bash", "read_file", "db_query", "search_memory", "process_manage"],
     };
     const granted = grantedHighImpactTools(filter);
     expect(granted.has("bash")).toBe(true);
     expect(granted.has("db_query")).toBe(true);
-    expect(granted.has("manage_agent")).toBe(true);
+    expect(granted.has("process_manage")).toBe(true);
     // Non-high-impact must NOT appear
     expect(granted.has("read_file")).toBe(false);
     expect(granted.has("search_memory")).toBe(false);

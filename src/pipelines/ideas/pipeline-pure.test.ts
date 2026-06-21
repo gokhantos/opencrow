@@ -33,6 +33,7 @@ import {
   paretoSelect,
   computeSigeConvergenceVeto,
   mergeSelectedIds,
+  applyMinQualityFloor,
 } from "./pipeline";
 import type { GiantAxisScores } from "./giant";
 import { GIANT_AXIS_KEYS } from "./giant";
@@ -626,5 +627,90 @@ describe("mergeSelectedIds", () => {
     mergeSelectedIds(into, new Map());
     expect(into.get("existing")).toEqual(["x"]);
     expect(into.size).toBe(1);
+  });
+});
+
+// ── applyMinQualityFloor ──────────────────────────────────────────────────────
+//
+// Verifies the non-empty floor: when all competability-passing candidates fall
+// below the minQualityScore threshold (e.g. after jury penalty), the helper must
+// return the top maxIdeas by qualityScore rather than an empty array. It must
+// never resurrect candidates that weren't in the input (competability-gated ideas
+// are absent from giantSurvivors entirely — floor only applies within the set).
+
+describe("applyMinQualityFloor", () => {
+  test("returns the above-threshold set when some candidates pass", () => {
+    const candidates = [
+      makeCandidate("High", { qualityScore: 3.0 }),
+      makeCandidate("Low", { qualityScore: 1.5 }),
+    ];
+    const result = applyMinQualityFloor(candidates, 2.5, 5);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.title).toBe("High");
+  });
+
+  test("returns all above-threshold candidates when all pass", () => {
+    const candidates = [
+      makeCandidate("A", { qualityScore: 3.0 }),
+      makeCandidate("B", { qualityScore: 4.0 }),
+      makeCandidate("C", { qualityScore: 2.5 }),
+    ];
+    const result = applyMinQualityFloor(candidates, 2.5, 5);
+    expect(result).toHaveLength(3);
+  });
+
+  test("returns top maxIdeas by qualityScore when all are below threshold (floor kicks in)", () => {
+    const candidates = [
+      makeCandidate("Mid", { qualityScore: 2.0 }),
+      makeCandidate("Best", { qualityScore: 2.4 }),
+      makeCandidate("Worst", { qualityScore: 1.0 }),
+      makeCandidate("SecondBest", { qualityScore: 2.3 }),
+    ];
+    // maxIdeas=2 → floor returns top 2
+    const result = applyMinQualityFloor(candidates, 2.5, 2);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.title).toBe("Best");
+    expect(result[1]?.title).toBe("SecondBest");
+  });
+
+  test("floor returns all candidates when giantSurvivors.length <= maxIdeas", () => {
+    const candidates = [
+      makeCandidate("A", { qualityScore: 2.0 }),
+      makeCandidate("B", { qualityScore: 1.5 }),
+    ];
+    // maxIdeas=5 → floor keeps both (only 2 available)
+    const result = applyMinQualityFloor(candidates, 2.5, 5);
+    expect(result).toHaveLength(2);
+  });
+
+  test("returns empty array for empty input (no floor, no crash)", () => {
+    const result = applyMinQualityFloor([], 2.5, 5);
+    expect(result).toHaveLength(0);
+  });
+
+  test("does not mutate the input array (immutability)", () => {
+    const candidates = [
+      makeCandidate("A", { qualityScore: 1.0 }),
+      makeCandidate("B", { qualityScore: 2.0 }),
+    ];
+    const original = [...candidates];
+    applyMinQualityFloor(candidates, 2.5, 5);
+    // Input array length and order unchanged
+    expect(candidates).toHaveLength(original.length);
+    expect(candidates[0]?.title).toBe("A");
+    expect(candidates[1]?.title).toBe("B");
+  });
+
+  test("floor result is sorted by qualityScore desc", () => {
+    const candidates = [
+      makeCandidate("C", { qualityScore: 1.0 }),
+      makeCandidate("A", { qualityScore: 2.4 }),
+      makeCandidate("B", { qualityScore: 2.2 }),
+    ];
+    const result = applyMinQualityFloor(candidates, 2.5, 10);
+    // All below threshold → floor, sorted desc
+    expect(result[0]?.title).toBe("A");
+    expect(result[1]?.title).toBe("B");
+    expect(result[2]?.title).toBe("C");
   });
 });

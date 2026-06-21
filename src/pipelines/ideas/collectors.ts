@@ -12,6 +12,7 @@
  */
 
 import { getDb } from "../../store/db";
+import type { ModelProvider } from "../../store/model-routing";
 import { createLogger } from "../../logger";
 import { chat } from "../../agent/chat";
 import type { ConversationMessage } from "../../agent/types";
@@ -35,6 +36,8 @@ import {
   computeRankScore,
   obscurityFromEngagement,
   selectRanked,
+  selectStratified,
+  stratifiedBucketKey,
   lookupLearnedCredibility,
   parseMakers,
   parseTopics,
@@ -45,9 +48,11 @@ import {
   mentionsIncumbent,
   INCUMBENT_DOWNRANK_FACTOR,
 } from "./incumbents";
+import { buildPainSeedSummary, isEchoChamberSignal } from "./collector-focus";
 import type {
   TrendData,
   CategoryTrend,
+  CategoryStat,
   ClusteredPains,
   PainCluster,
   CapabilityScan,
@@ -69,6 +74,8 @@ export {
   lookupLearnedCredibility,
   NEUTRAL_LEARNED_CREDIBILITY,
   selectRanked,
+  selectStratified,
+  stratifiedBucketKey,
   parseJsonArray,
   parseMakers,
   parseTopics,
@@ -77,8 +84,6 @@ export {
 } from "./collector-ranking";
 
 const log = createLogger("pipeline:collectors");
-
-const DEFAULT_MODEL = "claude-sonnet-4-6";
 
 // ── Layer A — long-tail fetch window ─────────────────────────────────────────
 //
@@ -157,11 +162,21 @@ export function excludeConsumed<T>(
   return { selected, selectedIds };
 }
 
-function buildChatOptions(model: string) {
+/**
+ * Build the chat options for a collector LLM insight pass. The PROVIDER is
+ * REQUIRED and threaded from the routed `pipeline.generator` provider so a
+ * non-Anthropic route (e.g. alibaba) actually dispatches the collector call to
+ * that provider. There is intentionally NO default: a missing provider used to
+ * fall through to "agent-sdk" (the Claude Code subprocess on the user's personal
+ * OAuth), silently billing their Claude subscription on any un-threaded path.
+ * Requiring it turns any such path into a compile error. Exported for unit
+ * testing.
+ */
+export function buildChatOptions(model: string, provider: ModelProvider) {
   return {
     systemPrompt: "",
     model,
-    provider: "agent-sdk" as const,
+    provider,
     agentId: "idea-pipeline",
     usageContext: { channel: "pipeline" as const, chatId: "ideas", source: "workflow" as const },
   };
@@ -193,6 +208,7 @@ function makeUserMessage(content: string): ConversationMessage {
 async function extractLandscapeInsights(
   rawSummary: string,
   model: string,
+  provider: ModelProvider,
 ): Promise<LandscapeInsight | undefined> {
   const systemPrompt =
     "You are a market analyst. Extract structured insights from app store data. Return only valid JSON.";
@@ -215,7 +231,7 @@ ${sanitizeForPrompt(rawSummary).slice(0, 60000)}`;
   const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
 
   try {
-    const response = await chat(messages, { ...buildChatOptions(model), systemPrompt });
+    const response = await chat(messages, { ...buildChatOptions(model, provider), systemPrompt });
     return parseJsonFromResponse<LandscapeInsight | undefined>(response.text, undefined);
   } catch (err) {
     log.warn("Landscape insight extraction failed", { err });
@@ -229,9 +245,24 @@ ${sanitizeForPrompt(rawSummary).slice(0, 60000)}`;
  * - What existing apps offer (descriptions = feature landscape)
  * - Which categories are underserved (low satisfaction + many apps = opportunity)
  */
-export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContext): Promise<TrendData> {
+export async function analyzeAppLandscape(
+  model: string,
+  _ctx: CollectorContext | undefined,
+  provider: ModelProvider,
+): Promise<TrendData> {
   const db = getDb();
-  const resolvedModel = model ?? DEFAULT_MODEL;
+  // model + provider are REQUIRED and threaded from the resolved
+  // `pipeline.generator` route by the caller — there is NO Claude default. A
+  // missing provider used to fall through to "agent-sdk" (Claude Code on the
+  // user's personal OAuth); the required params turn any un-threaded caller into
+  // a compile error instead of a silent Claude bill.
+  const resolvedModel = model;
+  const resolvedProvider = provider;
+  log.info("Collector resolved provider/model", {
+    collector: "analyzeAppLandscape",
+    provider: resolvedProvider,
+    model: resolvedModel,
+  });
   const summaryLines: string[] = [];
 
   // B7 — accumulate selected IDs into a local map; return them in the result
@@ -409,6 +440,17 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
         topApps: [],
       }));
 
+    // Seed-diversity lever 1: per-category satisfaction stats over the FULL iOS +
+    // Play distribution (not just the <=3.5 trending slice). selectFocusCategories
+    // ranks the high-opportunity head on these and rotates the tail per run.
+    const categoryStats: CategoryStat[] = [...categoryHealth, ...playCategoryHealth]
+      .map((c) => ({
+        category: c.category as string,
+        avgRating: Number(c.avg_rating),
+        complaintRatio: Number(c.negative_reviews) / Math.max(Number(c.positive_reviews), 1),
+      }))
+      .filter((s) => s.category && Number.isFinite(s.avgRating));
+
     // Structured-facet enrichment (gated; DEFAULT OFF, graceful no-op otherwise).
     if (loadConfig().pipelines.ideas.smart.signalFacets) {
       const facetBlock = await buildFacetContext(
@@ -425,11 +467,16 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
     });
 
     // LLM insight extraction (graceful degradation on failure)
-    const insights = await extractLandscapeInsights(summaryLines.join("\n"), resolvedModel);
+    const insights = await extractLandscapeInsights(
+      summaryLines.join("\n"),
+      resolvedModel,
+      resolvedProvider,
+    );
 
     return {
       risingApps: [],
       trendingCategories,
+      categoryStats,
       summary: summaryLines.join("\n"),
       insights,
       selectedIds: new Map(localSelected) as ReadonlyMap<string, readonly string[]>,
@@ -445,6 +492,7 @@ export async function analyzeAppLandscape(model?: string, _ctx?: CollectorContex
 async function extractReviewInsights(
   rawSummary: string,
   model: string,
+  provider: ModelProvider,
 ): Promise<ReviewInsight | undefined> {
   const systemPrompt =
     "You are a UX researcher. Extract structured insights from user reviews. Return only valid JSON.";
@@ -481,7 +529,7 @@ ${rawSummary.slice(0, 60000)}`;
   const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
 
   try {
-    const response = await chat(messages, { ...buildChatOptions(model), systemPrompt });
+    const response = await chat(messages, { ...buildChatOptions(model, provider), systemPrompt });
     return parseJsonFromResponse<ReviewInsight | undefined>(response.text, undefined);
   } catch (err) {
     log.warn("Review insight extraction failed", { err });
@@ -494,12 +542,21 @@ ${rawSummary.slice(0, 60000)}`;
  * and PRAISES (what people love and want more of).
  */
 export async function clusterReviews(
-  focusCategories?: readonly string[],
-  model?: string,
-  _ctx?: CollectorContext,
+  focusCategories: readonly string[] | undefined,
+  model: string,
+  _ctx: CollectorContext | undefined,
+  provider: ModelProvider,
 ): Promise<ClusteredPains> {
   const db = getDb();
-  const resolvedModel = model ?? DEFAULT_MODEL;
+  // model + provider REQUIRED, threaded from the `pipeline.generator` route — no
+  // Claude default (see analyzeAppLandscape).
+  const resolvedModel = model;
+  const resolvedProvider = provider;
+  log.info("Collector resolved provider/model", {
+    collector: "clusterReviews",
+    provider: resolvedProvider,
+    model: resolvedModel,
+  });
   const clusters: PainCluster[] = [];
 
   // Layer C: load the incumbent set so complaints ABOUT a top-N giant (which a
@@ -704,11 +761,39 @@ export async function clusterReviews(
     : summaryLines.join("\n\n");
 
   // LLM insight extraction (graceful degradation on failure)
-  const insights = await extractReviewInsights(summaryText, resolvedModel);
+  const insights = await extractReviewInsights(summaryText, resolvedModel, resolvedProvider);
+
+  // Seed-diversity lever 2: lead pains.summary with the SPECIFIC LLM-extracted
+  // pain themes so the generator's Pass-1 (which consumes pains.summary directly)
+  // seeds on concrete recurring complaints, not the "=== BUSINESS (340
+  // complaints) ===" category headers that dominate the cluster aggregate.
+  // The category aggregate is demoted to clearly-labeled BACKGROUND context.
+  // SECURITY: buildPainSeedSummary does NO sanitization — every scraped field
+  // (theme name/description, affected-app names) is sanitizeForPrompt'd HERE
+  // before it reaches the helper / the prompt.
+  const seedDiversity = loadConfig().pipelines.ideas.smart.seedDiversity;
+  let summary = summaryText;
+  if (
+    seedDiversity.enabled &&
+    seedDiversity.painThemesLeadSummary &&
+    insights?.painThemes?.length
+  ) {
+    const safeThemes = insights.painThemes.map((t) => ({
+      name: sanitizeForPrompt(t.name),
+      description: sanitizeForPrompt(t.description),
+      frequency: t.frequency,
+      affectedApps: t.affectedApps.map((a) => sanitizeForPrompt(a)),
+    }));
+    summary = buildPainSeedSummary(safeThemes, summaryText, seedDiversity.maxLeadingPainThemes);
+    log.info("Seed-diversity lever 2: specific pain themes lead pains.summary", {
+      themes: safeThemes.length,
+      maxLeading: seedDiversity.maxLeadingPainThemes,
+    });
+  }
 
   return {
     clusters: clusters.slice(0, 15),
-    summary: summaryText,
+    summary,
     insights,
     selectedIds: new Map(localSelected) as ReadonlyMap<string, readonly string[]>,
   };
@@ -719,6 +804,7 @@ export async function clusterReviews(
 async function extractCapabilityInsights(
   capabilities: readonly import("./types").Capability[],
   model: string,
+  provider: ModelProvider,
 ): Promise<CapabilityInsight | undefined> {
   const lines: string[] = [];
   for (const c of capabilities) {
@@ -764,7 +850,7 @@ ${sanitizeForPrompt(rawText).slice(0, 50000)}`;
   const messages: readonly ConversationMessage[] = [makeUserMessage(userContent)];
 
   try {
-    const response = await chat(messages, { ...buildChatOptions(model), systemPrompt });
+    const response = await chat(messages, { ...buildChatOptions(model, provider), systemPrompt });
     return parseJsonFromResponse<CapabilityInsight | undefined>(response.text, undefined);
   } catch (err) {
     log.warn("Capability insight extraction failed", { err });
@@ -801,6 +887,18 @@ interface RawCandidate {
   readonly engagement: number;
   /** Recency factor in [0, 1]. */
   readonly recency: number;
+  /**
+   * Seed-diversity lever 3: signals used to detect AI-builder-meta "echo
+   * chamber" candidates (curated meta subreddit + generic agent/LLM-framework
+   * phrases in the github full_name / PH topics / title + description). Such
+   * candidates are DOWN-WEIGHTED (not dropped) in the rank score. Optional —
+   * sources that can't be meta (e.g. news) omit it.
+   */
+  readonly echoChamber?: {
+    readonly subreddit?: string | null;
+    readonly tag?: string | null;
+    readonly text?: string | null;
+  };
   /** Builds the final Capability given the resolved corroboration + velocityNorm. */
   build: (extra: {
     readonly corroborationCount: number;
@@ -809,11 +907,29 @@ interface RawCandidate {
   }) => Capability;
 }
 
-export async function scanCapabilities(model?: string, ctx?: CollectorContext): Promise<CapabilityScan> {
+export async function scanCapabilities(
+  model: string,
+  ctx: CollectorContext | undefined,
+  provider: ModelProvider,
+): Promise<CapabilityScan> {
   const db = getDb();
-  const resolvedModel = model ?? DEFAULT_MODEL;
+  // model + provider REQUIRED, threaded from the `pipeline.generator` route — no
+  // Claude default (see analyzeAppLandscape).
+  const resolvedModel = model;
+  const resolvedProvider = provider;
+  log.info("Collector resolved provider/model", {
+    collector: "scanCapabilities",
+    provider: resolvedProvider,
+    model: resolvedModel,
+  });
   const smart = loadConfig().pipelines.ideas.smart;
   const adaptive = smart.adaptiveCollection;
+  const strat = smart.stratifiedIntake;
+  // Derive windowed top/midtier slice sizes from fetchLimit so the config value
+  // is the uniform per-source window across ALL source types. Default fetchLimit=100
+  // yields topSlice=30, midtierSlice=70 — identical to the previous hard-coded values.
+  const topSlice = Math.max(1, Math.round(strat.fetchLimit * (COLLECTOR_TOP_SLICE / COLLECTOR_FETCH_LIMIT)));
+  const midtierSlice = Math.max(1, strat.fetchLimit - topSlice);
   const incumbentCfg = smart.incumbentExclusion;
   const nowSec = Math.floor(Date.now() / 1000);
 
@@ -845,7 +961,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
 
   try {
     // ── Product Hunt ──────────────────────────────────────────────────────────
-    // Fetch 50 rows so we have enough fresh ones after filtering consumed.
+    // Fetch fetchLimit rows so we have enough fresh ones after filtering consumed.
     const cutoff30d = nowSec - 30 * 24 * 3600;
     // Layer A: TOP slice by engagement UNION a MID-TIER fresh window (rows ranked
     // below the top slice, ordered by recency) so the long-tail surfaces. One
@@ -853,29 +969,29 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
     let phRaw = (await db`
       WITH ranked AS (
         SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
-               makers_json, topics_json, first_seen_at,
+               makers_json, topics_json, first_seen_at, signal_category,
                ROW_NUMBER() OVER (ORDER BY (votes_count + comments_count * 3) DESC) AS eng_rank
         FROM ph_products
         WHERE first_seen_at >= ${cutoff30d}
       )
       (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
-              makers_json, topics_json, first_seen_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+              makers_json, topics_json, first_seen_at, signal_category
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
-              makers_json, topics_json, first_seen_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY first_seen_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+              makers_json, topics_json, first_seen_at, signal_category
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY first_seen_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset to ensure variation across runs
     if (phRaw.length < 5) {
       phRaw = (await db`
         SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
-               makers_json, topics_json, first_seen_at
+               makers_json, topics_json, first_seen_at, signal_category
         FROM ph_products
         ORDER BY (votes_count + comments_count * 3) DESC
-        LIMIT 50
+        LIMIT ${strat.fetchLimit}
         OFFSET floor(random() * 10)::int
       `) as Array<Record<string, unknown>>;
     }
@@ -894,7 +1010,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             table: "ph_products",
             id: p.id as string,
             signalType: "feed",
-            category: "unknown",
+            category: (p.signal_category as string) ?? "unknown",
             entity: {
               id: p.id as string,
               source: "producthunt",
@@ -905,6 +1021,10 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             velocity: 0, // ph has no persisted velocity column
             engagement: votes,
             recency: recencyFactor(toNumber(p.first_seen_at), nowSec),
+            echoChamber: {
+              tag: topics.join(" "),
+              text: `${(p.name as string) ?? ""} ${(p.tagline as string) ?? ""} ${(p.description as string) ?? ""}`,
+            },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: `${p.name}: ${p.tagline}`,
               source: "producthunt",
@@ -927,7 +1047,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
     const hnRaw = (await db`
       WITH ranked AS (
         SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
-               points_velocity, updated_at, feed_type,
+               points_velocity, updated_at, feed_type, signal_category,
                ROW_NUMBER() OVER (
                  ORDER BY COALESCE(points_velocity, 0) DESC, updated_at DESC, (points + comment_count * 2) DESC
                ) AS eng_rank
@@ -935,13 +1055,13 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
         WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
       )
       (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
-              points_velocity, updated_at, feed_type
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+              points_velocity, updated_at, feed_type, signal_category
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
-              points_velocity, updated_at, feed_type
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+              points_velocity, updated_at, feed_type, signal_category
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -960,7 +1080,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             table: "hn_stories",
             id: s.id as string,
             signalType: subSource,
-            category: "unknown",
+            category: (s.signal_category as string) ?? "unknown",
             entity: {
               id: s.id as string,
               source: "hackernews",
@@ -971,6 +1091,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             velocity: vel,
             engagement: points,
             recency: recencyFactor(toNumber(s.updated_at), nowSec),
+            echoChamber: { text: (s.title as string) ?? "" },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: s.title as string,
               source: "hackernews",
@@ -992,28 +1113,28 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
     // ── GitHub ────────────────────────────────────────────────────────────────
     let reposRaw = (await db`
       WITH ranked AS (
-        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at,
+        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at, signal_category,
                ROW_NUMBER() OVER (
                  ORDER BY COALESCE(stars_velocity, 0) DESC, stars_today DESC, stars DESC
                ) AS eng_rank
         FROM github_repos
         WHERE stars_today > 0
       )
-      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at, signal_category
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
-      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at, signal_category
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     // Fallback: all-time with random offset if no active trending data
     if (reposRaw.length < 5) {
       reposRaw = (await db`
-        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
+        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at, signal_category
         FROM github_repos
         ORDER BY stars DESC
-        LIMIT 50
+        LIMIT ${strat.fetchLimit}
         OFFSET floor(random() * 10)::int
       `) as Array<Record<string, unknown>>;
     }
@@ -1031,7 +1152,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             table: "github_repos",
             id: r.id as string,
             signalType: "trending",
-            category: "unknown",
+            category: (r.signal_category as string) ?? "unknown",
             entity: {
               id: r.id as string,
               source: "github",
@@ -1043,6 +1164,10 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             velocity: vel,
             engagement: stars,
             recency: recencyFactor(toNumber(r.updated_at), nowSec),
+            echoChamber: {
+              tag: (r.full_name as string) ?? "",
+              text: `${(r.full_name as string) ?? ""} ${(r.description as string) ?? ""}`,
+            },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: `${r.full_name} (${r.language || "?"})`,
               source: "github",
@@ -1064,7 +1189,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
     const postsRaw = (await db`
       WITH ranked AS (
         SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
-               top_comments_json, flair, score_velocity, updated_at,
+               top_comments_json, flair, score_velocity, updated_at, signal_category,
                ROW_NUMBER() OVER (
                  ORDER BY COALESCE(score_velocity, 0) DESC, updated_at DESC, (score + num_comments * 3) DESC
                ) AS eng_rank
@@ -1072,13 +1197,13 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
         WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
       )
       (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
-              top_comments_json, flair, score_velocity, updated_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+              top_comments_json, flair, score_velocity, updated_at, signal_category
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
-              top_comments_json, flair, score_velocity, updated_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY updated_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+              top_comments_json, flair, score_velocity, updated_at, signal_category
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1096,7 +1221,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             table: "reddit_posts",
             id: p.id as string,
             signalType: "topical",
-            category: "unknown",
+            category: (p.signal_category as string) ?? "unknown",
             entity: {
               id: p.id as string,
               source: "reddit",
@@ -1107,6 +1232,10 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             velocity: vel,
             engagement: score,
             recency: recencyFactor(toNumber(p.updated_at), nowSec),
+            echoChamber: {
+              subreddit: typeof p.subreddit === "string" ? p.subreddit : null,
+              text: `${(p.title as string) ?? ""} ${(p.selftext as string) ?? ""}`,
+            },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: `r/${p.subreddit}: ${p.title}`,
               source: "reddit",
@@ -1129,9 +1258,9 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
     // ── News ──────────────────────────────────────────────────────────────────
     const cutoff72h = nowSec - 72 * 3600;
     const articlesRaw = (await db`
-      SELECT id, title, url, source_name, summary, scraped_at
+      SELECT id, title, url, source_name, summary, scraped_at, signal_category
       FROM news_articles WHERE scraped_at >= ${cutoff72h}
-      ORDER BY scraped_at DESC LIMIT 50
+      ORDER BY scraped_at DESC LIMIT ${strat.fetchLimit}
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1149,7 +1278,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             table: "news_articles",
             id: a.id as string,
             signalType: subSource,
-            category: "unknown",
+            category: (a.signal_category as string) ?? "unknown",
             entity: {
               id: a.id as string,
               source: "news",
@@ -1179,7 +1308,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
     const tweetsRaw = (await db`
       WITH ranked AS (
         SELECT id, author_username, author_verified, text, likes, retweets, views,
-               likes_velocity, scraped_at,
+               likes_velocity, scraped_at, signal_category,
                ROW_NUMBER() OVER (
                  ORDER BY COALESCE(likes_velocity, 0) DESC, scraped_at DESC
                ) AS eng_rank
@@ -1187,13 +1316,13 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
         WHERE scraped_at >= ${nowSec - 7 * 24 * 3600}
       )
       (SELECT id, author_username, author_verified, text, likes, retweets, views,
-              likes_velocity, scraped_at
-       FROM ranked WHERE eng_rank <= ${COLLECTOR_TOP_SLICE})
+              likes_velocity, scraped_at, signal_category
+       FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, author_username, author_verified, text, likes, retweets, views,
-              likes_velocity, scraped_at
-       FROM ranked WHERE eng_rank > ${COLLECTOR_TOP_SLICE}
-       ORDER BY scraped_at DESC LIMIT ${COLLECTOR_MIDTIER_SLICE})
+              likes_velocity, scraped_at, signal_category
+       FROM ranked WHERE eng_rank > ${topSlice}
+       ORDER BY scraped_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
 
     pools.push({
@@ -1211,7 +1340,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             table: "x_scraped_tweets",
             id: t.id as string,
             signalType: subSource,
-            category: "unknown",
+            category: (t.signal_category as string) ?? "unknown",
             entity: {
               id: t.id as string,
               source: "x",
@@ -1222,6 +1351,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
             velocity: vel,
             engagement: likes,
             recency: recencyFactor(toNumber(t.scraped_at), nowSec),
+            echoChamber: { text: (t.text as string) ?? "" },
             build: ({ corroborationCount, velocityNorm, rankScore }) => ({
               title: `@${handle}`,
               source: "x",
@@ -1249,15 +1379,29 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
       log.warn("Corroboration resolution failed; continuing without it", { err });
     }
 
-    // ── Per-source: normalize velocity, rank, select top-K, build ───────────
+    // Seed-diversity lever 3: down-weight (not drop) AI-builder-meta "echo
+    // chamber" signals so the capability pool isn't dominated by "build an AI
+    // agent / LLM framework" meta. Mirrors the incumbent down-weight pattern.
+    const echoCfg = smart.seedDiversity;
+    let echoChamberDownweighted = 0;
+
+    // ── Phase 1: per-source velocity normalization + scoring ────────────────
+    // Velocity normalization is per-source by design (each source has its own
+    // velocity range). We compute velNorm per-pool and merge into a single map
+    // so that the union-level selection pass below can look up any candidate.
+    const velNormByRow = new Map<string, number>();
+    const scoreByRow = new Map<string, number>();
+
     for (const pool of pools) {
-      const velNormByRow = normalizeVelocities(
+      const poolVelNorm = normalizeVelocities(
         pool.candidates.map((c) => ({ id: c.id, velocity: c.velocity })),
       );
+      for (const [id, norm] of poolVelNorm) {
+        velNormByRow.set(id, norm);
+      }
 
       // Score each candidate ONCE (jitter included) so the sort key and the
       // persisted rankScore stay consistent.
-      const scoreByRow = new Map<string, number>();
       for (const c of pool.candidates) {
         // Learned per-source posterior (optional; neutral no-op when absent).
         const learnedCredibility = lookupLearnedCredibility(
@@ -1268,7 +1412,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
         );
         let score = computeRankScore({
           credibility: c.credibility,
-          velocityNorm: velNormByRow.get(c.id) ?? 0,
+          velocityNorm: poolVelNorm.get(c.id) ?? 0,
           corroborationCount: corroborationByRowId.get(c.id) ?? 1,
           recency: c.recency,
           // Layer A: inverse-popularity niche bonus from raw engagement.
@@ -1278,34 +1422,84 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
         // Layer C: a capability signal whose entity name prominently matches a
         // top-N incumbent is strong-down-ranked (not dropped) so it cannot seed
         // the head of the pool but can still corroborate further down.
-        if (
-          incumbentSet.size > 0 &&
-          mentionsIncumbent(c.entity.name ?? null, incumbentSet)
-        ) {
+        if (incumbentSet.size > 0 && mentionsIncumbent(c.entity.name ?? null, incumbentSet)) {
           score *= INCUMBENT_DOWNRANK_FACTOR;
+        }
+        // Seed-diversity lever 3: an AI-builder-meta candidate (meta subreddit or
+        // generic agent/LLM-framework phrase) is multiplied by echoChamberFactor
+        // (default 0.5) — REDUCED, not eliminated, so it drops in rank but can
+        // still surface and corroborate.
+        if (
+          echoCfg.enabled &&
+          echoCfg.echoChamberDownweight &&
+          c.echoChamber &&
+          isEchoChamberSignal(c.echoChamber)
+        ) {
+          score *= echoCfg.echoChamberFactor;
+          echoChamberDownweighted++;
         }
         scoreByRow.set(c.id, score);
       }
+    }
 
-      const { selected, selectedIds } = selectRanked(
-        pool.candidates,
-        new Set<string>(), // already filtered to fresh above
-        (c) => c.id,
-        pool.target,
-        (c) => scoreByRow.get(c.id) ?? 0,
-        adaptive,
-      );
-      registerSelected(pool.table, selectedIds);
+    // ── Phase 2: cross-pool stratified selection (or legacy per-pool path) ───
+    // STAGE 1 — stratified intake: select across the union of all pool candidates
+    // using a single cross-pool pass that caps each bucket at `perBucketCap`, so
+    // no single bucket can dominate. The bucket key is derived by
+    // stratifiedBucketKey honoring strat.bucketBy: theme (`${category}:${table}`)
+    // for enriched rows with a source/sub-source fallback (`signalCategory`,
+    // default), or the legacy `${table}:${signalType}` (`signalType`).
+    // The legacy per-pool path is preserved behind strat.enabled=false.
+    const unionCandidates = pools.flatMap((p) => p.candidates);
+    const totalTarget = pools.reduce((sum, p) => sum + p.target, 0);
 
-      for (const c of selected) {
-        capabilities.push(
-          c.build({
-            corroborationCount: corroborationByRowId.get(c.id) ?? 1,
-            velocityNorm: velNormByRow.get(c.id) ?? 0,
-            rankScore: scoreByRow.get(c.id) ?? 0,
-          }),
+    const chosen = strat.enabled
+      ? selectStratified(unionCandidates, {
+          idOf: (c) => c.id,
+          bucketOf: (c) => stratifiedBucketKey(c, strat.bucketBy),
+          scoreOf: (c) => scoreByRow.get(c.id) ?? 0,
+          perBucketCap: strat.perBucketCap,
+          totalCap: Math.min(strat.totalCap, totalTarget),
+        }).selected
+      : // Legacy per-pool path preserved for reversibility (strat.enabled=false).
+        pools.flatMap(
+          (pool) =>
+            selectRanked(
+              pool.candidates,
+              new Set<string>(), // already filtered to fresh above
+              (c) => c.id,
+              pool.target,
+              (c) => scoreByRow.get(c.id) ?? 0,
+              adaptive,
+            ).selected,
         );
-      }
+
+    // Register selected ids per table (preserves the localSelected accounting).
+    const byTable = new Map<string, string[]>();
+    for (const c of chosen) {
+      const list = byTable.get(c.table) ?? [];
+      list.push(c.id);
+      byTable.set(c.table, list);
+    }
+    for (const [table, ids] of byTable) {
+      registerSelected(table, ids);
+    }
+
+    for (const c of chosen) {
+      capabilities.push(
+        c.build({
+          corroborationCount: corroborationByRowId.get(c.id) ?? 1,
+          velocityNorm: velNormByRow.get(c.id) ?? 0,
+          rankScore: scoreByRow.get(c.id) ?? 0,
+        }),
+      );
+    }
+
+    if (echoChamberDownweighted > 0) {
+      log.info("Seed-diversity lever 3: down-weighted AI-builder-meta signals", {
+        downweighted: echoChamberDownweighted,
+        factor: echoCfg.echoChamberFactor,
+      });
     }
   } catch (err) {
     log.warn("Capability scan failed", { err });
@@ -1361,7 +1555,7 @@ export async function scanCapabilities(model?: string, ctx?: CollectorContext): 
   });
 
   // LLM insight extraction (graceful degradation on failure)
-  const insights = await extractCapabilityInsights(capabilities, resolvedModel);
+  const insights = await extractCapabilityInsights(capabilities, resolvedModel, resolvedProvider);
 
   return {
     capabilities,

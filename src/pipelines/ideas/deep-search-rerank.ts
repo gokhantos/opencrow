@@ -17,6 +17,7 @@
 import { chat } from "../../agent/chat";
 import { createLogger } from "../../logger";
 import type { SearchResult } from "../../memory/types";
+import type { ModelProvider } from "../../store/model-routing";
 import { buildChatOptions, parseJsonFromResponse, sanitizeForPrompt } from "./synthesizer";
 
 const log = createLogger("pipeline:deep-search-rerank");
@@ -45,6 +46,8 @@ export async function llmListwiseRerank(
   candidates: readonly RerankCandidate[],
   topK: number,
   model: string,
+  // REQUIRED routed provider (no Claude default) — see synthesizer buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly RerankCandidate[]> {
   if (candidates.length === 0) return [];
   if (candidates.length <= topK) return candidates;
@@ -66,7 +69,7 @@ export async function llmListwiseRerank(
 
     const response = await chat(
       [{ role: "user", content: prompt, timestamp: Date.now() }],
-      buildChatOptions(model),
+      buildChatOptions(model, provider),
     );
 
     const order = parseJsonFromResponse<number[]>(response.text, []);
@@ -108,7 +111,7 @@ export async function llmListwiseRerank(
   }
 }
 
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   const n = Math.min(a.length, b.length);
   let dot = 0;
   let na = 0;

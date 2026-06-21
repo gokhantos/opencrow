@@ -11,6 +11,31 @@ import {
   Settings as SettingsIcon,
   Settings2,
 } from "lucide-react";
+import SignalsSettings from "./settings/SignalsSettings";
+import SigeSettings from "./settings/SigeSettings";
+import IdeasSettings from "./settings/IdeasSettings";
+import GraphSettings from "./settings/GraphSettings";
+import EmbeddingsMemorySettings from "./settings/Embeddings-memorySettings";
+import RuntimeSettings from "./settings/RuntimeSettings";
+
+/* ── Settings sub-tabs ──
+ * The app-level Sidebar routes a single "settings" tab to this view; rather
+ * than add many top-level nav entries we expose a grouped "Configuration" area
+ * as in-view tabs. "Features" is the original infra/scrapers form; the rest are
+ * the config-as-data sections (each self-contained, persisting a partial
+ * config_overrides row the loader deep-merges over env + schema defaults).
+ */
+const SETTINGS_TABS = [
+  { id: "features", label: "Features" },
+  { id: "signals", label: "Signals" },
+  { id: "ideas", label: "Ideas" },
+  { id: "sige", label: "SIGE" },
+  { id: "graph", label: "Graph" },
+  { id: "embeddings-memory", label: "Embeddings & Memory" },
+  { id: "runtime", label: "Runtime" },
+] as const;
+
+type SettingsTabId = (typeof SETTINGS_TABS)[number]["id"];
 
 interface ScraperMeta {
   readonly id: string;
@@ -526,8 +551,8 @@ function EmbeddingsSection({
   );
 }
 
-/* ── Main ── */
-export default function Settings() {
+/* ── Features section (original infra + scrapers form) ── */
+function FeaturesSettings() {
   const { success, error: toastError } = useToast();
 
   const [features, setFeatures] = useState<FeaturesResponse | null>(null);
@@ -624,25 +649,19 @@ export default function Settings() {
   if (!features) return null;
 
   return (
-    <div className="max-w-[760px]">
-      <PageHeader
-        title="Settings"
-        subtitle="Manage infrastructure features and integrations"
-        actions={
-          <div className="flex items-center gap-2 text-xs text-muted">
-            <SettingsIcon className="w-3.5 h-3.5" />
-            <span>
-              {[
-                features.qdrant.enabled && "Qdrant",
-                enabledScrapers.size > 0 &&
-                  `${enabledScrapers.size} scraper${enabledScrapers.size === 1 ? "" : "s"}`,
-              ]
-                .filter(Boolean)
-                .join(" + ") || "All features disabled"}
-            </span>
-          </div>
-        }
-      />
+    <div>
+      <div className="flex items-center justify-end mb-3 gap-2 text-xs text-muted">
+        <SettingsIcon className="w-3.5 h-3.5" />
+        <span>
+          {[
+            features.qdrant.enabled && "Qdrant",
+            enabledScrapers.size > 0 &&
+              `${enabledScrapers.size} scraper${enabledScrapers.size === 1 ? "" : "s"}`,
+          ]
+            .filter(Boolean)
+            .join(" + ") || "All features disabled"}
+        </span>
+      </div>
 
       <div className="flex flex-col gap-3">
         {/* Qdrant + Embeddings */}
@@ -774,6 +793,59 @@ export default function Settings() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ── Settings tab bar ── */
+function SettingsTabs({
+  active,
+  onSelect,
+}: {
+  readonly active: SettingsTabId;
+  readonly onSelect: (id: SettingsTabId) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1 border-b border-border mb-5">
+      {SETTINGS_TABS.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          onClick={() => onSelect(t.id)}
+          className={`px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
+            active === t.id
+              ? "border-accent text-foreground"
+              : "border-transparent text-muted hover:text-foreground"
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ── Main ──
+ * Groups infrastructure (Features) and config-as-data sections under one
+ * "Configuration" area via in-view tabs, keeping the app-level Sidebar simple.
+ */
+export default function Settings() {
+  const [tab, setTab] = useState<SettingsTabId>("features");
+
+  return (
+    <div className="max-w-[760px]">
+      <PageHeader
+        title="Settings"
+        subtitle="Manage infrastructure, signal, idea, SIGE, graph, and runtime configuration"
+      />
+      <SettingsTabs active={tab} onSelect={setTab} />
+      {tab === "features" && <FeaturesSettings />}
+      {tab === "signals" && <SignalsSettings />}
+      {tab === "ideas" && <IdeasSettings />}
+      {tab === "sige" && <SigeSettings />}
+      {tab === "graph" && <GraphSettings />}
+      {tab === "embeddings-memory" && <EmbeddingsMemorySettings />}
+      {tab === "runtime" && <RuntimeSettings />}
     </div>
   );
 }

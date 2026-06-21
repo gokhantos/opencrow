@@ -25,6 +25,7 @@ import { discoverFrontiers } from "../../sige/discovery/frontier-discovery";
 import { generateDivergentIdeas } from "../../sige/run";
 import { acquireSigeRunSlot } from "../../sige/auto/run-guard";
 import { getDb } from "../../store/db";
+import { getModelRoute } from "../../store/model-routing";
 import {
   createPipelineStep,
   findCompletedStep,
@@ -32,11 +33,13 @@ import {
   updatePipelineStep,
 } from "../store";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
+import { resolveGeneratorRoute } from "./generator-route";
 import type { CollectorContext } from "./collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
 import { getConsumedIds, markConsumed } from "./consumption";
 import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
 import { selectWithNoveltyReserve } from "./generate-wide";
+import { selectDiverseBy } from "./idea-diversity";
 import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
 import { insertIdea } from "../../sources/ideas/store";
@@ -59,7 +62,7 @@ import {
   toDemandCandidateText,
 } from "./pipeline";
 import type { PipelineRunResult } from "./pipeline";
-import { resolveCandidateSegment } from "./pipeline-sige-math";
+import { candidateJoinId, resolveCandidateSegment } from "./pipeline-sige-math";
 import type { GeneratedIdeaCandidate } from "./types";
 
 export const AUTONOMOUS_SIGE_PIPELINE_ID = "autonomous-sige";
@@ -193,7 +196,13 @@ export async function runAutonomousSige(
       apiToken: sigeConfig.mem0.apiToken,
     });
     const userId = sigeConfig.mem0.userId;
-    const model = config.model ?? "claude-haiku-4-5-20251001";
+    // Collectors run on the dashboard-controlled `pipeline.generator` route
+    // (model + provider as a coupled pair — see resolveGeneratorRoute). No
+    // hardcoded model: a bare config.model would mismatch the route provider.
+    const { model, provider } = resolveGeneratorRoute(
+      config,
+      await getModelRoute("pipeline.generator"),
+    );
 
     // ── Outcome-memory parity with the seeded pipeline ────────────────────────
     // Read past verdicts at synthesis (gated readAtSynthesis) and write fresh
@@ -233,7 +242,7 @@ export async function runAutonomousSige(
       runStep(
         runId,
         "landscape",
-        () => analyzeAppLandscape(model, collectorCtx),
+        () => analyzeAppLandscape(model, collectorCtx, provider),
         (t) => `${t.trendingCategories.length} trend categories`,
       ).catch((err) => {
         log.warn("autonomous: landscape collector failed", { runId, err: getErrorMessage(err) });
@@ -242,7 +251,7 @@ export async function runAutonomousSige(
       runStep(
         runId,
         "reviews",
-        () => clusterReviews(undefined, model, collectorCtx),
+        () => clusterReviews(undefined, model, collectorCtx, provider),
         (p) => `${p.clusters.length} review clusters`,
       ).catch((err) => {
         log.warn("autonomous: reviews collector failed", { runId, err: getErrorMessage(err) });
@@ -251,7 +260,7 @@ export async function runAutonomousSige(
       runStep(
         runId,
         "capabilities",
-        () => scanCapabilities(model, collectorCtx),
+        () => scanCapabilities(model, collectorCtx, provider),
         (c) => `${c.capabilities.length} capabilities`,
       ).catch((err) => {
         log.warn("autonomous: capabilities collector failed", { runId, err: getErrorMessage(err) });
@@ -290,6 +299,7 @@ export async function runAutonomousSige(
       () =>
         discoverFrontiers(corpus, mem0, {
           broadPoolSize: sigeAutoConfig.broadPoolSize,
+          broadFrontierCap: sigeAutoConfig.broadFrontierCap,
           maxDeepFrontiers: sigeAutoConfig.maxDeepFrontiers,
           userId,
           signal: runSignal,
@@ -326,7 +336,17 @@ export async function runAutonomousSige(
     // `mapDeepGameRankedToCandidate` on its `rankedIdeas`, producing true expert-game
     // valuation for the depth stage. Until then, the depth stage and breadth stage
     // provide equivalent signal quality; the value is the frontier's scoped seedText.
-    const topFrontiers = discovery.frontiers.slice(0, sigeAutoConfig.maxDeepFrontiers);
+    // Select a DIVERSE subset of frontiers to deep-develop. Sort by score desc
+    // first, then apply selectDiverseBy to cap any single theme at 50% of the
+    // selected set — prevents one-theme monoculture when maxDeepFrontiers > 1.
+    const topFrontiers = selectDiverseBy(
+      [...discovery.frontiers].sort((a, b) => b.score - a.score),
+      {
+        maxIdeas: sigeAutoConfig.maxDeepFrontiers,
+        maxBucketShare: 0.5,
+        resolveBucket: (f) => f.theme,
+      },
+    );
     const deepCandidates: GeneratedIdeaCandidate[] = [];
 
     for (let i = 0; i < topFrontiers.length; i++) {
@@ -400,7 +420,13 @@ export async function runAutonomousSige(
     }
 
     // ── Back-half: demand enrichment ─────────────────────────────────────────
-    const demandByCandidate = new Map<GeneratedIdeaCandidate, Awaited<ReturnType<typeof enrichDemand>>>();
+    // Keyed by candidateJoinId(title), NOT object reference — mirrors the seeded
+    // pipeline so the artifact survives the GIANT-gate / selection transforms that
+    // replace each candidate object. (Autonomous does not yet persist demand_json,
+    // so this currently only feeds summarizeDemandCoverage; the stable key keeps it
+    // correct if/when a persistence consumer is added — and keeps the map type
+    // aligned with summarizeDemandCoverage.)
+    const demandByCandidate = new Map<string, Awaited<ReturnType<typeof enrichDemand>>>();
     if (smart.demand.enabled && kept.length > 0) {
       try {
         const demandCfg = buildEnrichDemandConfig(smart.demand);
@@ -412,7 +438,7 @@ export async function runAutonomousSige(
             demandCfg,
           );
           const next = applyDemandRescore(candidate, artifact, effectiveGiant);
-          demandByCandidate.set(next, artifact);
+          demandByCandidate.set(candidateJoinId(next.title), artifact);
           rescored.push(next);
         }
         kept = rescored;

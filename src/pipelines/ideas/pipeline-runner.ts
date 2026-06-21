@@ -13,6 +13,7 @@
 import type { GenerateWideConfig, SigeConfig, SigeHardeningConfig } from "../../config/schema";
 import { createLogger } from "../../logger";
 import type { MemoryManager } from "../../memory/types";
+import { getAllModelRoutes } from "../../store/model-routing";
 import {
   createPipelineStep,
   findCompletedStep,
@@ -216,11 +217,20 @@ function readEvaluation(ev: CandidateEvaluation): SigeEvalView {
  */
 async function runIndependentJury(
   candidates: readonly GeneratedIdeaCandidate[],
-  sigeHardening: SigeHardeningConfig,
   signals: Map<GeneratedIdeaCandidate, SigeSignals>,
 ): Promise<{ readonly candidates: readonly GeneratedIdeaCandidate[] }> {
   try {
-    const panel = buildJuryPanel(sigeHardening.judgeModels);
+    // Model-routing is the source of truth for the three judge slots: read the
+    // `sige.judge.0/1/2` routes (DB-backed, hot reloaded per run) instead of the
+    // static `sigeHardening.judgeModels` config default. The `judgeModels` schema
+    // field is kept for backward compat but no longer drives the runtime panel.
+    const routes = await getAllModelRoutes();
+    const judgeModels = [
+      routes["sige.judge.0"],
+      routes["sige.judge.1"],
+      routes["sige.judge.2"],
+    ];
+    const panel = buildJuryPanel(judgeModels);
 
     const rawCands = candidates.map((c) => ({
       id: candidateJoinId(c.title),
@@ -406,7 +416,7 @@ export async function applySigeValuation(
 
     let rescored = unioned;
     if (sigeHardening.independentJudge && unioned.length > 0) {
-      const juryResult = await runIndependentJury(unioned, sigeHardening, signals);
+      const juryResult = await runIndependentJury(unioned, signals);
       rescored = juryResult.candidates;
     }
 
@@ -487,7 +497,8 @@ export async function runStorePhase(params: {
   readonly capabilities: readonly Capability[];
   readonly runLevelProvenance: readonly ProvenanceEntry[];
   readonly groundingByTitle: ReadonlyMap<string, number>;
-  readonly demandByCandidate: ReadonlyMap<GeneratedIdeaCandidate, import("./demand").DemandArtifact>;
+  /** Keyed by candidateJoinId(title), NOT object reference — survives transforms. */
+  readonly demandByCandidate: ReadonlyMap<string, import("./demand").DemandArtifact>;
   readonly giantGateByCandidate: ReadonlyMap<GeneratedIdeaCandidate, CandidateGiantGate>;
   readonly sigeSignals: ReadonlyMap<string, SigeSignals>;
   readonly memoryManager: MemoryManager | null | undefined;
@@ -552,7 +563,7 @@ export async function runStorePhase(params: {
         signalCitationToken,
       );
 
-      const demandArtifact = demandByCandidate.get(candidate);
+      const demandArtifact = demandByCandidate.get(candidateJoinId(candidate.title));
       const demandProvenance = demandArtifact ? demandProvenanceEntries(demandArtifact) : [];
       const provenanceSeen = new Set(baseProvenance.map((e) => `${e.table}:${e.id}`));
       const ideaProvenance: readonly ProvenanceEntry[] = [
@@ -596,7 +607,7 @@ export async function runStorePhase(params: {
         },
         giantGateForIdea,
         {
-          artifact: demandByCandidate.get(candidate),
+          artifact: demandByCandidate.get(candidateJoinId(candidate.title)),
           segment: resolveCandidateSegment(candidate),
         },
         sigeSignals.get(candidateJoinId(candidate.title)),
@@ -638,7 +649,8 @@ export async function runStorePhase(params: {
  */
 export async function runProxyLabelPhase(params: {
   readonly storedPairs: readonly StoredIdeaPair[];
-  readonly demandByCandidate: ReadonlyMap<GeneratedIdeaCandidate, import("./demand").DemandArtifact>;
+  /** Keyed by candidateJoinId(title), NOT object reference — survives transforms. */
+  readonly demandByCandidate: ReadonlyMap<string, import("./demand").DemandArtifact>;
   readonly giantGateByCandidate: ReadonlyMap<GeneratedIdeaCandidate, CandidateGiantGate>;
   readonly convergenceVetoed: boolean | undefined;
   readonly runId: string;
@@ -661,10 +673,10 @@ export async function runProxyLabelPhase(params: {
         ideaId,
         candidate,
         gate: giantGateByCandidate.get(candidate),
-        artifact: demandByCandidate.get(candidate),
+        artifact: demandByCandidate.get(candidateJoinId(candidate.title)),
         grounded:
           candidateHasDemandEvidence(candidate) ||
-          (demandByCandidate.get(candidate)?.evidence.length ?? 0) > 0,
+          (demandByCandidate.get(candidateJoinId(candidate.title))?.evidence.length ?? 0) > 0,
         ...(convergenceVetoed !== undefined ? { convergenceVeto: convergenceVetoed } : {}),
       }),
     );
@@ -703,7 +715,8 @@ export async function runOutcomeMemoryWriteBack(params: {
   readonly storedPairs: readonly StoredIdeaPair[];
   readonly dedupRejected: readonly string[];
   readonly proxyLabels: readonly import("./feedback-bootstrap").ProxyLabel[];
-  readonly demandByCandidate: ReadonlyMap<GeneratedIdeaCandidate, import("./demand").DemandArtifact>;
+  /** Keyed by candidateJoinId(title), NOT object reference — survives transforms. */
+  readonly demandByCandidate: ReadonlyMap<string, import("./demand").DemandArtifact>;
   readonly giantGateByCandidate: ReadonlyMap<GeneratedIdeaCandidate, CandidateGiantGate>;
   readonly sigeSignals: ReadonlyMap<string, SigeSignals>;
   readonly convergenceVetoed: boolean | null | undefined;
@@ -756,7 +769,7 @@ export async function runOutcomeMemoryWriteBack(params: {
       };
 
       const gate = giantGateByCandidate.get(candidate);
-      const artifact = demandByCandidate.get(candidate);
+      const artifact = demandByCandidate.get(candidateJoinId(candidate.title));
       const sigeSignal = sigeSignals.get(candidateJoinId(candidate.title));
 
       const memory = toOutcomeMemory(

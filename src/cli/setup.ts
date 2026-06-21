@@ -50,7 +50,11 @@ function readEnvFile(): Record<string, string> {
 
 function writeEnvFile(env: Record<string, string>): void {
   const lines = Object.entries(env).map(([k, v]) => `${k}=${v}`);
-  fs.writeFileSync(ENV_PATH, lines.join("\n") + "\n", "utf8");
+  // .env holds web/internal tokens, NEO4J_PASSWORD, and API keys. Write with
+  // mode 0600 so it is owner-only from creation, and chmod to tighten any
+  // pre-existing file with looser permissions.
+  fs.writeFileSync(ENV_PATH, lines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+  fs.chmodSync(ENV_PATH, 0o600);
 }
 
 function cancelled(): never {

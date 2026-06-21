@@ -8,12 +8,14 @@ import { describe, test, expect, mock } from "bun:test";
 import {
   buildBroadSignalsContext,
   clusterIntoFrontiers,
+  resolveClusterCap,
   scoreFrontier,
   scoreFrontiers,
   type Frontier,
   type BroadCorpus,
   type FrontierScoringContext,
 } from "./frontier-discovery";
+import { selectDiverseBy } from "../../pipelines/ideas/idea-diversity";
 import type { DivergentCandidate } from "../run";
 import type { TrendData, ClusteredPains, CapabilityScan } from "../../pipelines/ideas/types";
 
@@ -411,5 +413,134 @@ describe("scoreFrontiers", () => {
     const scored = await scoreFrontiers([saturatedFrontier], mem0Mock, saturatedCtx);
     // With full saturation penalty = 1.0, novelty = (1-0)*(1-1) = 0, score = 0
     expect(scored[0]!.score).toBeLessThan(0.05);
+  });
+});
+
+// ── resolveClusterCap ────────────────────────────────────────────────────────
+
+describe("resolveClusterCap", () => {
+  test("returns DEFAULT_MAX_FRONTIERS (8) when no cap provided", () => {
+    expect(resolveClusterCap()).toBe(8);
+  });
+
+  test("returns DEFAULT_MAX_FRONTIERS (8) when cap equals the ceiling", () => {
+    expect(resolveClusterCap(8)).toBe(8);
+  });
+
+  test("returns the configured cap when below the ceiling", () => {
+    expect(resolveClusterCap(3)).toBe(3);
+  });
+
+  test("clamps to DEFAULT_MAX_FRONTIERS (8) when cap exceeds the ceiling", () => {
+    expect(resolveClusterCap(99)).toBe(8);
+  });
+
+  test("returns 1 for configured cap of 1 (minimum)", () => {
+    expect(resolveClusterCap(1)).toBe(1);
+  });
+
+  test("clamps to 1 when configured cap is 0 (floor guard)", () => {
+    expect(resolveClusterCap(0)).toBe(1);
+  });
+
+  test("clamps to 1 when configured cap is negative", () => {
+    expect(resolveClusterCap(-5)).toBe(1);
+  });
+});
+
+// ── Diverse frontier selection ────────────────────────────────────────────────
+//
+// Verify that selectDiverseBy — applied with resolveBucket: (f) => f.theme —
+// spans >=2 themes when a naive top-by-score slice would collapse to one theme.
+
+function makeFrontier(theme: string, score: number): Frontier {
+  return {
+    id: `${theme}-${score}`,
+    theme,
+    themeKeys: theme.split(" "),
+    candidates: [],
+    signalStrength: score,
+    novelty: score,
+    score,
+    seedText: `seed for ${theme}`,
+  };
+}
+
+describe("selectDiverseBy — frontier theme diversity", () => {
+  test("naive top-3 by score collapses to single theme (baseline)", () => {
+    const frontiers: Frontier[] = [
+      makeFrontier("ai notes", 0.95),
+      makeFrontier("ai notes", 0.90),
+      makeFrontier("ai notes", 0.85),
+      makeFrontier("ai notes", 0.80),
+      makeFrontier("budget planner", 0.75),
+      makeFrontier("fitness tracker", 0.70),
+      makeFrontier("recipe finder", 0.65),
+      makeFrontier("sleep monitor", 0.60),
+    ];
+    const naive = [...frontiers].sort((a, b) => b.score - a.score).slice(0, 3);
+    const themes = new Set(naive.map((f) => f.theme));
+    expect(themes.size).toBe(1);
+  });
+
+  test("selectDiverseBy spans >=2 themes with maxDeepFrontiers=3 over 8 frontiers (4 themes)", () => {
+    const frontiers: Frontier[] = [
+      makeFrontier("ai notes", 0.95),
+      makeFrontier("ai notes", 0.90),
+      makeFrontier("ai notes", 0.85),
+      makeFrontier("ai notes", 0.80),
+      makeFrontier("budget planner", 0.75),
+      makeFrontier("fitness tracker", 0.70),
+      makeFrontier("recipe finder", 0.65),
+      makeFrontier("sleep monitor", 0.60),
+    ];
+
+    const selected = selectDiverseBy(
+      [...frontiers].sort((a, b) => b.score - a.score),
+      { maxIdeas: 3, maxBucketShare: 0.5, resolveBucket: (f) => f.theme },
+    );
+
+    expect(selected).toHaveLength(3);
+    const themes = new Set(selected.map((f) => f.theme));
+    expect(themes.size).toBeGreaterThanOrEqual(2);
+  });
+
+  test("respects maxBucketShare=0.5: no single theme exceeds 50% of the selected set", () => {
+    const frontiers: Frontier[] = [
+      makeFrontier("ai notes", 0.95),
+      makeFrontier("ai notes", 0.90),
+      makeFrontier("ai notes", 0.85),
+      makeFrontier("budget planner", 0.80),
+      makeFrontier("fitness tracker", 0.75),
+      makeFrontier("recipe finder", 0.70),
+    ];
+
+    const selected = selectDiverseBy(
+      [...frontiers].sort((a, b) => b.score - a.score),
+      { maxIdeas: 4, maxBucketShare: 0.5, resolveBucket: (f) => f.theme },
+    );
+
+    const counts = new Map<string, number>();
+    for (const f of selected) {
+      counts.set(f.theme, (counts.get(f.theme) ?? 0) + 1);
+    }
+    for (const [, count] of counts) {
+      expect(count / selected.length).toBeLessThanOrEqual(0.5 + 0.01);
+    }
+  });
+
+  test("with maxDeepFrontiers=1 behaviour is equivalent to top-1 (diversity trivially satisfied)", () => {
+    const frontiers: Frontier[] = [
+      makeFrontier("ai notes", 0.95),
+      makeFrontier("budget planner", 0.80),
+    ];
+
+    const selected = selectDiverseBy(
+      [...frontiers].sort((a, b) => b.score - a.score),
+      { maxIdeas: 1, maxBucketShare: 0.5, resolveBucket: (f) => f.theme },
+    );
+
+    expect(selected).toHaveLength(1);
+    expect(selected[0]!.theme).toBe("ai notes");
   });
 });

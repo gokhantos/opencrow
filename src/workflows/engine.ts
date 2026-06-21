@@ -105,31 +105,6 @@ export async function startWorkflowExecution(
   return { executionId: execution.id };
 }
 
-/**
- * Execute a workflow graph synchronously (awaitable).
- * Creates execution + step records in the DB, iterates nodes in
- * topological order, and updates the execution on completion or failure.
- */
-export async function executeWorkflow(
-  workflow: StoredWorkflow,
-  triggerInput: Record<string, unknown>,
-  deps: EngineDeps,
-): Promise<StoreExecution> {
-  const validation = validateWorkflowForExecution(workflow.nodes, workflow.edges);
-  if (!validation.valid) {
-    throw new Error(
-      `Workflow "${workflow.name}" is invalid: ${validation.errors.join("; ")}`,
-    );
-  }
-
-  const execution = await createExecution({
-    workflowId: workflow.id,
-    triggerInput,
-  });
-
-  return runExecution(execution.id, workflow, triggerInput, deps);
-}
-
 async function runExecution(
   executionId: string,
   workflow: StoredWorkflow,

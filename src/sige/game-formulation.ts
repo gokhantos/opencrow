@@ -500,44 +500,6 @@ export function detectGameType(
   return "simultaneous";
 }
 
-// ─── Public: summarizeGame ────────────────────────────────────────────────────
-
-export function summarizeGame(formulation: GameFormulation): string {
-  const { gameType, players, informationStructure, moveSequence, constraints } = formulation;
-
-  const playerNames = players.map((p) => p.name).join(", ");
-  const constraintCount = constraints.length;
-  const asymmetryCount = informationStructure.asymmetries.length;
-
-  const lines: string[] = [
-    `Game Type: ${gameType}`,
-    `Players (${players.length}): ${playerNames}`,
-    `Move Sequence: ${moveSequence}`,
-  ];
-
-  if (asymmetryCount > 0) {
-    lines.push(
-      `Information Asymmetries (${asymmetryCount}): ${informationStructure.asymmetries.slice(0, 2).join("; ")}${asymmetryCount > 2 ? "; ..." : ""}`,
-    );
-  } else {
-    lines.push("Information: symmetric (common knowledge)");
-  }
-
-  if (constraintCount > 0) {
-    const constraintTypes = [...new Set(constraints.map((c) => c.type))].join(", ");
-    lines.push(`Constraints (${constraintCount}): ${constraintTypes}`);
-  }
-
-  for (const player of players) {
-    const strategies = formulation.strategies[player.id] ?? player.strategySpace;
-    lines.push(
-      `  ${player.name}: optimizes "${player.payoffFunction}" | strategies: ${strategies.slice(0, 3).join(", ")}${strategies.length > 3 ? ", ..." : ""}`,
-    );
-  }
-
-  return lines.join("\n");
-}
-
 // ─── Public: formulateGame ────────────────────────────────────────────────────
 
 export async function formulateGame(
@@ -545,7 +507,7 @@ export async function formulateGame(
   seedInput: string,
   options: {
     readonly model: string;
-    readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic";
+    readonly provider?: "openrouter" | "agent-sdk" | "alibaba" | "anthropic" | "opencode";
     readonly sessionId: string;
     readonly preferredGameType?: GameType;
     /**

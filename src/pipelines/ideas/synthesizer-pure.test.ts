@@ -27,9 +27,34 @@ import {
   outcomeMemorySection,
   hasDemandEvidence,
   compositeToQualityScore,
+  buildChatOptions,
 } from "./synthesizer";
 import type { SignalImportance } from "../../memory/signal-facets";
 import { neutralSignalCalibration } from "./signal-calibration";
+
+// ── buildChatOptions (provider routing) ─────────────────────────────────────
+
+describe("buildChatOptions", () => {
+  test("honors a routed provider so generation dispatches to it", () => {
+    const opts = buildChatOptions("qwen3.7-plus", "alibaba");
+    expect(opts.provider).toBe("alibaba");
+    expect(opts.model).toBe("qwen3.7-plus");
+  });
+
+  test("threads any supported provider through unchanged", () => {
+    expect(buildChatOptions("x/y", "openrouter").provider).toBe("openrouter");
+    expect(buildChatOptions("opencode-sonnet", "opencode").provider).toBe("opencode");
+  });
+
+  // Regression guard: provider is REQUIRED (no "anthropic" default). A missing
+  // provider used to silently bill the user's Claude OAuth; a one-arg call must
+  // now be a TYPE error so the leak cannot regress.
+  test("provider has no Claude default (one-arg call is a type error)", () => {
+    // @ts-expect-error provider is required — omitting it must not compile.
+    buildChatOptions("qwen3.7-plus");
+    expect(buildChatOptions.length).toBe(2);
+  });
+});
 
 // ── parseJsonArrayLenient ───────────────────────────────────────────────────
 

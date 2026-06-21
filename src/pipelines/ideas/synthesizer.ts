@@ -32,6 +32,14 @@ import type {
 } from "./types";
 import { applyMmr } from "../../memory/mmr";
 import { getDb } from "../../store/db";
+import type { ModelProvider } from "../../store/model-routing";
+import { selectDiverseBy } from "./idea-diversity";
+import {
+  type ScoredSketch,
+  type ThemeCandidate,
+  defaultShallowIdeationDeps,
+  runShallowIdeation,
+} from "./shallow-ideation";
 import { loadIncumbentNames } from "./incumbents";
 import type { IdeaCategory } from "../types";
 import { selectWithNoveltyReserve } from "./generate-wide";
@@ -59,11 +67,19 @@ export function sanitizeForPrompt(text: string): string {
     .slice(0, 80000);
 }
 
-export function buildChatOptions(model: string) {
+/**
+ * Build the shared chat options for an idea-pipeline LLM call. The PROVIDER is
+ * REQUIRED and routed (the generator path threads `provider` from `getModelRoute(
+ * "pipeline.generator")` through the synthesis passes). There is intentionally NO
+ * default: a missing provider used to fall through to "anthropic", silently
+ * billing the user's personal Claude OAuth on any un-threaded path. Requiring it
+ * turns any un-threaded caller into a compile error instead of a silent bill.
+ */
+export function buildChatOptions(model: string, provider: ModelProvider) {
   return {
     systemPrompt: "",
     model,
-    provider: "anthropic" as const,
+    provider,
     agentId: "idea-pipeline",
     usageContext: { channel: "pipeline" as const, chatId: "ideas", source: "workflow" as const },
   };
@@ -227,6 +243,16 @@ export async function synthesizeFromTrends(input: {
   readonly maxIdeas: number;
   readonly model: string;
   /**
+   * Provider for the generator LLM calls. REQUIRED — routed from
+   * `getModelRoute("pipeline.generator")` (or a `config.provider` override) by
+   * the Pipeline phase and threaded through EVERY generation path (primary wide
+   * generation, the single-idea fallback, single-pass, and the GIANT critique).
+   * No Claude default: a missing provider used to fall through to "anthropic",
+   * silently billing the user's personal Claude OAuth. Required so an un-threaded
+   * caller is a compile error, not a silent bill.
+   */
+  readonly provider: ModelProvider;
+  /**
    * #5 Positive few-shot block of human-validated ideas (built by the Pipeline
    * phase via buildValidatedExemplars). Optional — backward-compatible; injected
    * only when smart.validatedExemplars is on AND the caller supplies it.
@@ -289,8 +315,24 @@ export async function synthesizeFromTrends(input: {
    * is on AND the caller supplies it. Empty/absent → today's behavior.
    */
   readonly segmentDirective?: string;
+  /**
+   * SEED multi-hop graph-reasoning directive (built by the Pipeline phase via
+   * fetchGraphReasoningDirective → buildGraphReasoningDirective from a bounded
+   * Neo4j traversal). Injected ONLY at Pass 1 (discoverIntersections), right
+   * after the segment-diversity directive, to widen WHICH intersections the seed
+   * surfaces via non-obvious graph adjacencies. Already sanitized +
+   * untrusted-fenced. Optional — backward-compatible; injected only when
+   * smart.graphReasoning.enabled is on AND the caller supplies it. Empty/absent
+   * → today's seed prompt (byte-identical).
+   */
+  readonly graphDirective?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
+  const provider: ModelProvider = input.provider;
+  // Observability: record the routed provider/model for THIS synthesis so a
+  // future audit can confirm the idea pipeline ran on the configured cheap route
+  // and not the user's Claude OAuth. Threaded into every generation pass below.
+  log.info("Synthesis resolved provider/model", { provider, model });
 
   const smart = loadConfig().pipelines.ideas.smart;
   const chainOfEvidence = smart.chainOfEvidence;
@@ -309,6 +351,10 @@ export async function synthesizeFromTrends(input: {
   // boundary on the SAME flag as outcomeMemory so the path is defended
   // end-to-end. "" → today's seed prompt.
   const segmentDirective = smart.outcomeMemory.readAtSynthesis ? input.segmentDirective ?? "" : "";
+  // SEED graph-reasoning directive (Pass 1 only): re-gate at the synthesis
+  // boundary on smart.graphReasoning.enabled so the path is defended end-to-end.
+  // "" → today's seed prompt.
+  const graphDirective = smart.graphReasoning.enabled ? input.graphDirective ?? "" : "";
 
   // ── Pass 1: Discover intersections ──────────────────────────────────
   let intersections: readonly IntersectionHypothesis[];
@@ -321,6 +367,8 @@ export async function synthesizeFromTrends(input: {
       model,
       chainOfEvidence,
       segmentDirective,
+      graphDirective,
+      provider,
     );
   } catch (err) {
     log.error("Pass 1 failed, falling back to single-pass synthesis", { err });
@@ -355,14 +403,38 @@ export async function synthesizeFromTrends(input: {
     after: dedupedIntersections.length,
   });
 
-  // Take top 10 by signal strength from deduped set
-  const topIntersections = [...dedupedIntersections]
-    .sort((a, b) => b.signalStrength - a.signalStrength)
-    .slice(0, Math.min(maxIdeas * 2, 10));
+  // ── STAGE 2 neck — gated broad-shallow ideation ─────────────────────────
+  // When shallowIdeation is ON: ideate cheaply over many candidates, then
+  // diversity-select `deepDevelopCount` to deep-develop (the broadened funnel).
+  // When OFF: keep today's narrow top-10-by-signal neck byte-for-byte. The new
+  // path is one config flag away from the old behavior, and degrades to the old
+  // selection on any Stage-2 failure (selectViaShallowIdeation never throws).
+  // Optional access: the real schema always populates `shallowIdeation` +
+  // `deepDevelopCount`, but a partial/mocked config may omit them — default to
+  // the OFF (legacy-neck) behavior so a missing block never throws.
+  const shallow = smart.shallowIdeation;
+  let topIntersections: readonly IntersectionHypothesis[];
+  if (shallow?.enabled) {
+    topIntersections = await selectViaShallowIdeation({
+      intersections: dedupedIntersections,
+      candidateCount: shallow.candidateCount,
+      deepDevelopCount: smart.deepDevelopCount ?? shallow.candidateCount,
+      batchSize: shallow.batchSize,
+      cheapModel: shallow.model,
+      saturatedThemes,
+      maxBucketShare: smart.diversityGuard?.maxBucketShare ?? 0.5,
+    });
+  } else {
+    // Legacy narrow neck: top 10 by signal strength from the deduped set.
+    topIntersections = [...dedupedIntersections]
+      .sort((a, b) => b.signalStrength - a.signalStrength)
+      .slice(0, Math.min(maxIdeas * 2, 10));
+  }
 
   log.info("Pass 1 complete — proceeding to Pass 2", {
     totalIntersections: intersections.length,
     selectedForDevelopment: topIntersections.length,
+    shallowIdeation: shallow?.enabled ?? false,
   });
 
   // ── Pass 2: Develop ideas from intersections ─────────────────────────
@@ -386,6 +458,7 @@ export async function synthesizeFromTrends(input: {
           generateWide,
           antiExemplars,
           outcomeMemory,
+          provider,
         );
         if (rawCandidates.length === 0) {
           log.warn(
@@ -401,6 +474,7 @@ export async function synthesizeFromTrends(input: {
             chainOfEvidence,
             antiExemplars,
             outcomeMemory,
+            provider,
           );
         }
       } catch (wideErr) {
@@ -418,6 +492,7 @@ export async function synthesizeFromTrends(input: {
           chainOfEvidence,
           antiExemplars,
           outcomeMemory,
+          provider,
         );
       }
     } else {
@@ -431,6 +506,7 @@ export async function synthesizeFromTrends(input: {
         chainOfEvidence,
         antiExemplars,
         outcomeMemory,
+        provider,
       );
     }
   } catch (err) {
@@ -491,6 +567,7 @@ export async function synthesizeFromTrends(input: {
             decidedAt: input.competabilityDecidedAt,
           }
         : undefined,
+      provider,
     );
   } catch (err) {
     log.error("Pass 3 failed, returning uncritiqued candidates", { err });
@@ -604,4 +681,97 @@ function sortAndDiversify(
     log.warn("sort+MMR diversity pass failed, using quality sort", { err });
     return mmrInput.slice(0, maxIdeas);
   }
+}
+
+/** Bucket label for a sketch whose candidate has no signalCategory. */
+const UNKNOWN_SHALLOW_BUCKET = "unknown";
+
+/**
+ * STAGE 2 — broad-shallow ideation over the deduped intersection pool.
+ *
+ * Instead of the legacy narrow neck (`slice(0, min(maxIdeas*2, 10))`), ideate a
+ * cheap one-line sketch over up to `candidateCount` intersections, score each
+ * (signal + novelty-vs-saturation + market-gap), then DIVERSITY-select
+ * `deepDevelopCount` of them via the existing `selectDiverseBy` machinery
+ * (bucketing on the carried-through signalCategory). Returns the SAME
+ * `IntersectionHypothesis` objects (a subset), so Pass 2 is byte-for-byte
+ * unchanged per-theme.
+ *
+ * Resilient: if Stage 2 yields no scored sketches (model down / all junk), falls
+ * back to the legacy top-`deepDevelopCount` by signalStrength so the pipeline
+ * never starves. Never throws.
+ */
+async function selectViaShallowIdeation(input: {
+  readonly intersections: readonly IntersectionHypothesis[];
+  readonly candidateCount: number;
+  readonly deepDevelopCount: number;
+  readonly batchSize: number;
+  readonly cheapModel: string;
+  readonly saturatedThemes: string;
+  readonly maxBucketShare: number;
+}): Promise<readonly IntersectionHypothesis[]> {
+  const ranked = [...input.intersections].sort((a, b) => b.signalStrength - a.signalStrength);
+  const pool = ranked.slice(0, Math.max(1, input.candidateCount));
+
+  // Map each intersection → a provider-agnostic ThemeCandidate. The index-based
+  // id binds the scored sketch back to the exact IntersectionHypothesis.
+  const byId = new Map<string, IntersectionHypothesis>();
+  const candidates: ThemeCandidate[] = pool.map((h, i) => {
+    const id = `int_${i}`;
+    byId.set(id, h);
+    return {
+      id,
+      title: h.title,
+      signalStrength: h.signalStrength,
+      // The pipeline's intersections have no facet category; bucket on the
+      // capability signal so diversity selection still spreads across themes.
+      signalCategory: h.capabilitySignal.toLowerCase().trim() || undefined,
+      kind: "intersection",
+      source: "pipeline",
+      context: `${h.painSignal}\n${h.capabilitySignal}\n${h.marketSignal}\n${h.hypothesis}`,
+    };
+  });
+
+  let scored: readonly ScoredSketch[] = [];
+  try {
+    const deps = await defaultShallowIdeationDeps({
+      batchSize: input.batchSize,
+      lookupSaturation: async () => input.saturatedThemes,
+      model: input.cheapModel,
+    });
+    scored = await runShallowIdeation(candidates, deps);
+  } catch (err) {
+    log.warn("Stage 2 shallow ideation failed; falling back to top-by-signal", { err });
+  }
+
+  if (scored.length === 0) {
+    return pool.slice(0, input.deepDevelopCount);
+  }
+
+  // Diversity-select the deep-develop set across signalCategory buckets, then map
+  // each kept sketch back to its originating intersection (order preserved).
+  const selected = selectDiverseBy(scored, {
+    maxIdeas: input.deepDevelopCount,
+    maxBucketShare: input.maxBucketShare,
+    resolveBucket: (s) => s.candidate.signalCategory ?? UNKNOWN_SHALLOW_BUCKET,
+  });
+
+  const out: IntersectionHypothesis[] = [];
+  const seen = new Set<string>();
+  for (const s of selected) {
+    const h = byId.get(s.candidate.id);
+    if (h && !seen.has(s.candidate.id)) {
+      seen.add(s.candidate.id);
+      out.push(h);
+    }
+  }
+
+  log.info("Stage 2 shallow ideation selected diverse intersections", {
+    pool: pool.length,
+    scored: scored.length,
+    selected: out.length,
+    deepDevelopCount: input.deepDevelopCount,
+  });
+
+  return out.length > 0 ? out : pool.slice(0, input.deepDevelopCount);
 }

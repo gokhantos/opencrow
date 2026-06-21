@@ -10,8 +10,8 @@
  *                     are blocked even after the initial check.
  *
  * Design rationale:
- *   web-fetch.ts contains an async validateUrl that resolves DNS; that is the
- *   authoritative check for user-supplied URLs from agents. Scrapers work with
+ *   Agent-supplied URL fetching goes through the SDK-native WebFetch tool, which
+ *   performs its own DNS-resolving validation. Scrapers, by contrast, work with
  *   known-origin URLs (HN story URLs, news article URLs) where DNS resolution
  *   is impractical at scrape time (high volume, no retry budget). The sync check
  *   here blocks the obvious class: explicit IP literals, localhost, and reserved
@@ -119,8 +119,8 @@ function isIpLiteral(host: string): boolean {
  * Returns an error string on rejection, or null on acceptance.
  *
  * NOTE: This does not protect against DNS rebinding (a hostname that initially
- * resolves to a public IP then switches to a private one). For agent-supplied
- * URLs use web-fetch.ts's async validateUrl which resolves DNS. Use this
+ * resolves to a public IP then switches to a private one). Agent-supplied URLs
+ * are fetched via the SDK-native WebFetch tool, which resolves DNS. Use this
  * function only inside redirect-follow loops or for high-volume scraper URLs
  * where DNS resolution per hop is impractical.
  */

@@ -17,3 +17,5 @@ export { Tabs } from "./Tabs";
 export type { TabItem } from "./Tabs";
 export { IntervalConfigPanel } from "./IntervalConfigPanel";
 export type { IntervalConfigField } from "./IntervalConfigPanel";
+export { ModelRoutePicker } from "./ModelRoutePicker";
+export type { ModelRoutePickerProps } from "./ModelRoutePicker";
