@@ -284,21 +284,21 @@ MATCH (pain:Entity {user_id: $userId})
 WHERE pain.degree >= $minDegree
   AND pain.degree <= $maxDegree
   AND NOT pain.name =~ ('(?i)' + $stoplist)
-  -- toUpper(): $relWhitelist is the UPPERCASE canonical vocabulary, but
-  -- canonicalization is a WEEKLY backfill — the mem0 sidecar and code-graph
-  -- ingestion write FRESH lowercase rel types (uses / complained_about /
-  -- has_issue …) between runs. Folding the live type to upper-case before the
-  -- membership test keeps reasoning correct on those un-canonicalized edges
-  -- instead of silently dropping them until the next Sunday cleanup.
+  // toUpper(): $relWhitelist is the UPPERCASE canonical vocabulary, but
+  // canonicalization is a WEEKLY backfill — the mem0 sidecar and code-graph
+  // ingestion write FRESH lowercase rel types (uses / complained_about /
+  // has_issue …) between runs. Folding the live type to upper-case before the
+  // membership test keeps reasoning correct on those un-canonicalized edges
+  // instead of silently dropping them until the next Sunday cleanup.
   AND any(r IN [(pain)-[rr]-() | toUpper(type(rr))] WHERE r IN $relWhitelist)
 WITH pain
 ORDER BY pain.degree DESC
 LIMIT toInteger($searchLimit)
 MATCH path = (pain)-[rels*2..${MAX_HOPS_CEILING}]-(dest:Entity {user_id: $userId})
 WHERE length(path) <= toInteger($maxHops)
-  -- toUpper(): same as the seed predicate above — match fresh lowercase rel
-  -- types against the UPPERCASE whitelist so a path isn't dropped just because
-  -- it traverses an edge written since the last weekly canonicalization run.
+  // toUpper(): same as the seed predicate above — match fresh lowercase rel
+  // types against the UPPERCASE whitelist so a path isn't dropped just because
+  // it traverses an edge written since the last weekly canonicalization run.
   AND all(r IN relationships(path) WHERE toUpper(type(r)) IN $relWhitelist)
   AND all(n IN nodes(path) WHERE
         n.user_id = $userId
@@ -306,9 +306,9 @@ WHERE length(path) <= toInteger($maxHops)
         AND n.degree <= $maxDegree)
 RETURN pain.name AS seed,
        [i IN range(1, length(path)) |
-          -- toUpper(): emit the CANONICAL hop label so a returned path's rel is
-          -- consistent with the (uppercase) vocabulary it was filtered against,
-          -- regardless of whether the underlying edge was canonicalized yet.
+          // toUpper(): emit the CANONICAL hop label so a returned path's rel is
+          // consistent with the (uppercase) vocabulary it was filtered against,
+          // regardless of whether the underlying edge was canonicalized yet.
           { rel: toUpper(type(relationships(path)[i - 1])),
             node: nodes(path)[i].name }] AS steps
 LIMIT toInteger($maxPaths)

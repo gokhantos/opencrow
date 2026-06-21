@@ -245,6 +245,24 @@ describe("Neo4jReadClient.opportunityPaths — success path", () => {
     await client.close();
   });
 
+  test("uses Cypher `//` line comments, never SQL-style `--` (a parse error)", async () => {
+    // Cypher only supports `//` and `/* */`. A `--` "comment" is NOT ignored —
+    // Neo4j raises `Invalid input ':'` and the WHOLE query fails, so
+    // opportunityPaths silently returns [] on every call (graph reasoning dies
+    // with only a WARN). This guards against re-introducing SQL-style comments,
+    // since this lane has no live DB to catch the parse error directly.
+    okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
+    const client = freshClient();
+    await client.opportunityPaths(PARAMS);
+
+    const { query } = captured.queries[0]!;
+    // No line that is only-whitespace then `--` (SQL line comment).
+    expect(query).not.toMatch(/^\s*--/m);
+    // The intended explanatory comments are present as Cypher `//` comments.
+    expect(query).toContain("// toUpper()");
+    await client.close();
+  });
+
   test("forwards the per-query { timeout } transaction config", async () => {
     okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
     const client = freshClient(1234);
