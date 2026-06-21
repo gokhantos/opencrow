@@ -136,7 +136,7 @@ beforeEach(() => {
 
 describe("discoverIntersections — SEED graph directive injection", () => {
   test("directive present in seed prompt when supplied", async () => {
-    await discoverIntersections(trends, pains, capabilities, "model-x", false, "", DIRECTIVE);
+    await discoverIntersections(trends, pains, capabilities, "model-x", false, "", DIRECTIVE, "alibaba");
     expect(capturedPrompts.length).toBe(1);
     expect(capturedPrompts[0]).toContain("OPPORTUNITY PATHS");
     // The untrusted fence around each chain survives into the prompt.
@@ -145,16 +145,16 @@ describe("discoverIntersections — SEED graph directive injection", () => {
 
   test("no directive in seed prompt when empty string (byte-identical seed)", async () => {
     // Baseline: no segment directive, no graph directive.
-    await discoverIntersections(trends, pains, capabilities, "model-x", false, "", "");
+    await discoverIntersections(trends, pains, capabilities, "model-x", false, "", "", "alibaba");
     const baseline = capturedPrompts[0];
 
     capturedPrompts.length = 0;
-    // Same call but with the default (omitted) trailing arg.
-    await discoverIntersections(trends, pains, capabilities, "model-x", false, "");
+    // Same call again with an empty graph directive — must be byte-identical.
+    await discoverIntersections(trends, pains, capabilities, "model-x", false, "", "", "alibaba");
     const omitted = capturedPrompts[0];
 
     expect(baseline).not.toContain("OPPORTUNITY PATHS");
-    // Empty-string graph directive must be byte-identical to omitting it.
+    // Empty-string graph directive must produce a stable, identical seed prompt.
     expect(omitted).toBe(baseline);
   });
 });
@@ -169,6 +169,7 @@ describe("synthesizeFromTrends — directive gated on graphReasoning.enabled", (
     category: "general" as never,
     maxIdeas: 5,
     model: "model-x",
+    provider: "alibaba" as const,
   };
 
   test("graphReasoning ON → directive reaches the Pass-1 prompt", async () => {

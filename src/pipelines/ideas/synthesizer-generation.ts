@@ -95,7 +95,8 @@ export async function discoverIntersections(
   chainOfEvidence: boolean,
   segmentDirective = "",
   graphDirective = "",
-  provider: ModelProvider = "anthropic",
+  // REQUIRED routed provider (no Claude default) — see buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly IntersectionHypothesis[]> {
   const insightsSection = buildInsightsSection(trends, pains, capabilities, chainOfEvidence);
   // SEED diversity steering (learned from past verdicts, flag-gated upstream).
@@ -168,7 +169,10 @@ export async function developIdeas(
   chainOfEvidence: boolean,
   antiExemplars = "",
   outcomeMemory = "",
-  provider: ModelProvider = "anthropic",
+  // REQUIRED routed provider (no Claude default). This is the SINGLE-IDEA
+  // fallback target for the wide path: it MUST inherit the same routed provider
+  // the wide pass used, never silently jump to Claude — see buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const intersectionLines = topIntersections.map((h, i) =>
     `${i + 1}. "${h.title}"\n   Pain: ${h.painSignal}\n   Capability: ${h.capabilitySignal}\n   Market: ${h.marketSignal}\n   Hypothesis: ${h.hypothesis}\n   Signal strength: ${h.signalStrength.toFixed(2)}`,
@@ -322,7 +326,8 @@ export async function developIdeasWide(
   generateWide: GenerateWideConfig,
   antiExemplars = "",
   outcomeMemory = "",
-  provider: ModelProvider = "anthropic",
+  // REQUIRED routed provider (no Claude default) — see buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const seedsPer = generateWide.seedsPerIntersection;
   // Plan the segment spread over the FULL over-generated target so the pool spans
@@ -552,15 +557,21 @@ export async function critiqueIdeas(
   model: string,
   giant: GiantConfig,
   antiExemplars = "",
-  competability?: CompetabilityConfig,
+  // Explicit `| undefined` (not optional `?`) so the trailing REQUIRED `provider`
+  // is allowed and any un-threaded caller is a compile error. The sole caller
+  // (synthesizeFromTrends) already passes all of these positionally.
+  competability: CompetabilityConfig | undefined,
   incumbentSet: ReadonlySet<string> = new Set<string>(),
-  audit?: {
-    /** Pipeline run id stamped on each audit decision row (nullable). */
-    readonly pipelineRunId?: string | null;
-    /** Epoch SECONDS the decisions were made (caller supplies via `now()`). */
-    readonly decidedAt: number;
-  },
-  provider: ModelProvider = "anthropic",
+  audit:
+    | {
+        /** Pipeline run id stamped on each audit decision row (nullable). */
+        readonly pipelineRunId?: string | null;
+        /** Epoch SECONDS the decisions were made (caller supplies via `now()`). */
+        readonly decidedAt: number;
+      }
+    | undefined,
+  // REQUIRED routed provider (no Claude default) — see buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly GeneratedIdeaCandidate[]> {
   const competabilityOn = competability?.enabled === true;
   // The builder the gate is evaluated for. Defaults to the solo bootstrapper
@@ -1007,13 +1018,14 @@ export async function singlePassSynthesis(input: {
   readonly category: IdeaCategory;
   readonly maxIdeas: number;
   readonly model: string;
-  readonly provider?: ModelProvider;
+  /** REQUIRED routed provider (no Claude default) — see buildChatOptions. */
+  readonly provider: ModelProvider;
   readonly validatedExemplars?: string;
   readonly antiExemplars?: string;
   readonly outcomeMemory?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
-  const provider: ModelProvider = input.provider ?? "anthropic";
+  const provider: ModelProvider = input.provider;
 
   const saturatedSection = saturatedThemes
     ? `\nPREVIOUSLY GENERATED (avoid these themes):\n${saturatedThemes}`

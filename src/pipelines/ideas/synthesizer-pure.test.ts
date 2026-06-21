@@ -35,12 +35,6 @@ import { neutralSignalCalibration } from "./signal-calibration";
 // ── buildChatOptions (provider routing) ─────────────────────────────────────
 
 describe("buildChatOptions", () => {
-  test("defaults provider to anthropic when none is supplied", () => {
-    const opts = buildChatOptions("claude-sonnet-4-6");
-    expect(opts.provider).toBe("anthropic");
-    expect(opts.model).toBe("claude-sonnet-4-6");
-  });
-
   test("honors a routed provider so generation dispatches to it", () => {
     const opts = buildChatOptions("qwen3.7-plus", "alibaba");
     expect(opts.provider).toBe("alibaba");
@@ -50,6 +44,15 @@ describe("buildChatOptions", () => {
   test("threads any supported provider through unchanged", () => {
     expect(buildChatOptions("x/y", "openrouter").provider).toBe("openrouter");
     expect(buildChatOptions("opencode-sonnet", "opencode").provider).toBe("opencode");
+  });
+
+  // Regression guard: provider is REQUIRED (no "anthropic" default). A missing
+  // provider used to silently bill the user's Claude OAuth; a one-arg call must
+  // now be a TYPE error so the leak cannot regress.
+  test("provider has no Claude default (one-arg call is a type error)", () => {
+    // @ts-expect-error provider is required — omitting it must not compile.
+    buildChatOptions("qwen3.7-plus");
+    expect(buildChatOptions.length).toBe(2);
   });
 });
 

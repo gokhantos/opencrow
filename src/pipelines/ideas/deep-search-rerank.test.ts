@@ -121,13 +121,13 @@ describe("embeddingRerank short-circuit", () => {
 
 describe("llmListwiseRerank short-circuit", () => {
   test("returns empty for empty input", async () => {
-    const out = await llmListwiseRerank("theme", [], 6, "model");
+    const out = await llmListwiseRerank("theme", [], 6, "model", "alibaba");
     expect(out).toEqual([]);
   });
 
   test("returns input unchanged when count <= topK", async () => {
     const cands = [candidate("a", "A", "x")];
-    const out = await llmListwiseRerank("theme", cands, 6, "model");
+    const out = await llmListwiseRerank("theme", cands, 6, "model", "alibaba");
     expect(out).toBe(cands);
   });
 });

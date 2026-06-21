@@ -69,12 +69,13 @@ export function sanitizeForPrompt(text: string): string {
 
 /**
  * Build the shared chat options for an idea-pipeline LLM call. The PROVIDER is
- * routed (the generator path threads `provider` from `getModelRoute(
- * "pipeline.generator")` through the synthesis passes). Defaults to "anthropic"
- * so unthreaded callers (collectors, deep-search reranker) keep today's
- * behavior.
+ * REQUIRED and routed (the generator path threads `provider` from `getModelRoute(
+ * "pipeline.generator")` through the synthesis passes). There is intentionally NO
+ * default: a missing provider used to fall through to "anthropic", silently
+ * billing the user's personal Claude OAuth on any un-threaded path. Requiring it
+ * turns any un-threaded caller into a compile error instead of a silent bill.
  */
-export function buildChatOptions(model: string, provider: ModelProvider = "anthropic") {
+export function buildChatOptions(model: string, provider: ModelProvider) {
   return {
     systemPrompt: "",
     model,
@@ -242,11 +243,15 @@ export async function synthesizeFromTrends(input: {
   readonly maxIdeas: number;
   readonly model: string;
   /**
-   * Provider for the generator LLM calls. Routed from
+   * Provider for the generator LLM calls. REQUIRED — routed from
    * `getModelRoute("pipeline.generator")` (or a `config.provider` override) by
-   * the Pipeline phase. Optional — absent → "anthropic" (today's behavior).
+   * the Pipeline phase and threaded through EVERY generation path (primary wide
+   * generation, the single-idea fallback, single-pass, and the GIANT critique).
+   * No Claude default: a missing provider used to fall through to "anthropic",
+   * silently billing the user's personal Claude OAuth. Required so an un-threaded
+   * caller is a compile error, not a silent bill.
    */
-  readonly provider?: ModelProvider;
+  readonly provider: ModelProvider;
   /**
    * #5 Positive few-shot block of human-validated ideas (built by the Pipeline
    * phase via buildValidatedExemplars). Optional — backward-compatible; injected
@@ -323,7 +328,11 @@ export async function synthesizeFromTrends(input: {
   readonly graphDirective?: string;
 }): Promise<SynthesisResult> {
   const { trends, pains, capabilities, deepSearchContext, saturatedThemes, category, maxIdeas, model } = input;
-  const provider: ModelProvider = input.provider ?? "anthropic";
+  const provider: ModelProvider = input.provider;
+  // Observability: record the routed provider/model for THIS synthesis so a
+  // future audit can confirm the idea pipeline ran on the configured cheap route
+  // and not the user's Claude OAuth. Threaded into every generation pass below.
+  log.info("Synthesis resolved provider/model", { provider, model });
 
   const smart = loadConfig().pipelines.ideas.smart;
   const chainOfEvidence = smart.chainOfEvidence;

@@ -182,12 +182,13 @@ export function prioritizeByRanking(
 export interface DeepSearchOptions {
   readonly model?: string;
   /**
-   * Provider for the LLM listwise reranker. Threaded from the routed
+   * Provider for the LLM listwise reranker. REQUIRED — threaded from the routed
    * `pipeline.generator` provider so a non-Anthropic route (e.g. alibaba)
-   * dispatches the rerank call to that provider instead of defaulting to
-   * Anthropic. Undefined → buildChatOptions falls back to "anthropic".
+   * dispatches the rerank call to that provider. No Claude default: a missing
+   * provider used to fall through to "anthropic" in buildChatOptions, silently
+   * billing the user's Claude OAuth.
    */
-  readonly provider?: ModelProvider;
+  readonly provider: ModelProvider;
   readonly rerankEmbedder?: CrossEncoderEmbedder;
   readonly mem0?: Mem0Client;
   readonly userId?: string;

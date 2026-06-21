@@ -417,7 +417,8 @@ export function buildDeepSearchOptions(
   model: string,
   smart: SmartIdeasConfig,
   sigeConfig: SigeConfig | undefined,
-  provider?: ModelProvider,
+  // REQUIRED routed provider (no Claude default) — threaded into the rerank call.
+  provider: ModelProvider,
 ): DeepSearchOptions {
   if (!smart.knowledgeGraphRetrieval) {
     return { model, provider };

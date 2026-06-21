@@ -25,16 +25,12 @@ const id = (r: Row) => r.id;
 //
 // Regression: collectors used to hardcode the provider, so a non-Anthropic
 // routed generator (e.g. alibaba/deepseek-v4-flash) sent a deepseek model to
-// the wrong provider. The local helper must now honor a routed provider while
-// defaulting to the collectors' historical "agent-sdk" when none is supplied.
+// the wrong provider — and a MISSING provider silently fell through to
+// "agent-sdk" (Claude Code on the user's personal OAuth), billing their Claude
+// subscription. The provider is now a REQUIRED param (no Claude default): the
+// helper threads exactly what the routed generator passes.
 
 describe("buildChatOptions (collectors)", () => {
-  test("defaults provider to agent-sdk when none is supplied", () => {
-    const opts = buildChatOptions("claude-sonnet-4-6");
-    expect(opts.provider).toBe("agent-sdk");
-    expect(opts.model).toBe("claude-sonnet-4-6");
-  });
-
   test("honors a routed non-anthropic provider", () => {
     const opts = buildChatOptions("deepseek-v4-flash", "alibaba");
     expect(opts.provider).toBe("alibaba");
@@ -44,6 +40,15 @@ describe("buildChatOptions (collectors)", () => {
   test("threads any supported provider through unchanged", () => {
     expect(buildChatOptions("x/y", "openrouter").provider).toBe("openrouter");
     expect(buildChatOptions("c", "anthropic").provider).toBe("anthropic");
+  });
+
+  // Regression guard: provider is REQUIRED, so there is no overload that lets a
+  // caller omit it and silently get a Claude default. A one-arg call must be a
+  // TYPE error — assert that statically so the leak cannot be reintroduced.
+  test("provider has no Claude default (one-arg call is a type error)", () => {
+    // @ts-expect-error provider is required — omitting it must not compile.
+    buildChatOptions("deepseek-v4-flash");
+    expect(buildChatOptions.length).toBe(2);
   });
 });
 
