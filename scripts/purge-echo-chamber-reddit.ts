@@ -66,7 +66,7 @@ async function main(): Promise<void> {
   const preview = await db`
     SELECT COUNT(*)::int AS would_delete
     FROM reddit_posts
-    WHERE lower(subreddit) = ANY(${db.array(DENYLIST_LOWER)})
+    WHERE lower(subreddit) IN ${db(DENYLIST_LOWER)}
   `;
   const wouldDelete = (preview[0] as { would_delete: number } | undefined)?.would_delete ?? 0;
 
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   const breakdown = await db`
     SELECT lower(subreddit) AS sub, COUNT(*)::int AS n
     FROM reddit_posts
-    WHERE lower(subreddit) = ANY(${db.array(DENYLIST_LOWER)})
+    WHERE lower(subreddit) IN ${db(DENYLIST_LOWER)}
     GROUP BY lower(subreddit)
     ORDER BY n DESC
   `;
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
 
   await db`
     DELETE FROM reddit_posts
-    WHERE lower(subreddit) = ANY(${db.array(DENYLIST_LOWER)})
+    WHERE lower(subreddit) IN ${db(DENYLIST_LOWER)}
   `;
 
   log.info("Purge complete", { deleted: wouldDelete, remaining: totalRows - wouldDelete });
