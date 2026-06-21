@@ -30,6 +30,19 @@ def main() -> None:
     _check("_canonicalize_rel_type('hosted_on')",
            app._canonicalize_rel_type("hosted_on"), "HOSTED_ON")
 
+    print("1b) coercion to a VALID unquoted Cypher identifier (no 500 on write)")
+    # mem0 interpolates the rel type into `[r:{relationship}]` with no backticks;
+    # any non-[A-Za-z0-9_] char (hyphen, ASCII period) or a leading digit is a
+    # Cypher SyntaxError → the whole graph write 500s. These must be coerced.
+    _check("hyphen → underscore ('is_postgres-only')",
+           app._canonicalize_rel_type("is_postgres-only"), "IS_POSTGRES_ONLY")
+    _check("space + ASCII period ('uses v2.0')",
+           app._canonicalize_rel_type("uses v2.0"), "USES_V2_0")
+    _check("leading digit gets '_' prefix ('2_factor')",
+           app._canonicalize_rel_type("2_factor"), "_2_FACTOR")
+    _check("empty-after-strip falls back ('---')",
+           app._canonicalize_rel_type("---"), "RELATED_TO")
+
     print("2) patched mem0 sanitize_relationship_for_cypher (line-612 binding)")
     import mem0.memory.graph_memory as gm
     import mem0.memory.utils as utils

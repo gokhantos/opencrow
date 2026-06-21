@@ -24,6 +24,7 @@ so SIGE's behavior is byte-identical. Reads (search/get_all/delete) always run o
 are still returned by the existing search path (scoped by user_id).
 """
 import os
+import re
 import logging
 import secrets
 import time
@@ -212,12 +213,31 @@ _maybe_disable_thinking()
 # to the weekly canonicalizer; we do NOT touch them, nor the vector/embedder/LLM/
 # Qdrant paths, the dual graph-on/graph-less design, or the response-shape
 # helpers (`_normalize_relation`/`_flatten_relations`).
-def _canonicalize_rel_type(s: str) -> str:
-    """Canonical rel-type form written to Neo4j: UPPERCASE.
+# Any char that is NOT a valid UNQUOTED Cypher identifier char. mem0 interpolates
+# the relationship straight into `MERGE (s)-[r:{relationship}]->(d)` with NO
+# backticks, so the rel type MUST be `[A-Za-z_][A-Za-z0-9_]*` or Neo4j raises a
+# SyntaxError and the WHOLE graph write 500s. mem0's `sanitize_relationship_for_
+# cypher` char-map misses some chars (notably `-` / ASCII `.`), so e.g. an
+# extracted "Postgres-only" → `IS_POSTGRES-ONLY` → `[r:IS_POSTGRES-ONLY]` →
+# `Invalid input '-'`. We coerce to a guaranteed-valid identifier as a backstop.
+_INVALID_REL_CHARS = re.compile(r"[^A-Za-z0-9_]")
 
+
+def _canonicalize_rel_type(s: str) -> str:
+    """Canonical rel-type form written to Neo4j: UPPERCASE, valid Cypher id.
+
+    UPPERCASE (matches SIGE's REL_WHITELIST) + coerced to a valid unquoted
+    Cypher relationship-type identifier: every non-`[A-Za-z0-9_]` char (hyphen,
+    ASCII period, etc. that mem0's own sanitizer leaves through) → `_`, runs of
+    `_` collapsed and trimmed, a leading digit prefixed with `_` (an identifier
+    cannot start with a digit), and an empty result falls back to `RELATED_TO`.
     Pure string transform, no mem0 dependency — independently unit-testable.
     """
-    return str(s).upper()
+    out = _INVALID_REL_CHARS.sub("_", str(s).upper())
+    out = re.sub(r"_+", "_", out).strip("_")
+    if out and out[0].isdigit():
+        out = "_" + out
+    return out or "RELATED_TO"
 
 
 def _uppercase_relationship(orig):  # type: ignore[no-untyped-def]
