@@ -1018,10 +1018,16 @@ export const sigeAutoConfigSchema = z
     semanticFrontiers: z
       .object({
         enabled: z.boolean().default(true),
-        /** Cosine floor for joining an existing semantic cluster. */
-        similarityThreshold: z.number().min(0).max(1).default(0.62),
+        /**
+         * Cosine floor for joining an existing semantic cluster. Tuned 2026-06-21
+         * against real nomic embeddings of idea text: short same-domain ideas sit
+         * in a compressed ~0.49–0.78 cosine band (within≈cross-archetype), so the
+         * original 0.62 collapsed everything into ONE frontier. 0.67 yields ~4–5
+         * distinct frontiers; 0.69+ over-splits past the cluster cap.
+         */
+        similarityThreshold: z.number().min(0).max(1).default(0.67),
       })
-      .default({ enabled: true, similarityThreshold: 0.62 }),
+      .default({ enabled: true, similarityThreshold: 0.67 }),
   })
   .default({
     enabled: false,
@@ -1032,7 +1038,7 @@ export const sigeAutoConfigSchema = z
     maxConcurrent: 1,
     memoryWriteback: false,
     perRunCostCeilingUsd: 0,
-    semanticFrontiers: { enabled: true, similarityThreshold: 0.62 },
+    semanticFrontiers: { enabled: true, similarityThreshold: 0.67 },
   });
 export type SigeAutoConfig = z.infer<typeof sigeAutoConfigSchema>;
 
@@ -1509,7 +1515,7 @@ const SMART_IDEAS_DEFAULTS = {
     maxConcurrent: 1,
     memoryWriteback: false,
     perRunCostCeilingUsd: 0,
-    semanticFrontiers: { enabled: true, similarityThreshold: 0.62 },
+    semanticFrontiers: { enabled: true, similarityThreshold: 0.67 },
   },
   outcomeMemory: {
     writeBack: true,
