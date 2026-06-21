@@ -72,6 +72,13 @@ async function callAlibaba(
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
+      // Disable DashScope's input/output content moderation ("data inspection" /
+      // green-net). We feed it UNTRUSTED scraped reviews/posts, not user-facing
+      // chat, and that corpus intermittently trips the gate — returning a 400
+      // "Input text data may contain inappropriate content" that fails the whole
+      // pipeline/SIGE run. The platform moderation is inappropriate for this
+      // scraped-data analysis path. (DashScope honors `disable` on this header.)
+      "X-DashScope-DataInspection": "disable",
     },
     body: JSON.stringify(body),
     // Wire the per-call deadline / external abort into the HTTP request so a
