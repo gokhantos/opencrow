@@ -54,8 +54,11 @@ async function main(): Promise<void> {
     }
     case "reddit": {
       const { createRedditScraper } = await import("../sources/reddit/scraper");
+      // Pass redditCorpus from the loaded config so the curated allowlist and
+      // denylist from the operator's config.json override the schema defaults.
       const scraper = createRedditScraper({
         memoryManager: memoryManager ?? undefined,
+        redditCorpus: baseConfig.redditCorpus,
       });
       scraper.start();
       break;
