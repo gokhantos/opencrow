@@ -62,7 +62,7 @@ import {
   toDemandCandidateText,
 } from "./pipeline";
 import type { PipelineRunResult } from "./pipeline";
-import { resolveCandidateSegment } from "./pipeline-sige-math";
+import { candidateJoinId, resolveCandidateSegment } from "./pipeline-sige-math";
 import type { GeneratedIdeaCandidate } from "./types";
 
 export const AUTONOMOUS_SIGE_PIPELINE_ID = "autonomous-sige";
@@ -420,7 +420,13 @@ export async function runAutonomousSige(
     }
 
     // ── Back-half: demand enrichment ─────────────────────────────────────────
-    const demandByCandidate = new Map<GeneratedIdeaCandidate, Awaited<ReturnType<typeof enrichDemand>>>();
+    // Keyed by candidateJoinId(title), NOT object reference — mirrors the seeded
+    // pipeline so the artifact survives the GIANT-gate / selection transforms that
+    // replace each candidate object. (Autonomous does not yet persist demand_json,
+    // so this currently only feeds summarizeDemandCoverage; the stable key keeps it
+    // correct if/when a persistence consumer is added — and keeps the map type
+    // aligned with summarizeDemandCoverage.)
+    const demandByCandidate = new Map<string, Awaited<ReturnType<typeof enrichDemand>>>();
     if (smart.demand.enabled && kept.length > 0) {
       try {
         const demandCfg = buildEnrichDemandConfig(smart.demand);
@@ -432,7 +438,7 @@ export async function runAutonomousSige(
             demandCfg,
           );
           const next = applyDemandRescore(candidate, artifact, effectiveGiant);
-          demandByCandidate.set(next, artifact);
+          demandByCandidate.set(candidateJoinId(next.title), artifact);
           rescored.push(next);
         }
         kept = rescored;

@@ -1,12 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
   createSemanticDemandProbe,
+  SEARCH_DOCUMENT_PREFIX,
+  SEARCH_QUERY_PREFIX,
   SEMANTIC_SIMILARITY_THRESHOLD,
   type SemanticCandidateRow,
   type SemanticRowSource,
 } from "./semantic-demand-probe";
 import type { CrossEncoderEmbedder } from "./deep-search-rerank";
 import { ABSENCE_SCORE_CAP, aggregateDemand, hasCitedDemand } from "./demand";
+
+/** The embed-input form of the idea text (nomic search_query: prefix). */
+const q = (idea: string): string => `${SEARCH_QUERY_PREFIX}${idea}`;
+/** The embed-input form of a corpus row (nomic search_document: prefix). */
+const d = (rowText: string): string => `${SEARCH_DOCUMENT_PREFIX}${rowText}`;
 
 // ── DI fakes (no DB, no model → stays in the unit lane) ───────────────────────
 
@@ -38,6 +45,57 @@ const IDEA_TEXT = KEYWORDS.join(" "); // "invoice reconciliation"
 const OPTS = { windowSec: 86_400, limit: 50 };
 
 describe("createSemanticDemandProbe", () => {
+  // ── FIX B: nomic asymmetric task prefixes + calibrated threshold ────────────
+  test("(prefix) embeds the idea with search_query: and each row with search_document:", async () => {
+    const rows: readonly SemanticCandidateRow[] = [
+      { id: "rp_1", text: "first row text", engagement: 1 },
+      { id: "rp_2", text: "second row text", engagement: 1 },
+    ];
+    // Recording embedder: capture the EXACT strings handed to embed().
+    let seen: readonly string[] = [];
+    const recorder: CrossEncoderEmbedder = {
+      async embed(texts) {
+        seen = texts;
+        return texts.map(() => Float32Array.from([0, 0, 0]));
+      },
+    };
+    const probe = createSemanticDemandProbe({ rowSource: fakeRowSource(rows), embedder: recorder });
+    await probe.probe(KEYWORDS, OPTS);
+
+    // [0] = idea/query with search_query:; [1..] = rows with search_document:.
+    expect(seen[0]).toBe(`${SEARCH_QUERY_PREFIX}${IDEA_TEXT}`);
+    expect(seen[1]).toBe(`${SEARCH_DOCUMENT_PREFIX}${rows[0]!.text}`);
+    expect(seen[2]).toBe(`${SEARCH_DOCUMENT_PREFIX}${rows[1]!.text}`);
+    // The query prefix must NOT leak into the document side and vice-versa.
+    expect(seen[0]!.startsWith(SEARCH_DOCUMENT_PREFIX)).toBe(false);
+    expect(seen[1]!.startsWith(SEARCH_QUERY_PREFIX)).toBe(false);
+  });
+
+  test("(threshold) a high-similarity pair is admitted and a low-similarity pair rejected", async () => {
+    // Two rows straddling the CALIBRATED threshold (0.62): one clearly relevant
+    // (cosine 0.72, like the measured relevant band) and one unrelated
+    // (cosine 0.50, like the measured random band).
+    const rows: readonly SemanticCandidateRow[] = [
+      { id: "relevant", text: "matching payments to ledgers by hand all month", engagement: 10 },
+      { id: "random", text: "apple is raising prices on memory chips", engagement: 10 },
+    ];
+    // idea = [1,0]; a vector [c, sqrt(1-c^2)] has cosine == c to the idea.
+    const cosVec = (c: number): readonly number[] => [c, Math.sqrt(Math.max(0, 1 - c * c))];
+    const probe = createSemanticDemandProbe({
+      rowSource: fakeRowSource(rows),
+      embedder: fakeEmbedder({
+        [q(IDEA_TEXT)]: [1, 0],
+        [d(rows[0]!.text)]: cosVec(0.72), // relevant band → ADMIT
+        [d(rows[1]!.text)]: cosVec(0.5), // random band → REJECT (honest absence)
+      }),
+    });
+
+    const evidence = await probe.probe(KEYWORDS, OPTS);
+    expect(evidence.map((e) => e.sourceId)).toEqual(["relevant"]);
+    // Pin the calibrated value so a future edit that loosens it fails loudly.
+    expect(SEMANTIC_SIMILARITY_THRESHOLD).toBe(0.62);
+  });
+
   test("(a) rows above the cosine threshold become cited semantic_corpus evidence", async () => {
     const rows: readonly SemanticCandidateRow[] = [
       {
@@ -52,8 +110,8 @@ describe("createSemanticDemandProbe", () => {
     const probe = createSemanticDemandProbe({
       rowSource: fakeRowSource(rows),
       embedder: fakeEmbedder({
-        [IDEA_TEXT]: sameVec,
-        [rows[0]!.text]: sameVec,
+        [q(IDEA_TEXT)]: sameVec,
+        [d(rows[0]!.text)]: sameVec,
       }),
     });
 
@@ -77,8 +135,8 @@ describe("createSemanticDemandProbe", () => {
     const probe = createSemanticDemandProbe({
       rowSource: fakeRowSource(rows),
       embedder: fakeEmbedder({
-        [IDEA_TEXT]: [1, 0, 0],
-        [rows[0]!.text]: [0, 1, 0],
+        [q(IDEA_TEXT)]: [1, 0, 0],
+        [d(rows[0]!.text)]: [0, 1, 0],
       }),
     });
 
@@ -99,9 +157,9 @@ describe("createSemanticDemandProbe", () => {
     const probe = createSemanticDemandProbe({
       rowSource: fakeRowSource(rows),
       embedder: fakeEmbedder({
-        [IDEA_TEXT]: [1, 0],
-        [rows[0]!.text]: vec(below),
-        [rows[1]!.text]: vec(above),
+        [q(IDEA_TEXT)]: [1, 0],
+        [d(rows[0]!.text)]: vec(below),
+        [d(rows[1]!.text)]: vec(above),
       }),
     });
 
@@ -123,7 +181,7 @@ describe("createSemanticDemandProbe", () => {
 
   test("(c) rowSource throwing → [] (graceful)", async () => {
     const probe = createSemanticDemandProbe({
-      embedder: fakeEmbedder({ [IDEA_TEXT]: [1, 0, 0] }),
+      embedder: fakeEmbedder({ [q(IDEA_TEXT)]: [1, 0, 0] }),
       rowSource: {
         async fetchCandidates() {
           throw new Error("db down");
@@ -169,9 +227,9 @@ describe("semantic_corpus evidence lifts demand above the absence cap", () => {
     const probe = createSemanticDemandProbe({
       rowSource: fakeRowSource(rows),
       embedder: fakeEmbedder({
-        [IDEA_TEXT]: v,
-        [rows[0]!.text]: v,
-        [rows[1]!.text]: v,
+        [q(IDEA_TEXT)]: v,
+        [d(rows[0]!.text)]: v,
+        [d(rows[1]!.text)]: v,
       }),
     });
 

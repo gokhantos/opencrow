@@ -26,7 +26,7 @@ import type { GiantAxisKey, GiantAxisScores } from "./giant";
 import { aggregateGiant } from "./giant";
 import { compositeToQualityScore } from "./synthesizer";
 import type { GeneratedIdeaCandidate } from "./types";
-import type { SigeSignals } from "./pipeline-sige-math";
+import { candidateJoinId, type SigeSignals } from "./pipeline-sige-math";
 
 const log = createLogger("pipeline:ideas");
 
@@ -332,12 +332,14 @@ export interface DemandCoverageStats {
 
 /**
  * PHASE 2 (demand) — Summarize demand coverage across the surviving candidates.
- * PURE: reads the artifacts keyed by candidate; absent artifacts count toward
- * `total` with a 0 contribution. Means are over the full set.
+ * PURE: reads the artifacts keyed by the candidate's normalized-title JOIN id
+ * ({@link candidateJoinId}) — NOT by object reference, so the lookup survives the
+ * GIANT-gate / jury / selection transforms that replace candidate objects. Absent
+ * artifacts count toward `total` with a 0 contribution. Means are over the full set.
  */
 export function summarizeDemandCoverage(
   candidates: readonly GeneratedIdeaCandidate[],
-  artifacts: ReadonlyMap<GeneratedIdeaCandidate, DemandArtifact>,
+  artifacts: ReadonlyMap<string, DemandArtifact>,
 ): DemandCoverageStats {
   const total = candidates.length;
   let cited = 0;
@@ -345,7 +347,7 @@ export function summarizeDemandCoverage(
   let whitespaceSum = 0;
 
   for (const candidate of candidates) {
-    const artifact = artifacts.get(candidate);
+    const artifact = artifacts.get(candidateJoinId(candidate.title));
     if (artifact === undefined) continue;
     if (hasCitedDemand(artifact)) cited += 1;
     scoreSum += artifact.score;

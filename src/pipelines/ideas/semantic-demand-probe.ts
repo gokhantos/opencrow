@@ -52,18 +52,36 @@ export const SEMANTIC_PROBE_NAME = "semanticCorpus";
 /**
  * Cosine-similarity floor a corpus row must clear to count as semantic demand.
  *
- * Rationale (cosine distribution of local Ollama nomic-style / text-embedding
- * models, the default embedder built by `createEmbeddingProviderFromConfig`):
- *   - random/unrelated pairs cluster ~0.1-0.3,
- *   - topically-RELATED but lexically-different text ~0.45-0.6,
- *   - near-duplicate / restated >0.7.
- * We pick 0.58 — inside the "genuinely topically related" band. It is high
- * enough that unrelated chatter (which is what we MUST keep scoring at the
- * absence cap) does not clear it, yet low enough to catch a pain described in
- * different words than the candidate's keywords WITHOUT demanding lexical
- * overlap (the whole point of going semantic). Tune up to tighten precision.
+ * EMPIRICALLY CALIBRATED (FIX B, run 2026-06-21) against the LIVE default
+ * embedder (Ollama `nomic-embed-text`, 768-dim) on hand-picked pairs of a real
+ * idea text + a real `reddit_posts` row expressing the matching pain in DIFFERENT
+ * words, vs genuinely-unrelated rows. nomic is ASYMMETRIC, so the idea (query)
+ * and corpus rows (documents) are embedded WITH `search_query:` / `search_document:`
+ * prefixes (see {@link SEARCH_QUERY_PREFIX} / {@link SEARCH_DOCUMENT_PREFIX}).
+ *
+ * Measured prefixed cosine distributions (n_relevant=5, n_random=25):
+ *   - RELEVANT (related pain, different words): min 0.651, mean 0.713, max 0.741
+ *   - RANDOM   (unrelated topics):              max 0.560, mean 0.501
+ * nomic compresses cosines into a high band, so the OLD GUESSED 0.58 sat almost
+ * ON TOP of the random ceiling (0.560) — too low to reject unrelated chatter
+ * reliably AND too tight a margin for noisier real pairs (it ran INERT in prod,
+ * producing 0 evidence). 0.62 sits cleanly between the bands: ABOVE every random
+ * pair (max 0.560 → 0.06 precision buffer; honest-absence preserved — unrelated
+ * rows still score at the absence cap) and BELOW every relevant pair (min 0.651),
+ * so genuinely-related pain in different words is admitted. Raise to tighten
+ * precision further; do NOT lower past ~0.57 or random chatter starts clearing.
  */
-export const SEMANTIC_SIMILARITY_THRESHOLD = 0.58;
+export const SEMANTIC_SIMILARITY_THRESHOLD = 0.62;
+
+/**
+ * nomic-embed-text task prefixes. The model is asymmetric and was trained to be
+ * queried with these; without them genuinely-related pairs score lower and the
+ * probe went inert (FIX B). Applied ONLY in this probe's on-the-fly text prep —
+ * the probe controls both sides of every comparison, so this does NOT change the
+ * shared embedder's behaviour for any other caller (memory search, rerank).
+ */
+export const SEARCH_QUERY_PREFIX = "search_query: ";
+export const SEARCH_DOCUMENT_PREFIX = "search_document: ";
 
 /** Trim quotes to keep evidence compact and auditable (mirrors demand-probes). */
 const QUOTE_MAX_LEN = 240;
@@ -242,10 +260,14 @@ export function createSemanticDemandProbe(deps: SemanticDemandProbeDeps = {}): D
         // extracted demand keywords is deterministic and provider-agnostic.
         const ideaText = kws.join(" ");
 
-        // ONE batched embed call: [idea, ...rows]. Slice rows like embeddingRerank.
+        // ONE batched embed call: [idea, ...rows]. Apply nomic's asymmetric task
+        // prefixes — search_query: on the idea, search_document: on each row — AFTER
+        // the EMBED_TEXT_MAX_LEN slice so the prefix is never truncated and never
+        // eats into the row's content budget. The bare `ideaText` (no prefix) is
+        // what gets quoted/stored; the prefix lives only inside the embed input.
         const vectors = await embedder.embed([
-          ideaText,
-          ...candidates.map((c) => c.text.slice(0, EMBED_TEXT_MAX_LEN)),
+          `${SEARCH_QUERY_PREFIX}${ideaText}`,
+          ...candidates.map((c) => `${SEARCH_DOCUMENT_PREFIX}${c.text.slice(0, EMBED_TEXT_MAX_LEN)}`),
         ]);
         const ideaVec = vectors[0];
         if (!ideaVec) return [];

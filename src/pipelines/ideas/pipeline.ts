@@ -107,6 +107,7 @@ import {
 } from "./pipeline-context";
 import { selectFocusCategories } from "./collector-focus";
 import {
+  candidateJoinId,
   enforceSegmentSpread,
   summarizeSegmentSpread,
   paretoSelect,
@@ -645,7 +646,16 @@ export async function runIdeasPipeline(
     }
 
     // ── PHASE 2 (demand-side grounding): cited demand enrichment + rescore ──
-    const demandByCandidate = new Map<GeneratedIdeaCandidate, DemandArtifact>();
+    // Keyed by the candidate's normalized-title JOIN id ({@link candidateJoinId}),
+    // NOT by object reference: the demand artifact set here must survive the
+    // GIANT-gate, independent-jury and selection transforms below, all of which
+    // replace each candidate with a NEW immutable object (spread copies). An
+    // object-identity Map would miss for every candidate that passed through one
+    // of those transforms — the bug that left demand_json/demand_score NULL for
+    // all but one idea per run. Title is stable across every transform (none of
+    // them mutate it) and is already the canonical join key used by the jury and
+    // the SIGE-signals map.
+    const demandByCandidate = new Map<string, DemandArtifact>();
     if (smart.demand.enabled && kept.length > 0) {
       try {
         const demandCfg = buildEnrichDemandConfig(smart.demand);
@@ -657,7 +667,7 @@ export async function runIdeasPipeline(
             demandCfg,
           );
           const next = applyDemandRescore(candidate, artifact, effectiveGiant);
-          demandByCandidate.set(next, artifact);
+          demandByCandidate.set(candidateJoinId(next.title), artifact);
           rescored.push(next);
         }
         kept = rescored;
