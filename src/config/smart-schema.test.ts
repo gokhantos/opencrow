@@ -46,6 +46,7 @@ describe("smartConfigSchema", () => {
         maxCandidates: 40,
         multiSegment: true,
         sigeDivergent: false,
+        chunkSize: 2,
       },
       demand: {
         enabled: true,

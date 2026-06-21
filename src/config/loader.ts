@@ -543,6 +543,28 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }
 
+  // --- pipelines.ideas.generateWide (top-level, sibling of smart/giant) ---
+  // generateWide is NOT under smart, so it gets its own env-merge block. Read
+  // `result.pipelines.ideas` FRESH here (after the smart block wrote it) so we
+  // don't clobber `smart` or other ideas fields.
+  const generateWideEnv: Record<string, unknown> = {};
+  const generateWideChunkSize = Number(
+    process.env.OPENCROW_GENERATE_WIDE_CHUNK_SIZE ?? "",
+  );
+  if (
+    process.env.OPENCROW_GENERATE_WIDE_CHUNK_SIZE !== undefined &&
+    Number.isFinite(generateWideChunkSize)
+  ) {
+    generateWideEnv.chunkSize = generateWideChunkSize;
+  }
+  if (Object.keys(generateWideEnv).length > 0) {
+    const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
+    const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
+    const existingGenerateWide = (ideas.generateWide ?? {}) as Record<string, unknown>;
+    ideas.generateWide = { ...existingGenerateWide, ...generateWideEnv };
+    result.pipelines = { ...pipelines, ideas };
+  }
+
   // --- sige (Strategic Intelligence Game Engine) ---
   // Env-based enable so SIGE can be turned on consistently across both
   // loadConfig() (no DB) and loadConfigWithOverrides() (DB), instead of
