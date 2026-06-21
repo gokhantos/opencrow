@@ -12,8 +12,11 @@ import {
   buildSessionConfig,
   reportToMarkdown,
   DEFAULT_SIGE_SESSION_CONFIG,
+  selectFrontiersToDevelop,
 } from "./run";
 import type { SigeReport } from "./types";
+import type { Frontier } from "./discovery/frontier-discovery";
+import type { ScoredSketch, ThemeCandidate } from "../pipelines/ideas/shallow-ideation";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -235,5 +238,182 @@ describe("reportToMarkdown", () => {
     };
     const md = reportToMarkdown(reportWithout);
     expect(md).toContain("N/A");
+  });
+});
+
+// ── selectFrontiersToDevelop ─────────────────────────────────────────────────
+
+function makeFrontier(id: string, theme: string, overrides: Partial<Frontier> = {}): Frontier {
+  return {
+    id,
+    theme,
+    themeKeys: [theme.toLowerCase()],
+    candidates: [],
+    signalStrength: 0.5,
+    novelty: 0.5,
+    score: 0.5,
+    seedText: `seed for ${theme}`,
+    ...overrides,
+  };
+}
+
+function makeScored(
+  id: string,
+  kind: string,
+  score: number,
+  overrides: Partial<ThemeCandidate> = {},
+): ScoredSketch {
+  const candidate: ThemeCandidate = {
+    id,
+    title: `${kind} theme`,
+    kind,
+    source: "sige",
+    signalStrength: score,
+    context: "ctx",
+    ...overrides,
+  };
+  return {
+    candidate,
+    sketch: { candidateId: id, line: `${kind} idea`, marketGap: score },
+    score,
+    components: { signal: score, novelty: score, marketGap: score },
+  };
+}
+
+describe("selectFrontiersToDevelop", () => {
+  test("selects MULTIPLE distinct frontiers spread across buckets (not top-1 collapse)", () => {
+    const frontiers: readonly Frontier[] = [
+      makeFrontier("f1", "Alpha"),
+      makeFrontier("f2", "Beta"),
+      makeFrontier("f3", "Gamma"),
+      makeFrontier("f4", "Delta"),
+    ];
+    // Highest-scoring sketches deliberately span four distinct kind buckets.
+    const scored: readonly ScoredSketch[] = [
+      makeScored("f1", "productivity", 0.95),
+      makeScored("f2", "health", 0.9),
+      makeScored("f3", "finance", 0.85),
+      makeScored("f4", "education", 0.8),
+    ];
+
+    const toDevelop = selectFrontiersToDevelop(frontiers, scored, {
+      deepDevelopCount: 4,
+      maxBucketShare: 0.5,
+    });
+
+    expect(toDevelop.length).toBe(4);
+    const ids = toDevelop.map((f) => f.id);
+    expect(new Set(ids).size).toBe(4);
+    expect(ids).toEqual(["f1", "f2", "f3", "f4"]);
+  });
+
+  test("caps a dominant bucket so no single kind exceeds maxBucketShare", () => {
+    const frontiers: readonly Frontier[] = [
+      makeFrontier("f1", "Alpha"),
+      makeFrontier("f2", "Beta"),
+      makeFrontier("f3", "Gamma"),
+      makeFrontier("f4", "Delta"),
+    ];
+    // Three top sketches share ONE bucket; only one alternative bucket exists.
+    const scored: readonly ScoredSketch[] = [
+      makeScored("f1", "productivity", 0.95),
+      makeScored("f2", "productivity", 0.9),
+      makeScored("f3", "productivity", 0.85),
+      makeScored("f4", "health", 0.8),
+    ];
+
+    const toDevelop = selectFrontiersToDevelop(frontiers, scored, {
+      deepDevelopCount: 2,
+      maxBucketShare: 0.5,
+    });
+
+    expect(toDevelop.length).toBe(2);
+    const ids = toDevelop.map((f) => f.id);
+    // perBucketCap = ceil(2 * 0.5) = 1 → at most one "productivity" frontier kept,
+    // and the diverse "health" frontier (f4) is pulled up despite its lower score.
+    expect(ids).toEqual(["f1", "f4"]);
+  });
+
+  test("maps kept sketches back to their originating frontier by candidate.id", () => {
+    const frontiers: readonly Frontier[] = [
+      makeFrontier("f1", "Alpha"),
+      makeFrontier("f2", "Beta"),
+    ];
+    const scored: readonly ScoredSketch[] = [
+      makeScored("f2", "health", 0.9),
+      makeScored("f1", "productivity", 0.8),
+    ];
+
+    const toDevelop = selectFrontiersToDevelop(frontiers, scored, {
+      deepDevelopCount: 5,
+      maxBucketShare: 0.5,
+    });
+
+    // Order follows the (diversity-selected) sketch order, not frontier order.
+    expect(toDevelop.map((f) => f.id)).toEqual(["f2", "f1"]);
+  });
+
+  test("drops sketches whose candidate.id has no matching frontier", () => {
+    const frontiers: readonly Frontier[] = [makeFrontier("f1", "Alpha")];
+    const scored: readonly ScoredSketch[] = [
+      makeScored("ghost", "health", 0.95),
+      makeScored("f1", "productivity", 0.8),
+    ];
+
+    const toDevelop = selectFrontiersToDevelop(frontiers, scored, {
+      deepDevelopCount: 5,
+      maxBucketShare: 0.5,
+    });
+
+    expect(toDevelop.map((f) => f.id)).toEqual(["f1"]);
+  });
+
+  test("dedups so a frontier referenced twice is developed once", () => {
+    const frontiers: readonly Frontier[] = [makeFrontier("f1", "Alpha")];
+    const scored: readonly ScoredSketch[] = [
+      makeScored("f1", "health", 0.95),
+      makeScored("f1", "productivity", 0.8),
+    ];
+
+    const toDevelop = selectFrontiersToDevelop(frontiers, scored, {
+      deepDevelopCount: 5,
+      maxBucketShare: 0.5,
+    });
+
+    expect(toDevelop.map((f) => f.id)).toEqual(["f1"]);
+  });
+
+  test("falls back to candidate.title when kind is undefined", () => {
+    const frontiers: readonly Frontier[] = [
+      makeFrontier("f1", "Alpha"),
+      makeFrontier("f2", "Beta"),
+    ];
+    const scored: readonly ScoredSketch[] = [
+      makeScored("f1", "x", 0.9, { kind: undefined, title: "Alpha theme" }),
+      makeScored("f2", "x", 0.8, { kind: undefined, title: "Beta theme" }),
+    ];
+
+    const toDevelop = selectFrontiersToDevelop(frontiers, scored, {
+      deepDevelopCount: 5,
+      maxBucketShare: 0.5,
+    });
+
+    // Distinct titles → distinct buckets → both kept.
+    expect(toDevelop.map((f) => f.id)).toEqual(["f1", "f2"]);
+  });
+
+  test("does not mutate the input arrays", () => {
+    const frontiers: readonly Frontier[] = [makeFrontier("f1", "Alpha")];
+    const scored: readonly ScoredSketch[] = [makeScored("f1", "health", 0.9)];
+    const frontiersCopy = [...frontiers];
+    const scoredCopy = [...scored];
+
+    selectFrontiersToDevelop(frontiers, scored, {
+      deepDevelopCount: 5,
+      maxBucketShare: 0.5,
+    });
+
+    expect(frontiers).toEqual(frontiersCopy);
+    expect(scored).toEqual(scoredCopy);
   });
 });

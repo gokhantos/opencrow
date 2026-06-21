@@ -37,9 +37,15 @@ import {
 } from "./cross-write";
 import type { CollectorContext } from "../pipelines/ideas/collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "../pipelines/ideas/collectors";
+import type { BroadCorpus, DiscoverFrontiersOptions, DiscoveryResult, Frontier } from "./discovery/frontier-discovery";
+import { discoverFrontiers, extractSaturatedThemeKeys } from "./discovery/frontier-discovery";
+import { frontiersToThemeCandidates } from "./discovery/frontier-sketch";
 import { selectDiverseBy } from "../pipelines/ideas/idea-diversity";
-import type { BroadCorpus, DiscoverFrontiersOptions, DiscoveryResult } from "./discovery/frontier-discovery";
-import { discoverFrontiers } from "./discovery/frontier-discovery";
+import {
+  defaultShallowIdeationDeps,
+  runShallowIdeation,
+  type ScoredSketch,
+} from "../pipelines/ideas/shallow-ideation";
 import { applyIncentives, computeIncentives } from "./incentives";
 import { generateReport } from "./report-agent";
 import { enrichSeedWithProjectData } from "./seed-enricher";
@@ -240,6 +246,47 @@ export async function runSession(
   }
 }
 
+/** Tunables for {@link selectFrontiersToDevelop}. */
+interface SelectFrontiersOptions {
+  /** How many diverse frontiers to deep-develop (the new neck width). */
+  readonly deepDevelopCount: number;
+  /** Share ceiling (0..1) any single theme bucket may occupy in the kept set. */
+  readonly maxBucketShare: number;
+}
+
+/**
+ * Map ranked shallow-ideation sketches back to a DIVERSE subset of frontiers to
+ * deep-develop. PURE (no I/O): applies `selectDiverseBy` over the scored sketches
+ * — bucketed by the candidate's theme `kind` (falling back to its title) so
+ * near-duplicate themes collapse into one bucket — then resolves each kept sketch
+ * to its originating {@link Frontier} by `candidate.id`. Order follows the
+ * diversity-selected sketch order; unmatched ids and duplicate frontiers are
+ * dropped. Never mutates the inputs.
+ */
+export function selectFrontiersToDevelop(
+  frontiers: readonly Frontier[],
+  scored: readonly ScoredSketch[],
+  options: SelectFrontiersOptions,
+): readonly Frontier[] {
+  const byId = new Map(frontiers.map((f) => [f.id, f] as const));
+  const selected = selectDiverseBy(scored, {
+    maxIdeas: options.deepDevelopCount,
+    maxBucketShare: options.maxBucketShare,
+    resolveBucket: (s) => s.candidate.kind ?? s.candidate.title,
+  });
+
+  const out: Frontier[] = [];
+  const seen = new Set<string>();
+  for (const sketch of selected) {
+    const frontier = byId.get(sketch.candidate.id);
+    if (frontier === undefined) continue;
+    if (seen.has(frontier.id)) continue;
+    seen.add(frontier.id);
+    out.push(frontier);
+  }
+  return out;
+}
+
 /**
  * Autonomous (seedless) SIGE run: frontier discovery → per-frontier depth game.
  *
@@ -312,26 +359,56 @@ async function runAutonomousSession(
     return;
   }
 
-  // Select a DIVERSE subset of frontiers to deep-develop. Sort by score desc
-  // first, then apply selectDiverseBy to cap any single theme at 50% of the
-  // selected set — prevents collapsing into one-theme monoculture when
-  // maxDeepFrontiers > 1. With maxDeepFrontiers=1 this is equivalent to top-1.
-  const topFrontiers = selectDiverseBy(
-    [...discovery.frontiers].sort((a, b) => b.score - a.score),
-    {
+  // Select the frontiers to deep-develop. Default (shallowIdeation OFF) keeps
+  // master's exact behavior: score-sorted `selectDiverseBy` capped at
+  // `maxDeepFrontiers`, theme-bucketed at 50% share. When ON, ideate cheaply
+  // over ALL frontiers and diversity-select a few — so size (pool-share) never
+  // decides; novelty + spread do. Any failure degrades to that same legacy
+  // selection so the path is fully reversible.
+  const legacyTop = (): readonly Frontier[] =>
+    selectDiverseBy([...discovery.frontiers].sort((a, b) => b.score - a.score), {
       maxIdeas: sigeAutoConfig.maxDeepFrontiers,
       maxBucketShare: 0.5,
       resolveBucket: (f) => f.theme,
-    },
-  );
+    });
+  let toDevelop: readonly Frontier[];
+  if (smartConfig.shallowIdeation.enabled) {
+    try {
+      const candidates = frontiersToThemeCandidates(discovery.frontiers);
+      const deps = await defaultShallowIdeationDeps({
+        batchSize: smartConfig.shallowIdeation.batchSize,
+        lookupSaturation: async () => {
+          const keys = await extractSaturatedThemeKeys();
+          return keys.map((k) => `- "${k}" theme`).join("\n");
+        },
+        model: smartConfig.shallowIdeation.model,
+      });
+      const scored = await runShallowIdeation(candidates, deps);
+      toDevelop = scored.length
+        ? selectFrontiersToDevelop(discovery.frontiers, scored, {
+            deepDevelopCount: smartConfig.deepDevelopCount,
+            maxBucketShare: smartConfig.diversityGuard.maxBucketShare,
+          })
+        : legacyTop();
+    } catch (err) {
+      log.warn("autonomous: shallow ideation failed — falling back to legacy slice", {
+        sessionId,
+        err,
+      });
+      toDevelop = legacyTop();
+    }
+  } else {
+    toDevelop = legacyTop();
+  }
 
   log.info("autonomous: running depth game on top frontiers", {
     sessionId,
-    topFrontiers: topFrontiers.length,
+    topFrontiers: toDevelop.length,
     broadPool: discovery.candidates.length,
+    shallowIdeation: smartConfig.shallowIdeation.enabled,
   });
 
-  for (const frontier of topFrontiers) {
+  for (const frontier of toDevelop) {
     if (signal.aborted) break;
     log.info("autonomous: depth game for frontier", {
       sessionId,
