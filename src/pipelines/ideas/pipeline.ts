@@ -161,6 +161,41 @@ export interface PipelineRunResult {
  *
  * Exported so it can be unit-tested without exercising the full pipeline.
  */
+/**
+ * Applies the min-quality filter over `giantSurvivors`, with a non-empty floor:
+ * if the filter would produce an empty set (all competability-passing candidates
+ * scored below `minQualityScore` — typically due to jury penalties), fall back to
+ * the top `min(maxIdeas, giantSurvivors.length)` candidates ranked by qualityScore
+ * desc, logging a structured warning.
+ *
+ * This guarantees a non-empty run whenever competability-passing candidates exist,
+ * without resurrecting competability-GATED (uncompetable) ideas.
+ *
+ * Exported so it can be unit-tested without exercising the full pipeline.
+ */
+export function applyMinQualityFloor(
+  giantSurvivors: readonly GeneratedIdeaCandidate[],
+  minQualityScore: number,
+  maxIdeas: number,
+): readonly GeneratedIdeaCandidate[] {
+  const filtered = giantSurvivors.filter((c) => c.qualityScore >= minQualityScore);
+  if (filtered.length > 0 || giantSurvivors.length === 0) {
+    return filtered;
+  }
+  // All competability-passing candidates are below the threshold (jury penalty
+  // drove scores down). Keep the top `maxIdeas` by qualityScore so the run
+  // produces at least one output rather than silently returning 0 ideas.
+  const sorted = [...giantSurvivors].sort((a, b) => b.qualityScore - a.qualityScore);
+  const kept = sorted.slice(0, maxIdeas);
+  const topQuality = kept[0]?.qualityScore ?? 0;
+  log.warn("Min-quality filter would empty the run; keeping top competability-passing candidates as floor", {
+    kept: kept.length,
+    topQuality,
+    minQualityScore,
+  });
+  return kept;
+}
+
 export function mergeSelectedIds(
   into: Map<string, string[]>,
   ids: ReadonlyMap<string, readonly string[]> | Record<string, readonly string[]> | undefined,
@@ -552,7 +587,6 @@ export async function runIdeasPipeline(
       (s) =>
         `Generated ${s.totalGenerated} idea candidates from trend intersections` +
         (extraCandidates.length > 0 ? ` (incl. ${extraCandidates.length} SIGE-divergent)` : ""),
-      smart.synthesisDeadlineMs,
     );
 
     // ── Step 6: Validate (3-layer dedup: exact + fuzzy + semantic) ────────
@@ -752,7 +786,11 @@ export async function runIdeasPipeline(
       });
     }
 
-    const qualityFiltered = giantSurvivors.filter((c) => c.qualityScore >= config.minQualityScore);
+    const qualityFiltered = applyMinQualityFloor(
+      giantSurvivors,
+      config.minQualityScore,
+      config.maxIdeas,
+    );
 
     // ── PHASE 1/3: final selection (Pareto when SIGE on, else novelty-reserve) ──
     let finalSelected: readonly GeneratedIdeaCandidate[] = qualityFiltered;
