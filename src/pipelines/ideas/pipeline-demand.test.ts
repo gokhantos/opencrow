@@ -7,6 +7,7 @@ import {
   summarizeDemandCoverage,
   candidateHasDemandEvidence,
 } from "./pipeline";
+import { candidateJoinId } from "./pipeline-sige-math";
 import {
   GIANT_DEFAULT_WEIGHTS,
   aggregateGiant,
@@ -268,13 +269,15 @@ describe("summarizeDemandCoverage", () => {
     const c2 = candidate({ giant: { ...STRONG_SCORES }, title: "Second idea" });
     const c3 = candidate({ giant: { ...STRONG_SCORES }, title: "Third idea" });
 
-    const map = new Map<GeneratedIdeaCandidate, DemandArtifact>([
+    // Keyed by candidateJoinId(title) — matches the production lookup now that
+    // demandByCandidate is title-keyed (FIX A) rather than object-reference-keyed.
+    const map = new Map<string, DemandArtifact>([
       // cited (evidence + score>1)
-      [c1, artifact({ score: 4, whitespace: 0.6, evidence: [REDDIT_EVIDENCE] })],
+      [candidateJoinId(c1.title), artifact({ score: 4, whitespace: 0.6, evidence: [REDDIT_EVIDENCE] })],
       // absence (no evidence, score at cap) -> NOT cited
-      [c2, artifact({ score: 1, whitespace: 0, evidence: [] })],
+      [candidateJoinId(c2.title), artifact({ score: 1, whitespace: 0, evidence: [] })],
       // cited
-      [c3, artifact({ score: 3, whitespace: 0.4, evidence: [FUNDING_EVIDENCE] })],
+      [candidateJoinId(c3.title), artifact({ score: 3, whitespace: 0.4, evidence: [FUNDING_EVIDENCE] })],
     ]);
 
     const stats = summarizeDemandCoverage([c1, c2, c3], map);
@@ -288,8 +291,8 @@ describe("summarizeDemandCoverage", () => {
   test("candidates with no artifact count toward total with zero contribution", () => {
     const c1 = candidate({ giant: { ...STRONG_SCORES } });
     const c2 = candidate({ giant: { ...STRONG_SCORES }, title: "Second" });
-    const map = new Map<GeneratedIdeaCandidate, DemandArtifact>([
-      [c1, artifact({ score: 4, whitespace: 0.5, evidence: [REDDIT_EVIDENCE] })],
+    const map = new Map<string, DemandArtifact>([
+      [candidateJoinId(c1.title), artifact({ score: 4, whitespace: 0.5, evidence: [REDDIT_EVIDENCE] })],
     ]);
     const stats = summarizeDemandCoverage([c1, c2], map);
     expect(stats.total).toBe(2);
@@ -308,5 +311,79 @@ describe("summarizeDemandCoverage", () => {
       meanDemandScore: 0,
       meanWhitespace: 0,
     });
+  });
+});
+
+// ── FIX A REGRESSION: demand survives object-replacing transforms ─────────────
+//
+// PR #259 keyed demandByCandidate by OBJECT REFERENCE. The candidate set then
+// passes through the GIANT gate, the independent jury (which returns
+// `{ ...candidate, qualityScore }` — a NEW object) and the selection guards,
+// every one of which replaces candidate objects with fresh immutable copies. So
+// the reference-keyed lookup at persistence missed for all but the one surviving
+// reference -> demand_json/demand_score NULL for the rest (run dab947a0: 1 of 5).
+//
+// FIX A keys by candidateJoinId(title), which is invariant across every one of
+// those transforms (none mutate the title). These tests pin that: a demand
+// artifact stamped in Phase 2 still resolves after the candidate object has been
+// REPLACED, at the same key the production persistence path uses.
+describe("FIX A: title-keyed demand survives object-replacing transforms", () => {
+  /** The jury-penalty transform that orphaned the old reference-keyed Map. */
+  function juryReplace(c: GeneratedIdeaCandidate): GeneratedIdeaCandidate {
+    return { ...c, qualityScore: c.qualityScore - 0.5 };
+  }
+
+  test("artifact stamped in Phase 2 resolves by join-id after the object is replaced", () => {
+    // Phase 2: enrich + rescore produces a NEW candidate object (`rescored`).
+    const original = candidate({ giant: { ...STRONG_SCORES } });
+    const art = artifact({ score: 4, whitespace: 0.6, evidence: [REDDIT_EVIDENCE] });
+    const rescored = applyDemandRescore(original, art, GIANT_SHADOW);
+    expect(rescored).not.toBe(original); // Phase 2 already replaced the object
+
+    // Production keys by candidateJoinId(title), NOT by reference.
+    const demandByCandidate = new Map<string, DemandArtifact>([
+      [candidateJoinId(rescored.title), art],
+    ]);
+
+    // GIANT-gate / jury / selection replace the object again (new reference).
+    const transformed = juryReplace(rescored);
+    expect(transformed).not.toBe(rescored);
+    expect(transformed).not.toBe(original);
+
+    // The OLD reference-keyed lookup would now MISS — that was the bug.
+    const refKeyed = new Map<GeneratedIdeaCandidate, DemandArtifact>([[rescored, art]]);
+    expect(refKeyed.get(transformed)).toBeUndefined();
+
+    // The title join-id is invariant across the replacement -> persistence HITS.
+    expect(candidateJoinId(transformed.title)).toBe(candidateJoinId(rescored.title));
+    expect(demandByCandidate.get(candidateJoinId(transformed.title))).toBe(art);
+  });
+
+  test("summarizeDemandCoverage counts the transformed candidate as cited", () => {
+    const a = applyDemandRescore(
+      candidate({ giant: { ...STRONG_SCORES }, title: "Idea A" }),
+      artifact({ score: 4, whitespace: 0.6, evidence: [REDDIT_EVIDENCE] }),
+      GIANT_SHADOW,
+    );
+    const b = applyDemandRescore(
+      candidate({ giant: { ...STRONG_SCORES }, title: "Idea B" }),
+      artifact({ score: 3, whitespace: 0.4, evidence: [FUNDING_EVIDENCE] }),
+      GIANT_SHADOW,
+    );
+
+    const demandByCandidate = new Map<string, DemandArtifact>([
+      [candidateJoinId(a.title), artifact({ score: 4, whitespace: 0.6, evidence: [REDDIT_EVIDENCE] })],
+      [candidateJoinId(b.title), artifact({ score: 3, whitespace: 0.4, evidence: [FUNDING_EVIDENCE] })],
+    ]);
+
+    // The set persistence actually sees: post-jury REPLACED objects.
+    const finalSelected = [juryReplace(a), juryReplace(b)];
+
+    const stats = summarizeDemandCoverage(finalSelected, demandByCandidate);
+    // Both resolve despite the object replacement -> full coverage (the old bug
+    // would have reported cited=0 here because every reference was orphaned).
+    expect(stats.total).toBe(2);
+    expect(stats.cited).toBe(2);
+    expect(stats.citedShare).toBeCloseTo(1, 10);
   });
 });
