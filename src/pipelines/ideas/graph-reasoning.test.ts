@@ -145,6 +145,31 @@ describe("STOPLIST", () => {
     expect(re.test("5 star")).toBe(true);
   });
 
+  test("matches bare device / OS / platform-descriptor hubs", () => {
+    expect(re.test("iphone")).toBe(true);
+    expect(re.test("IPHONE")).toBe(true);
+    expect(re.test("ipad")).toBe(true);
+    expect(re.test("ios")).toBe(true);
+    expect(re.test("android")).toBe(true);
+    expect(re.test("apple_watch")).toBe(true);
+    expect(re.test("macos")).toBe(true);
+    expect(re.test("windows")).toBe(true);
+    expect(re.test("browser")).toBe(true);
+    expect(re.test("web")).toBe(true);
+  });
+
+  test("anchor protects variant device nodes that carry real signal", () => {
+    // EXACT match only — these specific nodes exist in the live graph and must
+    // NOT be swept out with the bare-descriptor hubs.
+    expect(re.test("iphone_15pro")).toBe(false);
+    expect(re.test("iphone_16")).toBe(false);
+    expect(re.test("android_17")).toBe(false);
+    expect(re.test("android_sdk_24")).toBe(false);
+    expect(re.test("android_pay")).toBe(false);
+    expect(re.test("ios_/_android")).toBe(false);
+    expect(re.test("jabber_android_application")).toBe(false);
+  });
+
   test("does NOT match meaningful pain / feature nodes", () => {
     expect(re.test("dark mode")).toBe(false);
     expect(re.test("offline sync")).toBe(false);

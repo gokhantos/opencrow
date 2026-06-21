@@ -127,6 +127,13 @@ export const REL_WHITELIST: readonly string[] = [
  *     (deg-408 et al).
  *   - a "digits optional-decimal optional-star" anchor — "4", "4.5 stars"
  *     rating nodes.
+ *   - `^(iphone|ipad|…|web)$` — bare device / OS / form-factor descriptor hubs
+ *     (`ipad` deg-22, `iphone` deg-21, `ios`/`android` deg-19, …). These are
+ *     pure platform connectors, never a standalone opportunity, but their high
+ *     degree makes them noisy intermediaries that route junk 2-hop paths
+ *     (e.g. `doordash —TARGETS→ iphone —AVAILABLE_ON→ <unrelated app>`). The
+ *     anchor is EXACT so variant nodes carrying real signal are untouched
+ *     (`iphone_15pro`, `android_17`, `android_sdk_24`, `ios_/_android` all stay).
  * See {@link STOPLIST} below for the exact regex source. These match on node
  * NAME values (not labels/types) and stay valid across canonicalization: the
  * store-hub nodes were relabeled, not deleted, and the user_id:/rating-fraction
@@ -137,7 +144,10 @@ export const STOPLIST: string =
   "^(app_store|play_store|sige-global)$" +
   "|^user_id:" +
   "|^\\d+\\s*/\\s*\\d+$" +
-  "|^\\d+(\\.\\d+)?\\s*(star|stars)?$";
+  "|^\\d+(\\.\\d+)?\\s*(star|stars)?$" +
+  "|^(iphone|ipad|ipod|ios|ipados|android|android_tv|apple_watch|watchos|" +
+  "macos|windows|linux|chromeos|browser|smartphone|tablet|desktop|mobile|" +
+  "pc|web)$";
 
 // How long the breaker stays fully open before letting a single probe through.
 const BREAKER_COOLDOWN_MS = 30_000;
