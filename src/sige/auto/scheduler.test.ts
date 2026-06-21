@@ -30,6 +30,19 @@ describe("buildFastProfile", () => {
     expect(profile.agentModel).toBe("deepseek-v4-flash");
   });
 
+  test("sets BOTH model and agentModel to the routed model (provider-consistent)", () => {
+    // Regression: buildFastProfile set only agentModel, leaving config.model as
+    // the default `claude-sonnet-4-6`. game-formulation + signal-synthesis use
+    // config.model + config.provider, so a Claude model id was sent to the
+    // routed (alibaba) provider → "400: Model not exist" → every autonomous SIGE
+    // run crashed at game_formulation before producing ideas.
+    const profile = buildFastProfile("alibaba", "deepseek-v4-flash");
+    expect(profile.model).toBe("deepseek-v4-flash");
+    expect(profile.model).not.toBe("claude-sonnet-4-6");
+    // model and agentModel must agree so every consumer hits the same provider.
+    expect(profile.model).toBe(profile.agentModel);
+  });
+
   test("applies the trimmed expert/social round counts", () => {
     const profile = buildFastProfile("anthropic", "claude-haiku-4-5");
     expect(profile.provider).toBe("anthropic");
