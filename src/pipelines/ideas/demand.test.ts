@@ -370,6 +370,7 @@ describe("schemas", () => {
         "reddit_intent",
         "review_complaint",
         "search_trend",
+        "semantic_corpus",
       ].sort(),
     );
   });

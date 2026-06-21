@@ -34,6 +34,7 @@ import {
   type DemandProbe,
   type DemandProbeOptions,
 } from "./demand";
+import { SEMANTIC_PROBE_NAME, semanticDemandProbe } from "./semantic-demand-probe";
 
 const logger = createLogger("ideas:demand");
 
@@ -94,7 +95,7 @@ const FUNDING_PATTERNS: readonly string[] = [
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Clamp + default the probe window/limit/relevance-gate options deterministically. */
-function resolveOpts(opts: DemandProbeOptions): {
+export function resolveOpts(opts: DemandProbeOptions): {
   windowSec: number;
   limit: number;
   minKeywordHits: number;
@@ -115,7 +116,7 @@ function resolveOpts(opts: DemandProbeOptions): {
 }
 
 /** Take the top-N keywords actually worth querying (cap cost, keep determinism). */
-function queryKeywords(keywords: readonly string[]): readonly string[] {
+export function queryKeywords(keywords: readonly string[]): readonly string[] {
   return keywords
     .map((k) => k.trim().toLowerCase())
     .filter((k) => k.length >= 3)
@@ -147,7 +148,7 @@ function firstPatternMatch(
 }
 
 /** Build a compact, verbatim quote around the matched marker for auditability. */
-function quoteAround(text: string, marker: string): string {
+export function quoteAround(text: string, marker: string): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
   const idx = collapsed.toLowerCase().indexOf(marker.toLowerCase());
   if (idx < 0) return collapsed.slice(0, QUOTE_MAX_LEN);
@@ -156,7 +157,7 @@ function quoteAround(text: string, marker: string): string {
 }
 
 /** Coerce an unknown DB cell to a trimmed string (empty when absent). */
-function asText(value: unknown): string {
+export function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
@@ -175,7 +176,7 @@ function asText(value: unknown): string {
  * `db.unsafe(sql, params)`. `startIndex` lets callers reserve leading params
  * (e.g. the window cutoff) before the keyword params.
  */
-function buildKeywordFilter(
+export function buildKeywordFilter(
   columns: readonly string[],
   keywords: readonly string[],
   startIndex: number,
@@ -653,6 +654,10 @@ export const DEFAULT_DEMAND_PROBES: readonly DemandProbe[] = [
   reviewComplaintProbe,
   hnProbe,
   externalTrendsProbe,
+  // Embedding-similarity probe — catches niche pains the lexical+intent probes
+  // miss (the "dead demand probe -> absence floor" fix). Default ON; degrades to
+  // [] when no embedder is configured.
+  semanticDemandProbe,
 ];
 
 // ── Orchestration ─────────────────────────────────────────────────────────────
@@ -669,6 +674,13 @@ export interface EnrichDemandConfig {
   readonly reviewComplaint?: boolean;
   /** Run the Hacker News buyer-intent probe. Default ON. */
   readonly hnIntent?: boolean;
+  /**
+   * Run the embedding-similarity corpus probe (`semantic_corpus` evidence).
+   * Default ON. Catches niche demand the lexical+intent probes miss because the
+   * pain is discussed in different words than the candidate keywords. Degrades
+   * to [] when no embedding provider is configured.
+   */
+  readonly semanticDemand?: boolean;
   /**
    * Use keyword-matching ph_products to discount whitespace via supplyDensity.
    * Default ON; internal-DB only. Has NO effect on the demand score — it only
@@ -709,6 +721,7 @@ function selectProbes(
     if (p.name === "fundingNews") return cfg.fundingSignal !== false;
     if (p.name === "reviewComplaint") return cfg.reviewComplaint !== false;
     if (p.name === "hnIntent") return cfg.hnIntent !== false;
+    if (p.name === SEMANTIC_PROBE_NAME) return cfg.semanticDemand !== false;
     if (p.name === "externalTrends") return cfg.externalTrends === true;
     return true; // unknown custom probes run by default
   });
@@ -796,7 +809,7 @@ export async function enrichDemand(
 // ── Small numeric coercion (local, DB cells are unknown) ───────────────────────
 
 /** Coerce an unknown DB numeric cell to a finite non-negative number. */
-function toCount(value: unknown): number {
+export function toCount(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) ? n : 0;
 }
