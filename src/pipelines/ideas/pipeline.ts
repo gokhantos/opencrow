@@ -552,6 +552,7 @@ export async function runIdeasPipeline(
       (s) =>
         `Generated ${s.totalGenerated} idea candidates from trend intersections` +
         (extraCandidates.length > 0 ? ` (incl. ${extraCandidates.length} SIGE-divergent)` : ""),
+      smart.synthesisDeadlineMs,
     );
 
     // ── Step 6: Validate (3-layer dedup: exact + fuzzy + semantic) ────────

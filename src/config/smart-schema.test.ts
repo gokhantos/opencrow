@@ -166,7 +166,9 @@ describe("smartConfigSchema", () => {
         perBucketCap: 8,
         totalCap: 90,
         fetchLimit: 100,
+        bucketBy: "signalCategory",
       },
+      synthesisDeadlineMs: 1_500_000,
     });
   });
 
@@ -336,6 +338,34 @@ describe("smartConfigSchema", () => {
     });
     expect(parsed.sigeValuation).toBe(true);
     expect(parsed.rerankTopK).toBe(12);
+  });
+
+  test("synthesisDeadlineMs defaults to 25 min (1_500_000 ms)", () => {
+    const parsed = smartConfigSchema.parse({});
+    expect(parsed.synthesisDeadlineMs).toBe(1_500_000);
+  });
+
+  test("synthesisDeadlineMs rejects values below 5 min (300_000 ms)", () => {
+    expect(() => smartConfigSchema.parse({ synthesisDeadlineMs: 299_999 })).toThrow();
+    expect(() => smartConfigSchema.parse({ synthesisDeadlineMs: 0 })).toThrow();
+  });
+
+  test("synthesisDeadlineMs rejects values above 60 min (3_600_000 ms)", () => {
+    expect(() => smartConfigSchema.parse({ synthesisDeadlineMs: 3_600_001 })).toThrow();
+  });
+
+  test("synthesisDeadlineMs accepts values at the min and max boundaries", () => {
+    expect(smartConfigSchema.parse({ synthesisDeadlineMs: 300_000 }).synthesisDeadlineMs).toBe(
+      300_000,
+    );
+    expect(smartConfigSchema.parse({ synthesisDeadlineMs: 3_600_000 }).synthesisDeadlineMs).toBe(
+      3_600_000,
+    );
+  });
+
+  test("synthesisDeadlineMs is reachable via the opencrowConfigSchema access path", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBe(1_500_000);
   });
 });
 
