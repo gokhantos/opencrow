@@ -780,6 +780,10 @@ export const generateWideConfigSchema = z
     multiSegment: z.boolean().default(true),
     // Flag-gated merge of the SIGE divergent-generation pool. OFF by default.
     sigeDivergent: z.boolean().default(false),
+    // Over-generation is split into chunks of this many intersections, one chat
+    // call each, so no single call asks for ~30 dense ideas (which timed out at
+    // 210s). Each chunk stays in the proven ~5k-output / ~90s regime.
+    chunkSize: z.number().int().min(1).max(20).default(2),
   })
   .default({
     overGenerate: true,
@@ -787,6 +791,7 @@ export const generateWideConfigSchema = z
     maxCandidates: 40,
     multiSegment: true,
     sigeDivergent: false,
+    chunkSize: 2,
   });
 
 // Stage 2 "broad-shallow ideation" (Funnel Breadth Redesign). Ideate cheaply over
@@ -1422,6 +1427,7 @@ const SMART_IDEAS_DEFAULTS = {
     maxCandidates: 40,
     multiSegment: true,
     sigeDivergent: false,
+    chunkSize: 2,
   },
   demand: {
     enabled: true,
