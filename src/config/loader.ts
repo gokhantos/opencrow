@@ -463,6 +463,15 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     shallowIdeationEnv.model = process.env.OPENCROW_SMART_SHALLOW_IDEATION_MODEL;
   }
 
+  // OPENCROW_SMART_STRATIFIED_INTAKE_* — Stage 1 stratified-intake overrides.
+  // Only the theme-bucketing lever is env-tunable (the caps are config-only);
+  // validated against the enum so a typo can't silently disable bucketing.
+  const stratifiedIntakeEnv: Record<string, unknown> = {};
+  const stratifiedBucketBy = process.env.OPENCROW_SMART_STRATIFIED_INTAKE_BUCKET_BY;
+  if (stratifiedBucketBy === "signalType" || stratifiedBucketBy === "signalCategory") {
+    stratifiedIntakeEnv.bucketBy = stratifiedBucketBy;
+  }
+
   // OPENCROW_SMART_DEEP_DEVELOP_COUNT — Stage 3 deep-develop count (top-level).
   const deepDevelopCount = Number(process.env.OPENCROW_SMART_DEEP_DEVELOP_COUNT ?? "");
   if (
@@ -483,7 +492,8 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     Object.keys(diversityGuardEnv).length > 0 ||
     Object.keys(seedDiversityEnv).length > 0 ||
     Object.keys(independentJuryEnv).length > 0 ||
-    Object.keys(shallowIdeationEnv).length > 0
+    Object.keys(shallowIdeationEnv).length > 0 ||
+    Object.keys(stratifiedIntakeEnv).length > 0
   ) {
     const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
     const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
@@ -539,6 +549,10 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     if (Object.keys(shallowIdeationEnv).length > 0) {
       const existing = (existingSmart.shallowIdeation ?? {}) as Record<string, unknown>;
       smart.shallowIdeation = { ...existing, ...shallowIdeationEnv };
+    }
+    if (Object.keys(stratifiedIntakeEnv).length > 0) {
+      const existing = (existingSmart.stratifiedIntake ?? {}) as Record<string, unknown>;
+      smart.stratifiedIntake = { ...existing, ...stratifiedIntakeEnv };
     }
     result.pipelines = { ...pipelines, ideas: { ...ideas, smart } };
   }

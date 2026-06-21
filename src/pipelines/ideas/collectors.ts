@@ -37,6 +37,7 @@ import {
   obscurityFromEngagement,
   selectRanked,
   selectStratified,
+  stratifiedBucketKey,
   lookupLearnedCredibility,
   parseMakers,
   parseTopics,
@@ -74,6 +75,7 @@ export {
   NEUTRAL_LEARNED_CREDIBILITY,
   selectRanked,
   selectStratified,
+  stratifiedBucketKey,
   parseJsonArray,
   parseMakers,
   parseTopics,
@@ -967,17 +969,17 @@ export async function scanCapabilities(
     let phRaw = (await db`
       WITH ranked AS (
         SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
-               makers_json, topics_json, first_seen_at,
+               makers_json, topics_json, first_seen_at, signal_category,
                ROW_NUMBER() OVER (ORDER BY (votes_count + comments_count * 3) DESC) AS eng_rank
         FROM ph_products
         WHERE first_seen_at >= ${cutoff30d}
       )
       (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
-              makers_json, topics_json, first_seen_at
+              makers_json, topics_json, first_seen_at, signal_category
        FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
-              makers_json, topics_json, first_seen_at
+              makers_json, topics_json, first_seen_at, signal_category
        FROM ranked WHERE eng_rank > ${topSlice}
        ORDER BY first_seen_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
@@ -986,7 +988,7 @@ export async function scanCapabilities(
     if (phRaw.length < 5) {
       phRaw = (await db`
         SELECT id, name, tagline, description, url, website_url, votes_count, comments_count,
-               makers_json, topics_json, first_seen_at
+               makers_json, topics_json, first_seen_at, signal_category
         FROM ph_products
         ORDER BY (votes_count + comments_count * 3) DESC
         LIMIT ${strat.fetchLimit}
@@ -1008,7 +1010,7 @@ export async function scanCapabilities(
             table: "ph_products",
             id: p.id as string,
             signalType: "feed",
-            category: "unknown",
+            category: (p.signal_category as string) ?? "unknown",
             entity: {
               id: p.id as string,
               source: "producthunt",
@@ -1045,7 +1047,7 @@ export async function scanCapabilities(
     const hnRaw = (await db`
       WITH ranked AS (
         SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
-               points_velocity, updated_at, feed_type,
+               points_velocity, updated_at, feed_type, signal_category,
                ROW_NUMBER() OVER (
                  ORDER BY COALESCE(points_velocity, 0) DESC, updated_at DESC, (points + comment_count * 2) DESC
                ) AS eng_rank
@@ -1053,11 +1055,11 @@ export async function scanCapabilities(
         WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
       )
       (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
-              points_velocity, updated_at, feed_type
+              points_velocity, updated_at, feed_type, signal_category
        FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, title, url, hn_url, points, comment_count, top_comments_json,
-              points_velocity, updated_at, feed_type
+              points_velocity, updated_at, feed_type, signal_category
        FROM ranked WHERE eng_rank > ${topSlice}
        ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
@@ -1078,7 +1080,7 @@ export async function scanCapabilities(
             table: "hn_stories",
             id: s.id as string,
             signalType: subSource,
-            category: "unknown",
+            category: (s.signal_category as string) ?? "unknown",
             entity: {
               id: s.id as string,
               source: "hackernews",
@@ -1111,17 +1113,17 @@ export async function scanCapabilities(
     // ── GitHub ────────────────────────────────────────────────────────────────
     let reposRaw = (await db`
       WITH ranked AS (
-        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at,
+        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at, signal_category,
                ROW_NUMBER() OVER (
                  ORDER BY COALESCE(stars_velocity, 0) DESC, stars_today DESC, stars DESC
                ) AS eng_rank
         FROM github_repos
         WHERE stars_today > 0
       )
-      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
+      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at, signal_category
        FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
-      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
+      (SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at, signal_category
        FROM ranked WHERE eng_rank > ${topSlice}
        ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
@@ -1129,7 +1131,7 @@ export async function scanCapabilities(
     // Fallback: all-time with random offset if no active trending data
     if (reposRaw.length < 5) {
       reposRaw = (await db`
-        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at
+        SELECT id, full_name, description, language, stars, stars_today, url, stars_velocity, updated_at, signal_category
         FROM github_repos
         ORDER BY stars DESC
         LIMIT ${strat.fetchLimit}
@@ -1150,7 +1152,7 @@ export async function scanCapabilities(
             table: "github_repos",
             id: r.id as string,
             signalType: "trending",
-            category: "unknown",
+            category: (r.signal_category as string) ?? "unknown",
             entity: {
               id: r.id as string,
               source: "github",
@@ -1187,7 +1189,7 @@ export async function scanCapabilities(
     const postsRaw = (await db`
       WITH ranked AS (
         SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
-               top_comments_json, flair, score_velocity, updated_at,
+               top_comments_json, flair, score_velocity, updated_at, signal_category,
                ROW_NUMBER() OVER (
                  ORDER BY COALESCE(score_velocity, 0) DESC, updated_at DESC, (score + num_comments * 3) DESC
                ) AS eng_rank
@@ -1195,11 +1197,11 @@ export async function scanCapabilities(
         WHERE updated_at >= ${nowSec - 7 * 24 * 3600}
       )
       (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
-              top_comments_json, flair, score_velocity, updated_at
+              top_comments_json, flair, score_velocity, updated_at, signal_category
        FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, title, selftext, subreddit, score, num_comments, permalink, url,
-              top_comments_json, flair, score_velocity, updated_at
+              top_comments_json, flair, score_velocity, updated_at, signal_category
        FROM ranked WHERE eng_rank > ${topSlice}
        ORDER BY updated_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
@@ -1219,7 +1221,7 @@ export async function scanCapabilities(
             table: "reddit_posts",
             id: p.id as string,
             signalType: "topical",
-            category: "unknown",
+            category: (p.signal_category as string) ?? "unknown",
             entity: {
               id: p.id as string,
               source: "reddit",
@@ -1256,7 +1258,7 @@ export async function scanCapabilities(
     // ── News ──────────────────────────────────────────────────────────────────
     const cutoff72h = nowSec - 72 * 3600;
     const articlesRaw = (await db`
-      SELECT id, title, url, source_name, summary, scraped_at
+      SELECT id, title, url, source_name, summary, scraped_at, signal_category
       FROM news_articles WHERE scraped_at >= ${cutoff72h}
       ORDER BY scraped_at DESC LIMIT ${strat.fetchLimit}
     `) as Array<Record<string, unknown>>;
@@ -1276,7 +1278,7 @@ export async function scanCapabilities(
             table: "news_articles",
             id: a.id as string,
             signalType: subSource,
-            category: "unknown",
+            category: (a.signal_category as string) ?? "unknown",
             entity: {
               id: a.id as string,
               source: "news",
@@ -1306,7 +1308,7 @@ export async function scanCapabilities(
     const tweetsRaw = (await db`
       WITH ranked AS (
         SELECT id, author_username, author_verified, text, likes, retweets, views,
-               likes_velocity, scraped_at,
+               likes_velocity, scraped_at, signal_category,
                ROW_NUMBER() OVER (
                  ORDER BY COALESCE(likes_velocity, 0) DESC, scraped_at DESC
                ) AS eng_rank
@@ -1314,11 +1316,11 @@ export async function scanCapabilities(
         WHERE scraped_at >= ${nowSec - 7 * 24 * 3600}
       )
       (SELECT id, author_username, author_verified, text, likes, retweets, views,
-              likes_velocity, scraped_at
+              likes_velocity, scraped_at, signal_category
        FROM ranked WHERE eng_rank <= ${topSlice})
       UNION
       (SELECT id, author_username, author_verified, text, likes, retweets, views,
-              likes_velocity, scraped_at
+              likes_velocity, scraped_at, signal_category
        FROM ranked WHERE eng_rank > ${topSlice}
        ORDER BY scraped_at DESC LIMIT ${midtierSlice})
     `) as Array<Record<string, unknown>>;
@@ -1338,7 +1340,7 @@ export async function scanCapabilities(
             table: "x_scraped_tweets",
             id: t.id as string,
             signalType: subSource,
-            category: "unknown",
+            category: (t.signal_category as string) ?? "unknown",
             entity: {
               id: t.id as string,
               source: "x",
@@ -1442,8 +1444,11 @@ export async function scanCapabilities(
 
     // ── Phase 2: cross-pool stratified selection (or legacy per-pool path) ───
     // STAGE 1 — stratified intake: select across the union of all pool candidates
-    // using a single cross-pool pass that caps each `${table}:${signalType}`
-    // bucket at `perBucketCap`, so no single source/signalType can dominate.
+    // using a single cross-pool pass that caps each bucket at `perBucketCap`, so
+    // no single bucket can dominate. The bucket key is derived by
+    // stratifiedBucketKey honoring strat.bucketBy: theme (`${category}:${table}`)
+    // for enriched rows with a source/sub-source fallback (`signalCategory`,
+    // default), or the legacy `${table}:${signalType}` (`signalType`).
     // The legacy per-pool path is preserved behind strat.enabled=false.
     const unionCandidates = pools.flatMap((p) => p.candidates);
     const totalTarget = pools.reduce((sum, p) => sum + p.target, 0);
@@ -1451,7 +1456,7 @@ export async function scanCapabilities(
     const chosen = strat.enabled
       ? selectStratified(unionCandidates, {
           idOf: (c) => c.id,
-          bucketOf: (c) => `${c.table}:${c.signalType}`,
+          bucketOf: (c) => stratifiedBucketKey(c, strat.bucketBy),
           scoreOf: (c) => scoreByRow.get(c.id) ?? 0,
           perBucketCap: strat.perBucketCap,
           totalCap: Math.min(strat.totalCap, totalTarget),
