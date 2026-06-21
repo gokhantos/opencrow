@@ -285,6 +285,33 @@ export function selectRanked<T>(
 }
 
 /**
+ * Theme-Stratified Intake (Component 3) — derive the stratified bucket key for a
+ * collector candidate, honoring the `stratifiedIntake.bucketBy` flag.
+ *
+ *  - "signalType" (legacy): the exact pre-theme key `${table}:${signalType}` —
+ *    spreads the pool across sources and sub-sources only.
+ *  - "signalCategory" (default, hybrid): an enriched row (its LLM-extracted
+ *    `category` is present and not "unknown") buckets on its THEME,
+ *    `${category}:${table}`, so a hot theme can't monopolize the seeds; an
+ *    un-enriched row falls back to the legacy source/sub-source key
+ *    `${signalType}:${table}` (NOT a single "uncategorized" bucket), so the
+ *    un-enriched tail keeps today's source spread until enrichment coverage
+ *    grows.
+ *
+ * Pure and side-effect-free so the key derivation is unit-testable in isolation.
+ */
+export function stratifiedBucketKey(
+  c: { readonly table: string; readonly signalType: string; readonly category: string },
+  bucketBy: "signalType" | "signalCategory",
+): string {
+  if (bucketBy === "signalType") {
+    return `${c.table}:${c.signalType}`;
+  }
+  const enriched = Boolean(c.category) && c.category !== "unknown";
+  return enriched ? `${c.category}:${c.table}` : `${c.signalType}:${c.table}`;
+}
+
+/**
  * STAGE 1 — quota-based cross-bucket selection. Globally ranks rows by score,
  * then admits them while capping each bucket at `perBucketCap`, until `totalCap`
  * is reached. Anti-starvation: if buckets exhaust before `totalCap`, back-fill
