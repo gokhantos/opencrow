@@ -23,7 +23,7 @@ const opencodeStub = mock(async (_messages: unknown, options: AgentOptions) => {
 });
 
 mock.module("../store/model-routing", () => ({
-  getModelRoute: mock(async () => ({ provider: "opencode", model: "opencode-sonnet" })),
+  getModelRoute: mock(async () => ({ provider: "opencode", model: "deepseek-v4-flash" })),
 }));
 mock.module("../agent/opencode", () => ({ chat: opencodeStub, agenticChat: opencodeStub }));
 
@@ -49,7 +49,7 @@ describe("observation extractor model routing", () => {
 
     expect(opencodeStub).toHaveBeenCalled();
     expect(lastChatOpts?.provider).toBe("opencode");
-    expect(lastChatOpts?.model).toBe("opencode-sonnet");
+    expect(lastChatOpts?.model).toBe("deepseek-v4-flash");
   });
 
   test("an explicit params.model overrides the route model (provider still from route)", async () => {
