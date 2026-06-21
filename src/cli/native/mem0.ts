@@ -7,9 +7,40 @@ import type { NativePaths } from "./paths.ts";
 import { MEM0_LABEL } from "./paths.ts";
 import { buildInfraPlist } from "./plist.ts";
 import { renderMem0Env } from "./mem0-env.ts";
+import { readRepoFileFromOriginMaster } from "./git-stage.ts";
+import { createLogger } from "../../logger.ts";
+
+const log = createLogger("native:mem0");
 
 function plistPath(label: string): string {
   return path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
+}
+
+/**
+ * Stage a sidecar source file from `origin/master` when available, else fall
+ * back to the local working tree. Always writes to `dest` (a failed write of a
+ * resolved buffer still throws — only the "origin/master unavailable" case is
+ * soft). See git-stage.ts for why origin/master is preferred.
+ */
+async function stageSidecarFile(
+  repoDir: string,
+  repoRelPath: string,
+  workingTreeSrc: string,
+  dest: string,
+): Promise<void> {
+  const fromOrigin = readRepoFileFromOriginMaster(repoDir, repoRelPath);
+  if (fromOrigin) {
+    await fs.writeFile(dest, fromOrigin);
+    log.info(`staged mem0 ${repoRelPath} from origin/master`, { dest });
+    return;
+  }
+  // Degraded: origin/master genuinely unavailable (no repo/remote/ref). Deploy
+  // the working-tree copy so provisioning still succeeds offline.
+  await fs.copyFile(workingTreeSrc, dest);
+  log.warn(
+    `staged mem0 ${repoRelPath} from working tree (origin/master unavailable)`,
+    { dest, workingTreeSrc },
+  );
 }
 
 export async function provisionMem0(
@@ -31,8 +62,26 @@ export async function provisionMem0(
   await fs.mkdir(appDir, { recursive: true });
   await fs.mkdir(p.logDir, { recursive: true });
 
-  // Copy app.py into the staging dir so uvicorn's cwd is TCC-safe.
-  await fs.copyFile(path.join(serverSrc, "app.py"), path.join(appDir, "app.py"));
+  // Stage app.py into the staging dir so uvicorn's cwd is TCC-safe. Prefer
+  // origin/master (the merged, reviewed ref) over the local working tree: many
+  // concurrent sessions share this checkout and the staged app.py is a single
+  // shared resource, so a stale tree must not clobber a newer merged fix.
+  await stageSidecarFile(
+    repoDir,
+    "mem0-server/app.py",
+    path.join(serverSrc, "app.py"),
+    path.join(appDir, "app.py"),
+  );
+
+  // Stage requirements.txt the same way and install from the staged copy, so the
+  // venv is reproducible from a known file that matches origin/master.
+  const stagedRequirements = path.join(appDir, "requirements.txt");
+  await stageSidecarFile(
+    repoDir,
+    "mem0-server/requirements.txt",
+    path.join(serverSrc, "requirements.txt"),
+    stagedRequirements,
+  );
 
   // Bug fix #1: create venv with uv (self-contained CPython) instead of
   // python3.11 -m venv, which fails on up-to-date macOS because Homebrew's
@@ -46,7 +95,7 @@ export async function provisionMem0(
 
   const uvPip = spawnSync(
     "uv",
-    ["pip", "install", "--python", path.join(venv, "bin", "python"), "-r", path.join(serverSrc, "requirements.txt")],
+    ["pip", "install", "--python", path.join(venv, "bin", "python"), "-r", stagedRequirements],
     { stdio: "inherit" },
   );
   if (uvPip.status !== 0) {
