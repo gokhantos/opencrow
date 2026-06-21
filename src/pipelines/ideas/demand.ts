@@ -41,6 +41,13 @@ export const DEMAND_EVIDENCE_KINDS = [
   // A Hacker News story/discussion pairing the keyword WITH a buyer-intent
   // marker — same "people who WANT a tool" semantics as reddit_intent.
   "hn_intent",
+  // A scraped corpus row (reddit) whose EMBEDDING is topically close to the
+  // idea even when it shares no buyer-intent phrase or exact keyword. This is
+  // the fix for the "dead demand probe -> absence floor" defect: niche pains
+  // discussed in different words than the candidate's keywords were invisible
+  // to the lexical+intent probes and pinned demand at the absence cap. Softer,
+  // fuzzier evidence than an explicit intent marker (see DEMAND_KIND_WEIGHTS).
+  "semantic_corpus",
 ] as const;
 
 export type DemandEvidenceKind = (typeof DEMAND_EVIDENCE_KINDS)[number];
@@ -133,6 +140,13 @@ export const DEMAND_KIND_WEIGHTS: Readonly<Record<DemandEvidenceKind, number>> =
   // HN discussion pairs a keyword with a buyer-intent marker — same strength as
   // the reddit-intent signal it mirrors.
   hn_intent: 1.0,
+  // Embedding-similarity match against the scraped corpus. Deliberately SOFTER
+  // than a literal buyer-intent marker (1.0): semantic relatedness is fuzzier
+  // evidence than an explicit "is there a tool for X" phrase — it proves the
+  // topic is discussed, not that someone stated a want. We keep it below 1.0 so
+  // it lifts genuinely-niche ideas off the absence floor without letting purely
+  // topical chatter masquerade as buyer intent. Engagement still scales `count`.
+  semantic_corpus: 0.8,
 };
 
 /** Confidence saturates as evidence volume + source diversity grow. */

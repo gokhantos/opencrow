@@ -208,7 +208,7 @@ describe("externalTrendsProbe", () => {
 // ── default probe set ────────────────────────────────────────────────────────
 
 describe("DEFAULT_DEMAND_PROBES", () => {
-  test("includes reddit, funding, review, hn, and external-trends probes", () => {
+  test("includes reddit, funding, review, hn, external-trends, and semantic probes", () => {
     const names = DEFAULT_DEMAND_PROBES.map((p) => p.name).sort();
     expect(names).toEqual([
       "externalTrends",
@@ -216,6 +216,7 @@ describe("DEFAULT_DEMAND_PROBES", () => {
       "hnIntent",
       "redditIntent",
       "reviewComplaint",
+      "semanticCorpus",
     ]);
   });
 

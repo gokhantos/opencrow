@@ -110,7 +110,7 @@ export async function llmListwiseRerank(
   }
 }
 
-function cosineSimilarity(a: Float32Array, b: Float32Array): number {
+export function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   const n = Math.min(a.length, b.length);
   let dot = 0;
   let na = 0;
