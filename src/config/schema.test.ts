@@ -34,6 +34,36 @@ describe("stratifiedIntake config", () => {
   });
 });
 
+describe("synthesisDeadlineMs config", () => {
+  test("defaults to 25 minutes (above the generic 12m step deadline)", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    // The synthesis step is the slowest; its deadline must exceed the generic
+    // 12-min DEFAULT_STEP_DEADLINE_MS or slow-but-progressing runs get killed.
+    expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBe(1_500_000);
+    expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBeGreaterThan(12 * 60 * 1000);
+  });
+
+  test("is tunable within the 5m–60m bounds", () => {
+    const cfg = opencrowConfigSchema.parse({
+      pipelines: { ideas: { smart: { synthesisDeadlineMs: 3_600_000 } } },
+    });
+    expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBe(3_600_000);
+  });
+
+  test("rejects values outside the 5m–60m bounds", () => {
+    expect(() =>
+      opencrowConfigSchema.parse({
+        pipelines: { ideas: { smart: { synthesisDeadlineMs: 299_999 } } },
+      }),
+    ).toThrow();
+    expect(() =>
+      opencrowConfigSchema.parse({
+        pipelines: { ideas: { smart: { synthesisDeadlineMs: 3_600_001 } } },
+      }),
+    ).toThrow();
+  });
+});
+
 describe("retryConfigSchema", () => {
   test("valid full input parses correctly", () => {
     const result = retryConfigSchema.parse({

@@ -587,6 +587,12 @@ export async function runIdeasPipeline(
       (s) =>
         `Generated ${s.totalGenerated} idea candidates from trend intersections` +
         (extraCandidates.length > 0 ? ` (incl. ${extraCandidates.length} SIGE-divergent)` : ""),
+      // Synthesis is the slowest step (Pass-1 intersections + Pass-2 deep-develop
+      // + Pass-3 critique + competability + demand + jury). Use the configurable
+      // synthesis deadline (default 25m, tunable 5–60m in Settings → Ideas) so a
+      // legitimately-slow-but-progressing run is not killed by the generic 12m
+      // DEFAULT_STEP_DEADLINE_MS.
+      smart.synthesisDeadlineMs,
     );
 
     // ── Step 6: Validate (3-layer dedup: exact + fuzzy + semantic) ────────
