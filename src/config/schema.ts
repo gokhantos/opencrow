@@ -1007,6 +1007,21 @@ export const sigeAutoConfigSchema = z
      * does NOT cap spending. Do not rely on it as a cost guard.
      */
     perRunCostCeilingUsd: z.number().min(0).default(0),
+    /**
+     * Semantic (embedding-based) frontier clustering. When ON, the broad
+     * divergent pool is clustered by embedding cosine similarity instead of
+     * lexical n-gram title overlap, so distinct themes form even when titles
+     * share no words (the lexical clusterer collapses those into one residual
+     * frontier, starving the diversity-select step). Fallback-safe: flag OFF —
+     * or no embedder / embed failure — reverts to the lexical path exactly.
+     */
+    semanticFrontiers: z
+      .object({
+        enabled: z.boolean().default(true),
+        /** Cosine floor for joining an existing semantic cluster. */
+        similarityThreshold: z.number().min(0).max(1).default(0.62),
+      })
+      .default({ enabled: true, similarityThreshold: 0.62 }),
   })
   .default({
     enabled: false,
@@ -1017,6 +1032,7 @@ export const sigeAutoConfigSchema = z
     maxConcurrent: 1,
     memoryWriteback: false,
     perRunCostCeilingUsd: 0,
+    semanticFrontiers: { enabled: true, similarityThreshold: 0.62 },
   });
 export type SigeAutoConfig = z.infer<typeof sigeAutoConfigSchema>;
 
@@ -1470,6 +1486,7 @@ const SMART_IDEAS_DEFAULTS = {
     maxConcurrent: 1,
     memoryWriteback: false,
     perRunCostCeilingUsd: 0,
+    semanticFrontiers: { enabled: true, similarityThreshold: 0.62 },
   },
   outcomeMemory: {
     writeBack: true,
