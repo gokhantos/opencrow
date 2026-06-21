@@ -3,6 +3,8 @@
 import { createLogger } from "../../logger";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 import { inBatches } from "../shared/in-batches";
+import type { RedditCorpusConfig } from "../../config/schema";
+import { resolveSubredditsToScrape, buildDenylistSet, isDenylisted } from "./subreddit-filter";
 
 const log = createLogger("reddit-feed");
 
@@ -13,18 +15,10 @@ const POSTS_PER_PAGE = 25;
 const MAX_PAGES = 2;
 const MIN_DELAY_MS = 8000;
 const MAX_DELAY_MS = 14000;
-const FALLBACK_SUBREDDITS = [
-  "programming",
-  "technology",
-  "startups",
-  "webdev",
-  "machinelearning",
-  "cryptocurrency",
-  "bitcoin",
-  "ethereum",
-  "defi",
-  "CryptoTechnology",
-];
+// FALLBACK_SUBREDDITS removed — scraper now uses the curated allowlist from
+// RedditCorpusConfig (src/config/schema.ts redditCorpusConfigSchema) exclusively.
+// The allowlist defaults are end-user/vertical-pain subreddits; see schema for
+// the full curated set. Echo-chamber + crypto subs are blocked by the denylist.;
 
 export interface RawRedditPost {
   id: string;
@@ -120,6 +114,7 @@ async function fetchSubscribedSubreddits(
  */
 export async function scrapeRedditFeed(
   cookiesJson: string,
+  corpusConfig: RedditCorpusConfig,
 ): Promise<readonly RawRedditPost[]> {
   const cookieHeader = buildCookieHeader(cookiesJson);
   const seenIds = new Set<string>();
@@ -135,7 +130,12 @@ export async function scrapeRedditFeed(
     headers["Cookie"] = cookieHeader;
   }
 
-  // Home feed (authenticated)
+  // Build denylist set once for all filter operations in this scrape cycle.
+  const denylistSet = buildDenylistSet(corpusConfig.denylist);
+
+  // Home feed (authenticated) — filter posts by subreddit through denylist.
+  // We cannot avoid fetching the home feed (it mixes subreddits), but we drop
+  // any post whose subreddit is denylisted before it reaches the DB.
   if (cookieHeader) {
     const homePosts = await scrapeFeed(
       `${BASE_URL}/.json?limit=${POSTS_PER_PAGE}&raw_json=1`,
@@ -143,26 +143,30 @@ export async function scrapeRedditFeed(
       headers,
       seenIds,
     );
-    allPosts.push(...homePosts);
-    log.info("Scraped home feed", { count: homePosts.length });
+    const filtered = homePosts.filter((p) => !isDenylisted(p.subreddit, denylistSet));
+    const dropped = homePosts.length - filtered.length;
+    allPosts.push(...filtered);
+    log.info("Scraped home feed", { count: filtered.length, dropped });
   }
 
-  // Fetch user's subscribed subreddits, fall back to defaults
-  let subreddits: readonly string[];
-  if (cookieHeader) {
-    const subscribed = await fetchSubscribedSubreddits(headers);
-    if (subscribed.length > 0) {
-      subreddits = subscribed;
-      log.info("Using subscribed subreddits", { count: subscribed.length });
-    } else {
-      subreddits = FALLBACK_SUBREDDITS;
-      log.info("No subscriptions found, using fallback subreddits");
-    }
-  } else {
-    subreddits = FALLBACK_SUBREDDITS;
+  // Resolve which subreddits to scrape: curated allowlist (always) + optionally
+  // the account's subscriptions (only when includeSubscriptions is true), both
+  // filtered through the denylist. We never default to subscriptions — the
+  // account's subs are the echo chamber; the curated allowlist is the signal.
+  let subscribedSubs: readonly string[] = [];
+  if (cookieHeader && corpusConfig.includeSubscriptions) {
+    subscribedSubs = await fetchSubscribedSubreddits(headers);
+    log.info("Fetched subscriptions for optional merge", { count: subscribedSubs.length });
   }
 
-  // Subreddit feeds
+  const subreddits = resolveSubredditsToScrape(corpusConfig, subscribedSubs);
+  log.info("Resolved subreddits to scrape", {
+    total: subreddits.length,
+    includeSubscriptions: corpusConfig.includeSubscriptions,
+  });
+
+  // Subreddit feeds — each subreddit was already validated + denylist-filtered
+  // by resolveSubredditsToScrape, so no second filter needed here.
   for (const subreddit of subreddits) {
     await delay(MIN_DELAY_MS, MAX_DELAY_MS);
     const url = `${BASE_URL}/r/${subreddit}/hot.json?limit=${POSTS_PER_PAGE}&raw_json=1`;

@@ -443,6 +443,93 @@ export const scraperProcessesConfigSchema = z
     scraperIds: [],
   });
 
+// ─── Reddit corpus de-bias ───────────────────────────────────────────────────
+// Controls WHICH subreddits the reddit scraper fetches, applying a curated
+// end-user/vertical-pain allowlist and an echo-chamber+crypto denylist at
+// ingestion time. This is orthogonal to the existing echoChamberDownweight
+// lever (which re-ranks already-ingested posts) — this gate drops echo-chamber
+// content BEFORE it reaches the DB.
+//
+// allowlist  — scraped unconditionally (curated end-user pain subs).
+// denylist   — dropped at ingestion from EVERY path (home feed, subreddit
+//              feeds, subscriptions). Case-insensitive.
+// includeSubscriptions — when true, the account's own subscriptions are
+//              merged into the allowlist AFTER denylist filtering. Default
+//              false (subscriptions are the echo chamber; use the curated list).
+const DEFAULT_REDDIT_ALLOWLIST = [
+  "freelance",
+  "smallbusiness",
+  "Entrepreneur",
+  "gamedev",
+  "personalfinance",
+  "productivity",
+  "ADHD",
+  "parenting",
+  "restaurateurs",
+  "RealEstate",
+  "nonprofit",
+  "Accounting",
+  "sysadmin",
+  "msp",
+  "legaladvice",
+  "Etsy",
+  "ecommerce",
+  "smallbusinessUK",
+  "Construction",
+  "dentistry",
+  "nursing",
+  "teachers",
+  "freelanceWriters",
+  "weddingplanning",
+  "SomebodyMakeThis",
+  "AppIdeas",
+  "Lightbulb",
+] as const;
+
+const DEFAULT_REDDIT_DENYLIST = [
+  "vibecoding",
+  "ClaudeCode",
+  "ClaudeAI",
+  "ChatGPT",
+  "Anthropic",
+  "DeepSeek",
+  "PromptEngineering",
+  "VibeCodeDevs",
+  "aiagents",
+  "midjourney",
+  "openclaw",
+  "LocalLLaMA",
+  "MachineLearning",
+  "ArtificialInteligence",
+  "OpenAI",
+  "singularity",
+  "ChatGPTCoding",
+  "cursor",
+  "ChatGPTPro",
+  "CryptoCurrency",
+  "Bitcoin",
+  "ethereum",
+  "defi",
+  "CryptoTechnology",
+  "CryptoMarkets",
+] as const;
+
+export const redditCorpusConfigSchema = z
+  .object({
+    // Curated list of end-user/vertical-pain subreddits to scrape explicitly.
+    allowlist: z.array(z.string()).default([...DEFAULT_REDDIT_ALLOWLIST]),
+    // Echo-chamber + crypto subs to drop at ingestion (all paths, case-insensitive).
+    denylist: z.array(z.string()).default([...DEFAULT_REDDIT_DENYLIST]),
+    // When true, the account's own subscriptions are merged AFTER denylist
+    // filtering. Default false — subscriptions are the echo chamber.
+    includeSubscriptions: z.boolean().default(false),
+  })
+  .default({
+    allowlist: [...DEFAULT_REDDIT_ALLOWLIST],
+    denylist: [...DEFAULT_REDDIT_DENYLIST],
+    includeSubscriptions: false,
+  });
+
 export const processesConfigSchema = z
   .object({
     static: z.array(processSpecSchema).default([]),
@@ -1531,6 +1618,8 @@ export const opencrowConfigSchema = z.object({
   sige: sigeConfigSchema.optional(),
   // Data ingestion → mem0. Top-level (shared infra), independent of `sige`.
   ingestion: ingestionConfigSchema,
+  // Reddit corpus de-bias: curated allowlist + echo-chamber/crypto denylist.
+  redditCorpus: redditCorpusConfigSchema,
   pipelines: pipelinesConfigSchema.default({
     ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
   }),
@@ -1575,5 +1664,6 @@ export type SigeHardeningConfig = z.infer<typeof sigeHardeningConfigSchema>;
 export type TasteConfig = z.infer<typeof tasteConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;
+export type RedditCorpusConfig = z.infer<typeof redditCorpusConfigSchema>;
 // SigeAutoConfig and OutcomeMemoryConfig are also exported directly from their
 // schema declarations above.
