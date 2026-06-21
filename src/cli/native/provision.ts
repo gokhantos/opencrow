@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { nativePaths } from "./paths.ts";
 import { provisionQdrant } from "./qdrant.ts";
-import { provisionMem0 } from "./mem0.ts";
+import { provisionMem0, restageMem0 } from "./mem0.ts";
 import { provisionNeo4j } from "./neo4j.ts";
 import { ensureOpencrowDb } from "./postgres.ts";
 import { REQUIRED_FORMULAE, pgBinDir } from "./brew.ts";
@@ -116,4 +116,19 @@ export async function runNativeUp(): Promise<void> {
   await provisionMem0(p, repoDir, { internalToken, llmApiKey, neo4jPassword });
 
   w.write("\nNative stack up. Next: `bun run src/cli.ts doctor` then `bun run dev`.\n");
+}
+
+/**
+ * Fast mem0-sidecar redeploy: re-stage app.py from origin/master and restart the
+ * service in place. Deliberately minimal vs. `runNativeUp` — it touches ONLY the
+ * mem0 sidecar (no brew/postgres/neo4j/qdrant) and does NOT rebuild the venv.
+ * Use a full `native up` when requirements.txt or other infra changed.
+ */
+export async function runNativeRestageMem0(): Promise<void> {
+  const repoDir = process.cwd();
+  const p = nativePaths(os.homedir());
+
+  process.stdout.write("Restaging mem0 sidecar from origin/master…\n");
+  await restageMem0(p, repoDir);
+  process.stdout.write("mem0 sidecar restaged and restarted.\n");
 }

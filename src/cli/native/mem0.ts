@@ -161,3 +161,54 @@ exec "${venvUvicorn}" app:app --host 127.0.0.1 --port 8050
     );
   }
 }
+
+/**
+ * Fast REDEPLOY of the mem0 sidecar: re-stage app.py from origin/master and
+ * restart in place. Unlike `provisionMem0`, this does NOT rebuild the venv,
+ * re-install requirements, rewrite the env file/wrapper/plist, or re-bootstrap
+ * launchd — it is the lightweight path for picking up a newly-merged app.py.
+ *
+ * NOTE: dependency changes (requirements.txt) still require a full
+ * `opencrow native up` — the venv is intentionally left untouched here.
+ */
+export async function restageMem0(p: NativePaths, repoDir: string): Promise<void> {
+  const appDir = p.mem0AppDir;
+  const venv = path.join(appDir, ".venv");
+
+  // Guard: this is a redeploy, not an install. If the sidecar was never
+  // provisioned the venv won't exist — staging app.py + kickstart would either
+  // no-op against a missing service or fail confusingly, so bail early with an
+  // actionable message instead.
+  try {
+    await fs.access(venv);
+  } catch {
+    throw new Error("mem0 sidecar not provisioned — run `opencrow native up` first");
+  }
+
+  // Re-stage app.py, preferring the merged origin/master ref over the local
+  // working tree (stageSidecarFile logs which source it used).
+  await stageSidecarFile(
+    repoDir,
+    "mem0-server/app.py",
+    path.join(repoDir, "mem0-server", "app.py"),
+    path.join(appDir, "app.py"),
+  );
+
+  // Clear stale bytecode so the restart can't execute a cached .pyc that masks
+  // the freshly-staged app.py source (we hit exactly this in a deploy).
+  await fs.rm(path.join(appDir, "__pycache__"), { recursive: true, force: true });
+
+  // Restart in place — no bootout/bootstrap, just kick the existing service.
+  const domain = `gui/${process.getuid?.() ?? ""}`;
+  const kick = spawnSync("launchctl", ["kickstart", "-k", `${domain}/${MEM0_LABEL}`], {
+    stdio: "inherit",
+  });
+  if (kick.status !== 0) {
+    throw new Error(
+      `launchctl kickstart (mem0) failed: ${kick.error?.message ?? `exited ${kick.status}`} ` +
+        "— the sidecar may not be bootstrapped; run `opencrow native up`",
+    );
+  }
+
+  log.info("restaged mem0 app.py from origin/master and restarted sidecar", { appDir });
+}
