@@ -93,6 +93,7 @@ describe("smartConfigSchema", () => {
         maxConcurrent: 1,
         memoryWriteback: false,
         perRunCostCeilingUsd: 0,
+        semanticFrontiers: { enabled: true, similarityThreshold: 0.62 },
       },
       outcomeMemory: {
         writeBack: true,
