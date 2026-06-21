@@ -112,6 +112,9 @@ describe("smartConfigSchema", () => {
         rejectThreshold: 2,
         softPenaltyThreshold: 2.5,
         topNIncumbents: 100,
+        hardVeto: true,
+        hardVetoThreshold: 4,
+        hardVetoDimensions: ["regulated", "capital", "logistics", "networkEffect"],
         builderProfile: {
           capital: "bootstrap",
           teamSize: 1,

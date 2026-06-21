@@ -31,6 +31,7 @@ import {
   type CompetabilityPersisted,
   type CompetabilityScore,
   buildCompetabilityPersisted,
+  hardVetoCompetability,
   heuristicMoatFlags,
   parseCompetability,
 } from "../pipelines/ideas/competability";
@@ -242,12 +243,36 @@ export async function gateSigeIdeasOnCompetability(params: {
     // LLM was lenient (mirrors the pipeline critique).
     const heuristic = heuristicMoatFlags(ideaText, incumbentSet);
 
-    const gated = !decision.pass || heuristic.obvious;
-    const reason = heuristic.obvious
-      ? decision.reason
-        ? `${decision.reason}; ${heuristic.reason}`
-        : heuristic.reason
-      : decision.reason;
+    // HARD per-dimension veto — evaluated on the RAW (profile-INDEPENDENT) `score`,
+    // NOT the discounted `effective` one, so an inherently-uncompetable market
+    // (regulation / heavy capital / physical logistics / network-effect cold-start)
+    // is killed regardless of overall and of any builder-profile discount.
+    const veto =
+      config.hardVeto !== false
+        ? hardVetoCompetability(score, {
+            threshold: config.hardVetoThreshold,
+            dimensions: config.hardVetoDimensions,
+          })
+        : ({ vetoed: false, dimension: null, value: null, reason: "" } as const);
+
+    const gated = !decision.pass || heuristic.obvious || veto.vetoed;
+    const reasonParts = [
+      ...(veto.vetoed ? [veto.reason] : []),
+      ...(decision.reason ? [decision.reason] : []),
+      ...(heuristic.obvious ? [heuristic.reason] : []),
+    ];
+    const reason = reasonParts.length > 0 ? reasonParts.join("; ") : decision.reason;
+
+    if (veto.vetoed) {
+      log.info("SIGE idea HARD-VETOED by competability gate (uncompetable moat)", {
+        ideaId: idea.id,
+        title: idea.title,
+        dimension: veto.dimension,
+        rawScore: veto.value,
+        threshold: config.hardVetoThreshold ?? 4,
+        enforced: enforce,
+      });
+    }
 
     // Persist the EFFECTIVE (decided) score as the top-level dims/overall, with
     // the RAW (pre-profile) score + matched domain preserved alongside. The

@@ -36,6 +36,7 @@ import {
   buildCompetabilityPersisted,
   parseCompetability,
   heuristicMoatFlags,
+  hardVetoCompetability,
   type CompetabilityScore,
 } from "./competability";
 import {
@@ -69,6 +70,7 @@ import {
   CATEGORY_CONTEXT,
   GIANT_RUBRIC_PROMPT,
   SCHLEP_INSTRUCTION,
+  NEVER_GENERATE_BLOCK,
   antiExemplarSection,
   buildExistingIdeasContext,
   buildInsightsSection,
@@ -200,6 +202,8 @@ DIVERSITY REQUIREMENT (CRITICAL):
 ${CATEGORY_CONTEXT[category]}
 
 ${SCHLEP_INSTRUCTION}
+
+${NEVER_GENERATE_BLOCK}
 
 === VALIDATED INTERSECTION HYPOTHESES (ranked by signal strength) ===
 ${intersectionLines}
@@ -370,6 +374,8 @@ DIVERSITY REQUIREMENT (CRITICAL):
 ${CATEGORY_CONTEXT[category]}
 
 ${SCHLEP_INSTRUCTION}
+
+${NEVER_GENERATE_BLOCK}
 ${segmentSpread}
 
 === VALIDATED INTERSECTION HYPOTHESES (ranked by signal strength) ===
@@ -777,6 +783,32 @@ Return ONLY a JSON array with one entry per idea (in the same order):
         effectiveOverall = effective.overall;
         competabilityGated = !decision.pass;
         competabilityReason = decision.reason;
+
+        // HARD per-dimension veto — evaluated on the RAW (profile-INDEPENDENT)
+        // moat score, so an inherently-uncompetable market (regulation / heavy
+        // capital / physical logistics / network-effect cold-start) is killed
+        // regardless of the overall AND regardless of any builder-profile
+        // discount. Independent backstop; only ACTS when enforcing (shadow
+        // otherwise), mirroring the composite gate below.
+        if (competability?.hardVeto !== false) {
+          const veto = hardVetoCompetability(competabilityScore, {
+            threshold: competability?.hardVetoThreshold,
+            dimensions: competability?.hardVetoDimensions,
+          });
+          if (veto.vetoed) {
+            competabilityGated = true;
+            competabilityReason = competabilityReason
+              ? `${veto.reason}; ${competabilityReason}`
+              : veto.reason;
+            log.info("Idea HARD-VETOED by competability gate (uncompetable moat)", {
+              title: candidate.title,
+              dimension: veto.dimension,
+              rawScore: veto.value,
+              threshold: competability?.hardVetoThreshold ?? 4,
+              enforced: enforceCompetabilityGate,
+            });
+          }
+        }
       }
       // The heuristic can ALSO flag an obvious uncompetable shell even when the
       // LLM was lenient — treat that as a gate too.
@@ -959,6 +991,8 @@ Your job: Find opportunities where existing apps FAIL to deliver what users clea
 ${CATEGORY_CONTEXT[category]}
 
 ${SCHLEP_INSTRUCTION}
+
+${NEVER_GENERATE_BLOCK}
 
 === APP LANDSCAPE (4000+ apps across 28 categories — satisfaction scores, what they offer) ===
 ${sanitizeForPrompt(trends.summary || "No landscape data")}
