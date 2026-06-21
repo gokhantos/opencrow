@@ -123,6 +123,15 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   ) {
     sigeAutoEnv.maxDeepFrontiers = sigeAutoMaxDeepFrontiers;
   }
+  const sigeAutoBroadFrontierCap = Number(
+    process.env.OPENCROW_SMART_SIGE_AUTO_BROAD_FRONTIER_CAP ?? "",
+  );
+  if (
+    !Number.isNaN(sigeAutoBroadFrontierCap) &&
+    process.env.OPENCROW_SMART_SIGE_AUTO_BROAD_FRONTIER_CAP !== undefined
+  ) {
+    sigeAutoEnv.broadFrontierCap = sigeAutoBroadFrontierCap;
+  }
   const sigeAutoBroadPoolSize = Number(process.env.OPENCROW_SMART_SIGE_AUTO_BROAD_POOL_SIZE ?? "");
   if (
     !Number.isNaN(sigeAutoBroadPoolSize) &&

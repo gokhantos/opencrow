@@ -81,6 +81,7 @@ describe("smartConfigSchema", () => {
       sigeAuto: {
         enabled: false,
         maxDeepFrontiers: 1,
+        broadFrontierCap: 8,
         broadPoolSize: 50,
         cadence: "daily",
         maxConcurrent: 1,

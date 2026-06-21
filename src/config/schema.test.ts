@@ -247,6 +247,7 @@ describe("sigeAutoConfigSchema", () => {
     const result = sigeAutoConfigSchema.parse({});
     expect(result.enabled).toBe(false);
     expect(result.maxDeepFrontiers).toBe(1);
+    expect(result.broadFrontierCap).toBe(8);
     expect(result.broadPoolSize).toBe(50);
     expect(result.cadence).toBe("daily");
     expect(result.maxConcurrent).toBe(1);
@@ -269,13 +270,27 @@ describe("sigeAutoConfigSchema", () => {
     expect(result.maxDeepFrontiers).toBe(1);
   });
 
-  test("maxDeepFrontiers=3 is valid (maximum)", () => {
-    const result = sigeAutoConfigSchema.parse({ maxDeepFrontiers: 3 });
-    expect(result.maxDeepFrontiers).toBe(3);
+  test("maxDeepFrontiers=8 is valid (maximum)", () => {
+    const result = sigeAutoConfigSchema.parse({ maxDeepFrontiers: 8 });
+    expect(result.maxDeepFrontiers).toBe(8);
   });
 
-  test("maxDeepFrontiers > 3 is rejected", () => {
-    expect(() => sigeAutoConfigSchema.parse({ maxDeepFrontiers: 4 })).toThrow();
+  test("maxDeepFrontiers > 8 is rejected", () => {
+    expect(() => sigeAutoConfigSchema.parse({ maxDeepFrontiers: 9 })).toThrow();
+  });
+
+  test("broadFrontierCap=8 is the default", () => {
+    const result = sigeAutoConfigSchema.parse({});
+    expect(result.broadFrontierCap).toBe(8);
+  });
+
+  test("broadFrontierCap=1 is valid (minimum)", () => {
+    const result = sigeAutoConfigSchema.parse({ broadFrontierCap: 1 });
+    expect(result.broadFrontierCap).toBe(1);
+  });
+
+  test("broadFrontierCap > 8 is rejected", () => {
+    expect(() => sigeAutoConfigSchema.parse({ broadFrontierCap: 9 })).toThrow();
   });
 
   test("maxDeepFrontiers = 0 is rejected (below minimum)", () => {

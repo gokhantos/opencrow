@@ -177,9 +177,9 @@ describe("PUT /config/sige/auto", () => {
     expect(res.status).toBe(400);
   });
 
-  it("400 for maxDeepFrontiers above the hard cap of 3", async () => {
+  it("400 for maxDeepFrontiers above the hard cap of 8", async () => {
     const app = makeApp();
-    const res = await put(app, "/config/sige/auto", { maxDeepFrontiers: 4 });
+    const res = await put(app, "/config/sige/auto", { maxDeepFrontiers: 9 });
     expect(res.status).toBe(400);
   });
 

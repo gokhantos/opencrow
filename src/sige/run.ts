@@ -37,6 +37,7 @@ import {
 } from "./cross-write";
 import type { CollectorContext } from "../pipelines/ideas/collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "../pipelines/ideas/collectors";
+import { selectDiverseBy } from "../pipelines/ideas/idea-diversity";
 import type { BroadCorpus, DiscoverFrontiersOptions, DiscoveryResult } from "./discovery/frontier-discovery";
 import { discoverFrontiers } from "./discovery/frontier-discovery";
 import { applyIncentives, computeIncentives } from "./incentives";
@@ -295,6 +296,7 @@ async function runAutonomousSession(
 
   const discoveryOpts: DiscoverFrontiersOptions = {
     broadPoolSize: sigeAutoConfig.broadPoolSize,
+    broadFrontierCap: sigeAutoConfig.broadFrontierCap,
     maxDeepFrontiers: sigeAutoConfig.maxDeepFrontiers,
     userId,
     config: session.config,
@@ -310,8 +312,18 @@ async function runAutonomousSession(
     return;
   }
 
-  // Run the EXISTING steps 1-6 on each top frontier's seedText as enrichedSeed.
-  const topFrontiers = discovery.frontiers.slice(0, sigeAutoConfig.maxDeepFrontiers);
+  // Select a DIVERSE subset of frontiers to deep-develop. Sort by score desc
+  // first, then apply selectDiverseBy to cap any single theme at 50% of the
+  // selected set — prevents collapsing into one-theme monoculture when
+  // maxDeepFrontiers > 1. With maxDeepFrontiers=1 this is equivalent to top-1.
+  const topFrontiers = selectDiverseBy(
+    [...discovery.frontiers].sort((a, b) => b.score - a.score),
+    {
+      maxIdeas: sigeAutoConfig.maxDeepFrontiers,
+      maxBucketShare: 0.5,
+      resolveBucket: (f) => f.theme,
+    },
+  );
 
   log.info("autonomous: running depth game on top frontiers", {
     sessionId,

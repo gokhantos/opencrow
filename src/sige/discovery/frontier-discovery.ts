@@ -84,6 +84,11 @@ export interface FrontierScoringContext {
 export interface DiscoverFrontiersOptions {
   readonly broadPoolSize?: number;
   readonly maxDeepFrontiers?: number;
+  /** Cap on how many frontier clusters to form in the broad-pool phase.
+   *  Decoupled from maxDeepFrontiers so we can always discover a large pool
+   *  (for diversity) even when only deep-developing 1–2 frontiers.
+   *  Defaults to DEFAULT_MAX_FRONTIERS (8). */
+  readonly broadFrontierCap?: number;
   readonly userId?: string;
   readonly config?: SigeSessionConfig;
   readonly deepNovelty?: boolean;
@@ -147,6 +152,20 @@ function tokenizeTitle(title: string): readonly string[] {
  * from pool share; scoreFrontiers fills novelty + final score). Capped at
  * `maxFrontiers`.
  */
+/**
+ * Resolve how many frontier clusters to form during the discovery broad-pool
+ * phase. We always discover the FULL configurable pool so the selection step
+ * has enough diversity candidates to draw from, regardless of how many will
+ * actually be deep-developed (maxDeepFrontiers).
+ *
+ * @param configuredCap - operator-set cap (e.g. broadFrontierCap from sigeAuto).
+ *   When omitted, defaults to DEFAULT_MAX_FRONTIERS.
+ * @returns Clamped value in [1, DEFAULT_MAX_FRONTIERS].
+ */
+export function resolveClusterCap(configuredCap?: number): number {
+  return Math.min(configuredCap ?? DEFAULT_MAX_FRONTIERS, DEFAULT_MAX_FRONTIERS);
+}
+
 export function clusterIntoFrontiers(
   candidates: readonly DivergentCandidate[],
   opts?: { readonly maxFrontiers?: number; readonly minClusterSize?: number },
@@ -408,13 +427,12 @@ export async function discoverFrontiers(
       return { candidates: [], frontiers: [] };
     }
 
-    // Generate a small headroom above maxDeepFrontiers so scoreFrontiers has
-    // enough candidates to rank before we slice to the caller's limit.
-    // Cap at DEFAULT_MAX_FRONTIERS (8) as an absolute ceiling.
-    // Previously: Math.max(maxDeepFrontiers, 8) — that forced 8× Mem0 probes
-    // when maxDeepFrontiers=1, which is 8× the intended cost.
-    const requestedDepth = opts.maxDeepFrontiers ?? 1;
-    const clusterCap = Math.min(Math.max(requestedDepth, 3), DEFAULT_MAX_FRONTIERS);
+    // Always discover a full-sized frontier pool so the downstream selection
+    // step (selectDiverseBy) has enough diversity candidates to draw from,
+    // regardless of how many will actually be deep-developed (maxDeepFrontiers).
+    // broadFrontierCap (default: DEFAULT_MAX_FRONTIERS) decouples discovery
+    // breadth from deep-develop depth.
+    const clusterCap = resolveClusterCap(opts.broadFrontierCap);
 
     const clustered = clusterIntoFrontiers(broadPool, {
       maxFrontiers: clusterCap,

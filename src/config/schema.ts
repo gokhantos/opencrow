@@ -872,8 +872,12 @@ export const sigeAutoConfigSchema = z
   .object({
     /** Master switch. Must be false (default) until Phase D staged enablement. */
     enabled: z.boolean().default(false),
-    /** Max full expert-game runs per discovery cycle. Hard-capped at 3. */
-    maxDeepFrontiers: z.number().int().min(1).max(3).default(1),
+    /** Max full expert-game runs per discovery cycle. Hard-capped at 8. */
+    maxDeepFrontiers: z.number().int().min(1).max(8).default(1),
+    /** Max frontier clusters formed in the broad-pool phase. Hard-capped at 8.
+     *  Decoupled from maxDeepFrontiers: always discover the full pool for
+     *  diversity, even when only deep-developing 1 frontier. */
+    broadFrontierCap: z.number().int().min(1).max(8).default(8),
     /** Max cheap broad-pool candidates from Round-1 generation. Hard-capped at 200. */
     broadPoolSize: z.number().int().min(1).max(200).default(50),
     /** Auto-tick cadence. 'daily' = 86.4M ms; 'manual' = never auto-ticks. */
@@ -892,6 +896,7 @@ export const sigeAutoConfigSchema = z
   .default({
     enabled: false,
     maxDeepFrontiers: 1,
+    broadFrontierCap: 8,
     broadPoolSize: 50,
     cadence: "daily",
     maxConcurrent: 1,
@@ -1338,6 +1343,7 @@ const SMART_IDEAS_DEFAULTS = {
   sigeAuto: {
     enabled: false,
     maxDeepFrontiers: 1,
+    broadFrontierCap: 8,
     broadPoolSize: 50,
     cadence: "daily",
     maxConcurrent: 1,
