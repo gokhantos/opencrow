@@ -43,7 +43,7 @@ describe("buildChatOptions", () => {
 
   test("threads any supported provider through unchanged", () => {
     expect(buildChatOptions("x/y", "openrouter").provider).toBe("openrouter");
-    expect(buildChatOptions("opencode-sonnet", "opencode").provider).toBe("opencode");
+    expect(buildChatOptions("deepseek-v4-flash", "opencode").provider).toBe("opencode");
   });
 
   // Regression guard: provider is REQUIRED (no "anthropic" default). A missing

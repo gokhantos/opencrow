@@ -33,7 +33,7 @@ describe("model-routing constants", () => {
   });
 
   test("modelRouteSchema accepts opencode", () => {
-    const r = modelRouteSchema.safeParse({ provider: "opencode", model: "opencode-sonnet" });
+    const r = modelRouteSchema.safeParse({ provider: "opencode", model: "deepseek-v4-flash" });
     expect(r.success).toBe(true);
   });
 });
