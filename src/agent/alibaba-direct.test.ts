@@ -11,14 +11,17 @@ const realKey = process.env.ALIBABA_API_KEY;
 const realBaseUrl = process.env.ALIBABA_BASE_URL;
 
 let capturedBody: Record<string, unknown> | undefined;
+let capturedHeaders: Record<string, string> | undefined;
 
 function stubFetch(): void {
   capturedBody = undefined;
+  capturedHeaders = undefined;
   globalThis.fetch = (async (
     _input: RequestInfo | URL,
     init?: RequestInit,
   ): Promise<Response> => {
     capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    capturedHeaders = init?.headers as Record<string, string> | undefined;
     return new Response(
       JSON.stringify({
         choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
@@ -75,5 +78,14 @@ describe("alibaba-direct chat thinking-disable", () => {
     expect(capturedBody).toBeDefined();
     expect(capturedBody?.thinking).toBeUndefined();
     expect(capturedBody?.enable_thinking).toBeUndefined();
+  });
+
+  test("disables DashScope content moderation on every request", async () => {
+    await chat([{ role: "user", content: "hi", timestamp: 0 }], baseOptions());
+
+    expect(capturedHeaders).toBeDefined();
+    // Scraped data analysis must not be gated by the platform green-net, which
+    // intermittently 400s on flagged scraped content and fails the whole run.
+    expect(capturedHeaders?.["X-DashScope-DataInspection"]).toBe("disable");
   });
 });
