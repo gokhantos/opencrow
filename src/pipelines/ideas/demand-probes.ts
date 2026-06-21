@@ -27,6 +27,8 @@ import {
   extractDemandKeywords,
   aggregateDemand,
   distinctKeywordHits,
+  matchesKeyword,
+  keywordPrefilterTerm,
   DEFAULT_MIN_KEYWORD_HITS,
   type DemandArtifact,
   type DemandCandidateText,
@@ -35,6 +37,7 @@ import {
   type DemandProbeOptions,
 } from "./demand";
 import { SEMANTIC_PROBE_NAME, semanticDemandProbe } from "./semantic-demand-probe";
+import { DEMAND_INTENT_MARKERS } from "./demand-intent-markers";
 
 const logger = createLogger("ideas:demand");
 
@@ -50,31 +53,13 @@ const MAX_QUERY_KEYWORDS = 8;
 const QUOTE_MAX_LEN = 240;
 
 /**
- * Reddit demand-INTENT phrases. A row only counts as buyer-intent when it pairs
- * a candidate keyword WITH one of these intent markers — that pairing is what
- * separates "people discussing X" from "people who WANT a tool for X".
+ * Reddit / HN / X demand-INTENT phrases. A row only counts as STRONG buyer-intent
+ * when it pairs a candidate keyword WITH one of these intent markers — that
+ * pairing separates "people discussing X" from "people who WANT a tool for X".
+ * The expanded list (question / frustration / manual-workaround / willingness
+ * forms) lives in ./demand-intent-markers.ts; aliased here for the probes.
  */
-const REDDIT_INTENT_PATTERNS: readonly string[] = [
-  "looking for a tool",
-  "looking for an app",
-  "looking for a way",
-  "is there a tool",
-  "is there an app",
-  "is there a way",
-  "is there anything",
-  "i wish there was",
-  "i wish there were",
-  "anyone know of",
-  "anyone know a",
-  "does anyone know",
-  "recommend a tool",
-  "recommend an app",
-  "willing to pay",
-  "would pay for",
-  "shut up and take my money",
-  "alternative to",
-  "any alternatives",
-];
+const REDDIT_INTENT_PATTERNS: readonly string[] = DEMAND_INTENT_MARKERS;
 
 /** Funding / raise markers used to detect demand-validating capital in news. */
 const FUNDING_PATTERNS: readonly string[] = [
@@ -94,11 +79,19 @@ const FUNDING_PATTERNS: readonly string[] = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Clamp + default the probe window/limit/relevance-gate options deterministically. */
+/** Lever 1/3 defaults (mirror smart.demand schema; used when opts omit them). */
+const DEFAULT_WEAK_INTENT_FACTOR = 0.35;
+const DEFAULT_WEAK_INTENT_MIN_ENGAGEMENT = 1.5;
+
+/** Clamp + default the probe window/limit/relevance-gate + fuzzy/weak options. */
 export function resolveOpts(opts: DemandProbeOptions): {
   windowSec: number;
   limit: number;
   minKeywordHits: number;
+  fuzzy: boolean;
+  weakIntent: boolean;
+  weakIntentFactor: number;
+  weakIntentMinEngagement: number;
 } {
   const windowSec =
     typeof opts.windowSec === "number" && opts.windowSec > 0
@@ -112,7 +105,29 @@ export function resolveOpts(opts: DemandProbeOptions): {
     typeof opts.minKeywordHits === "number" && opts.minKeywordHits >= 1
       ? Math.floor(opts.minKeywordHits)
       : DEFAULT_MIN_KEYWORD_HITS;
-  return { windowSec, limit, minKeywordHits };
+  // Fuzzy + weak-intent default ON (the recall fix); each reversible per-flag.
+  const fuzzy = opts.fuzzyMatch !== false;
+  const weakIntent = opts.weakIntent !== false;
+  const weakIntentFactor =
+    typeof opts.weakIntentFactor === "number" &&
+    opts.weakIntentFactor >= 0 &&
+    opts.weakIntentFactor <= 1
+      ? opts.weakIntentFactor
+      : DEFAULT_WEAK_INTENT_FACTOR;
+  const weakIntentMinEngagement =
+    typeof opts.weakIntentMinEngagement === "number" &&
+    opts.weakIntentMinEngagement >= 1
+      ? opts.weakIntentMinEngagement
+      : DEFAULT_WEAK_INTENT_MIN_ENGAGEMENT;
+  return {
+    windowSec,
+    limit,
+    minKeywordHits,
+    fuzzy,
+    weakIntent,
+    weakIntentFactor,
+    weakIntentMinEngagement,
+  };
 }
 
 /** Take the top-N keywords actually worth querying (cap cost, keep determinism). */
@@ -123,14 +138,26 @@ export function queryKeywords(keywords: readonly string[]): readonly string[] {
     .slice(0, MAX_QUERY_KEYWORDS);
 }
 
-/** Find the first candidate keyword present (case-insensitive) in `haystack`. */
+/**
+ * Find the first candidate keyword present in `haystack`. Uses fuzzy lexical
+ * matching ({@link matchesKeyword}: stem + word-boundary + curated synonyms) by
+ * default so it stays consistent with {@link distinctKeywordHits}; falls back to
+ * legacy literal substring when `fuzzy` is false.
+ */
 function firstKeywordMatch(
   haystack: string,
   keywords: readonly string[],
+  fuzzy = true,
 ): string | null {
+  if (fuzzy) {
+    for (const kw of keywords) {
+      if (matchesKeyword(haystack, kw)) return kw;
+    }
+    return null;
+  }
   const lower = haystack.toLowerCase();
   for (const kw of keywords) {
-    if (lower.includes(kw)) return kw;
+    if (kw.length > 0 && lower.includes(kw)) return kw;
   }
   return null;
 }
@@ -145,6 +172,34 @@ function firstPatternMatch(
     if (lower.includes(p)) return p;
   }
   return null;
+}
+
+/**
+ * Lever 1 — derive the STRONG-vs-WEAK demand count for an intent-probe row whose
+ * relevance gate + keyword already passed. PURE.
+ *
+ *   - marker present                          → STRONG: full `engagement` count.
+ *   - no marker, weakIntent on, engagement ≥
+ *     weakIntentMinEngagement                 → WEAK:   `engagement * factor`.
+ *   - otherwise                               → null (skip the row).
+ *
+ * The evidence KIND is unchanged (no new "weak" kind); only the count is scaled,
+ * so a marker-less but high-engagement niche post counts as real—but discounted—
+ * demand and can't masquerade as strong buyer-intent.
+ */
+function intentRowCount(
+  engagement: number,
+  hasMarker: boolean,
+  o: {
+    readonly weakIntent: boolean;
+    readonly weakIntentFactor: number;
+    readonly weakIntentMinEngagement: number;
+  },
+): number | null {
+  if (hasMarker) return Number(engagement.toFixed(3));
+  if (!o.weakIntent) return null;
+  if (engagement < o.weakIntentMinEngagement) return null;
+  return Number((engagement * o.weakIntentFactor).toFixed(3));
 }
 
 /** Build a compact, verbatim quote around the matched marker for auditability. */
@@ -180,12 +235,17 @@ export function buildKeywordFilter(
   columns: readonly string[],
   keywords: readonly string[],
   startIndex: number,
+  fuzzy = true,
 ): { clause: string; params: readonly string[] } {
   const params: string[] = [];
   const orParts: string[] = [];
   let idx = startIndex;
   for (const kw of keywords) {
-    params.push(`%${kw}%`);
+    // Prefilter on the STEM body (e.g. "scheduling" → "%schedul%") so the cheap
+    // ILIKE candidate filter is recall-safe across morphological variants; the
+    // precise stem/boundary/synonym gate runs in code per row. The keyword text
+    // is ALWAYS a bound parameter (never concatenated) — injection-safe.
+    params.push(`%${keywordPrefilterTerm(kw, fuzzy)}%`);
     const placeholder = `$${idx}`;
     for (const col of columns) {
       orParts.push(`${col} ILIKE ${placeholder}`);
@@ -216,7 +276,15 @@ export const redditIntentProbe: DemandProbe = {
   ): Promise<readonly DemandEvidence[]> {
     const kws = queryKeywords(keywords);
     if (kws.length === 0) return [];
-    const { windowSec, limit, minKeywordHits } = resolveOpts(opts);
+    const {
+      windowSec,
+      limit,
+      minKeywordHits,
+      fuzzy,
+      weakIntent,
+      weakIntentFactor,
+      weakIntentMinEngagement,
+    } = resolveOpts(opts);
 
     try {
       const db = getDb();
@@ -232,6 +300,7 @@ export const redditIntentProbe: DemandProbe = {
         ["title", "selftext", "top_comments_json"],
         kws,
         2,
+        fuzzy,
       );
       const sql = `
         SELECT id, subreddit, title, selftext, top_comments_json,
@@ -255,22 +324,29 @@ export const redditIntentProbe: DemandProbe = {
         // RELEVANCE GATE: the row must contain ≥ minKeywordHits distinct idea
         // keywords (the DB OR-filter only guarantees one). One generic shared
         // word is not enough — the doc must be about THIS idea.
-        if (distinctKeywordHits(haystack, kws) < minKeywordHits) continue;
-        const keyword = firstKeywordMatch(haystack, kws);
-        if (!keyword) continue; // must pair an intent marker WITH our keyword
+        if (distinctKeywordHits(haystack, kws, 2, fuzzy) < minKeywordHits) continue;
+        const keyword = firstKeywordMatch(haystack, kws, fuzzy);
+        if (!keyword) continue;
         const marker = firstPatternMatch(haystack, REDDIT_INTENT_PATTERNS);
-        if (!marker) continue;
 
         const score = toCount(r.score);
         const numComments = toCount(r.num_comments);
         // Engagement-weighted count: base 1 + log of community signal. Real,
         // deterministic — derived from persisted score/num_comments columns.
         const engagement = 1 + Math.log1p(Math.max(0, score) + Math.max(0, numComments));
+        // Lever 1: marker → STRONG (full count); marker-less but high-engagement
+        // → WEAK (discounted). null → skip.
+        const count = intentRowCount(engagement, marker !== null, {
+          weakIntent,
+          weakIntentFactor,
+          weakIntentMinEngagement,
+        });
+        if (count === null) continue;
         evidence.push({
           kind: "reddit_intent",
           query: keyword,
-          count: Number(engagement.toFixed(3)),
-          quote: quoteAround(haystack, marker),
+          count,
+          quote: quoteAround(haystack, marker ?? keyword),
           sourceId: asText(r.id) || undefined,
         });
       }
@@ -302,7 +378,7 @@ export const fundingNewsProbe: DemandProbe = {
   ): Promise<readonly DemandEvidence[]> {
     const kws = queryKeywords(keywords);
     if (kws.length === 0) return [];
-    const { windowSec, limit, minKeywordHits } = resolveOpts(opts);
+    const { windowSec, limit, minKeywordHits, fuzzy } = resolveOpts(opts);
 
     try {
       const db = getDb();
@@ -316,6 +392,7 @@ export const fundingNewsProbe: DemandProbe = {
         ["title", "summary", "body", "category", "section"],
         kws,
         2,
+        fuzzy,
       );
       const sql = `
         SELECT id, title, summary, body, category, section, url
@@ -337,8 +414,8 @@ export const fundingNewsProbe: DemandProbe = {
 
         // RELEVANCE GATE: ≥ minKeywordHits distinct idea keywords must co-occur,
         // on top of the funding×keyword AND below.
-        if (distinctKeywordHits(haystack, kws) < minKeywordHits) continue;
-        const keyword = firstKeywordMatch(haystack, kws);
+        if (distinctKeywordHits(haystack, kws, 2, fuzzy) < minKeywordHits) continue;
+        const keyword = firstKeywordMatch(haystack, kws, fuzzy);
         if (!keyword) continue;
         const marker = firstPatternMatch(haystack, FUNDING_PATTERNS);
         if (!marker) continue;
@@ -387,7 +464,7 @@ export const reviewComplaintProbe: DemandProbe = {
   ): Promise<readonly DemandEvidence[]> {
     const kws = queryKeywords(keywords);
     if (kws.length === 0) return [];
-    const { windowSec, limit, minKeywordHits } = resolveOpts(opts);
+    const { windowSec, limit, minKeywordHits, fuzzy } = resolveOpts(opts);
 
     try {
       const db = getDb();
@@ -395,7 +472,7 @@ export const reviewComplaintProbe: DemandProbe = {
       const evidence: DemandEvidence[] = [];
 
       // App Store: rating <= 2, keyword in title/content. No engagement column.
-      const appFilter = buildKeywordFilter(["title", "content"], kws, 2);
+      const appFilter = buildKeywordFilter(["title", "content"], kws, 2, fuzzy);
       const appSql = `
         SELECT id, app_name, rating, title, content
         FROM appstore_reviews
@@ -416,8 +493,8 @@ export const reviewComplaintProbe: DemandProbe = {
         // replaces the intent marker, but the review must STILL contain ≥
         // minKeywordHits distinct idea keywords — a delivery review sharing the
         // single word "restaurant" must not count as scheduling demand.
-        if (distinctKeywordHits(haystack, kws) < minKeywordHits) continue;
-        const keyword = firstKeywordMatch(haystack, kws);
+        if (distinctKeywordHits(haystack, kws, 2, fuzzy) < minKeywordHits) continue;
+        const keyword = firstKeywordMatch(haystack, kws, fuzzy);
         if (!keyword) continue; // the low rating is the intent — no marker needed
         evidence.push({
           kind: "review_complaint",
@@ -429,7 +506,7 @@ export const reviewComplaintProbe: DemandProbe = {
       }
 
       // Play Store: rating <= 2, keyword in title/content; thumbs_up weights it.
-      const playFilter = buildKeywordFilter(["title", "content"], kws, 2);
+      const playFilter = buildKeywordFilter(["title", "content"], kws, 2, fuzzy);
       const playSql = `
         SELECT id, app_name, rating, title, content, thumbs_up
         FROM playstore_reviews
@@ -447,8 +524,8 @@ export const reviewComplaintProbe: DemandProbe = {
         const content = asText(r.content);
         const haystack = `${title} ${content}`;
         // RELEVANCE GATE: same ≥ minKeywordHits distinct-keyword requirement.
-        if (distinctKeywordHits(haystack, kws) < minKeywordHits) continue;
-        const keyword = firstKeywordMatch(haystack, kws);
+        if (distinctKeywordHits(haystack, kws, 2, fuzzy) < minKeywordHits) continue;
+        const keyword = firstKeywordMatch(haystack, kws, fuzzy);
         if (!keyword) continue;
         const thumbsUp = Math.max(0, toCount(r.thumbs_up));
         // Engagement-weighted count: base 1 + log of upvotes. Real + deterministic.
@@ -490,7 +567,15 @@ export const hnProbe: DemandProbe = {
   ): Promise<readonly DemandEvidence[]> {
     const kws = queryKeywords(keywords);
     if (kws.length === 0) return [];
-    const { windowSec, limit, minKeywordHits } = resolveOpts(opts);
+    const {
+      windowSec,
+      limit,
+      minKeywordHits,
+      fuzzy,
+      weakIntent,
+      weakIntentFactor,
+      weakIntentMinEngagement,
+    } = resolveOpts(opts);
 
     try {
       const db = getDb();
@@ -499,6 +584,7 @@ export const hnProbe: DemandProbe = {
         ["title", "description", "top_comments_json"],
         kws,
         2,
+        fuzzy,
       );
       const sql = `
         SELECT id, title, description, top_comments_json,
@@ -521,27 +607,124 @@ export const hnProbe: DemandProbe = {
 
         // RELEVANCE GATE: ≥ minKeywordHits distinct idea keywords must co-occur,
         // on top of the keyword×intent AND below.
-        if (distinctKeywordHits(haystack, kws) < minKeywordHits) continue;
-        const keyword = firstKeywordMatch(haystack, kws);
-        if (!keyword) continue; // must pair an intent marker WITH our keyword
+        if (distinctKeywordHits(haystack, kws, 2, fuzzy) < minKeywordHits) continue;
+        const keyword = firstKeywordMatch(haystack, kws, fuzzy);
+        if (!keyword) continue;
         const marker = firstPatternMatch(haystack, REDDIT_INTENT_PATTERNS);
-        if (!marker) continue;
 
         const points = toCount(r.points);
         const commentCount = toCount(r.comment_count);
         const engagement =
           1 + Math.log1p(Math.max(0, points) + Math.max(0, commentCount));
+        // Lever 1: STRONG when a marker is present, WEAK (discounted) when a
+        // high-engagement row names the keyword but lacks a marker.
+        const count = intentRowCount(engagement, marker !== null, {
+          weakIntent,
+          weakIntentFactor,
+          weakIntentMinEngagement,
+        });
+        if (count === null) continue;
         evidence.push({
           kind: "hn_intent",
           query: keyword,
-          count: Number(engagement.toFixed(3)),
-          quote: quoteAround(haystack, marker),
+          count,
+          quote: quoteAround(haystack, marker ?? keyword),
           sourceId: asText(r.id) || undefined,
         });
       }
       return evidence;
     } catch (error) {
       logger.warn("hnProbe failed; returning no demand evidence", {
+        error: getErrorMessage(error),
+      });
+      return [];
+    }
+  },
+};
+
+// ── xIntentProbe ──────────────────────────────────────────────────────────────
+
+/**
+ * X/Twitter buyer-intent probe over EXISTING x_scraped_tweets. Same semantics as
+ * {@link redditIntentProbe}: a row qualifies only when its `text` pairs a
+ * candidate keyword (relevance gate ≥ minKeywordHits) WITH a buyer-intent marker
+ * (STRONG), or — under Lever 1 — names the keyword with enough engagement but no
+ * marker (WEAK, discounted). Engagement-weighted count from the tweet's
+ * likes/retweets/replies columns. Kind "x_intent".
+ *
+ * x_scraped_tweets columns used (verified against the baseline migration):
+ *   text (content), likes, retweets, replies (engagement), scraped_at (epoch int
+ *   window), id (sourceId). A tweet has no title/comments — `text` is the only
+ *   text column. Graceful: any failure or absent table/columns → [].
+ */
+export const xIntentProbe: DemandProbe = {
+  name: "xIntent",
+  async probe(
+    keywords: readonly string[],
+    opts: DemandProbeOptions,
+  ): Promise<readonly DemandEvidence[]> {
+    const kws = queryKeywords(keywords);
+    if (kws.length === 0) return [];
+    const {
+      windowSec,
+      limit,
+      minKeywordHits,
+      fuzzy,
+      weakIntent,
+      weakIntentFactor,
+      weakIntentMinEngagement,
+    } = resolveOpts(opts);
+
+    try {
+      const db = getDb();
+      const cutoff = Math.floor(Date.now() / 1000) - windowSec;
+      // Only `text` carries tweet content; prefilter on it at the DB level.
+      const { clause, params } = buildKeywordFilter(["text"], kws, 2, fuzzy);
+      const sql = `
+        SELECT id, text, likes, retweets, replies
+        FROM x_scraped_tweets
+        WHERE scraped_at >= $1 AND ${clause}
+        ORDER BY (likes + retweets * 3 + replies) DESC, scraped_at DESC
+        LIMIT $${2 + kws.length}
+      `;
+      const rows = (await db.unsafe(sql, [cutoff, ...params, limit])) as Array<
+        Record<string, unknown>
+      >;
+
+      const evidence: DemandEvidence[] = [];
+      for (const r of rows) {
+        const haystack = asText(r.text);
+
+        // RELEVANCE GATE: ≥ minKeywordHits distinct idea keywords must co-occur.
+        if (distinctKeywordHits(haystack, kws, 2, fuzzy) < minKeywordHits) continue;
+        const keyword = firstKeywordMatch(haystack, kws, fuzzy);
+        if (!keyword) continue;
+        const marker = firstPatternMatch(haystack, REDDIT_INTENT_PATTERNS);
+
+        const likes = Math.max(0, toCount(r.likes));
+        const retweets = Math.max(0, toCount(r.retweets));
+        const replies = Math.max(0, toCount(r.replies));
+        // Engagement-weighted count: base 1 + log of community signal. Real,
+        // deterministic — derived from persisted engagement columns.
+        const engagement = 1 + Math.log1p(likes + retweets + replies);
+        // Lever 1: STRONG when a marker is present, WEAK (discounted) otherwise.
+        const count = intentRowCount(engagement, marker !== null, {
+          weakIntent,
+          weakIntentFactor,
+          weakIntentMinEngagement,
+        });
+        if (count === null) continue;
+        evidence.push({
+          kind: "x_intent",
+          query: keyword,
+          count,
+          quote: quoteAround(haystack, marker ?? keyword),
+          sourceId: asText(r.id) || undefined,
+        });
+      }
+      return evidence;
+    } catch (error) {
+      logger.warn("xIntentProbe failed; returning no demand evidence", {
         error: getErrorMessage(error),
       });
       return [];
@@ -575,7 +758,7 @@ export async function computePhSupplyDensity(
 ): Promise<number> {
   const kws = queryKeywords(keywords);
   if (kws.length === 0) return 0;
-  const { windowSec, limit, minKeywordHits } = resolveOpts(opts);
+  const { windowSec, limit, minKeywordHits, fuzzy } = resolveOpts(opts);
 
   try {
     const db = getDb();
@@ -584,6 +767,7 @@ export async function computePhSupplyDensity(
       ["name", "tagline", "description", "topics_json"],
       kws,
       2,
+      fuzzy,
     );
     const sql = `
       SELECT id, name, tagline, description, topics_json
@@ -653,6 +837,7 @@ export const DEFAULT_DEMAND_PROBES: readonly DemandProbe[] = [
   fundingNewsProbe,
   reviewComplaintProbe,
   hnProbe,
+  xIntentProbe,
   externalTrendsProbe,
   // Embedding-similarity probe — catches niche pains the lexical+intent probes
   // miss (the "dead demand probe -> absence floor" fix). Default ON; degrades to
@@ -674,6 +859,22 @@ export interface EnrichDemandConfig {
   readonly reviewComplaint?: boolean;
   /** Run the Hacker News buyer-intent probe. Default ON. */
   readonly hnIntent?: boolean;
+  /** Run the X/Twitter buyer-intent probe over x_scraped_tweets. Default ON. */
+  readonly xIntent?: boolean;
+  /**
+   * Lever 1 — count marker-less but high-engagement keyword rows as WEAK
+   * (discounted) demand evidence in the reddit/HN/X intent probes. Default ON.
+   */
+  readonly weakIntent?: boolean;
+  /** Multiplier applied to a WEAK row's engagement count. Default 0.35 (0..1). */
+  readonly weakIntentFactor?: number;
+  /** Engagement-weighted count a marker-less row must reach to count as weak. Default 1.5. */
+  readonly weakIntentMinEngagement?: number;
+  /**
+   * Lever 3 — fuzzy lexical keyword matching (stem + word-boundary + curated
+   * synonyms). Default ON; set false to restore legacy literal substring matching.
+   */
+  readonly fuzzyMatch?: boolean;
   /**
    * Run the embedding-similarity corpus probe (`semantic_corpus` evidence).
    * Default ON. Catches niche demand the lexical+intent probes miss because the
@@ -722,6 +923,7 @@ function selectProbes(
     if (p.name === "reviewComplaint") return cfg.reviewComplaint !== false;
     if (p.name === "hnIntent") return cfg.hnIntent !== false;
     if (p.name === SEMANTIC_PROBE_NAME) return cfg.semanticDemand !== false;
+    if (p.name === "xIntent") return cfg.xIntent !== false;
     if (p.name === "externalTrends") return cfg.externalTrends === true;
     return true; // unknown custom probes run by default
   });
@@ -762,6 +964,10 @@ export async function enrichDemand(
     limit: cfg.limit,
     minKeywordHits: cfg.minKeywordHits,
     externalTrends: cfg.externalTrends === true,
+    fuzzyMatch: cfg.fuzzyMatch,
+    weakIntent: cfg.weakIntent,
+    weakIntentFactor: cfg.weakIntentFactor,
+    weakIntentMinEngagement: cfg.weakIntentMinEngagement,
   };
 
   const active = selectProbes(probes, cfg);

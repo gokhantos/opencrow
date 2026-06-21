@@ -748,6 +748,24 @@ export const demandConfigSchema = z
     reviewComplaint: z.boolean().default(true),
     // Hacker News buyer-intent probe over existing hn_stories. Default ON.
     hnIntent: z.boolean().default(true),
+    // X/Twitter buyer-intent probe over existing x_scraped_tweets. Internal-DB
+    // only, same buyer-intent semantics as reddit. Default ON (Lever 4).
+    xIntent: z.boolean().default(true),
+    // Lever 1 — WEAK-INTENT gate: count a marker-less but high-engagement row
+    // that names the idea as WEAK (discounted) demand in the reddit/HN/X probes.
+    // The full relevance gate + an engagement floor still apply. Default ON.
+    weakIntent: z.boolean().default(true),
+    // Multiplier applied to a WEAK (marker-less) row's engagement count so it
+    // can't masquerade as strong buyer-intent. Default 0.35; bounds 0..1.
+    weakIntentFactor: z.number().min(0).max(1).default(0.35),
+    // Engagement-weighted count (1 + log1p(score+comments)) a marker-less row
+    // must reach to qualify as weak evidence — guards dead, zero-engagement
+    // keyword mentions. Default 1.5 (≈ 1 upvote/comment of signal); bounds ≥ 1.
+    weakIntentMinEngagement: z.number().min(1).default(1.5),
+    // Lever 3 — FUZZY LEXICAL MATCHING (stem + word-boundary + curated synonyms)
+    // so idea variants/synonyms match the corpus. Default ON; false restores the
+    // legacy literal-substring matcher per probe.
+    fuzzyMatch: z.boolean().default(true),
     // Use keyword-matching ph_products to DISCOUNT whitespace via supplyDensity
     // (supply, not demand — never affects the demand score). Default ON.
     phSupply: z.boolean().default(true),
@@ -770,6 +788,11 @@ export const demandConfigSchema = z
     fundingSignal: true,
     reviewComplaint: true,
     hnIntent: true,
+    xIntent: true,
+    weakIntent: true,
+    weakIntentFactor: 0.35,
+    weakIntentMinEngagement: 1.5,
+    fuzzyMatch: true,
     phSupply: true,
     externalTrends: false,
     minMatches: 2,
@@ -1319,6 +1342,11 @@ const SMART_IDEAS_DEFAULTS = {
     fundingSignal: true,
     reviewComplaint: true,
     hnIntent: true,
+    xIntent: true,
+    weakIntent: true,
+    weakIntentFactor: 0.35,
+    weakIntentMinEngagement: 1.5,
+    fuzzyMatch: true,
     phSupply: true,
     externalTrends: false,
     minMatches: 2,

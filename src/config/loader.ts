@@ -306,6 +306,33 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     competabilityEnv.builderProfile = builderProfileEnv;
   }
 
+  // OPENCROW_SMART_DEMAND_* overrides for the demand-grounding probe levers.
+  const demandEnv: Record<string, unknown> = {};
+  const demandWeakIntent = boolEnv("OPENCROW_SMART_DEMAND_WEAK_INTENT");
+  if (demandWeakIntent !== undefined) demandEnv.weakIntent = demandWeakIntent;
+  const demandFuzzyMatch = boolEnv("OPENCROW_SMART_DEMAND_FUZZY_MATCH");
+  if (demandFuzzyMatch !== undefined) demandEnv.fuzzyMatch = demandFuzzyMatch;
+  const demandXIntent = boolEnv("OPENCROW_SMART_DEMAND_X_INTENT");
+  if (demandXIntent !== undefined) demandEnv.xIntent = demandXIntent;
+  const demandWeakFactor = Number(
+    process.env.OPENCROW_SMART_DEMAND_WEAK_INTENT_FACTOR ?? "",
+  );
+  if (
+    !Number.isNaN(demandWeakFactor) &&
+    process.env.OPENCROW_SMART_DEMAND_WEAK_INTENT_FACTOR !== undefined
+  ) {
+    demandEnv.weakIntentFactor = demandWeakFactor;
+  }
+  const demandWeakMinEngagement = Number(
+    process.env.OPENCROW_SMART_DEMAND_WEAK_INTENT_MIN_ENGAGEMENT ?? "",
+  );
+  if (
+    !Number.isNaN(demandWeakMinEngagement) &&
+    process.env.OPENCROW_SMART_DEMAND_WEAK_INTENT_MIN_ENGAGEMENT !== undefined
+  ) {
+    demandEnv.weakIntentMinEngagement = demandWeakMinEngagement;
+  }
+
   // OPENCROW_SMART_DIVERSITY_GUARD_* overrides for the within-run diversity guard.
   const diversityGuardEnv: Record<string, unknown> = {};
   const diversityGuardEnabled = boolEnv("OPENCROW_SMART_DIVERSITY_GUARD_ENABLED");
@@ -452,6 +479,7 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     Object.keys(graphReasoningEnv).length > 0 ||
     Object.keys(incumbentExclusionEnv).length > 0 ||
     Object.keys(competabilityEnv).length > 0 ||
+    Object.keys(demandEnv).length > 0 ||
     Object.keys(diversityGuardEnv).length > 0 ||
     Object.keys(seedDiversityEnv).length > 0 ||
     Object.keys(independentJuryEnv).length > 0 ||
@@ -491,6 +519,10 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
         };
       }
       smart.competability = mergedComp;
+    }
+    if (Object.keys(demandEnv).length > 0) {
+      const existing = (existingSmart.demand ?? {}) as Record<string, unknown>;
+      smart.demand = { ...existing, ...demandEnv };
     }
     if (Object.keys(diversityGuardEnv).length > 0) {
       const existing = (existingSmart.diversityGuard ?? {}) as Record<string, unknown>;

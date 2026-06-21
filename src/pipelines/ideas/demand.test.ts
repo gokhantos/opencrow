@@ -13,6 +13,8 @@ import {
   hasCitedDemand,
   demandArtifactSchema,
   demandEvidenceSchema,
+  stemToken,
+  matchesKeyword,
   type DemandEvidence,
 } from "./demand";
 
@@ -176,6 +178,119 @@ describe("distinctKeywordHits", () => {
     const phraseOnly = ["staff scheduling"] as const;
     expect(distinctKeywordHits("staff scheduling tool", phraseOnly, 1)).toBe(1);
     expect(distinctKeywordHits("staff scheduling tool", phraseOnly, 3)).toBe(3);
+  });
+
+  // Lever 3 — fuzzy matching is inherited by distinctKeywordHits.
+  test("matches morphological variants via stemming (fuzzy on by default)", () => {
+    // "scheduling" keyword should match a row that says "scheduler"/"schedules".
+    const kws = ["scheduling", "overtime"] as const;
+    expect(
+      distinctKeywordHits("the scheduler keeps double-booking overtime", kws),
+    ).toBe(2);
+  });
+
+  test("rejects substring-only matches at word boundaries", () => {
+    // "cat" must NOT match inside "category" — the old includes() bug.
+    expect(distinctKeywordHits("a product category page", ["cat", "page"])).toBe(
+      1,
+    );
+  });
+
+  test("matches curated synonyms (payroll ↔ wages)", () => {
+    const kws = ["payroll", "compliance"] as const;
+    expect(
+      distinctKeywordHits("late wages and compliance headaches", kws),
+    ).toBe(2);
+  });
+
+  test("can be made literal via fuzzyMatch=false (restores old behavior)", () => {
+    // With fuzzy off, "scheduling" no longer matches "scheduler".
+    const kws = ["scheduling", "overtime"] as const;
+    expect(
+      distinctKeywordHits("the scheduler logs overtime", kws, 2, false),
+    ).toBe(1);
+  });
+});
+
+// ── stemToken (Lever 3 — PURE) ───────────────────────────────────────────────
+
+describe("stemToken", () => {
+  test("strips common inflections", () => {
+    expect(stemToken("schedules")).toBe(stemToken("schedule"));
+    expect(stemToken("scheduling")).toBe(stemToken("schedule"));
+    expect(stemToken("scheduled")).toBe(stemToken("schedule"));
+    expect(stemToken("scheduler")).toBe(stemToken("schedule"));
+  });
+
+  test("collapses -es plurals", () => {
+    expect(stemToken("invoices")).toBe(stemToken("invoice"));
+    expect(stemToken("boxes")).toBe(stemToken("box"));
+  });
+
+  test("does NOT over-stem distinct lexemes", () => {
+    // The classic over-stemming trap: "billing" must not collapse to "bill".
+    expect(stemToken("billing")).not.toBe(stemToken("bill"));
+    // Short words are left intact (no stripping below the safety length).
+    expect(stemToken("bed")).toBe("bed");
+    expect(stemToken("red")).toBe("red");
+    expect(stemToken("ring")).toBe("ring");
+  });
+
+  test("is deterministic and idempotent", () => {
+    const once = stemToken("reconciliations");
+    expect(stemToken("reconciliations")).toBe(once);
+    expect(stemToken(once)).toBe(once);
+  });
+
+  test("handles -tion → -t only where safe", () => {
+    // "automation" → "automat" (a real shared stem with "automate").
+    expect(stemToken("automation")).toBe(stemToken("automate"));
+  });
+});
+
+// ── matchesKeyword (Lever 3 — PURE) ──────────────────────────────────────────
+
+describe("matchesKeyword", () => {
+  test("exact word match", () => {
+    expect(matchesKeyword("manual invoice entry", "invoice")).toBe(true);
+  });
+
+  test("morphological variant match (stem)", () => {
+    expect(matchesKeyword("our scheduler is broken", "scheduling")).toBe(true);
+    expect(matchesKeyword("invoices piling up", "invoicing")).toBe(true);
+  });
+
+  test("word-boundary precision — rejects substrings", () => {
+    expect(matchesKeyword("the category list", "cat")).toBe(false);
+    expect(matchesKeyword("schedules slipping", "scheduling")).toBe(true); // stem
+    expect(matchesKeyword("a classic case", "lass")).toBe(false);
+  });
+
+  test("multi-word phrase keyword matches as a boundary phrase", () => {
+    expect(matchesKeyword("staff scheduling tool", "staff scheduling")).toBe(
+      true,
+    );
+    // The phrase parts must be adjacent (stemmed), not scattered.
+    expect(
+      matchesKeyword("staff hate the scheduling form", "staff scheduling"),
+    ).toBe(false);
+  });
+
+  test("curated synonym match", () => {
+    expect(matchesKeyword("we cut wages last month", "payroll")).toBe(true);
+    expect(matchesKeyword("billing disputes everywhere", "invoicing")).toBe(
+      true,
+    );
+  });
+
+  test("no false synonym beyond the curated map", () => {
+    // "payroll" must not match an unrelated word just because both are HR-ish.
+    expect(matchesKeyword("the manager approved it", "payroll")).toBe(false);
+  });
+
+  test("empty inputs are safe", () => {
+    expect(matchesKeyword("", "invoice")).toBe(false);
+    expect(matchesKeyword("invoice", "")).toBe(false);
   });
 });
 
@@ -371,6 +486,7 @@ describe("schemas", () => {
         "review_complaint",
         "search_trend",
         "semantic_corpus",
+        "x_intent",
       ].sort(),
     );
   });
