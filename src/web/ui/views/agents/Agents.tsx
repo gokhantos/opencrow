@@ -32,6 +32,7 @@ const PROVIDER_TABS = [
   { id: "anthropic", label: "Anthropic" },
   { id: "openrouter", label: "OpenRouter" },
   { id: "alibaba", label: "Alibaba" },
+  { id: "opencode", label: "OpenCode Zen" },
 ] as const;
 
 /* ===============================================

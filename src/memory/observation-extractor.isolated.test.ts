@@ -7,7 +7,7 @@
  * exercises the REAL `chat()`, so mocking `../agent/chat` here would clobber it.
  * Instead we mock the NARROWEST non-overlapping deps:
  *   - `../store/model-routing` — the route source (what we're asserting flows through)
- *   - `../agent/opencode-direct` — the provider-direct module the REAL `chat()`
+ *   - `../agent/opencode` — the provider client the REAL `chat()`
  *     dispatches to for the routed provider ("opencode"). chat-timeout only mocks
  *     anthropic/openrouter/alibaba/agent-sdk, so there is no collision.
  * The stub returns no `usage`, so chat()'s persistUsage never touches the DB.
@@ -25,7 +25,7 @@ const opencodeStub = mock(async (_messages: unknown, options: AgentOptions) => {
 mock.module("../store/model-routing", () => ({
   getModelRoute: mock(async () => ({ provider: "opencode", model: "opencode-sonnet" })),
 }));
-mock.module("../agent/opencode-direct", () => ({ chat: opencodeStub }));
+mock.module("../agent/opencode", () => ({ chat: opencodeStub, agenticChat: opencodeStub }));
 
 afterAll(() => {
   mock.restore();

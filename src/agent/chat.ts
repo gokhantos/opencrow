@@ -3,13 +3,16 @@ import {
   agenticChat as agenticChatOpenRouter,
 } from "./openrouter";
 import {
+  chat as chatOpenCode,
+  agenticChat as agenticChatOpenCode,
+} from "./opencode";
+import {
   chat as chatAgentSdk,
   agenticChat as agenticChatAgentSdk,
   withAlibabaEnv,
 } from "./agent-sdk";
 import { chat as chatAlibabaDirect } from "./alibaba-direct";
 import { chat as chatAnthropicDirect } from "./anthropic-direct";
-import { chat as chatOpenCodeDirect } from "./opencode-direct";
 import type { AgentOptions, AgentResponse, ConversationMessage } from "./types";
 import { recordTokenUsage } from "../store/token-usage";
 import { createLogger } from "../logger";
@@ -113,6 +116,26 @@ async function dispatchChat(
       });
       response = await chatOpenRouter(messages, options);
     }
+  } else if (provider === "opencode") {
+    if (options.toolsEnabled && options.toolRegistry) {
+      log.debug("Routing to agentic OpenCode Zen (tools enabled)", {
+        agentId: options.agentId,
+        model: options.model,
+      });
+      response = await agenticChatOpenCode(
+        messages,
+        options,
+        options.toolRegistry,
+        maxIterations,
+        options.onProgress,
+      );
+    } else {
+      log.debug("Routing to OpenCode Zen", {
+        agentId: options.agentId,
+        model: options.model,
+      });
+      response = await chatOpenCode(messages, options);
+    }
   } else if (provider === "agent-sdk") {
     if (options.toolsEnabled && options.toolRegistry) {
       log.debug("Routing to agentic Agent SDK (tools enabled)", {
@@ -165,12 +188,6 @@ async function dispatchChat(
       model: options.model,
     });
     response = await chatAnthropicDirect(messages, options);
-  } else if (provider === "opencode") {
-    log.debug("Routing to OpenCode direct", {
-      agentId: options.agentId,
-      model: options.model,
-    });
-    response = await chatOpenCodeDirect(messages, options);
   } else {
     throw new Error(`Unknown AI provider: ${provider}`);
   }

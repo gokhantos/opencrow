@@ -109,32 +109,41 @@ services:
       # Graph store: embedded Kùzu (in-process, no server/JVM), persisted to /data.
       MEM0_GRAPH_PROVIDER: kuzu
       MEM0_GRAPH_DB: /data/kuzu
-      # Extraction LLM: HOSTED Alibaba token-plan DeepSeek (deepseek-v4-flash) via
-      # its OpenAI-compatible endpoint. Routed through the `openai` provider
-      # because only the OpenAI path forwards `tools` — required for graph
-      # entity/relation extraction.
+      # Extraction LLM: HOSTED OpenCode Go gateway (deepseek-v4-flash) via its
+      # OpenAI-compatible endpoint. Routed through the `openai` provider because
+      # only the OpenAI path forwards `tools` — required for graph entity/relation
+      # extraction. Flat $10/mo subscription (https://opencode.ai/zen/go/v1) — no
+      # per-token billing; the key is OPENCODE_API_KEY.
       #
-      # deepseek-v4-flash is a *reasoning* model and would stall mem0's always-on
-      # graph phase (hidden chain-of-thought; sequential tool-calls never return).
-      # We disable thinking with MEM0_LLM_DISABLE_THINKING=true, which makes the
-      # sidecar inject `enable_thinking: false` on every completion (verified: it
-      # then tool-calls with zero reasoning tokens). Extraction is fully hosted —
-      # the local Ollama chat model (gemma) has been decommissioned; only the
-      # EMBEDDER below still uses host Ollama (nomic-embed-text).
+      # deepseek-v4-flash is a *reasoning* model; its hidden chain-of-thought
+      # breaks mem0's always-on graph phase (relations come back EMPTY). We disable
+      # thinking with MEM0_LLM_DISABLE_THINKING=true — the sidecar injects BOTH
+      # `enable_thinking:false` AND `thinking:{type:disabled}` (the Go gateway
+      # honors only the latter; Alibaba only the former). Verified end-to-end on an
+      # isolated instance: full graph add() in ~8s with facts + relations, no stall.
+      # Extraction is fully hosted; only the EMBEDDER below uses host Ollama.
       #
-      # FALLBACK — hosted Zhipu GLM (glm-5.1): plain text-gen (no thinking flag
-      # needed), same endpoint + ${MEM0_LLM_API_KEY}. (No local-LLM fallback: the
-      # gemma chat model was removed; embeddings remain local.)
+      # FALLBACK A — Alibaba token-plan DeepSeek (per-token): same model, set
+      #   MEM0_LLM_BASE_URL / OPENAI_BASE_URL / OPENAI_API_BASE:
+      #     https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      #   MEM0_LLM_API_KEY / OPENAI_API_KEY: ${MEM0_LLM_API_KEY}   (thinking fully
+      #   off there, ~10-12s/record). FALLBACK B — Zhipu GLM (glm-5.1): non-reasoning
+      #   text-gen, no thinking flag needed. (No local-LLM fallback: gemma removed.)
+      #
+      # NOTE: the Go plan is a coding-agent subscription with fair-use limits; the
+      # SIGE ingestion firehose is rate-limit-sensitive — watch for 429s and keep
+      # the daily ingest cap (see sige-ingestion config) conservative.
       MEM0_LLM_PROVIDER: openai
       MEM0_LLM_MODEL: deepseek-v4-flash
-      MEM0_LLM_BASE_URL: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
-      MEM0_LLM_API_KEY: ${MEM0_LLM_API_KEY}
-      # Reasoning/thinking OFF (deepseek-v4-flash is a reasoning model; thinking
-      # stalls the graph phase). The sidecar injects enable_thinking=false.
+      MEM0_LLM_BASE_URL: https://opencode.ai/zen/go/v1
+      MEM0_LLM_API_KEY: ${OPENCODE_API_KEY}
+      # Reasoning/thinking OFF (deepseek-v4-flash is a reasoning model; residual
+      # thinking empties the graph). The sidecar injects enable_thinking=false +
+      # thinking.type=disabled (Go honors the latter).
       MEM0_LLM_DISABLE_THINKING: "true"
-      OPENAI_API_KEY: ${MEM0_LLM_API_KEY}
-      OPENAI_BASE_URL: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
-      OPENAI_API_BASE: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      OPENAI_API_KEY: ${OPENCODE_API_KEY}
+      OPENAI_BASE_URL: https://opencode.ai/zen/go/v1
+      OPENAI_API_BASE: https://opencode.ai/zen/go/v1
       # Embeddings stay on host-native Ollama (nomic-embed-text, 768-dim).
       MEM0_OLLAMA_URL: http://host.docker.internal:11434
       MEM0_EMBED_MODEL: nomic-embed-text:latest

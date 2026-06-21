@@ -119,6 +119,7 @@ export function providerLabel(provider: AiProvider): string {
   if (provider === "agent-sdk") return "Agent SDK";
   if (provider === "anthropic") return "Anthropic";
   if (provider === "alibaba") return "Alibaba";
+  if (provider === "opencode") return "OpenCode Zen";
   return "OpenRouter";
 }
 

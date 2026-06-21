@@ -35,7 +35,7 @@ export function ModelTab({ form }: { form: UseAgentFormReturn }) {
                   <option value="anthropic">Anthropic (OAuth)</option>
                   <option value="openrouter">OpenRouter</option>
                   <option value="alibaba">Alibaba ModelStudio</option>
-                  <option value="opencode">OpenCode</option>
+                  <option value="opencode">OpenCode Zen</option>
                 </select>
               )}
             />

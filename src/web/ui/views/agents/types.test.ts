@@ -15,6 +15,10 @@ test("providerLabel returns 'OpenRouter' for openrouter", () => {
   expect(providerLabel("openrouter")).toBe("OpenRouter");
 });
 
+test("providerLabel returns 'OpenCode Zen' for opencode", () => {
+  expect(providerLabel("opencode")).toBe("OpenCode Zen");
+});
+
 /* ---------- getInitials ---------- */
 
 test("getInitials returns first letters of each word uppercased", () => {
