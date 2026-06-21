@@ -7,6 +7,7 @@ import {
   opencrowConfigSchema,
   pipelinesConfigSchema,
   SIGE_DEFAULT_JUDGE_MODELS,
+  sigeAutoConfigSchema,
   sigeHardeningConfigSchema,
   smartConfigSchema,
   tasteConfigSchema,
@@ -335,6 +336,26 @@ describe("smartConfigSchema", () => {
     });
     expect(parsed.sigeValuation).toBe(true);
     expect(parsed.rerankTopK).toBe(12);
+  });
+});
+
+describe("sigeAutoConfigSchema", () => {
+  test("maxDeepFrontiers defaults to 1 (selectDiverseBy handles frontier diversity)", () => {
+    const parsed = sigeAutoConfigSchema.parse({});
+    expect(parsed.maxDeepFrontiers).toBe(1);
+  });
+
+  test("maxDeepFrontiers accepts values up to 8", () => {
+    const parsed = sigeAutoConfigSchema.parse({ maxDeepFrontiers: 8 });
+    expect(parsed.maxDeepFrontiers).toBe(8);
+  });
+
+  test("maxDeepFrontiers rejects values above 8", () => {
+    expect(() => sigeAutoConfigSchema.parse({ maxDeepFrontiers: 9 })).toThrow();
+  });
+
+  test("maxDeepFrontiers still enforces minimum of 1", () => {
+    expect(() => sigeAutoConfigSchema.parse({ maxDeepFrontiers: 0 })).toThrow();
   });
 });
 

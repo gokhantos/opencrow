@@ -326,7 +326,7 @@ export const redditIntentProbe: DemandProbe = {
         // word is not enough — the doc must be about THIS idea.
         if (distinctKeywordHits(haystack, kws, 2, fuzzy) < minKeywordHits) continue;
         const keyword = firstKeywordMatch(haystack, kws, fuzzy);
-        if (!keyword) continue;
+        if (!keyword) continue; // must pair an intent marker WITH our keyword
         const marker = firstPatternMatch(haystack, REDDIT_INTENT_PATTERNS);
 
         const score = toCount(r.score);
@@ -609,7 +609,7 @@ export const hnProbe: DemandProbe = {
         // on top of the keyword×intent AND below.
         if (distinctKeywordHits(haystack, kws, 2, fuzzy) < minKeywordHits) continue;
         const keyword = firstKeywordMatch(haystack, kws, fuzzy);
-        if (!keyword) continue;
+        if (!keyword) continue; // must pair an intent marker WITH our keyword
         const marker = firstPatternMatch(haystack, REDDIT_INTENT_PATTERNS);
 
         const points = toCount(r.points);
@@ -787,7 +787,7 @@ export async function computePhSupplyDensity(
       const haystack = `${asText(r.name)} ${asText(r.tagline)} ${asText(
         r.description,
       )} ${asText(r.topics_json)}`;
-      if (distinctKeywordHits(haystack, kws) >= minKeywordHits) matched += 1;
+      if (distinctKeywordHits(haystack, kws, 2, fuzzy) >= minKeywordHits) matched += 1;
     }
     if (matched <= 0) return 0;
 
