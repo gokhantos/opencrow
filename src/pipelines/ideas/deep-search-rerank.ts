@@ -46,7 +46,8 @@ export async function llmListwiseRerank(
   candidates: readonly RerankCandidate[],
   topK: number,
   model: string,
-  provider?: ModelProvider,
+  // REQUIRED routed provider (no Claude default) — see synthesizer buildChatOptions.
+  provider: ModelProvider,
 ): Promise<readonly RerankCandidate[]> {
   if (candidates.length === 0) return [];
   if (candidates.length <= topK) return candidates;

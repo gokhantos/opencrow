@@ -2,10 +2,11 @@
  * Isolated test: llmListwiseRerank threads the routed provider into chat().
  *
  * Regression for the pipeline provider-threading bug — the deep-search listwise
- * reranker used to call buildChatOptions(model) with no provider, so a
- * non-Anthropic routed generator (e.g. alibaba/deepseek-v4-flash) dispatched the
- * rerank call to Anthropic and failed. The reranker must now forward the
- * provider it is given (and fall back to "anthropic" when none is supplied).
+ * reranker used to call buildChatOptions(model) with no provider, so a missing
+ * provider silently fell through to "anthropic" (the user's personal Claude
+ * OAuth) and a non-Anthropic routed generator (e.g. alibaba/deepseek-v4-flash)
+ * dispatched the rerank call to the wrong API. The provider is now a REQUIRED
+ * param: the reranker forwards exactly what it is given, with NO Claude default.
  *
  * Filed as *.isolated.test.ts because mock.module replaces the narrowest
  * dependency — ../../agent/chat — so no real LLM call occurs. Mocking only chat
@@ -84,12 +85,23 @@ describe("llmListwiseRerank provider threading", () => {
     expect(out.map((c) => c.hit.source.id)).toEqual(["b", "a"]);
   });
 
-  test("defaults provider to anthropic when none is supplied", async () => {
+  test("forwards an anthropic provider only when explicitly routed to it", async () => {
     captured.length = 0;
-    await llmListwiseRerank("theme", cands, 2, "claude-sonnet-4-6");
+    // Anthropic is reachable, but ONLY when the route explicitly selects it —
+    // never as a silent default for a missing provider (see the @ts-expect-error
+    // guard below).
+    await llmListwiseRerank("theme", cands, 2, "claude-sonnet-4-6", "anthropic");
 
     expect(captured.length).toBe(1);
     expect(captured[0]?.provider).toBe("anthropic");
     expect(captured[0]?.model).toBe("claude-sonnet-4-6");
+  });
+
+  // Regression guard: provider is REQUIRED. Omitting it used to default to
+  // Anthropic and bill the user's Claude OAuth — that path must no longer compile.
+  test("provider has no Claude default (omitting it is a type error)", () => {
+    // @ts-expect-error provider is required — a 4-arg call must not compile.
+    void (() => llmListwiseRerank("theme", cands, 2, "claude-sonnet-4-6"));
+    expect(true).toBe(true);
   });
 });

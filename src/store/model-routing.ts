@@ -40,7 +40,10 @@ export const MODEL_ROUTING_DEFAULTS: Readonly<Record<ModelRoutingKey, ModelRoute
   "sige.judge.0": { provider: "anthropic", model: "claude-haiku-4-5" },
   "sige.judge.1": { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
   "sige.judge.2": { provider: "alibaba", model: "qwen3.7-plus" },
-  "pipeline.generator": { provider: "anthropic", model: "claude-sonnet-4-6" },
+  // Hosted (non-Claude) default: the idea pipeline must never silently bill the
+  // operator's personal Claude OAuth when the DB override is missing/unparseable.
+  // Matches the live `pipeline.generator` route (alibaba / deepseek-v4-pro).
+  "pipeline.generator": { provider: "alibaba", model: "deepseek-v4-pro" },
   "agent-templates": { provider: "agent-sdk", model: "claude-haiku-4-5" },
 };
 

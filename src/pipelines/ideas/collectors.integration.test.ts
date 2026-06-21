@@ -151,7 +151,7 @@ describe("scanCapabilities stratified intake", () => {
     "no single kind:signalType bucket exceeds perBucketCap when alternatives exist",
     async () => {
       const ctx = await buildTestCtx();
-      const scan = await scanCapabilities(undefined, ctx);
+      const scan = await scanCapabilities("deepseek-v4-flash", ctx, "alibaba");
 
       // Count capabilities by source.
       const counts = new Map<string, number>();
@@ -174,7 +174,7 @@ describe("scanCapabilities stratified intake", () => {
 
   it("total capabilities do not exceed min(totalCap, totalTarget)", async () => {
     const ctx = await buildTestCtx();
-    const scan = await scanCapabilities(undefined, ctx);
+    const scan = await scanCapabilities("deepseek-v4-flash", ctx, "alibaba");
     // totalTarget = sum of pool.targets = 75; strat.totalCap = 90.
     // With only 25 seeded rows total, output <= 25.
     expect(scan.capabilities.length).toBeLessThanOrEqual(90);
@@ -185,7 +185,7 @@ describe("scanCapabilities stratified intake", () => {
 
   it("selectedIds map matches capability count", async () => {
     const ctx = await buildTestCtx();
-    const scan = await scanCapabilities(undefined, ctx);
+    const scan = await scanCapabilities("deepseek-v4-flash", ctx, "alibaba");
     expect(scan.capabilities.length).toBeGreaterThan(0);
     let totalSelected = 0;
     for (const ids of (scan.selectedIds ?? new Map()).values()) {
@@ -201,7 +201,7 @@ describe("scanCapabilities stratified intake", () => {
     // ~30/70 top/midtier for windowed sources, or the full limit for flat queries);
     // we assert the result is non-empty and within the totalCap ceiling (90).
     const ctx = await buildTestCtx();
-    const scan = await scanCapabilities(undefined, ctx);
+    const scan = await scanCapabilities("deepseek-v4-flash", ctx, "alibaba");
     expect(scan.capabilities.length).toBeGreaterThan(0);
     // totalCap default is 90; with 25 seeded rows the output is well under.
     expect(scan.capabilities.length).toBeLessThanOrEqual(90);

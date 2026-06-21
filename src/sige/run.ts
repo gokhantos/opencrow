@@ -418,22 +418,28 @@ async function runAutonomousSession(
 
   // Collect a real signal corpus so discovery has grounding to self-pick a
   // frontier. Fault-tolerant: a failing collector degrades to an empty section.
+  // Thread the session's ROUTED model AND provider (resolved from the
+  // `pipeline.generator` route by the session config) into every collector — the
+  // provider used to be omitted here, so the collectors silently defaulted to
+  // "agent-sdk" (Claude Code on the user's personal OAuth) and billed their
+  // Claude subscription on every autonomous SIGE run.
   const collectorModel = session.config.model;
+  const collectorProvider = session.config.provider;
   const collectorCtx: CollectorContext = {
     consumed: new Map(),
     selected: new Map(),
     credibilityPosteriors: new Map(),
   };
   const [trends, pains, capabilities] = await Promise.all([
-    analyzeAppLandscape(collectorModel, collectorCtx).catch((err) => {
+    analyzeAppLandscape(collectorModel, collectorCtx, collectorProvider).catch((err) => {
       log.warn("autonomous: landscape collector failed", { sessionId, err });
       return { trendingCategories: [], risingApps: [], summary: "" };
     }),
-    clusterReviews(undefined, collectorModel, collectorCtx).catch((err) => {
+    clusterReviews(undefined, collectorModel, collectorCtx, collectorProvider).catch((err) => {
       log.warn("autonomous: reviews collector failed", { sessionId, err });
       return { clusters: [], summary: "" };
     }),
-    scanCapabilities(collectorModel, collectorCtx).catch((err) => {
+    scanCapabilities(collectorModel, collectorCtx, collectorProvider).catch((err) => {
       log.warn("autonomous: capabilities collector failed", { sessionId, err });
       return { capabilities: [], summary: "" };
     }),

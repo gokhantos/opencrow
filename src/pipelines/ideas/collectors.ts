@@ -83,8 +83,6 @@ export {
 
 const log = createLogger("pipeline:collectors");
 
-const DEFAULT_MODEL = "claude-sonnet-4-6";
-
 // ── Layer A — long-tail fetch window ─────────────────────────────────────────
 //
 // Instead of fetching ONLY the top-50-by-engagement (which biases the pool
@@ -164,15 +162,15 @@ export function excludeConsumed<T>(
 
 /**
  * Build the chat options for a collector LLM insight pass. The PROVIDER is
- * threaded from the routed `pipeline.generator` provider so a non-Anthropic
- * route (e.g. alibaba) actually dispatches the collector call to that provider.
- * Defaults to "agent-sdk" — the collectors' historical provider — so callers
- * that omit it keep today's behavior. Exported for unit testing.
+ * REQUIRED and threaded from the routed `pipeline.generator` provider so a
+ * non-Anthropic route (e.g. alibaba) actually dispatches the collector call to
+ * that provider. There is intentionally NO default: a missing provider used to
+ * fall through to "agent-sdk" (the Claude Code subprocess on the user's personal
+ * OAuth), silently billing their Claude subscription on any un-threaded path.
+ * Requiring it turns any such path into a compile error. Exported for unit
+ * testing.
  */
-export function buildChatOptions(
-  model: string,
-  provider: ModelProvider = "agent-sdk",
-) {
+export function buildChatOptions(model: string, provider: ModelProvider) {
   return {
     systemPrompt: "",
     model,
@@ -208,7 +206,7 @@ function makeUserMessage(content: string): ConversationMessage {
 async function extractLandscapeInsights(
   rawSummary: string,
   model: string,
-  provider?: ModelProvider,
+  provider: ModelProvider,
 ): Promise<LandscapeInsight | undefined> {
   const systemPrompt =
     "You are a market analyst. Extract structured insights from app store data. Return only valid JSON.";
@@ -246,13 +244,23 @@ ${sanitizeForPrompt(rawSummary).slice(0, 60000)}`;
  * - Which categories are underserved (low satisfaction + many apps = opportunity)
  */
 export async function analyzeAppLandscape(
-  model?: string,
-  _ctx?: CollectorContext,
-  provider?: ModelProvider,
+  model: string,
+  _ctx: CollectorContext | undefined,
+  provider: ModelProvider,
 ): Promise<TrendData> {
   const db = getDb();
-  const resolvedModel = model ?? DEFAULT_MODEL;
-  const resolvedProvider = provider ?? "agent-sdk";
+  // model + provider are REQUIRED and threaded from the resolved
+  // `pipeline.generator` route by the caller — there is NO Claude default. A
+  // missing provider used to fall through to "agent-sdk" (Claude Code on the
+  // user's personal OAuth); the required params turn any un-threaded caller into
+  // a compile error instead of a silent Claude bill.
+  const resolvedModel = model;
+  const resolvedProvider = provider;
+  log.info("Collector resolved provider/model", {
+    collector: "analyzeAppLandscape",
+    provider: resolvedProvider,
+    model: resolvedModel,
+  });
   const summaryLines: string[] = [];
 
   // B7 — accumulate selected IDs into a local map; return them in the result
@@ -482,7 +490,7 @@ export async function analyzeAppLandscape(
 async function extractReviewInsights(
   rawSummary: string,
   model: string,
-  provider?: ModelProvider,
+  provider: ModelProvider,
 ): Promise<ReviewInsight | undefined> {
   const systemPrompt =
     "You are a UX researcher. Extract structured insights from user reviews. Return only valid JSON.";
@@ -532,14 +540,21 @@ ${rawSummary.slice(0, 60000)}`;
  * and PRAISES (what people love and want more of).
  */
 export async function clusterReviews(
-  focusCategories?: readonly string[],
-  model?: string,
-  _ctx?: CollectorContext,
-  provider?: ModelProvider,
+  focusCategories: readonly string[] | undefined,
+  model: string,
+  _ctx: CollectorContext | undefined,
+  provider: ModelProvider,
 ): Promise<ClusteredPains> {
   const db = getDb();
-  const resolvedModel = model ?? DEFAULT_MODEL;
-  const resolvedProvider = provider ?? "agent-sdk";
+  // model + provider REQUIRED, threaded from the `pipeline.generator` route — no
+  // Claude default (see analyzeAppLandscape).
+  const resolvedModel = model;
+  const resolvedProvider = provider;
+  log.info("Collector resolved provider/model", {
+    collector: "clusterReviews",
+    provider: resolvedProvider,
+    model: resolvedModel,
+  });
   const clusters: PainCluster[] = [];
 
   // Layer C: load the incumbent set so complaints ABOUT a top-N giant (which a
@@ -787,7 +802,7 @@ export async function clusterReviews(
 async function extractCapabilityInsights(
   capabilities: readonly import("./types").Capability[],
   model: string,
-  provider?: ModelProvider,
+  provider: ModelProvider,
 ): Promise<CapabilityInsight | undefined> {
   const lines: string[] = [];
   for (const c of capabilities) {
@@ -891,13 +906,20 @@ interface RawCandidate {
 }
 
 export async function scanCapabilities(
-  model?: string,
-  ctx?: CollectorContext,
-  provider?: ModelProvider,
+  model: string,
+  ctx: CollectorContext | undefined,
+  provider: ModelProvider,
 ): Promise<CapabilityScan> {
   const db = getDb();
-  const resolvedModel = model ?? DEFAULT_MODEL;
-  const resolvedProvider = provider ?? "agent-sdk";
+  // model + provider REQUIRED, threaded from the `pipeline.generator` route — no
+  // Claude default (see analyzeAppLandscape).
+  const resolvedModel = model;
+  const resolvedProvider = provider;
+  log.info("Collector resolved provider/model", {
+    collector: "scanCapabilities",
+    provider: resolvedProvider,
+    model: resolvedModel,
+  });
   const smart = loadConfig().pipelines.ideas.smart;
   const adaptive = smart.adaptiveCollection;
   const strat = smart.stratifiedIntake;
