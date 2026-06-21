@@ -32,6 +32,9 @@ import { getDb } from "../../store/db";
 import { createLogger } from "../../logger";
 import { getErrorMessage } from "../../lib/error-serialization";
 import { parseTopComments } from "./collector-ranking";
+// Import shared helpers from the LEAF module, NOT from ./demand-probes — that
+// would re-introduce the demand-probes ↔ semantic-demand-probe init cycle that
+// caused a TDZ crash when this module loaded first.
 import {
   asText,
   buildKeywordFilter,
@@ -39,7 +42,7 @@ import {
   quoteAround,
   resolveOpts,
   toCount,
-} from "./demand-probes";
+} from "./demand-probe-helpers";
 import type { CrossEncoderEmbedder } from "./deep-search-rerank";
 import { cosineSimilarity } from "./deep-search-rerank";
 import type { DemandEvidence, DemandProbe, DemandProbeOptions } from "./demand";
