@@ -107,6 +107,16 @@ describe("smartConfigSchema", () => {
         mmrLambda: 0.7,
         supersedePriorOnRerun: true,
         writePendingMemories: false,
+        trustWeighting: false,
+        proxyAvoidCap: 2,
+        reprobe: {
+          enabled: false,
+          delayDays: 21,
+          tickIntervalMs: 3_600_000,
+          scoreDeltaGrew: 0.75,
+          scoreDeltaDecayed: -0.75,
+          batchSize: 5,
+        },
       },
       graphReasoning: {
         enabled: false,

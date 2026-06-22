@@ -1088,6 +1088,46 @@ export const outcomeMemoryConfigSchema = z
     // Write stored-pending / verdictSource:"none" memories (no real verdict yet).
     // Default OFF: un-adjudicated ideas dilute recall. dedup-rejected is unaffected.
     writePendingMemories: z.boolean().default(false),
+    // ── Phase 2: trust-tiered recall (read path) ──────────────────────────────
+    // When ON, stable-sort already-ranked recall so GOLD (human) / REPROBE
+    // (deferred re-probe) tiers lead PROXY (same-run self-grades) lead NONE
+    // (legacy/unknown), and cap proxy-tier AVOID bullets at proxyAvoidCap. Default
+    // OFF: the emitted block is byte-identical to the pre-Phase-2 ranking.
+    trustWeighting: z.boolean().default(false),
+    // Max PROXY-tier AVOID bullets kept when trustWeighting is ON, so self-graded
+    // archivals can't crowd out gold/reprobe lessons. Only consulted when ON.
+    proxyAvoidCap: z.number().int().min(0).max(20).default(2),
+    // ── Phase 2: deferred outcome re-probe ────────────────────────────────────
+    // A bespoke cron-side scheduler re-runs the demand probes for proxy-VALIDATED
+    // ideas after delayDays and supersedes the original proxy verdict with a real
+    // "reprobe:*" outcome memory (grew → validated, decayed → archived, flat →
+    // stored-pending). Default OFF: no table is enqueued and the scheduler never
+    // starts, so the pipeline is byte-identical.
+    reprobe: z
+      .object({
+        // Master switch. Default OFF — gates BOTH the enqueue points and the
+        // cron-side scheduler. Off ⇒ no enqueue rows, no scheduler, no mem0 write.
+        enabled: z.boolean().default(false),
+        // How many days after a proxy-validation to re-probe demand.
+        delayDays: z.number().int().min(1).default(21),
+        // Scheduler tick interval (ms). Default 1h — the work is sparse and DB-bound.
+        tickIntervalMs: z.number().int().default(3_600_000),
+        // Score delta (current − baseline demand score) at/above which demand
+        // "grew" → re-validate the idea.
+        scoreDeltaGrew: z.number().default(0.75),
+        // Score delta at/below which demand "decayed" → archive the idea.
+        scoreDeltaDecayed: z.number().default(-0.75),
+        // Max due rows claimed + processed (sequentially) per tick.
+        batchSize: z.number().int().min(1).max(50).default(5),
+      })
+      .default({
+        enabled: false,
+        delayDays: 21,
+        tickIntervalMs: 3_600_000,
+        scoreDeltaGrew: 0.75,
+        scoreDeltaDecayed: -0.75,
+        batchSize: 5,
+      }),
   })
   .default({
     writeBack: true,
@@ -1100,6 +1140,16 @@ export const outcomeMemoryConfigSchema = z
     mmrLambda: 0.7,
     supersedePriorOnRerun: true,
     writePendingMemories: false,
+    trustWeighting: false,
+    proxyAvoidCap: 2,
+    reprobe: {
+      enabled: false,
+      delayDays: 21,
+      tickIntervalMs: 3_600_000,
+      scoreDeltaGrew: 0.75,
+      scoreDeltaDecayed: -0.75,
+      batchSize: 5,
+    },
   });
 export type OutcomeMemoryConfig = z.infer<typeof outcomeMemoryConfigSchema>;
 
@@ -1555,6 +1605,16 @@ const SMART_IDEAS_DEFAULTS = {
     mmrLambda: 0.7,
     supersedePriorOnRerun: true,
     writePendingMemories: false,
+    trustWeighting: false,
+    proxyAvoidCap: 2,
+    reprobe: {
+      enabled: false,
+      delayDays: 21,
+      tickIntervalMs: 3_600_000,
+      scoreDeltaGrew: 0.75,
+      scoreDeltaDecayed: -0.75,
+      batchSize: 5,
+    },
   },
   graphReasoning: {
     enabled: false,

@@ -30,6 +30,58 @@ export interface RankableOutcome {
   };
 }
 
+// ─── Trust tiers (Phase 2) ────────────────────────────────────────────────────
+
+/**
+ * The trust tier of an outcome memory, derived ONLY from its `verdictSource`:
+ *   - "gold"    — a real human dashboard verdict (verdictSource starts "human").
+ *   - "reprobe" — a deferred demand re-probe outcome (starts "reprobe:").
+ *   - "proxy"   — a same-run self-grade (starts "proxy:") — weakest real signal.
+ *   - "none"    — dedup, verdictSource:"none", or any legacy/unknown source.
+ *
+ * CONSERVATIVE: an unknown/legacy source is NEVER promoted to gold — it falls to
+ * "none". The only genuinely external ground-truth tiers are gold and reprobe.
+ * PURE.
+ */
+export type OutcomeTrustTier = "gold" | "reprobe" | "proxy" | "none";
+
+export function outcomeTrustTier(verdictSource: string): OutcomeTrustTier {
+  if (verdictSource.startsWith("human")) return "gold";
+  if (verdictSource.startsWith("reprobe:")) return "reprobe";
+  if (verdictSource.startsWith("proxy:")) return "proxy";
+  return "none";
+}
+
+/** Sort rank for trust tiers: gold/reprobe (external truth) before proxy before none. */
+const TRUST_TIER_RANK: Readonly<Record<OutcomeTrustTier, number>> = {
+  gold: 0,
+  reprobe: 0,
+  proxy: 1,
+  none: 2,
+};
+
+/** Minimal shape needed to read a memory's trust tier — a subset of RetrievedOutcome. */
+export interface TrustTierable {
+  readonly metadata: { readonly verdictSource: string };
+}
+
+/**
+ * STABLE-sort an already-ordered list so higher-trust tiers (gold/reprobe) lead
+ * proxy lead none, WITHOUT disturbing relative order within a tier (preserves the
+ * upstream relevance/recency ranking inside each bucket). PURE — returns a new
+ * array; never mutates the input.
+ */
+export function stableSortByTrust<T extends TrustTierable>(items: readonly T[]): readonly T[] {
+  return items
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const ra = TRUST_TIER_RANK[outcomeTrustTier(a.item.metadata.verdictSource)];
+      const rb = TRUST_TIER_RANK[outcomeTrustTier(b.item.metadata.verdictSource)];
+      return ra - rb || a.index - b.index;
+    })
+    .map(({ item }) => item);
+}
+
 /** Knobs for {@link rankOutcomes}. */
 export interface RankOptions {
   /** Epoch seconds; passed by the caller (this module has no clock). */
@@ -190,6 +242,44 @@ export function selectRankedOutcomes<T extends RankableOutcome>(
   const ranked = rankOutcomes(items, opts);
   const deduped = dedupRankedAndCap(ranked, cap);
   return mmrSelectOutcomes(deduped, opts.mmrLambda, cap);
+}
+
+/**
+ * Trust-tiered variant of {@link selectRankedOutcomes}: rank → dedup → MMR
+ * (UNCAPPED) → STABLE trust-sort (gold/reprobe before proxy before none) → cap.
+ *
+ * The trust sort runs on the ALREADY-RANKED list and BEFORE the final cap, so a
+ * high-trust lesson can never be capped out by a flood of same-run proxy
+ * self-grades. Within a tier the relevance/recency/MMR order is preserved.
+ *
+ * `proxyAvoidCap` (when finite) additionally limits how many PROXY-tier items
+ * survive — used for the AVOID bucket so self-graded archivals can't crowd out
+ * gold/reprobe lessons. Pass `Infinity` to disable (REINFORCE never proxy-caps).
+ * PURE.
+ */
+export function selectTrustRankedOutcomes<T extends RankableOutcome & TrustTierable>(
+  items: readonly T[],
+  cap: number,
+  opts: BlockRankOptions,
+  proxyAvoidCap: number,
+): readonly T[] {
+  const ranked = rankOutcomes(items, opts);
+  const deduped = dedupRankedAndCap(ranked, ranked.length);
+  // MMR over the full deduped list (uncapped) so trust sort + cap operate last.
+  const diversified = mmrSelectOutcomes(deduped, opts.mmrLambda, deduped.length);
+  const trustSorted = stableSortByTrust(diversified);
+
+  const out: T[] = [];
+  let proxyKept = 0;
+  for (const item of trustSorted) {
+    if (out.length >= cap) break;
+    if (outcomeTrustTier(item.metadata.verdictSource) === "proxy") {
+      if (proxyKept >= proxyAvoidCap) continue;
+      proxyKept += 1;
+    }
+    out.push(item);
+  }
+  return out;
 }
 
 /** Structured inputs for {@link buildRecallQuery}. */

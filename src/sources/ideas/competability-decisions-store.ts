@@ -21,6 +21,11 @@ import type { CompetabilityPersistedJson } from "./store";
 
 const log = createLogger("ideas:competability-decisions");
 
+// TODO(calibration): needs idea_id on competability_decisions — moat-threshold
+// calibration was deferred because this table carries only a truncated
+// idea_title (no idea_id), so a JOIN to real outcomes is unsound (survivor-bias).
+// Add an idea_id column here first, then build the calibration query/store.
+
 /** Which gate produced the decision. */
 export type CompetabilityDecisionSource = "pipeline" | "sige";
 

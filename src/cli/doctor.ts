@@ -387,10 +387,54 @@ async function checkSigeAutoConfig(): Promise<CheckResult[]> {
   }
 }
 
+/**
+ * When the deferred outcome re-probe is enabled, the scheduler depends on the
+ * mem0 sidecar to write its superseding memories — if mem0 is down the scheduler
+ * degrades to a silent no-op (every supersede is swallowed). Warn so the operator
+ * knows the loop isn't actually closing. Cheap + config-gated: only probes mem0
+ * when reprobe.enabled, reusing the same 127.0.0.1:8050 reachability check.
+ */
+async function checkDeferredReprobeConfig(): Promise<CheckResult[]> {
+  try {
+    const { loadConfig } = await import("../config/loader");
+    const cfg = loadConfig();
+    if (!cfg.pipelines.ideas.smart.outcomeMemory.reprobe.enabled) return [];
+
+    let reachable = false;
+    try {
+      const res = await fetch("http://127.0.0.1:8050/docs", {
+        signal: AbortSignal.timeout(2000),
+      });
+      reachable = res.ok;
+    } catch {
+      reachable = false;
+    }
+
+    return [
+      reachable
+        ? {
+            name: "Deferred re-probe",
+            status: "pass",
+            message: "reprobe.enabled=true and mem0 sidecar reachable — supersede writes will land",
+          }
+        : {
+            name: "Deferred re-probe",
+            status: "warn",
+            message:
+              "reprobe.enabled=true but mem0 (127.0.0.1:8050) is unreachable — the scheduler will silently no-op its supersede writes.",
+            repair: "Start the mem0 sidecar, or disable smart.outcomeMemory.reprobe.enabled",
+          },
+    ];
+  } catch {
+    return [];
+  }
+}
+
 export async function runDoctor(): Promise<void> {
   p.intro(`OpenCrow v${getVersion()} — Health Check`);
 
   const sigeAutoChecks = await checkSigeAutoConfig();
+  const reprobeChecks = await checkDeferredReprobeConfig();
 
   const checks = await Promise.all([
     checkBun(),
@@ -405,7 +449,7 @@ export async function runDoctor(): Promise<void> {
     checkMonitorProbes(),
   ]);
 
-  const allChecks = [...checks, ...sigeAutoChecks];
+  const allChecks = [...checks, ...sigeAutoChecks, ...reprobeChecks];
 
   console.log("");
   for (const check of allChecks) {

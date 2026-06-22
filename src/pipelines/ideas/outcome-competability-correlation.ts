@@ -23,6 +23,7 @@
 import { createLogger } from "../../logger";
 import { COMPETABILITY_DIMENSIONS, type CompetabilityDimension } from "./competability";
 import type { OutcomeCompetability, RetrievedOutcome } from "./outcome-memory";
+import { outcomeTrustTier } from "./outcome-memory-rank";
 
 const log = createLogger("pipeline:outcome-competability");
 
@@ -133,14 +134,32 @@ function tally(items: readonly RetrievedOutcome[]): MoatTally {
  *
  * Empty input or no competability-scored memories → "" (byte-identical default).
  * PURE — no I/O, no clock, no throw.
+ *
+ * Phase 2 `goldReprobeOnly` (gated by trustWeighting upstream): when true, the
+ * AVOID moat line counts only GOLD (human) + REPROBE (deferred re-probe) archived
+ * memories, so same-run proxy self-grades cannot manufacture a moat lesson. Absent
+ * / false → counts every archived memory as before (byte-identical default).
  */
+export interface MoatLearningsOptions {
+  readonly goldReprobeOnly?: boolean;
+}
+
 export function buildMoatLearningsDirective(
   retrieved: readonly RetrievedOutcome[],
+  opts?: MoatLearningsOptions,
 ): string {
   if (retrieved.length === 0) return "";
 
+  const goldReprobeOnly = opts?.goldReprobeOnly === true;
+  const isTrusted = (r: RetrievedOutcome): boolean => {
+    const tier = outcomeTrustTier(r.metadata.verdictSource);
+    return tier === "gold" || tier === "reprobe";
+  };
+
   const validated = retrieved.filter((r) => r.metadata.verdict === "validated");
-  const archived = retrieved.filter((r) => r.metadata.verdict === "archived");
+  const archived = retrieved.filter(
+    (r) => r.metadata.verdict === "archived" && (!goldReprobeOnly || isTrusted(r)),
+  );
 
   const archivedTally = tally(archived);
   const validatedTally = tally(validated);

@@ -27,10 +27,16 @@ import { sanitizeScrapedField, wrapUntrusted } from "../../sige/untrusted";
 import type { CandidateCompetabilityFields } from "./competability";
 import type { DemandArtifact } from "./demand";
 import { buildMoatLearningsDirective, highMoats } from "./outcome-competability-correlation";
-import { type BlockRankOptions, selectRankedOutcomes } from "./outcome-memory-rank";
+import {
+  type BlockRankOptions,
+  selectRankedOutcomes,
+  selectTrustRankedOutcomes,
+} from "./outcome-memory-rank";
 export {
   type BlockRankOptions,
   buildRecallQuery,
+  outcomeTrustTier,
+  type OutcomeTrustTier,
   type RecallQueryInputs,
 } from "./outcome-memory-rank";
 import { buildSegmentDiversityDirective } from "./outcome-memory-segments";
@@ -352,38 +358,72 @@ function bullet(memory: string): string {
 }
 
 /**
+ * Trust-tiering options for {@link buildOutcomeMemoryBlock} (Phase 2). Absent or
+ * `weighting:false` → the block is byte-identical to the pre-Phase-2 behavior.
+ */
+export interface TrustOptions {
+  /** When true, stable-sort ranked items by trust tier and proxy-cap AVOID. */
+  readonly weighting: boolean;
+  /** Max PROXY-tier AVOID bullets when weighting is on. */
+  readonly proxyAvoidCap: number;
+}
+
+/**
  * Assemble the OUTCOME MEMORY prompt section from retrieved outcomes. The split
  * between REINFORCE and AVOID is driven SOLELY by structured metadata:
  *   - REINFORCE = verdict "validated", EXCLUDING any verdictSource starting
  *     "proxy:" (proxy auto-validate is rare and would double-count the Postgres
- *     GIANT/credibility calibration that already feeds generation).
+ *     GIANT/credibility calibration that already feeds generation). This admits
+ *     "reprobe:grew" (a real deferred re-probe), since it is NOT "proxy:".
  *   - AVOID = verdict "archived" or "dedup-rejected" (proxy archives kept — a
  *     cheap archive is safe to learn from).
  * Each bucket is de-duped and independently capped. An empty bucket renders
  * nothing; when BOTH are empty the whole block is "" so a default run is
  * byte-identical to today. PURE.
+ *
+ * TRUST WEIGHTING (Phase 2, `trust.weighting`): when ON the ranked REINFORCE/AVOID
+ * lists are stable-sorted so GOLD (human) / REPROBE (deferred re-probe) tiers lead
+ * PROXY (same-run self-grades) lead NONE BEFORE the final cap, and proxy-tier AVOID
+ * bullets are capped at `trust.proxyAvoidCap`. dedup-rejected entries are split OUT
+ * of AVOID and rendered as a "crowded title space" novelty HINT (a near-dup existed
+ * this run — a novelty signal, not an outcome-quality verdict). When OFF the
+ * wording and ordering are unchanged.
  */
 export function buildOutcomeMemoryBlock(
   retrieved: readonly RetrievedOutcome[],
   reinforceCap: number,
   avoidCap: number,
   rankOpts?: BlockRankOptions,
+  trust?: TrustOptions,
 ): string {
+  const trustOn = trust?.weighting === true && rankOpts !== undefined;
+
   const reinforceRaw = retrieved.filter(
     (r) => r.metadata.verdict === "validated" && !r.metadata.verdictSource.startsWith("proxy:"),
   );
-  const avoidRaw = retrieved.filter(
-    (r) => r.metadata.verdict === "archived" || r.metadata.verdict === "dedup-rejected",
-  );
+  // When trust weighting is on, dedup-rejected is NOT an outcome-quality signal —
+  // it just means a near-dup title existed this run — so it leaves the AVOID
+  // bucket and renders as a novelty hint. When off, the legacy mix is preserved.
+  const archivedRaw = retrieved.filter((r) => r.metadata.verdict === "archived");
+  const dedupRaw = retrieved.filter((r) => r.metadata.verdict === "dedup-rejected");
+  const avoidRaw = trustOn ? archivedRaw : [...archivedRaw, ...dedupRaw];
 
   // When no ranking opts are passed, fall back to the legacy first-N dedupAndCap
   // path so the emitted block is byte-identical to the pre-ranking behavior.
-  const reinforce = rankOpts
-    ? selectRankedOutcomes(reinforceRaw, reinforceCap, rankOpts)
-    : dedupAndCap(reinforceRaw, reinforceCap);
-  const avoid = rankOpts
-    ? selectRankedOutcomes(avoidRaw, avoidCap, rankOpts)
-    : dedupAndCap(avoidRaw, avoidCap);
+  // When trust weighting is on, use the trust-tiered selection (rank → MMR →
+  // trust-sort → cap), proxy-capping the AVOID bucket only.
+  const reinforce = trustOn
+    ? selectTrustRankedOutcomes(reinforceRaw, reinforceCap, rankOpts, Number.POSITIVE_INFINITY)
+    : rankOpts
+      ? selectRankedOutcomes(reinforceRaw, reinforceCap, rankOpts)
+      : dedupAndCap(reinforceRaw, reinforceCap);
+  const avoid = trustOn
+    ? selectTrustRankedOutcomes(avoidRaw, avoidCap, rankOpts, trust?.proxyAvoidCap ?? 0)
+    : rankOpts
+      ? selectRankedOutcomes(avoidRaw, avoidCap, rankOpts)
+      : dedupAndCap(avoidRaw, avoidCap);
+  // Novelty hint (trust-on only): dedup-rejected as "crowded title space".
+  const novelty = trustOn && rankOpts ? selectRankedOutcomes(dedupRaw, avoidCap, rankOpts) : [];
 
   // Competability-aware moat learnings: correlate the moat signal on retrieved
   // outcomes with their verdict and distil a bounded directive. PURE, no LLM, no
@@ -391,10 +431,21 @@ export function buildOutcomeMemoryBlock(
   // memories. It MUST receive the FULL UNRANKED retrieved set (not the
   // MMR-trimmed sublists) so the aggregate moat ↔ outcome lesson is unaffected by
   // recall ranking. "" when there is no competability-scored evidence, so
-  // absent-data is byte-identical to today.
-  const moatDirective = buildMoatLearningsDirective(retrieved);
+  // absent-data is byte-identical to today. When trust weighting is on, only
+  // gold+reprobe archived count toward the AVOID moat line (see directive opts).
+  const moatDirective = buildMoatLearningsDirective(
+    retrieved,
+    trustOn ? { goldReprobeOnly: true } : undefined,
+  );
 
-  if (reinforce.length === 0 && avoid.length === 0 && moatDirective === "") return "";
+  if (
+    reinforce.length === 0 &&
+    avoid.length === 0 &&
+    novelty.length === 0 &&
+    moatDirective === ""
+  ) {
+    return "";
+  }
 
   const parts: string[] = [HEADER];
 
@@ -403,8 +454,19 @@ export function buildOutcomeMemoryBlock(
     for (const r of reinforce) parts.push(bullet(r.memory));
   }
   if (avoid.length > 0) {
-    parts.push("AVOID — patterns ARCHIVED or rejected as duplicates (do NOT regenerate):");
+    parts.push(
+      trustOn
+        ? "AVOID — patterns ARCHIVED (do NOT regenerate):"
+        : "AVOID — patterns ARCHIVED or rejected as duplicates (do NOT regenerate):",
+    );
     for (const a of avoid) parts.push(bullet(a.memory));
+  }
+  if (novelty.length > 0) {
+    parts.push(
+      "CROWDED TITLE SPACE — these themes already had near-duplicate titles this run " +
+        "(a novelty hint, not an outcome verdict — differentiate or pick a fresher angle):",
+    );
+    for (const n of novelty) parts.push(bullet(n.memory));
   }
   // Append the learned moat-scoring directive after the per-idea bullets so the
   // model reads the aggregate "moat ↔ outcome" lesson last.
@@ -653,6 +715,8 @@ export async function fetchOutcomeMemoryBlock(params: {
   readonly searchLimit: number;
   /** See {@link fetchOutcomeMemoryGuidance}. Omitted → legacy first-N selection. */
   readonly rank?: BlockRankOptions;
+  /** Trust-tiered recall (Phase 2). Omitted / weighting:false → unchanged. */
+  readonly trust?: TrustOptions;
 }): Promise<string> {
   // Thin wrapper so seeded + autonomous share ONE ranking codepath: it delegates
   // to fetchOutcomeMemoryGuidance and returns only the REINFORCE/AVOID block.
@@ -736,11 +800,16 @@ export async function fetchOutcomeMemoryGuidance(params: {
    * legacy first-N selection (byte-identical to the pre-ranking behavior).
    */
   readonly rank?: BlockRankOptions;
+  /**
+   * Trust-tiered recall (Phase 2). Omitted / weighting:false → the block is
+   * byte-identical to the pre-Phase-2 behavior.
+   */
+  readonly trust?: TrustOptions;
 }): Promise<OutcomeMemoryGuidance> {
-  const { reinforceCap, avoidCap, rotationSeed = 0, rank } = params;
+  const { reinforceCap, avoidCap, rotationSeed = 0, rank, trust } = params;
   const retrieved = await fetchRetrievedOutcomes(params);
   return {
-    block: buildOutcomeMemoryBlock(retrieved, reinforceCap, avoidCap, rank),
+    block: buildOutcomeMemoryBlock(retrieved, reinforceCap, avoidCap, rank, trust),
     segmentDirective: buildSegmentDiversityDirective(retrieved, rotationSeed),
   };
 }

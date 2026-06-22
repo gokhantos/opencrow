@@ -62,6 +62,50 @@ async function main(): Promise<void> {
     cronScheduler.stop();
   });
 
+  // --- Deferred outcome re-probe scheduler (Phase 2, gated, default OFF) ---
+  // A bespoke (non-CronPayload) scheduler: a CronPayload routes through
+  // runAgentIsolated and can only express an AGENT job, but this is a pure data
+  // job (claim due rows → re-run demand probes → diff vs baseline → supersede a
+  // mem0 memory), so it cannot be modeled as a cron job. It mirrors the cron
+  // scheduler's start/stop/non-reentrant shape and is added to graceful shutdown.
+  const reprobeCfg = config.pipelines.ideas.smart.outcomeMemory.reprobe;
+  const sigeMem0 = config.sige?.mem0;
+  if (reprobeCfg.enabled && sigeMem0) {
+    const { createDeferredOutcomeScheduler } = await import(
+      "../cron/deferred-outcome-scheduler"
+    );
+    const { deferredOutcomeStore } = await import(
+      "../pipelines/ideas/deferred-outcome-store"
+    );
+    const { Mem0Client } = await import("../sige/knowledge/mem0-client");
+
+    // Build the mem0 client factory from config exactly like web/routes/pipelines.ts.
+    const deferredScheduler = createDeferredOutcomeScheduler({
+      deferredStore: deferredOutcomeStore,
+      mem0Factory: () =>
+        new Mem0Client({ baseUrl: sigeMem0.baseUrl, apiToken: sigeMem0.apiToken }),
+      config: {
+        reprobe: {
+          tickIntervalMs: reprobeCfg.tickIntervalMs,
+          batchSize: reprobeCfg.batchSize,
+          scoreDeltaGrew: reprobeCfg.scoreDeltaGrew,
+          scoreDeltaDecayed: reprobeCfg.scoreDeltaDecayed,
+        },
+        demand: config.pipelines.ideas.smart.demand,
+        ideasUserId: sigeMem0.ideasUserId,
+      },
+    });
+    deferredScheduler.start();
+    supervisor.onShutdown(async () => {
+      deferredScheduler.stop();
+      await deferredScheduler.drain();
+    });
+    log.info("Deferred-outcome re-probe scheduler started", {
+      tickIntervalMs: reprobeCfg.tickIntervalMs,
+      delayDays: reprobeCfg.delayDays,
+    });
+  }
+
   // --- Proactive Monitor ---
   if (config.monitor !== undefined) {
     const primaryUserId = config.channels.telegram.allowedUserIds[0];
