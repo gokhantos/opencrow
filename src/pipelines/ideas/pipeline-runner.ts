@@ -38,6 +38,15 @@ import {
 } from "./outcome-memory";
 import { ABSENCE_CONFIDENCE_CAP } from "./demand";
 import { enqueueValidatedIdea } from "./deferred-outcome-store";
+import { Neo4jWriteClient } from "../../sige/knowledge/neo4j-write-client";
+import {
+  appendOutcomeEvents,
+  buildSeedOutcomeEvents,
+  loadRunSeeds,
+  projectLearnedWeights,
+  recomputeSeedWeights,
+  type IdeaVerdict,
+} from "./graph-outcome-feedback";
 import {
   buildIdeaProvenance,
   candidateHasDemandEvidence,
@@ -741,6 +750,27 @@ export async function runOutcomeMemoryWriteBack(params: {
    * demand re-probe `delayDays` later. `createdAtSec` is the validation timestamp.
    */
   readonly reprobe?: { readonly enabled: boolean; readonly delayDays: number };
+  /**
+   * Graph outcome feedback (Phase 3). Absent / enabled:false → no Postgres/Neo4j
+   * writes (byte-identical). When enabled, the run's AGGREGATE gold/reprobe verdict
+   * is attributed back to the seeds that fed it (loaded from graph_seed_exposure),
+   * appended to the immutable event log, the decayed weights re-materialized, and —
+   * when projectToNeo4j and a neo4j connection are present — projected onto the live
+   * graph via a WRITE client. Best-effort: never breaks the run.
+   */
+  readonly graphFeedback?: {
+    readonly enabled: boolean;
+    readonly projectToNeo4j: boolean;
+    readonly validatedWeight: number;
+    readonly killedWeight: number;
+    readonly weightHalfLifeDays: number;
+    readonly maxSeedWeight: number;
+    readonly neo4j: {
+      readonly boltUrl: string;
+      readonly user: string;
+      readonly queryTimeoutMs: number;
+    } | null;
+  };
 }): Promise<void> {
   const {
     storedPairs,
@@ -759,6 +789,7 @@ export async function runOutcomeMemoryWriteBack(params: {
     writePendingMemories = false,
     supersedePriorOnRerun = true,
     reprobe,
+    graphFeedback,
   } = params;
 
   try {
@@ -882,5 +913,75 @@ export async function runOutcomeMemoryWriteBack(params: {
     });
   } catch (err) {
     log.warn("Outcome-memory write-back failed — skipping", { err });
+  }
+
+  // ── Graph outcome feedback write-back (gated, Phase 3) ─────────────────────
+  // Attribute the run's AGGREGATE gold/reprobe verdict back to the seeds that fed
+  // it. SAME-run verdicts are proxy-tier and so are filtered out by
+  // buildSeedOutcomeEvents (the event log stays near-empty until a human/reprobe
+  // verdict lands); this still records exposure-driven recompute + projection so
+  // the loop is wired end-to-end. Independent best-effort block — a failure here
+  // never affects the mem0 write above or the run.
+  if (graphFeedback?.enabled) {
+    let graphWriteClient: Neo4jWriteClient | null = null;
+    try {
+      // Build the run's per-idea verdict map from the proxy labels (archived →
+      // "killed"). Re-derived here (the map inside the try-block above is out of
+      // scope). Only gold/reprobe-tier verdicts survive the trust filter inside the
+      // builder — same-run proxy verdicts are excluded by design.
+      const verdictMap = new Map<string, IdeaVerdict>();
+      for (const label of proxyLabels) {
+        const kind = label.event.kind;
+        if (kind !== "validated" && kind !== "archived") continue;
+        verdictMap.set(label.event.idea_id, {
+          verdict: kind === "validated" ? "validated" : "killed",
+          verdictSource: `proxy:${label.reason}`,
+        });
+      }
+
+      const runSeeds = await loadRunSeeds(runId);
+      const events = buildSeedOutcomeEvents({
+        runId,
+        verdictMap,
+        runSeeds,
+        config: {
+          validatedWeight: graphFeedback.validatedWeight,
+          killedWeight: graphFeedback.killedWeight,
+          maxSeedWeight: graphFeedback.maxSeedWeight,
+        },
+        createdAtSec,
+      });
+
+      await appendOutcomeEvents(events);
+      await recomputeSeedWeights({
+        now: createdAtSec,
+        halfLifeDays: graphFeedback.weightHalfLifeDays,
+      });
+
+      // Project onto the live graph only when enabled AND a connection is present.
+      if (graphFeedback.projectToNeo4j && graphFeedback.neo4j) {
+        graphWriteClient = new Neo4jWriteClient(graphFeedback.neo4j);
+        await graphWriteClient.upsertSeedOutcomeEdges(
+          events.map((e) => ({
+            seedName: e.seedName,
+            runId: e.runId,
+            verdict: e.verdict,
+            weight: e.weight,
+          })),
+        );
+        await projectLearnedWeights(graphWriteClient);
+      }
+
+      log.info("Graph outcome feedback write-back complete", {
+        runId,
+        seeds: runSeeds.length,
+        events: events.length,
+        projected: graphFeedback.projectToNeo4j && graphFeedback.neo4j !== null,
+      });
+    } catch (err) {
+      log.warn("Graph outcome feedback write-back failed — skipping", { err });
+    } finally {
+      if (graphWriteClient) await graphWriteClient.close().catch(() => {});
+    }
   }
 }

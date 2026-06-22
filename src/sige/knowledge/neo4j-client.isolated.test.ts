@@ -127,6 +127,9 @@ const PARAMS = {
   searchLimit: 25,
   minDegree: 3,
   maxDegree: 60,
+  // Phase 3 graph-feedback seed-ranking knobs.
+  neutralWeight: 1,
+  noveltyHalfLifeRuns: 10,
 } as const;
 
 function freshClient(timeoutMs = 5_000) {
@@ -186,6 +189,32 @@ describe("Neo4jReadClient.opportunityPaths — success path", () => {
     expect(params.maxDegree).toBe(60);
     expect(params.stoplist).toBe(STOPLIST);
     expect(params.relWhitelist).toEqual([...REL_WHITELIST]);
+    // Phase 3 seed-ranking knobs are bound (not interpolated).
+    expect(params.neutralWeight).toBe(1);
+    expect(params.noveltyHalfLifeRuns).toBe(10);
+    await client.close();
+  });
+
+  test("seed ranking is weighted + novelty-aware, stays read-only, and falls back to neutral on cold start", async () => {
+    okRecords = [{ seed: "p", steps: [{ rel: "LACKS", node: "f" }] }];
+    const client = freshClient();
+    await client.opportunityPaths(PARAMS);
+
+    const { query } = captured.queries[0]!;
+    // Composite seed score: learned success_weight * novelty decay on exposure.
+    expect(query).toContain("coalesce(pain.success_weight, $neutralWeight)");
+    expect(query).toContain("coalesce(pain.exposure_count, 0)");
+    expect(query).toContain("$noveltyHalfLifeRuns");
+    expect(query).toContain("ORDER BY seedScore DESC, pain.degree DESC");
+    // The new ranking knobs are bound params, never interpolated.
+    expect(query).toContain("$neutralWeight");
+    expect(query).not.toContain("ORDER BY pain.degree DESC\nLIMIT"); // old ranking gone
+    // The read-only contract MUST stay intact after the Cypher edit.
+    expect(captured.executeWriteCalled).toBe(false);
+    // Whitelist predicate (case-insensitive) is untouched on the seed AND path.
+    expect(query).toContain("toUpper(type(r)) IN $relWhitelist");
+    // No SQL-style `--` comment slipped into the Cypher (a parse error).
+    expect(query).not.toMatch(/^\s*--/m);
     await client.close();
   });
 

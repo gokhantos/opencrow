@@ -35,6 +35,7 @@ import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
 import { buildRecallQuery, fetchOutcomeMemoryGuidance } from "./outcome-memory";
 import { fetchGraphReasoningDirective } from "./graph-reasoning";
+import { recordSeedExposure } from "./graph-outcome-feedback";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import { getDb } from "../../store/db";
 import { getModelRoute } from "../../store/model-routing";
@@ -566,7 +567,8 @@ export async function runIdeasPipeline(
     // Guarded on graphClient !== null and returns "" on any failure / empty
     // graph / timeout (fetchGraphReasoningDirective never throws), so a default
     // run is byte-identical to the pre-feature path.
-    const graphDirective: string =
+    const graphFeedbackCfg = smart.graphFeedback;
+    const { directive: graphDirective, seedEntities: graphSeedEntities } =
       graphReasoningCfg.enabled && graphClient !== null
         ? await fetchGraphReasoningDirective({
             client: graphClient,
@@ -576,8 +578,18 @@ export async function runIdeasPipeline(
             searchLimit: graphReasoningCfg.searchLimit,
             minDegree: graphReasoningCfg.minDegree,
             maxDegree: graphReasoningCfg.maxDegree,
+            // Phase 3 weighted + novelty-aware seed ranking knobs.
+            neutralWeight: graphReasoningCfg.neutralWeight,
+            noveltyHalfLifeRuns: graphReasoningCfg.noveltyHalfLifeRuns,
           })
-        : "";
+        : { directive: "", seedEntities: [] };
+
+    // Phase 3 graph feedback: record WHICH seeds fed this run so the write-back
+    // can attribute the run's aggregate verdict back to them. Gated + best-effort
+    // (recordSeedExposure swallows its own errors); OFF → no Postgres write.
+    if (graphFeedbackCfg.enabled && graphSeedEntities.length > 0) {
+      await recordSeedExposure(runId, graphSeedEntities);
+    }
 
     const synthesis = await runStep(
       runId,
@@ -990,6 +1002,25 @@ export async function runIdeasPipeline(
             reprobe: {
               enabled: outcomeMemoryCfg.reprobe.enabled,
               delayDays: outcomeMemoryCfg.reprobe.delayDays,
+            },
+            // Graph outcome feedback (Phase 3). enabled:false → no Postgres/Neo4j
+            // writes. Carries the run's neo4j connection so the projection step can
+            // open a WRITE session only when projectToNeo4j is on.
+            graphFeedback: {
+              enabled: graphFeedbackCfg.enabled,
+              projectToNeo4j: graphFeedbackCfg.projectToNeo4j,
+              validatedWeight: graphFeedbackCfg.validatedWeight,
+              killedWeight: graphFeedbackCfg.killedWeight,
+              weightHalfLifeDays: graphFeedbackCfg.weightHalfLifeDays,
+              maxSeedWeight: graphFeedbackCfg.maxSeedWeight,
+              neo4j:
+                sigeConfig?.neo4j.enabled === true
+                  ? {
+                      boltUrl: sigeConfig.neo4j.boltUrl,
+                      user: sigeConfig.neo4j.user,
+                      queryTimeoutMs: sigeConfig.neo4j.queryTimeoutMs,
+                    }
+                  : null,
             },
           });
         }

@@ -101,11 +101,35 @@ export function buildGraphReasoningDirective(
 
 // ─── fetchGraphReasoningDirective (best-effort I/O) ───────────────────────────
 
+/** Result of one graph-reasoning traversal: the rendered directive PLUS the
+ *  distinct seed entities the traversal expanded from (Phase 3 credit assignment
+ *  needs to know WHICH seeds fed the run). */
+export interface GraphReasoningResult {
+  /** The sanitized OPPORTUNITY-PATHS directive ("" when empty / feature-OFF). */
+  readonly directive: string;
+  /** Distinct seed names the returned paths started from (deduped, order-stable). */
+  readonly seedEntities: readonly string[];
+}
+
+/** Distinct, order-stable seed names across the returned paths. PURE. */
+function distinctSeeds(paths: readonly GraphPath[]): readonly string[] {
+  const seen = new Set<string>();
+  const seeds: string[] = [];
+  for (const path of paths) {
+    if (path.seed.length === 0 || seen.has(path.seed)) continue;
+    seen.add(path.seed);
+    seeds.push(path.seed);
+  }
+  return seeds;
+}
+
 /**
- * Run ONE bounded opportunity-paths traversal and render the directive.
+ * Run ONE bounded opportunity-paths traversal and render the directive, returning
+ * BOTH the directive and the distinct seed entities it expanded from.
  * Best-effort: the read client already returns [] on any error / open breaker /
  * timeout, and this wrapper additionally try/catches so ANY unexpected throw
- * degrades to "". Never throws. Empty graph → "" → byte-identical seed prompt.
+ * degrades to `{ directive: "", seedEntities: [] }`. Never throws. Empty graph →
+ * empty directive → byte-identical seed prompt.
  */
 export async function fetchGraphReasoningDirective(params: {
   readonly client: Neo4jReadClient;
@@ -115,7 +139,9 @@ export async function fetchGraphReasoningDirective(params: {
   readonly searchLimit: number;
   readonly minDegree: number;
   readonly maxDegree: number;
-}): Promise<string> {
+  readonly neutralWeight: number;
+  readonly noveltyHalfLifeRuns: number;
+}): Promise<GraphReasoningResult> {
   try {
     const paths = await params.client.opportunityPaths({
       userId: params.userId,
@@ -124,10 +150,15 @@ export async function fetchGraphReasoningDirective(params: {
       searchLimit: params.searchLimit,
       minDegree: params.minDegree,
       maxDegree: params.maxDegree,
+      neutralWeight: params.neutralWeight,
+      noveltyHalfLifeRuns: params.noveltyHalfLifeRuns,
     });
-    return buildGraphReasoningDirective(paths, params.maxPaths);
+    return {
+      directive: buildGraphReasoningDirective(paths, params.maxPaths),
+      seedEntities: distinctSeeds(paths),
+    };
   } catch (err) {
     log.warn("fetchGraphReasoningDirective failed (returning empty)", { err });
-    return "";
+    return { directive: "", seedEntities: [] };
   }
 }

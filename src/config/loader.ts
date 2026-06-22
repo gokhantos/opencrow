@@ -294,6 +294,70 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   ) {
     graphReasoningEnv.maxDegree = graphReasoningMaxDegree;
   }
+  const graphReasoningNeutralWeight = Number(
+    process.env.OPENCROW_SMART_GRAPH_REASONING_NEUTRAL_WEIGHT ?? "",
+  );
+  if (
+    !Number.isNaN(graphReasoningNeutralWeight) &&
+    process.env.OPENCROW_SMART_GRAPH_REASONING_NEUTRAL_WEIGHT !== undefined
+  ) {
+    graphReasoningEnv.neutralWeight = graphReasoningNeutralWeight;
+  }
+  const graphReasoningNoveltyHalfLife = Number(
+    process.env.OPENCROW_SMART_GRAPH_REASONING_NOVELTY_HALF_LIFE_RUNS ?? "",
+  );
+  if (
+    !Number.isNaN(graphReasoningNoveltyHalfLife) &&
+    process.env.OPENCROW_SMART_GRAPH_REASONING_NOVELTY_HALF_LIFE_RUNS !== undefined
+  ) {
+    graphReasoningEnv.noveltyHalfLifeRuns = graphReasoningNoveltyHalfLife;
+  }
+
+  // OPENCROW_SMART_GRAPH_FEEDBACK_* overrides for the Phase-3 feedback block.
+  // EXPLICIT block (like graphReasoningEnv): the generic deep-merge does not reach
+  // nested smart sub-blocks, so each field is read and merged by hand.
+  const graphFeedbackEnv: Record<string, unknown> = {};
+  const graphFeedbackEnabled = boolEnv("OPENCROW_SMART_GRAPH_FEEDBACK_ENABLED");
+  if (graphFeedbackEnabled !== undefined) graphFeedbackEnv.enabled = graphFeedbackEnabled;
+  const graphFeedbackProjectToNeo4j = boolEnv("OPENCROW_SMART_GRAPH_FEEDBACK_PROJECT_TO_NEO4J");
+  if (graphFeedbackProjectToNeo4j !== undefined)
+    graphFeedbackEnv.projectToNeo4j = graphFeedbackProjectToNeo4j;
+  const graphFeedbackValidatedWeight = Number(
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_VALIDATED_WEIGHT ?? "",
+  );
+  if (
+    !Number.isNaN(graphFeedbackValidatedWeight) &&
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_VALIDATED_WEIGHT !== undefined
+  ) {
+    graphFeedbackEnv.validatedWeight = graphFeedbackValidatedWeight;
+  }
+  const graphFeedbackKilledWeight = Number(
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_KILLED_WEIGHT ?? "",
+  );
+  if (
+    !Number.isNaN(graphFeedbackKilledWeight) &&
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_KILLED_WEIGHT !== undefined
+  ) {
+    graphFeedbackEnv.killedWeight = graphFeedbackKilledWeight;
+  }
+  const graphFeedbackHalfLifeDays = Number(
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_WEIGHT_HALF_LIFE_DAYS ?? "",
+  );
+  if (
+    !Number.isNaN(graphFeedbackHalfLifeDays) &&
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_WEIGHT_HALF_LIFE_DAYS !== undefined
+  ) {
+    graphFeedbackEnv.weightHalfLifeDays = graphFeedbackHalfLifeDays;
+  }
+  const graphFeedbackMaxSeedWeight = Number(
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_MAX_SEED_WEIGHT ?? "",
+  );
+  if (
+    !Number.isNaN(graphFeedbackMaxSeedWeight) &&
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_MAX_SEED_WEIGHT !== undefined
+  ) {
+    graphFeedbackEnv.maxSeedWeight = graphFeedbackMaxSeedWeight;
+  }
 
   // OPENCROW_SMART_INCUMBENT_EXCLUSION_* overrides for the Layer-C feature block.
   const incumbentExclusionEnv: Record<string, unknown> = {};
@@ -547,6 +611,7 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     Object.keys(outcomeMemoryEnv).length > 0 ||
     Object.keys(reprobeEnv).length > 0 ||
     Object.keys(graphReasoningEnv).length > 0 ||
+    Object.keys(graphFeedbackEnv).length > 0 ||
     Object.keys(incumbentExclusionEnv).length > 0 ||
     Object.keys(competabilityEnv).length > 0 ||
     Object.keys(demandEnv).length > 0 ||
@@ -581,6 +646,10 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     if (Object.keys(graphReasoningEnv).length > 0) {
       const existing = (existingSmart.graphReasoning ?? {}) as Record<string, unknown>;
       smart.graphReasoning = { ...existing, ...graphReasoningEnv };
+    }
+    if (Object.keys(graphFeedbackEnv).length > 0) {
+      const existing = (existingSmart.graphFeedback ?? {}) as Record<string, unknown>;
+      smart.graphFeedback = { ...existing, ...graphFeedbackEnv };
     }
     if (Object.keys(incumbentExclusionEnv).length > 0) {
       const existing = (existingSmart.incumbentExclusion ?? {}) as Record<string, unknown>;
@@ -832,6 +901,7 @@ const SMART_SUBTREE_KEYS = [
   "sigeAuto",
   "outcomeMemory",
   "graphReasoning",
+  "graphFeedback",
   "incumbentExclusion",
   "diversityGuard",
 ] as const;
