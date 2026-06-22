@@ -184,6 +184,41 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   ) {
     outcomeMemoryEnv.searchLimit = outcomeMemorySearchLimit;
   }
+  const outcomeMemoryHalfLifeDays = Number(
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_HALF_LIFE_DAYS ?? "",
+  );
+  if (
+    !Number.isNaN(outcomeMemoryHalfLifeDays) &&
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_HALF_LIFE_DAYS !== undefined
+  ) {
+    outcomeMemoryEnv.halfLifeDays = outcomeMemoryHalfLifeDays;
+  }
+  const outcomeMemoryStalePromptPenalty = Number(
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_STALE_PROMPT_PENALTY ?? "",
+  );
+  if (
+    !Number.isNaN(outcomeMemoryStalePromptPenalty) &&
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_STALE_PROMPT_PENALTY !== undefined
+  ) {
+    outcomeMemoryEnv.stalePromptPenalty = outcomeMemoryStalePromptPenalty;
+  }
+  const outcomeMemoryMmrLambda = Number(process.env.OPENCROW_SMART_OUTCOME_MEMORY_MMR_LAMBDA ?? "");
+  if (
+    !Number.isNaN(outcomeMemoryMmrLambda) &&
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_MMR_LAMBDA !== undefined
+  ) {
+    outcomeMemoryEnv.mmrLambda = outcomeMemoryMmrLambda;
+  }
+  const outcomeMemorySupersedePriorOnRerun = boolEnv(
+    "OPENCROW_SMART_OUTCOME_MEMORY_SUPERSEDE_PRIOR_ON_RERUN",
+  );
+  if (outcomeMemorySupersedePriorOnRerun !== undefined)
+    outcomeMemoryEnv.supersedePriorOnRerun = outcomeMemorySupersedePriorOnRerun;
+  const outcomeMemoryWritePendingMemories = boolEnv(
+    "OPENCROW_SMART_OUTCOME_MEMORY_WRITE_PENDING_MEMORIES",
+  );
+  if (outcomeMemoryWritePendingMemories !== undefined)
+    outcomeMemoryEnv.writePendingMemories = outcomeMemoryWritePendingMemories;
 
   // OPENCROW_SMART_GRAPH_REASONING_* overrides for the graph-reasoning block.
   // An EXPLICIT block (like outcomeMemoryEnv): the generic deep-merge above does
@@ -314,9 +349,7 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   if (demandFuzzyMatch !== undefined) demandEnv.fuzzyMatch = demandFuzzyMatch;
   const demandXIntent = boolEnv("OPENCROW_SMART_DEMAND_X_INTENT");
   if (demandXIntent !== undefined) demandEnv.xIntent = demandXIntent;
-  const demandWeakFactor = Number(
-    process.env.OPENCROW_SMART_DEMAND_WEAK_INTENT_FACTOR ?? "",
-  );
+  const demandWeakFactor = Number(process.env.OPENCROW_SMART_DEMAND_WEAK_INTENT_FACTOR ?? "");
   if (
     !Number.isNaN(demandWeakFactor) &&
     process.env.OPENCROW_SMART_DEMAND_WEAK_INTENT_FACTOR !== undefined
@@ -562,9 +595,7 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   // `result.pipelines.ideas` FRESH here (after the smart block wrote it) so we
   // don't clobber `smart` or other ideas fields.
   const generateWideEnv: Record<string, unknown> = {};
-  const generateWideChunkSize = Number(
-    process.env.OPENCROW_GENERATE_WIDE_CHUNK_SIZE ?? "",
-  );
+  const generateWideChunkSize = Number(process.env.OPENCROW_GENERATE_WIDE_CHUNK_SIZE ?? "");
   if (
     process.env.OPENCROW_GENERATE_WIDE_CHUNK_SIZE !== undefined &&
     Number.isFinite(generateWideChunkSize)
@@ -820,9 +851,7 @@ function mergeSmartSignalOverride(
  * Precedence is preserved: env (already applied in `base`) is the fallback; a DB
  * row deep-merges ON TOP of it, so DB > env > schema default.
  */
-async function mergeFeatureOverrides(
-  base: OpenCrowConfig,
-): Promise<OpenCrowConfig> {
+async function mergeFeatureOverrides(base: OpenCrowConfig): Promise<OpenCrowConfig> {
   const [
     enabledScrapers,
     qdrantEnabled,
@@ -840,10 +869,7 @@ async function mergeFeatureOverrides(
     getOverride("config", "competability"),
     getOverride("config", "smart.signal"),
     Promise.all(
-      SMART_SUBTREE_KEYS.map(
-        async (k) =>
-          [k, await getOverride("config", `smart.${k}`)] as const,
-      ),
+      SMART_SUBTREE_KEYS.map(async (k) => [k, await getOverride("config", `smart.${k}`)] as const),
     ),
     getOverride("config", "server"),
     getOverride("config", "sandbox"),
@@ -914,26 +940,16 @@ async function mergeFeatureOverrides(
   const hasSmartSubtree = smartSubtreeOverrides.some(
     ([, value]) => value !== null && typeof value === "object",
   );
-  if (
-    (signalOverride !== null && typeof signalOverride === "object") ||
-    hasSmartSubtree
-  ) {
+  if ((signalOverride !== null && typeof signalOverride === "object") || hasSmartSubtree) {
     const pipelines = { ...((result.pipelines ?? {}) as Record<string, unknown>) };
     const ideas = { ...((pipelines.ideas ?? {}) as Record<string, unknown>) };
     let smart = { ...((ideas.smart ?? {}) as Record<string, unknown>) };
     if (signalOverride !== null && typeof signalOverride === "object") {
-      smart = mergeSmartSignalOverride(
-        smart,
-        signalOverride as Record<string, unknown>,
-      );
+      smart = mergeSmartSignalOverride(smart, signalOverride as Record<string, unknown>);
     }
     for (const [subKey, value] of smartSubtreeOverrides) {
       if (value !== null && typeof value === "object") {
-        smart = mergeSmartSubtreeOverride(
-          smart,
-          subKey,
-          value as Record<string, unknown>,
-        );
+        smart = mergeSmartSubtreeOverride(smart, subKey, value as Record<string, unknown>);
       }
     }
     result = {

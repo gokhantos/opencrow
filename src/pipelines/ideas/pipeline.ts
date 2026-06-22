@@ -33,7 +33,7 @@ import type { DemandArtifact } from "./demand";
 import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
 import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
-import { fetchOutcomeMemoryGuidance } from "./outcome-memory";
+import { buildRecallQuery, fetchOutcomeMemoryGuidance } from "./outcome-memory";
 import { fetchGraphReasoningDirective } from "./graph-reasoning";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import { getDb } from "../../store/db";
@@ -188,11 +188,14 @@ export function applyMinQualityFloor(
   const sorted = [...giantSurvivors].sort((a, b) => b.qualityScore - a.qualityScore);
   const kept = sorted.slice(0, maxIdeas);
   const topQuality = kept[0]?.qualityScore ?? 0;
-  log.warn("Min-quality filter would empty the run; keeping top competability-passing candidates as floor", {
-    kept: kept.length,
-    topQuality,
-    minQualityScore,
-  });
+  log.warn(
+    "Min-quality filter would empty the run; keeping top competability-passing candidates as floor",
+    {
+      kept: kept.length,
+      topQuality,
+      minQualityScore,
+    },
+  );
   return kept;
 }
 
@@ -526,16 +529,28 @@ export async function runIdeasPipeline(
         ? await fetchOutcomeMemoryGuidance({
             mem0: outcomeMem0,
             userId: ideasUserId,
-            query: [
-              ...trends.trendingCategories.slice(0, 6).map((c) => c.category),
-              config.category,
-            ]
-              .filter(Boolean)
-              .join(", "),
+            // Relevance-keyed recall: pain-cluster themes (most specific) lead,
+            // then trending categories, configured category last. Blends more
+            // signal than the old trending+category CSV so recall is sharper.
+            query: buildRecallQuery({
+              painThemes: pains.clusters.slice(0, 6).map((cluster) => cluster.theme),
+              trendingCategories: trends.trendingCategories.slice(0, 6).map((c) => c.category),
+              category: config.category,
+            }),
             reinforceCap: outcomeMemoryCfg.reinforceCap,
             avoidCap: outcomeMemoryCfg.avoidCap,
             searchLimit: outcomeMemoryCfg.searchLimit,
             rotationSeed,
+            // Relevance/recency-aware selection knobs (gated by config; at no-op
+            // values the block degrades to the legacy first-N behavior).
+            rank: {
+              now: now(),
+              halfLifeDays: outcomeMemoryCfg.halfLifeDays,
+              stalePromptPenalty: outcomeMemoryCfg.stalePromptPenalty,
+              mmrLambda: outcomeMemoryCfg.mmrLambda,
+              currentPromptVersion: PROMPT_VERSION,
+              currentModel: model,
+            },
           })
         : { block: "", segmentDirective: "" };
     const outcomeMemory: string = guidance.block;
@@ -964,6 +979,8 @@ export async function runIdeasPipeline(
             promptVersion: PROMPT_VERSION,
             model,
             createdAtSec: now(),
+            writePendingMemories: outcomeMemoryCfg.writePendingMemories,
+            supersedePriorOnRerun: outcomeMemoryCfg.supersedePriorOnRerun,
           });
         }
 

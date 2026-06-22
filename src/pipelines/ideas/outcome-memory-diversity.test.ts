@@ -48,7 +48,7 @@ function memory(overrides: Partial<OutcomeMemory> = {}): OutcomeMemory {
 }
 
 function retrieved(overrides: Partial<OutcomeMemory> = {}, body = "body"): RetrievedOutcome {
-  return { memory: body, metadata: memory(overrides) };
+  return { memory: body, metadata: memory(overrides), relevance: 1 };
 }
 
 describe("buildSegmentDiversityDirective — empty / neutral inputs", () => {

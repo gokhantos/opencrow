@@ -30,6 +30,7 @@ import { aggregateGiant } from "./giant";
 import type { GiantAxisScores } from "./giant";
 import { anonymizeCandidates, fuseJury, type JuryVerdict, judgeWithJury } from "./jury";
 import {
+  deletePriorOutcomeMemories,
   toOutcomeMemory,
   renderOutcomeSentence,
   writeOutcomeMemories,
@@ -225,11 +226,7 @@ async function runIndependentJury(
     // static `sigeHardening.judgeModels` config default. The `judgeModels` schema
     // field is kept for backward compat but no longer drives the runtime panel.
     const routes = await getAllModelRoutes();
-    const judgeModels = [
-      routes["sige.judge.0"],
-      routes["sige.judge.1"],
-      routes["sige.judge.2"],
-    ];
+    const judgeModels = [routes["sige.judge.0"], routes["sige.judge.1"], routes["sige.judge.2"]];
     const panel = buildJuryPanel(judgeModels);
 
     const rawCands = candidates.map((c) => ({
@@ -532,9 +529,7 @@ export async function runStorePhase(params: {
     try {
       const sourceLinksText =
         candidate.sourceLinks?.length > 0
-          ? candidate.sourceLinks
-              .map((l) => `- [${l.title}](${l.url}) (${l.source})`)
-              .join("\n")
+          ? candidate.sourceLinks.map((l) => `- [${l.title}](${l.url}) (${l.source})`).join("\n")
           : "";
 
       const reasoning = [
@@ -726,6 +721,17 @@ export async function runOutcomeMemoryWriteBack(params: {
   readonly promptVersion: string;
   readonly model: string;
   readonly createdAtSec: number;
+  /**
+   * Write stored-pending / verdictSource:"none" memories (no real verdict yet).
+   * Default false: these dilute recall with un-adjudicated ideas, so skip them.
+   * dedup-rejected writes are unaffected (they carry a real "avoid" signal).
+   */
+  readonly writePendingMemories?: boolean;
+  /**
+   * Before writing a real verdict for an ideaId, delete its prior outcome
+   * memories so a re-run SUPERSEDES rather than duplicates. Default true.
+   */
+  readonly supersedePriorOnRerun?: boolean;
 }): Promise<void> {
   const {
     storedPairs,
@@ -741,6 +747,8 @@ export async function runOutcomeMemoryWriteBack(params: {
     promptVersion,
     model,
     createdAtSec,
+    writePendingMemories = false,
+    supersedePriorOnRerun = true,
   } = params;
 
   try {
@@ -760,13 +768,20 @@ export async function runOutcomeMemoryWriteBack(params: {
 
     const outcomeContext = { runId, promptVersion, model, createdAtSec };
     const items: OutcomeMemoryItem[] = [];
+    // Real-verdict ideaIds whose prior memories should be superseded before write.
+    const supersedeIds: string[] = [];
 
     for (const { ideaId, candidate } of storedPairs) {
       const proxyVerdict = proxyVerdictMap.get(ideaId);
+      // No real (proxy) verdict yet → "stored-pending". Skip writing it unless
+      // writePendingMemories is on: pending memories carry no adjudicated signal
+      // and only dilute recall.
+      if (!proxyVerdict && !writePendingMemories) continue;
       const outcomeVerdict = proxyVerdict ?? {
         verdict: "stored-pending" as const,
         verdictSource: "none",
       };
+      if (proxyVerdict) supersedeIds.push(ideaId);
 
       const gate = giantGateByCandidate.get(candidate);
       const artifact = demandByCandidate.get(candidateJoinId(candidate.title));
@@ -813,11 +828,22 @@ export async function runOutcomeMemoryWriteBack(params: {
       items.push({ sentence: renderOutcomeSentence(memory, bareTitle), metadata: memory });
     }
 
+    // Supersede prior memories for re-adjudicated ideas BEFORE writing the fresh
+    // verdict, so a re-run replaces rather than duplicates. Best-effort: each
+    // delete swallows its own failures (deletePriorOutcomeMemories never throws).
+    let superseded = 0;
+    if (supersedePriorOnRerun) {
+      for (const ideaId of supersedeIds) {
+        superseded += await deletePriorOutcomeMemories(outcomeMem0, ideasUserId, ideaId);
+      }
+    }
+
     await writeOutcomeMemories(outcomeMem0, items, ideasUserId);
     log.info("Outcome-memory write-back complete", {
       stored: storedPairs.length,
       dedupRejected: dedupRejected.length,
       total: items.length,
+      superseded,
       userId: ideasUserId,
     });
   } catch (err) {

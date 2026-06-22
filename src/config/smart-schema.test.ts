@@ -102,6 +102,11 @@ describe("smartConfigSchema", () => {
         reinforceCap: 5,
         avoidCap: 5,
         searchLimit: 12,
+        halfLifeDays: 45,
+        stalePromptPenalty: 0.6,
+        mmrLambda: 0.7,
+        supersedePriorOnRerun: true,
+        writePendingMemories: false,
       },
       graphReasoning: {
         enabled: false,

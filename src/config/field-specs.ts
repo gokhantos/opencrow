@@ -25,12 +25,7 @@
  * so introspection and seeding never drift from what the loader honors.
  */
 
-export type EnvParse =
-  | "string"
-  | "number"
-  | "boolean"
-  | "csv-string"
-  | "csv-number";
+export type EnvParse = "string" | "number" | "boolean" | "csv-string" | "csv-number";
 
 export interface ConfigFieldSpec {
   /** Dotted path into the parsed OpenCrowConfig. */
@@ -96,14 +91,7 @@ export const CONFIG_FIELD_SPECS: readonly ConfigDomainSpec[] = [
   },
   {
     domain: "memory",
-    fields: [
-      f(
-        "memorySearch.backend",
-        ["OPENCROW_MEMORY_BACKEND"],
-        "config/memory",
-        "backend",
-      ),
-    ],
+    fields: [f("memorySearch.backend", ["OPENCROW_MEMORY_BACKEND"], "config/memory", "backend")],
   },
   {
     domain: "sige",
@@ -229,6 +217,41 @@ export const CONFIG_FIELD_SPECS: readonly ConfigDomainSpec[] = [
         "config/smart.outcomeMemory",
         "searchLimit",
         "number",
+      ),
+      f(
+        "pipelines.ideas.smart.outcomeMemory.halfLifeDays",
+        ["OPENCROW_SMART_OUTCOME_MEMORY_HALF_LIFE_DAYS"],
+        "config/smart.outcomeMemory",
+        "halfLifeDays",
+        "number",
+      ),
+      f(
+        "pipelines.ideas.smart.outcomeMemory.stalePromptPenalty",
+        ["OPENCROW_SMART_OUTCOME_MEMORY_STALE_PROMPT_PENALTY"],
+        "config/smart.outcomeMemory",
+        "stalePromptPenalty",
+        "number",
+      ),
+      f(
+        "pipelines.ideas.smart.outcomeMemory.mmrLambda",
+        ["OPENCROW_SMART_OUTCOME_MEMORY_MMR_LAMBDA"],
+        "config/smart.outcomeMemory",
+        "mmrLambda",
+        "number",
+      ),
+      f(
+        "pipelines.ideas.smart.outcomeMemory.supersedePriorOnRerun",
+        ["OPENCROW_SMART_OUTCOME_MEMORY_SUPERSEDE_PRIOR_ON_RERUN"],
+        "config/smart.outcomeMemory",
+        "supersedePriorOnRerun",
+        "boolean",
+      ),
+      f(
+        "pipelines.ideas.smart.outcomeMemory.writePendingMemories",
+        ["OPENCROW_SMART_OUTCOME_MEMORY_WRITE_PENDING_MEMORIES"],
+        "config/smart.outcomeMemory",
+        "writePendingMemories",
+        "boolean",
       ),
     ],
   },
@@ -398,18 +421,8 @@ export const CONFIG_FIELD_SPECS: readonly ConfigDomainSpec[] = [
   {
     domain: "embeddings",
     fields: [
-      f(
-        "embeddings.provider",
-        ["OPENCROW_EMBEDDINGS_PROVIDER"],
-        "features/embeddings",
-        "provider",
-      ),
-      f(
-        "embeddings.baseUrl",
-        ["OPENCROW_EMBEDDINGS_BASE_URL"],
-        "features/embeddings",
-        "baseUrl",
-      ),
+      f("embeddings.provider", ["OPENCROW_EMBEDDINGS_PROVIDER"], "features/embeddings", "provider"),
+      f("embeddings.baseUrl", ["OPENCROW_EMBEDDINGS_BASE_URL"], "features/embeddings", "baseUrl"),
       f("embeddings.model", ["OPENCROW_EMBEDDINGS_MODEL"], "features/embeddings", "model"),
       f(
         "embeddings.dimensions",

@@ -22,13 +22,20 @@
 
 import { describe, test, expect } from "bun:test";
 import {
+  deletePriorOutcomeMemories,
   writeOutcomeMemories,
   fetchOutcomeMemoryBlock,
+  fetchOutcomeMemoryGuidance,
   outcomeMemorySchema,
   type OutcomeMemoryItem,
   type OutcomeMemory,
 } from "./outcome-memory";
-import type { Mem0Client, Mem0Memory, Mem0SearchResult, Mem0AddResult } from "../../sige/knowledge/mem0-client";
+import type {
+  Mem0Client,
+  Mem0Memory,
+  Mem0SearchResult,
+  Mem0AddResult,
+} from "../../sige/knowledge/mem0-client";
 
 // ── Stub Mem0Client ───────────────────────────────────────────────────────────
 
@@ -58,7 +65,7 @@ function makeStubClient(opts: {
     _addMemoriesCalls: addMemoriesCalls,
     _searchCalls: searchCalls,
     isUnavailable: () => false,
-    addMemory: async () => ({ memories: [], relations: [] } as Mem0AddResult),
+    addMemory: async () => ({ memories: [], relations: [] }) as Mem0AddResult,
     addMemories: async (params: AddMemoriesCall) => {
       addMemoriesCalls.push(params);
       if (opts.addMemoriesImpl) return opts.addMemoriesImpl(params);
@@ -190,7 +197,11 @@ describe("writeOutcomeMemories — basic calls", () => {
 
   test("passes all items as content/metadata pairs", async () => {
     const calls: AddMemoriesCall[] = [];
-    const client = makeStubClient({ addMemoriesImpl: async (p) => { calls.push(p); } });
+    const client = makeStubClient({
+      addMemoriesImpl: async (p) => {
+        calls.push(p);
+      },
+    });
 
     const items = [
       makeItem("validated", "human", "id-a", "Sentence A"),
@@ -206,7 +217,11 @@ describe("writeOutcomeMemories — basic calls", () => {
 
   test("verdict and verdictSource are reflected in the metadata sent to mem0", async () => {
     const calls: AddMemoriesCall[] = [];
-    const client = makeStubClient({ addMemoriesImpl: async (p) => { calls.push(p); } });
+    const client = makeStubClient({
+      addMemoriesImpl: async (p) => {
+        calls.push(p);
+      },
+    });
 
     const items = [
       makeItem("dedup-rejected", "dedup", null, "Dedup sentence"),
@@ -215,8 +230,12 @@ describe("writeOutcomeMemories — basic calls", () => {
     await writeOutcomeMemories(client, items, "sige-ideas");
 
     const payload = calls[0]?.items ?? [];
-    const dedupItem = payload.find((i) => (i.metadata as OutcomeMemory | undefined)?.verdict === "dedup-rejected");
-    const pendingItem = payload.find((i) => (i.metadata as OutcomeMemory | undefined)?.verdict === "stored-pending");
+    const dedupItem = payload.find(
+      (i) => (i.metadata as OutcomeMemory | undefined)?.verdict === "dedup-rejected",
+    );
+    const pendingItem = payload.find(
+      (i) => (i.metadata as OutcomeMemory | undefined)?.verdict === "stored-pending",
+    );
 
     expect(dedupItem).toBeDefined();
     expect((dedupItem?.metadata as OutcomeMemory | undefined)?.verdictSource).toBe("dedup");
@@ -554,4 +573,69 @@ describe("writeBack-OFF pipeline gate — writeOutcomeMemories called with empty
       expect(addMemoriesCallCount).toBe(0);
     },
   );
+});
+
+// ── unified codepath: fetchOutcomeMemoryBlock === fetchOutcomeMemoryGuidance.block ──
+
+describe("fetchOutcomeMemoryBlock — unified with fetchOutcomeMemoryGuidance", () => {
+  test("returns the same block as fetchOutcomeMemoryGuidance for identical inputs", async () => {
+    const validated = makeMemory("validated", "human", "idea-1", "A validated lesson");
+    const archived = makeMemory("archived", "human", "idea-2", "An archived antipattern");
+    const searchImpl = async (params: SearchCall) => {
+      const verdict = (params.filters?.["verdict"] as string | undefined) ?? "";
+      if (verdict === "validated") return { memories: [validated], relations: [] };
+      if (verdict === "archived") return { memories: [archived], relations: [] };
+      return { memories: [], relations: [] };
+    };
+
+    const args = {
+      userId: "sige-ideas",
+      query: "saas productivity",
+      reinforceCap: 5,
+      avoidCap: 5,
+      searchLimit: 12,
+    };
+
+    const block = await fetchOutcomeMemoryBlock({ mem0: makeStubClient({ searchImpl }), ...args });
+    const guidance = await fetchOutcomeMemoryGuidance({
+      mem0: makeStubClient({ searchImpl }),
+      ...args,
+    });
+    expect(block).toBe(guidance.block);
+    expect(block).toContain("REINFORCE");
+    expect(block).toContain("AVOID");
+  });
+});
+
+// ── deletePriorOutcomeMemories (supersede primitive) ──────────────────────────
+
+describe("deletePriorOutcomeMemories", () => {
+  test("deletes only memories matching the ideaId, returns the count", async () => {
+    const m1 = makeMemory("validated", "human", "idea-1", "prior 1");
+    const m2 = makeMemory("archived", "human", "idea-1", "prior 2");
+    const other = makeMemory("validated", "human", "idea-OTHER", "unrelated");
+    const deleted: string[] = [];
+    const client = {
+      isUnavailable: () => false,
+      getAll: async () => [m1, m2, other],
+      deleteMemory: async (id: string) => {
+        deleted.push(id);
+      },
+    } as unknown as Mem0Client;
+
+    const count = await deletePriorOutcomeMemories(client, "sige-ideas", "idea-1");
+    expect(count).toBe(2);
+    expect(deleted).toContain(m1.id);
+    expect(deleted).toContain(m2.id);
+    expect(deleted).not.toContain(other.id);
+  });
+
+  test("no matching memories → zero deletions, returns 0", async () => {
+    const client = {
+      isUnavailable: () => false,
+      getAll: async () => [makeMemory("validated", "human", "idea-X", "x")],
+      deleteMemory: async () => undefined,
+    } as unknown as Mem0Client;
+    expect(await deletePriorOutcomeMemories(client, "sige-ideas", "idea-MISSING")).toBe(0);
+  });
 });

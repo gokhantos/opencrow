@@ -47,7 +47,7 @@ function memoryFor(
     model: "test-model",
     createdAtSec: 1_000_000,
   });
-  return { memory: body, metadata };
+  return { memory: body, metadata, relevance: 1 };
 }
 
 function reinforceItem(id: string, body = "Validated memory"): RetrievedOutcome {
