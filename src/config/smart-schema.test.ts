@@ -125,6 +125,16 @@ describe("smartConfigSchema", () => {
         searchLimit: 25,
         minDegree: 3,
         maxDegree: 200,
+        neutralWeight: 1,
+        noveltyHalfLifeRuns: 10,
+      },
+      graphFeedback: {
+        enabled: false,
+        validatedWeight: 1,
+        killedWeight: -1,
+        weightHalfLifeDays: 60,
+        maxSeedWeight: 5,
+        projectToNeo4j: true,
       },
       incumbentExclusion: {
         enabled: true,

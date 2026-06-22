@@ -66,6 +66,20 @@ export interface OpportunityPathsParams {
   readonly minDegree: number;
   /** Upper degree bound on EVERY path node (suppresses hubs). */
   readonly maxDegree: number;
+  /**
+   * Cold-start neutral weight for a seed that has no learned `success_weight` yet
+   * (Phase 3 graph feedback). `coalesce(success_weight, $neutralWeight)` keeps an
+   * un-projected seed at this value so an empty weight table reproduces ~degree
+   * behavior. Bound as a $param (no interpolation).
+   */
+  readonly neutralWeight: number;
+  /**
+   * Novelty half-life in RUNS for the exposure penalty: a seed's score is
+   * multiplied by `exp(-ln2 * exposure_count / noveltyHalfLifeRuns)`, so a seed
+   * that has fed many runs is gradually down-weighted to break the monoculture.
+   * Bound as a $param (no interpolation).
+   */
+  readonly noveltyHalfLifeRuns: number;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -291,8 +305,19 @@ WHERE pain.degree >= $minDegree
   // membership test keeps reasoning correct on those un-canonicalized edges
   // instead of silently dropping them until the next Sunday cleanup.
   AND any(r IN [(pain)-[rr]-() | toUpper(type(rr))] WHERE r IN $relWhitelist)
-WITH pain
-ORDER BY pain.degree DESC
+// Phase 3 graph feedback: rank seeds by LEARNED productivity, not raw degree.
+// seedScore = (learned success_weight) * a novelty decay on exposure_count.
+// COLD-START NEUTRAL FALLBACK: a seed with no projected weight uses
+// coalesce(success_weight, $neutralWeight) and coalesce(exposure_count, 0), so an
+// EMPTY weight table makes every seed score == $neutralWeight and the ORDER BY
+// collapses to the pain.degree DESC tiebreak — i.e. byte-identical to the prior
+// degree-only ranking until learning populates the weights. -0.6931 ≈ -ln(2), so
+// a seed that has fed $noveltyHalfLifeRuns runs is novelty-halved.
+WITH pain,
+     coalesce(pain.success_weight, $neutralWeight)
+       * exp(-0.6931 * coalesce(pain.exposure_count, 0) / $noveltyHalfLifeRuns)
+       AS seedScore
+ORDER BY seedScore DESC, pain.degree DESC
 LIMIT toInteger($searchLimit)
 MATCH path = (pain)-[rels*2..${MAX_HOPS_CEILING}]-(dest:Entity {user_id: $userId})
 WHERE length(path) <= toInteger($maxHops)
@@ -442,6 +467,9 @@ export class Neo4jReadClient {
       maxPaths: params.maxPaths,
       stoplist: STOPLIST,
       relWhitelist: [...REL_WHITELIST],
+      // Phase 3 graph feedback seed-ranking knobs (bound, never interpolated).
+      neutralWeight: params.neutralWeight,
+      noveltyHalfLifeRuns: params.noveltyHalfLifeRuns,
     };
 
     try {

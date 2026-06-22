@@ -1179,6 +1179,13 @@ export const graphReasoningConfigSchema = z
     // keeping legitimate popular-app nodes (facebook ~120, roblox ~154). 60 was
     // too low and filtered out all real paths.
     maxDegree: z.number().int().min(1).max(5000).default(200),
+    // Phase 3 graph feedback — cold-start neutral weight for an un-projected seed.
+    // coalesce(success_weight, neutralWeight) keeps an empty weight table at
+    // ~degree behavior (the read path's ORDER BY collapses to the degree tiebreak).
+    neutralWeight: z.number().min(0).max(10).default(1),
+    // Phase 3 graph feedback — novelty half-life in RUNS: a seed that has fed this
+    // many runs is novelty-halved, so traversal rotates off over-used seeds.
+    noveltyHalfLifeRuns: z.number().int().min(1).max(100).default(10),
   })
   .default({
     enabled: false,
@@ -1187,8 +1194,43 @@ export const graphReasoningConfigSchema = z
     searchLimit: 25,
     minDegree: 3,
     maxDegree: 200,
+    neutralWeight: 1,
+    noveltyHalfLifeRuns: 10,
   });
 export type GraphReasoningConfig = z.infer<typeof graphReasoningConfigSchema>;
+
+// Phase 3 "graph outcome feedback": learn which seed entities historically
+// produced GOOD ideas and project that back onto the live graph so opportunity-
+// path traversal favors them (breaking the degree-DESC monoculture). Default OFF
+// → no Postgres/Neo4j writes and the read path stays at neutral/degree. Fully
+// defaulted -> backward-compatible.
+export const graphFeedbackConfigSchema = z
+  .object({
+    // Master switch. OFF → no exposure recording, no event log, no projection.
+    enabled: z.boolean().default(false),
+    // Signed credit a VALIDATED idea contributes to the run's aggregate verdict.
+    validatedWeight: z.number().default(1),
+    // Signed (negative) debit a KILLED idea contributes to the aggregate verdict.
+    killedWeight: z.number().default(-1),
+    // Half-life (days) of the temporal decay applied to each event's weight when
+    // materializing graph_seed_weights, so stale outcomes fade.
+    weightHalfLifeDays: z.number().default(60),
+    // Clamp on the per-seed aggregate weight magnitude (±maxSeedWeight).
+    maxSeedWeight: z.number().default(5),
+    // Whether to project the materialized weights onto the live Neo4j graph (the
+    // only step that opens a WRITE session). When false, bookkeeping still runs in
+    // Postgres but the graph is untouched.
+    projectToNeo4j: z.boolean().default(true),
+  })
+  .default({
+    enabled: false,
+    validatedWeight: 1,
+    killedWeight: -1,
+    weightHalfLifeDays: 60,
+    maxSeedWeight: 5,
+    projectToNeo4j: true,
+  });
+export type GraphFeedbackConfig = z.infer<typeof graphFeedbackConfigSchema>;
 
 // Layer C "incumbent exclusion": drop / down-rank collector signals that
 // prominently name a top-N charted (or high-review-count) app. PURE-logic + safe,
@@ -1484,6 +1526,11 @@ export const smartConfigSchema = z.object({
   // Default OFF (gated together with sige.neo4j.enabled). Fully defaulted ->
   // backward-compatible.
   graphReasoning: graphReasoningConfigSchema,
+  // Phase 3 "graph outcome feedback": learn productive seed entities + project
+  // success weights onto the live graph so traversal favors them. Default OFF
+  // (gated alongside graphReasoning + sige.neo4j). Fully defaulted ->
+  // backward-compatible.
+  graphFeedback: graphFeedbackConfigSchema,
   // Layer C "incumbent exclusion": drop/down-rank collector signals that name a
   // top-N incumbent. Pure-logic + safe — default ON. Fully defaulted ->
   // backward-compatible.
@@ -1623,6 +1670,16 @@ const SMART_IDEAS_DEFAULTS = {
     searchLimit: 25,
     minDegree: 3,
     maxDegree: 200,
+    neutralWeight: 1,
+    noveltyHalfLifeRuns: 10,
+  },
+  graphFeedback: {
+    enabled: false,
+    validatedWeight: 1,
+    killedWeight: -1,
+    weightHalfLifeDays: 60,
+    maxSeedWeight: 5,
+    projectToNeo4j: true,
   },
   incumbentExclusion: {
     enabled: true,
