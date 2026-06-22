@@ -551,6 +551,11 @@ export async function runIdeasPipeline(
               currentPromptVersion: PROMPT_VERSION,
               currentModel: model,
             },
+            // Trust-tiered recall (Phase 2). weighting:false → no-op.
+            trust: {
+              weighting: outcomeMemoryCfg.trustWeighting,
+              proxyAvoidCap: outcomeMemoryCfg.proxyAvoidCap,
+            },
           })
         : { block: "", segmentDirective: "" };
     const outcomeMemory: string = guidance.block;
@@ -981,6 +986,11 @@ export async function runIdeasPipeline(
             createdAtSec: now(),
             writePendingMemories: outcomeMemoryCfg.writePendingMemories,
             supersedePriorOnRerun: outcomeMemoryCfg.supersedePriorOnRerun,
+            // Deferred re-probe enqueue (Phase 2). enabled:false → no rows enqueued.
+            reprobe: {
+              enabled: outcomeMemoryCfg.reprobe.enabled,
+              delayDays: outcomeMemoryCfg.reprobe.delayDays,
+            },
           });
         }
 

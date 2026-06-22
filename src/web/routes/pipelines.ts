@@ -26,7 +26,11 @@ import {
 } from "../../pipelines/ideas/competability-calibration";
 import { persistedToCandidateCompetability } from "../../pipelines/ideas/competability";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
-import { writeHumanOutcomeMemory } from "../../pipelines/ideas/outcome-memory";
+import {
+  humanStageToVerdict,
+  writeHumanOutcomeMemory,
+} from "../../pipelines/ideas/outcome-memory";
+import { enqueueValidatedIdea } from "../../pipelines/ideas/deferred-outcome-store";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
 import { DEFAULT_PIPELINE_CONFIG } from "../../pipelines/types";
 import {
@@ -514,6 +518,26 @@ export function createPipelineRoutes(deps?: {
           },
           sigeMem0.ideasUserId,
         );
+      }
+
+      // Deferred re-probe enqueue (Phase 2, gated): a HUMAN validation is ground
+      // truth, but a deferred demand re-probe still adds a second external check.
+      // The human path carries NO demand snapshot, so baselineDemand is null — the
+      // re-probe will resolve "inconclusive" and leave the human verdict intact
+      // (it only records a row). Gated on reprobe.enabled; best-effort (the store
+      // helper never throws). delayDays from config; validatedAt = now.
+      if (outcomeMemoryCfg.reprobe.enabled && humanStageToVerdict(body.stage) === "validated") {
+        const validatedAt = Math.floor(Date.now() / 1000);
+        await enqueueValidatedIdea({
+          ideaId: updated.id,
+          title: updated.title,
+          segment: null,
+          archetype: null,
+          validationSource: "human",
+          validatedAt,
+          baselineDemand: null,
+          dueAt: validatedAt + outcomeMemoryCfg.reprobe.delayDays * 86_400,
+        });
       }
     } catch (err) {
       // Defense in depth: writeHumanOutcomeMemory is already best-effort, but a

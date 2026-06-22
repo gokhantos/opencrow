@@ -219,6 +219,33 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   );
   if (outcomeMemoryWritePendingMemories !== undefined)
     outcomeMemoryEnv.writePendingMemories = outcomeMemoryWritePendingMemories;
+  // Phase 2 trust-tiered recall scalar flags.
+  const outcomeMemoryTrustWeighting = boolEnv("OPENCROW_SMART_OUTCOME_MEMORY_TRUST_WEIGHTING");
+  if (outcomeMemoryTrustWeighting !== undefined)
+    outcomeMemoryEnv.trustWeighting = outcomeMemoryTrustWeighting;
+  const outcomeMemoryProxyAvoidCap = Number(
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_PROXY_AVOID_CAP ?? "",
+  );
+  if (
+    !Number.isNaN(outcomeMemoryProxyAvoidCap) &&
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_PROXY_AVOID_CAP !== undefined
+  ) {
+    outcomeMemoryEnv.proxyAvoidCap = outcomeMemoryProxyAvoidCap;
+  }
+  // Phase 2 deferred re-probe scalar flags. A nested sub-block (like sigeAuto):
+  // collected separately and merged field-wise below so siblings survive.
+  const reprobeEnv: Record<string, unknown> = {};
+  const reprobeEnabled = boolEnv("OPENCROW_SMART_OUTCOME_MEMORY_REPROBE_ENABLED");
+  if (reprobeEnabled !== undefined) reprobeEnv.enabled = reprobeEnabled;
+  const reprobeDelayDays = Number(
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_REPROBE_DELAY_DAYS ?? "",
+  );
+  if (
+    !Number.isNaN(reprobeDelayDays) &&
+    process.env.OPENCROW_SMART_OUTCOME_MEMORY_REPROBE_DELAY_DAYS !== undefined
+  ) {
+    reprobeEnv.delayDays = reprobeDelayDays;
+  }
 
   // OPENCROW_SMART_GRAPH_REASONING_* overrides for the graph-reasoning block.
   // An EXPLICIT block (like outcomeMemoryEnv): the generic deep-merge above does
@@ -518,6 +545,7 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     Object.keys(smartEnv).length > 0 ||
     Object.keys(sigeAutoEnv).length > 0 ||
     Object.keys(outcomeMemoryEnv).length > 0 ||
+    Object.keys(reprobeEnv).length > 0 ||
     Object.keys(graphReasoningEnv).length > 0 ||
     Object.keys(incumbentExclusionEnv).length > 0 ||
     Object.keys(competabilityEnv).length > 0 ||
@@ -536,9 +564,19 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
       const existingSigeAuto = (existingSmart.sigeAuto ?? {}) as Record<string, unknown>;
       smart.sigeAuto = { ...existingSigeAuto, ...sigeAutoEnv };
     }
-    if (Object.keys(outcomeMemoryEnv).length > 0) {
+    if (Object.keys(outcomeMemoryEnv).length > 0 || Object.keys(reprobeEnv).length > 0) {
       const existingOutcomeMemory = (existingSmart.outcomeMemory ?? {}) as Record<string, unknown>;
-      smart.outcomeMemory = { ...existingOutcomeMemory, ...outcomeMemoryEnv };
+      const mergedOutcomeMemory: Record<string, unknown> = {
+        ...existingOutcomeMemory,
+        ...outcomeMemoryEnv,
+      };
+      // Merge the reprobe sub-block field-wise so sibling reprobe fields survive a
+      // partial env override (mirrors the competability.builderProfile pattern).
+      if (Object.keys(reprobeEnv).length > 0) {
+        const existingReprobe = (existingOutcomeMemory.reprobe ?? {}) as Record<string, unknown>;
+        mergedOutcomeMemory.reprobe = { ...existingReprobe, ...reprobeEnv };
+      }
+      smart.outcomeMemory = mergedOutcomeMemory;
     }
     if (Object.keys(graphReasoningEnv).length > 0) {
       const existing = (existingSmart.graphReasoning ?? {}) as Record<string, unknown>;

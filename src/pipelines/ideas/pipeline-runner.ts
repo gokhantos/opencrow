@@ -36,6 +36,8 @@ import {
   writeOutcomeMemories,
   type OutcomeMemoryItem,
 } from "./outcome-memory";
+import { ABSENCE_CONFIDENCE_CAP } from "./demand";
+import { enqueueValidatedIdea } from "./deferred-outcome-store";
 import {
   buildIdeaProvenance,
   candidateHasDemandEvidence,
@@ -732,6 +734,13 @@ export async function runOutcomeMemoryWriteBack(params: {
    * memories so a re-run SUPERSEDES rather than duplicates. Default true.
    */
   readonly supersedePriorOnRerun?: boolean;
+  /**
+   * Deferred outcome re-probe enqueue (Phase 2). Absent / enabled:false → no rows
+   * enqueued (byte-identical). When enabled, a proxy-VALIDATED idea whose
+   * validation-time demand snapshot CLEARED the absence floor is enqueued for a
+   * demand re-probe `delayDays` later. `createdAtSec` is the validation timestamp.
+   */
+  readonly reprobe?: { readonly enabled: boolean; readonly delayDays: number };
 }): Promise<void> {
   const {
     storedPairs,
@@ -749,6 +758,7 @@ export async function runOutcomeMemoryWriteBack(params: {
     createdAtSec,
     writePendingMemories = false,
     supersedePriorOnRerun = true,
+    reprobe,
   } = params;
 
   try {
@@ -815,6 +825,30 @@ export async function runOutcomeMemoryWriteBack(params: {
       );
 
       items.push({ sentence: renderOutcomeSentence(memory, candidate.title), metadata: memory });
+
+      // ── Deferred re-probe enqueue (gated, Phase 2) ───────────────────────────
+      // A proxy-VALIDATED idea is a SELF-GRADE; enqueue it to re-probe real demand
+      // after delayDays and supersede the proxy verdict with ground truth. ONLY
+      // when the validation-time demand snapshot cleared the absence floor —
+      // otherwise the re-probe diff would always be inconclusive (both at floor).
+      if (
+        reprobe?.enabled &&
+        proxyVerdict?.verdict === "validated" &&
+        artifact &&
+        artifact.confidence > ABSENCE_CONFIDENCE_CAP
+      ) {
+        const dueAt = createdAtSec + reprobe.delayDays * 86_400;
+        await enqueueValidatedIdea({
+          ideaId,
+          title: candidate.title,
+          segment: resolveCandidateSegment(candidate),
+          archetype: candidate.archetype ?? null,
+          validationSource: proxyVerdict.verdictSource,
+          validatedAt: createdAtSec,
+          baselineDemand: artifact,
+          dueAt,
+        });
+      }
     }
 
     for (const rejected of dedupRejected) {

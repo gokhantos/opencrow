@@ -303,6 +303,11 @@ export async function runAutonomousSige(
             currentPromptVersion: PROMPT_VERSION,
             currentModel: model,
           },
+          // Trust-tiered recall (Phase 2). weighting:false → no-op.
+          trust: {
+            weighting: outcomeMemoryCfg.trustWeighting,
+            proxyAvoidCap: outcomeMemoryCfg.proxyAvoidCap,
+          },
         }).catch(() => "")
       : "";
 
