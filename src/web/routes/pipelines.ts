@@ -25,6 +25,7 @@ import {
   type CompetabilityCalibrationReport,
 } from "../../pipelines/ideas/competability-calibration";
 import { persistedToCandidateCompetability } from "../../pipelines/ideas/competability";
+import { getLiftSummary, getRunLift } from "../../pipelines/ideas/lift-attribution";
 import { Mem0Client } from "../../sige/knowledge/mem0-client";
 import {
   humanStageToVerdict,
@@ -187,6 +188,26 @@ export function createPipelineRoutes(deps?: {
         { success: false, error: "Competability calibration failed" },
         500,
       );
+    }
+  });
+
+  // READ-ONLY learning-lift summary (Phase 4 A/B holdout). Registered BEFORE the
+  // dynamic "/pipelines/:id" route so the static path wins. Reports guided-vs-blind
+  // validated/kept rates over a window + per-lesson lift. humanOnly (default true)
+  // is the honest signal; humanOnly=false includes proxy/auto self-grades.
+  app.get("/pipelines/lift-summary", async (c) => {
+    try {
+      const windowParam = c.req.query("window");
+      const windowSec = windowParam ? Math.max(1, Number(windowParam)) : undefined;
+      const humanOnly = c.req.query("humanOnly") !== "false";
+      const data = await getLiftSummary({
+        ...(windowSec !== undefined && Number.isFinite(windowSec) ? { windowSec } : {}),
+        humanOnly,
+      });
+      return c.json({ success: true, data });
+    } catch (err) {
+      log.error("Lift summary failed", { err });
+      return c.json({ success: false, error: "Lift summary failed" }, 500);
     }
   });
 
@@ -377,6 +398,23 @@ export function createPipelineRoutes(deps?: {
     const runId = c.req.param("runId");
     const ideas = await getIdeasForRun(runId);
     return c.json({ success: true, data: ideas });
+  });
+
+  // READ-ONLY per-run learning lift (Phase 4 A/B holdout): the run's arm, idea
+  // count, human + any validated counts, and injected-lesson counts. 404 when the
+  // run has no arm row (holdout disabled, or pre-feature run).
+  app.get("/pipelines-runs/:runId/lift", async (c) => {
+    const runId = c.req.param("runId");
+    try {
+      const lift = await getRunLift(runId);
+      if (!lift) {
+        return c.json({ success: false, error: "Run lift not found" }, 404);
+      }
+      return c.json({ success: true, data: lift });
+    } catch (err) {
+      log.error("Run lift failed", { runId, err });
+      return c.json({ success: false, error: "Run lift failed" }, 500);
+    }
   });
 
   // Bulk: resume ALL interrupted runs (still 'running' after a restart).

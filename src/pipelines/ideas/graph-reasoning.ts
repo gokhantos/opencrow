@@ -109,6 +109,13 @@ export interface GraphReasoningResult {
   readonly directive: string;
   /** Distinct seed names the returned paths started from (deduped, order-stable). */
   readonly seedEntities: readonly string[];
+  /**
+   * The raw GraphPath[] the traversal returned (the SAME paths the `directive`
+   * was rendered from), for per-lesson lift attribution. Derived from the one
+   * `opportunityPaths` call so it cannot drift from the directive. `[]` on
+   * failure / empty graph.
+   */
+  readonly paths: readonly GraphPath[];
 }
 
 /** Distinct, order-stable seed names across the returned paths. PURE. */
@@ -156,9 +163,10 @@ export async function fetchGraphReasoningDirective(params: {
     return {
       directive: buildGraphReasoningDirective(paths, params.maxPaths),
       seedEntities: distinctSeeds(paths),
+      paths,
     };
   } catch (err) {
     log.warn("fetchGraphReasoningDirective failed (returning empty)", { err });
-    return { directive: "", seedEntities: [] };
+    return { directive: "", seedEntities: [], paths: [] };
   }
 }

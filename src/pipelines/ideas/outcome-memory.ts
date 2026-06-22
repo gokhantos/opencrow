@@ -389,13 +389,33 @@ export interface TrustOptions {
  * this run — a novelty signal, not an outcome-quality verdict). When OFF the
  * wording and ordering are unchanged.
  */
-export function buildOutcomeMemoryBlock(
+/**
+ * The structured REINFORCE / AVOID / novelty sublists that
+ * {@link buildOutcomeMemoryBlock} actually renders, in the exact order they would
+ * appear as bullets. Surfaced so the lift-attribution layer can record WHICH
+ * lessons were injected without re-deriving (and risking drift from) the rendered
+ * string. PURE.
+ */
+export interface OutcomeLessonPartition {
+  readonly reinforce: readonly RetrievedOutcome[];
+  readonly avoid: readonly RetrievedOutcome[];
+  readonly novelty: readonly RetrievedOutcome[];
+}
+
+/**
+ * Pure selection core shared by {@link buildOutcomeMemoryBlock} and
+ * {@link buildOutcomeMemoryGuidanceWithItems}: partitions the retrieved outcomes
+ * into the exact capped REINFORCE / AVOID / novelty sublists that get rendered.
+ * Both the rendered string and the captured items derive from THIS one call so
+ * they cannot drift. PURE.
+ */
+export function partitionOutcomeLessons(
   retrieved: readonly RetrievedOutcome[],
   reinforceCap: number,
   avoidCap: number,
   rankOpts?: BlockRankOptions,
   trust?: TrustOptions,
-): string {
+): OutcomeLessonPartition {
   const trustOn = trust?.weighting === true && rankOpts !== undefined;
 
   const reinforceRaw = retrieved.filter(
@@ -424,6 +444,26 @@ export function buildOutcomeMemoryBlock(
       : dedupAndCap(avoidRaw, avoidCap);
   // Novelty hint (trust-on only): dedup-rejected as "crowded title space".
   const novelty = trustOn && rankOpts ? selectRankedOutcomes(dedupRaw, avoidCap, rankOpts) : [];
+
+  return { reinforce, avoid, novelty };
+}
+
+export function buildOutcomeMemoryBlock(
+  retrieved: readonly RetrievedOutcome[],
+  reinforceCap: number,
+  avoidCap: number,
+  rankOpts?: BlockRankOptions,
+  trust?: TrustOptions,
+): string {
+  const trustOn = trust?.weighting === true && rankOpts !== undefined;
+
+  const { reinforce, avoid, novelty } = partitionOutcomeLessons(
+    retrieved,
+    reinforceCap,
+    avoidCap,
+    rankOpts,
+    trust,
+  );
 
   // Competability-aware moat learnings: correlate the moat signal on retrieved
   // outcomes with their verdict and distil a bounded directive. PURE, no LLM, no
@@ -775,6 +815,14 @@ export interface OutcomeMemoryGuidance {
   readonly block: string;
   /** SEED segment-diversity directive injected at Pass 1 (buildSegmentDiversityDirective). */
   readonly segmentDirective: string;
+  /**
+   * The structured REINFORCE / AVOID sublists actually rendered into `block`,
+   * for per-lesson lift attribution. ONLY populated by
+   * {@link fetchOutcomeMemoryGuidanceWithItems}; absent on the legacy
+   * {@link fetchOutcomeMemoryGuidance} path so existing callers/shape are
+   * unchanged. Derived from the SAME selection as `block` so the two cannot drift.
+   */
+  readonly lessons?: OutcomeLessonPartition;
 }
 
 /**
@@ -811,5 +859,34 @@ export async function fetchOutcomeMemoryGuidance(params: {
   return {
     block: buildOutcomeMemoryBlock(retrieved, reinforceCap, avoidCap, rank, trust),
     segmentDirective: buildSegmentDiversityDirective(retrieved, rotationSeed),
+  };
+}
+
+/**
+ * Additive variant of {@link fetchOutcomeMemoryGuidance} that ALSO surfaces the
+ * structured REINFORCE / AVOID items rendered into the block, for per-lesson lift
+ * attribution. The rendered `block` and the captured `lessons` are both derived
+ * from the SAME retrieved set + selection params, so they cannot drift. Same
+ * best-effort contract (never throws; "" / empty when no usable memories). Kept as
+ * a sibling — not a change to {@link fetchOutcomeMemoryGuidance} — so existing
+ * callers and the returned shape stay untouched.
+ */
+export async function fetchOutcomeMemoryGuidanceWithItems(params: {
+  readonly mem0: Mem0Client;
+  readonly userId: string;
+  readonly query: string;
+  readonly reinforceCap: number;
+  readonly avoidCap: number;
+  readonly searchLimit: number;
+  readonly rotationSeed?: number;
+  readonly rank?: BlockRankOptions;
+  readonly trust?: TrustOptions;
+}): Promise<Required<OutcomeMemoryGuidance>> {
+  const { reinforceCap, avoidCap, rotationSeed = 0, rank, trust } = params;
+  const retrieved = await fetchRetrievedOutcomes(params);
+  return {
+    block: buildOutcomeMemoryBlock(retrieved, reinforceCap, avoidCap, rank, trust),
+    segmentDirective: buildSegmentDiversityDirective(retrieved, rotationSeed),
+    lessons: partitionOutcomeLessons(retrieved, reinforceCap, avoidCap, rank, trust),
   };
 }

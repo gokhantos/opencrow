@@ -5,7 +5,13 @@ import {
   RotateCcw,
   Check,
 } from "lucide-react";
-import { apiFetch } from "../api";
+import {
+  apiFetch,
+  getLiftSummary,
+  getRunLift,
+  type LiftSummaryData,
+  type RunLiftData,
+} from "../api";
 import { relativeTime } from "../lib/format";
 import { cn } from "../lib/cn";
 import { PageHeader, LoadingState, EmptyState, SearchBar } from "../components";
@@ -329,6 +335,129 @@ function IdeaCard({
 
 // ── Main Component ─────────────────────────────────────────────────────
 
+// ── Learning lift card (Phase 4 A/B holdout) ───────────────────────────
+//
+// ONE light read-only card: the HUMAN-ONLY guided-vs-blind validated rate is the
+// headline (proxy lift is circular, so it is never the headline), plus this run's
+// arm + injected-lesson count. The lift number is HIDDEN until each arm has >= 20
+// runs (otherwise "insufficient data"). lesson_text is untrusted display data and
+// is rendered ONLY as React text children — never via dangerouslySetInnerHTML.
+
+const MIN_RUNS_PER_ARM = 20;
+
+function pct(rate: number): string {
+  return `${(rate * 100).toFixed(1)}%`;
+}
+
+function LearningLiftCard({ runFilter }: { readonly runFilter: string }) {
+  const [summary, setSummary] = useState<LiftSummaryData | null>(null);
+  const [runLift, setRunLift] = useState<RunLiftData | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getLiftSummary()
+      .then((res) => {
+        if (!cancelled && res.success && res.data) setSummary(res.data);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (runFilter === "all") {
+      setRunLift(null);
+      return;
+    }
+    getRunLift(runFilter)
+      .then((res) => {
+        if (!cancelled) setRunLift(res.success && res.data ? res.data : null);
+      })
+      .catch(() => {
+        if (!cancelled) setRunLift(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runFilter]);
+
+  // Hide the card entirely until a holdout has produced at least one arm row —
+  // when the feature is OFF the window has no guided/blind runs and there is
+  // nothing to show.
+  if (!loaded || !summary) return null;
+  const { guided, blind } = summary.lift;
+  if (guided.runs === 0 && blind.runs === 0) return null;
+
+  const enoughData = guided.runs >= MIN_RUNS_PER_ARM && blind.runs >= MIN_RUNS_PER_ARM;
+  const lift = summary.lift.validatedLift;
+  const liftPositive = lift >= 0;
+
+  return (
+    <div className="mb-5 px-5 py-4 bg-bg-1 border border-border rounded-lg">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h3 className="font-heading text-sm font-semibold text-strong">Learning lift</h3>
+          <p className="text-xs text-faint mt-0.5">
+            Guided vs blind validated rate (human verdicts only)
+          </p>
+        </div>
+        {enoughData ? (
+          <div className="text-right">
+            <div
+              className={cn(
+                "font-mono text-xl font-semibold",
+                liftPositive ? "text-success" : "text-danger",
+              )}
+            >
+              {liftPositive ? "+" : ""}
+              {pct(lift)}
+            </div>
+            <div className="text-xs text-faint mt-0.5">
+              guided {pct(guided.validatedRate)} vs blind {pct(blind.validatedRate)}
+            </div>
+          </div>
+        ) : (
+          <div className="text-right">
+            <div className="font-mono text-sm text-faint">insufficient data</div>
+            <div className="text-xs text-faint mt-0.5">
+              guided {guided.runs}/{MIN_RUNS_PER_ARM} · blind {blind.runs}/{MIN_RUNS_PER_ARM} runs
+            </div>
+          </div>
+        )}
+      </div>
+
+      {runLift && (
+        <div className="mt-3 pt-3 border-t border-border flex items-center gap-3 flex-wrap text-xs text-muted">
+          <span
+            className={cn(
+              "inline-flex items-center px-2 py-0.5 rounded-full border font-medium",
+              runLift.arm === "guided"
+                ? "bg-accent-subtle text-accent border-accent/20"
+                : "bg-bg-3 text-faint border-border",
+            )}
+          >
+            this run: {runLift.arm}
+          </span>
+          <span>{runLift.ideas} ideas</span>
+          <span>{runLift.humanValidated} validated</span>
+          <span>
+            {runLift.injectedLessons.reinforce +
+              runLift.injectedLessons.avoid +
+              runLift.injectedLessons.graphPath}{" "}
+            lessons injected
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PipelineIdeas() {
   const toast = useToast();
   const [ideas, setIdeas] = useState<readonly PipelineIdea[]>([]);
@@ -527,6 +656,9 @@ export default function PipelineIdeas() {
           </select>
         )}
       </div>
+
+      {/* Learning lift (Phase 4 A/B holdout) — hidden when no holdout data */}
+      <LearningLiftCard runFilter={runFilter} />
 
       {/* Ideas */}
       {ideas.length === 0 ? (

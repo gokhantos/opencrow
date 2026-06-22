@@ -33,9 +33,20 @@ import type { DemandArtifact } from "./demand";
 import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
 import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
-import { buildRecallQuery, fetchOutcomeMemoryGuidance } from "./outcome-memory";
+import {
+  buildRecallQuery,
+  fetchOutcomeMemoryGuidance,
+  fetchOutcomeMemoryGuidanceWithItems,
+} from "./outcome-memory";
 import { fetchGraphReasoningDirective } from "./graph-reasoning";
 import { recordSeedExposure } from "./graph-outcome-feedback";
+import { assignHoldoutArm, resolveHoldoutGuidance } from "./holdout";
+import {
+  graphPathsToLessons,
+  outcomeItemsToLessons,
+  recordInjectedLessons,
+  recordRunArm,
+} from "./lift-attribution";
 import { selectWithNoveltyReserve } from "./generate-wide";
 import { getDb } from "../../store/db";
 import { getModelRoute } from "../../store/model-routing";
@@ -274,6 +285,28 @@ export async function runIdeasPipeline(
     const sigeConfig = loadConfig().sige;
     const taste = smart.taste;
     const rotationSeed = rotationSeedFromRunId(runId);
+
+    // ── PHASE 4 (A/B holdout): deterministic per-RUN arm assignment ───────────
+    // The learning signal (outcome-memory + graph-reasoning) is injected ONCE per
+    // run, so the holdout split is per-RUN. A configurable fraction of runs are
+    // "blind" — they SKIP the memory/graph READ hooks below (guidance blanked to
+    // "") so they generate as if the learning loop did not exist. Comparing
+    // guided-vs-blind validated rates is the honest lift measurement. Gated on
+    // abHoldout.enabled; default OFF (ratio 0 → assignHoldoutArm always "guided")
+    // → byte-identical to the pre-feature path. recordRunArm is best-effort.
+    const abHoldoutCfg = smart.abHoldout;
+    const holdoutArm = abHoldoutCfg.enabled
+      ? assignHoldoutArm(runId, abHoldoutCfg.holdoutRatio)
+      : "guided";
+    if (abHoldoutCfg.enabled) {
+      await recordRunArm(runId, holdoutArm, abHoldoutCfg.holdoutRatio, rotationSeed);
+      log.info("Phase 4 A/B holdout: arm assigned", {
+        runId,
+        arm: holdoutArm,
+        holdoutRatio: abHoldoutCfg.holdoutRatio,
+      });
+    }
+    const blindArm = abHoldoutCfg.enabled && holdoutArm === "blind";
 
     // ── Outcome-memory: build a shared Mem0 client + ideasUserId ONCE, gated
     //    so neither hook constructs anything when both flags are OFF (default).
@@ -525,64 +558,109 @@ export async function runIdeasPipeline(
     // history is byte-identical to the pre-feature path. rotationSeed (run-id
     // derived) rotates WHICH under-explored segments lead so consecutive runs
     // explore different corners.
-    const guidance =
-      outcomeMemoryCfg.readAtSynthesis && outcomeMem0 !== null
-        ? await fetchOutcomeMemoryGuidance({
-            mem0: outcomeMem0,
-            userId: ideasUserId,
-            // Relevance-keyed recall: pain-cluster themes (most specific) lead,
-            // then trending categories, configured category last. Blends more
-            // signal than the old trending+category CSV so recall is sharper.
-            query: buildRecallQuery({
-              painThemes: pains.clusters.slice(0, 6).map((cluster) => cluster.theme),
-              trendingCategories: trends.trendingCategories.slice(0, 6).map((c) => c.category),
-              category: config.category,
-            }),
-            reinforceCap: outcomeMemoryCfg.reinforceCap,
-            avoidCap: outcomeMemoryCfg.avoidCap,
-            searchLimit: outcomeMemoryCfg.searchLimit,
-            rotationSeed,
-            // Relevance/recency-aware selection knobs (gated by config; at no-op
-            // values the block degrades to the legacy first-N behavior).
-            rank: {
-              now: now(),
-              halfLifeDays: outcomeMemoryCfg.halfLifeDays,
-              stalePromptPenalty: outcomeMemoryCfg.stalePromptPenalty,
-              mmrLambda: outcomeMemoryCfg.mmrLambda,
-              currentPromptVersion: PROMPT_VERSION,
-              currentModel: model,
-            },
-            // Trust-tiered recall (Phase 2). weighting:false → no-op.
-            trust: {
-              weighting: outcomeMemoryCfg.trustWeighting,
-              proxyAvoidCap: outcomeMemoryCfg.proxyAvoidCap,
-            },
-          })
-        : { block: "", segmentDirective: "" };
+    //
+    // PHASE 4 (A/B holdout): a BLIND run skips BOTH reads — guidance and the
+    // graph directive are blanked to "" — so it generates as if the learning
+    // loop did not exist (reusing the synthesizer's existing ""-degrade → zero
+    // synthesizer change). When the run is GUIDED *and* abHoldout is enabled we
+    // capture the structured lessons actually injected (reinforce/avoid items +
+    // graph paths) so the lift attribution can correlate them with outcomes.
+    const captureLessons = abHoldoutCfg.enabled && !blindArm;
+    const graphFeedbackCfg = smart.graphFeedback;
+
+    // The shared query for both the legacy and capturing read paths.
+    const recallQuery = buildRecallQuery({
+      painThemes: pains.clusters.slice(0, 6).map((cluster) => cluster.theme),
+      trendingCategories: trends.trendingCategories.slice(0, 6).map((c) => c.category),
+      category: config.category,
+    });
+    const outcomeReadParams = {
+      mem0: outcomeMem0 as Mem0Client,
+      userId: ideasUserId,
+      query: recallQuery,
+      reinforceCap: outcomeMemoryCfg.reinforceCap,
+      avoidCap: outcomeMemoryCfg.avoidCap,
+      searchLimit: outcomeMemoryCfg.searchLimit,
+      rotationSeed,
+      // Relevance/recency-aware selection knobs (gated by config; at no-op
+      // values the block degrades to the legacy first-N behavior).
+      rank: {
+        now: now(),
+        halfLifeDays: outcomeMemoryCfg.halfLifeDays,
+        stalePromptPenalty: outcomeMemoryCfg.stalePromptPenalty,
+        mmrLambda: outcomeMemoryCfg.mmrLambda,
+        currentPromptVersion: PROMPT_VERSION,
+        currentModel: model,
+      },
+      // Trust-tiered recall (Phase 2). weighting:false → no-op.
+      trust: {
+        weighting: outcomeMemoryCfg.trustWeighting,
+        proxyAvoidCap: outcomeMemoryCfg.proxyAvoidCap,
+      },
+    };
+
+    // Capture the graph seeds the read expanded from (Phase 3 needs them even when
+    // we are NOT capturing lessons), via a closure since resolveHoldoutGuidance
+    // only surfaces the lesson-relevant slice of the graph result.
+    let graphSeedEntities: readonly string[] = [];
+
+    // PHASE 4 (A/B holdout): resolve guidance via the injected reads. A BLIND run
+    // skips BOTH reads (guidance blanked to "" → byte-identical to pre-feature);
+    // a GUIDED run runs the reads and, when capturing, collects the structured
+    // reinforce/avoid + graph-path lessons. The fetchers below are the existing
+    // best-effort ones (never throw, "" on empty), so the default path is unchanged.
+    const { guidance, lessons } = await resolveHoldoutGuidance({
+      blind: blindArm,
+      doOutcomeRead: outcomeMemoryCfg.readAtSynthesis && outcomeMem0 !== null,
+      doGraphRead: graphReasoningCfg.enabled && graphClient !== null,
+      capture: captureLessons,
+      fetchOutcome: async () => {
+        const g = captureLessons
+          ? await fetchOutcomeMemoryGuidanceWithItems(outcomeReadParams)
+          : await fetchOutcomeMemoryGuidance(outcomeReadParams);
+        const items =
+          "lessons" in g && g.lessons !== undefined
+            ? outcomeItemsToLessons(g.lessons.reinforce, g.lessons.avoid)
+            : [];
+        return {
+          block: g.block,
+          segmentDirective: g.segmentDirective,
+          lessons: { reinforce: items.filter((l) => l.kind === "reinforce"), avoid: items.filter((l) => l.kind === "avoid") },
+        };
+      },
+      fetchGraph: async () => {
+        const r = await fetchGraphReasoningDirective({
+          client: graphClient as Neo4jReadClient,
+          userId: sigeConfig?.mem0.userId ?? "sige-global",
+          maxHops: graphReasoningCfg.maxHops,
+          maxPaths: graphReasoningCfg.maxPaths,
+          searchLimit: graphReasoningCfg.searchLimit,
+          minDegree: graphReasoningCfg.minDegree,
+          maxDegree: graphReasoningCfg.maxDegree,
+          // Phase 3 weighted + novelty-aware seed ranking knobs.
+          neutralWeight: graphReasoningCfg.neutralWeight,
+          noveltyHalfLifeRuns: graphReasoningCfg.noveltyHalfLifeRuns,
+        });
+        graphSeedEntities = r.seedEntities;
+        return { directive: r.directive, graphLessons: graphPathsToLessons(r.paths) };
+      },
+    });
     const outcomeMemory: string = guidance.block;
     const segmentDirective: string = guidance.segmentDirective;
+    const graphDirective: string = guidance.graphDirective;
 
-    // ── Graph-reasoning READ hook (gated on BOTH flags, default OFF) ──────────
-    // A single bounded Neo4j traversal → the Pass-1 OPPORTUNITY PATHS directive.
-    // Guarded on graphClient !== null and returns "" on any failure / empty
-    // graph / timeout (fetchGraphReasoningDirective never throws), so a default
-    // run is byte-identical to the pre-feature path.
-    const graphFeedbackCfg = smart.graphFeedback;
-    const { directive: graphDirective, seedEntities: graphSeedEntities } =
-      graphReasoningCfg.enabled && graphClient !== null
-        ? await fetchGraphReasoningDirective({
-            client: graphClient,
-            userId: sigeConfig?.mem0.userId ?? "sige-global",
-            maxHops: graphReasoningCfg.maxHops,
-            maxPaths: graphReasoningCfg.maxPaths,
-            searchLimit: graphReasoningCfg.searchLimit,
-            minDegree: graphReasoningCfg.minDegree,
-            maxDegree: graphReasoningCfg.maxDegree,
-            // Phase 3 weighted + novelty-aware seed ranking knobs.
-            neutralWeight: graphReasoningCfg.neutralWeight,
-            noveltyHalfLifeRuns: graphReasoningCfg.noveltyHalfLifeRuns,
-          })
-        : { directive: "", seedEntities: [] };
+    // PHASE 4 (A/B holdout): persist the structured lessons injected into this
+    // guided run for per-lesson lift attribution. Best-effort (sanitizes text +
+    // swallows errors); a blind run injects nothing so this is a no-op there.
+    if (captureLessons && lessons.length > 0) {
+      await recordInjectedLessons(runId, lessons);
+      log.info("Phase 4 A/B holdout: lessons injected", {
+        runId,
+        reinforce: lessons.filter((l) => l.kind === "reinforce").length,
+        avoid: lessons.filter((l) => l.kind === "avoid").length,
+        graphPath: lessons.filter((l) => l.kind === "graph_path").length,
+      });
+    }
 
     // Phase 3 graph feedback: record WHICH seeds fed this run so the write-back
     // can attribute the run's aggregate verdict back to them. Gated + best-effort

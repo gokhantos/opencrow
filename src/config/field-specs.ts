@@ -392,6 +392,25 @@ export const CONFIG_FIELD_SPECS: readonly ConfigDomainSpec[] = [
     ],
   },
   {
+    domain: "smart.abHoldout",
+    fields: [
+      f(
+        "pipelines.ideas.smart.abHoldout.enabled",
+        ["OPENCROW_SMART_AB_HOLDOUT_ENABLED"],
+        "config/smart.abHoldout",
+        "enabled",
+        "boolean",
+      ),
+      f(
+        "pipelines.ideas.smart.abHoldout.holdoutRatio",
+        ["OPENCROW_SMART_AB_HOLDOUT_RATIO"],
+        "config/smart.abHoldout",
+        "holdoutRatio",
+        "number",
+      ),
+    ],
+  },
+  {
     domain: "smart.incumbentExclusion",
     fields: [
       f(
