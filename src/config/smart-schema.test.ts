@@ -136,6 +136,10 @@ describe("smartConfigSchema", () => {
         maxSeedWeight: 5,
         projectToNeo4j: true,
       },
+      abHoldout: {
+        enabled: false,
+        holdoutRatio: 0,
+      },
       incumbentExclusion: {
         enabled: true,
         topN: 100,

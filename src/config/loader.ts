@@ -359,6 +359,20 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     graphFeedbackEnv.maxSeedWeight = graphFeedbackMaxSeedWeight;
   }
 
+  // OPENCROW_SMART_AB_HOLDOUT_* overrides for the Phase-4 A/B holdout block.
+  // EXPLICIT block (like graphFeedbackEnv): the generic deep-merge does not reach
+  // nested smart sub-blocks, so each field is read and merged by hand.
+  const abHoldoutEnv: Record<string, unknown> = {};
+  const abHoldoutEnabled = boolEnv("OPENCROW_SMART_AB_HOLDOUT_ENABLED");
+  if (abHoldoutEnabled !== undefined) abHoldoutEnv.enabled = abHoldoutEnabled;
+  const abHoldoutRatio = Number(process.env.OPENCROW_SMART_AB_HOLDOUT_RATIO ?? "");
+  if (
+    !Number.isNaN(abHoldoutRatio) &&
+    process.env.OPENCROW_SMART_AB_HOLDOUT_RATIO !== undefined
+  ) {
+    abHoldoutEnv.holdoutRatio = abHoldoutRatio;
+  }
+
   // OPENCROW_SMART_INCUMBENT_EXCLUSION_* overrides for the Layer-C feature block.
   const incumbentExclusionEnv: Record<string, unknown> = {};
   const incumbentEnabled = boolEnv("OPENCROW_SMART_INCUMBENT_EXCLUSION_ENABLED");
@@ -612,6 +626,7 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     Object.keys(reprobeEnv).length > 0 ||
     Object.keys(graphReasoningEnv).length > 0 ||
     Object.keys(graphFeedbackEnv).length > 0 ||
+    Object.keys(abHoldoutEnv).length > 0 ||
     Object.keys(incumbentExclusionEnv).length > 0 ||
     Object.keys(competabilityEnv).length > 0 ||
     Object.keys(demandEnv).length > 0 ||
@@ -650,6 +665,10 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     if (Object.keys(graphFeedbackEnv).length > 0) {
       const existing = (existingSmart.graphFeedback ?? {}) as Record<string, unknown>;
       smart.graphFeedback = { ...existing, ...graphFeedbackEnv };
+    }
+    if (Object.keys(abHoldoutEnv).length > 0) {
+      const existing = (existingSmart.abHoldout ?? {}) as Record<string, unknown>;
+      smart.abHoldout = { ...existing, ...abHoldoutEnv };
     }
     if (Object.keys(incumbentExclusionEnv).length > 0) {
       const existing = (existingSmart.incumbentExclusion ?? {}) as Record<string, unknown>;

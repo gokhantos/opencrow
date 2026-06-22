@@ -1232,6 +1232,25 @@ export const graphFeedbackConfigSchema = z
   });
 export type GraphFeedbackConfig = z.infer<typeof graphFeedbackConfigSchema>;
 
+// Phase 4 "A/B holdout": deterministically send a fraction of idea-pipeline runs
+// down a memory/graph-BLIND path (no learned guidance injected) so guided-vs-blind
+// validated rates measure whether the funnel actually gets smarter. The split is
+// per-RUN (guidance is injected once per run). Default OFF / ratio 0 → every run
+// is guided and the pipeline is byte-identical. Fully defaulted -> backward-compatible.
+export const abHoldoutConfigSchema = z
+  .object({
+    // Master switch. OFF → no arm assignment, no lesson recording, all guided.
+    enabled: z.boolean().default(false),
+    // Fraction of runs assigned the BLIND arm. 0 → never blind (always guided);
+    // 1 → always blind. Deterministic per run id (no RNG).
+    holdoutRatio: z.number().min(0).max(1).default(0),
+  })
+  .default({
+    enabled: false,
+    holdoutRatio: 0,
+  });
+export type AbHoldoutConfig = z.infer<typeof abHoldoutConfigSchema>;
+
 // Layer C "incumbent exclusion": drop / down-rank collector signals that
 // prominently name a top-N charted (or high-review-count) app. PURE-logic + safe,
 // so it defaults ON (matching adaptiveCollection). Disabling it reverts the
@@ -1531,6 +1550,10 @@ export const smartConfigSchema = z.object({
   // (gated alongside graphReasoning + sige.neo4j). Fully defaulted ->
   // backward-compatible.
   graphFeedback: graphFeedbackConfigSchema,
+  // Phase 4 "A/B holdout": deterministic per-run guided-vs-blind split that makes
+  // the learning lift MEASURABLE. Default OFF (ratio 0) → all runs guided, pipeline
+  // byte-identical. Fully defaulted -> backward-compatible.
+  abHoldout: abHoldoutConfigSchema,
   // Layer C "incumbent exclusion": drop/down-rank collector signals that name a
   // top-N incumbent. Pure-logic + safe — default ON. Fully defaulted ->
   // backward-compatible.
@@ -1680,6 +1703,10 @@ const SMART_IDEAS_DEFAULTS = {
     weightHalfLifeDays: 60,
     maxSeedWeight: 5,
     projectToNeo4j: true,
+  },
+  abHoldout: {
+    enabled: false,
+    holdoutRatio: 0,
   },
   incumbentExclusion: {
     enabled: true,

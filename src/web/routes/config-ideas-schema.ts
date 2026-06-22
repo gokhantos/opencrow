@@ -30,6 +30,16 @@ export const outcomeMemoryOverrideSchema = z
   .partial()
   .strict();
 
+// config/smart.abHoldout — Phase 4 A/B holdout. holdoutRatio is a 0..1 fraction
+// (reject >1); enabled toggles the per-run guided/blind split.
+export const abHoldoutOverrideSchema = z
+  .object({
+    enabled: z.boolean(),
+    holdoutRatio: z.number().min(0).max(1),
+  })
+  .partial()
+  .strict();
+
 // config/smart.incumbentExclusion
 export const incumbentExclusionOverrideSchema = z
   .object({
@@ -99,6 +109,12 @@ export const IDEAS_OVERRIDE_SECTIONS: readonly IdeasOverrideSection[] = [
     schema: outcomeMemoryOverrideSchema,
   },
   {
+    id: "abHoldout",
+    namespace: "config",
+    key: "smart.abHoldout",
+    schema: abHoldoutOverrideSchema,
+  },
+  {
     id: "incumbentExclusion",
     namespace: "config",
     key: "smart.incumbentExclusion",
@@ -131,6 +147,7 @@ export function buildIdeasConfigResponse(
 ): {
   readonly effective: {
     readonly outcomeMemory: OpenCrowConfig["pipelines"]["ideas"]["smart"]["outcomeMemory"];
+    readonly abHoldout: OpenCrowConfig["pipelines"]["ideas"]["smart"]["abHoldout"];
     readonly incumbentExclusion: OpenCrowConfig["pipelines"]["ideas"]["smart"]["incumbentExclusion"];
     readonly diversityGuard: OpenCrowConfig["pipelines"]["ideas"]["smart"]["diversityGuard"];
     readonly competability: OpenCrowConfig["pipelines"]["ideas"]["smart"]["competability"];
@@ -141,12 +158,14 @@ export function buildIdeasConfigResponse(
   return {
     effective: {
       outcomeMemory: smart.outcomeMemory,
+      abHoldout: smart.abHoldout,
       incumbentExclusion: smart.incumbentExclusion,
       diversityGuard: smart.diversityGuard,
       competability: smart.competability,
     },
     overrides: {
       outcomeMemory: overrides.outcomeMemory ?? null,
+      abHoldout: overrides.abHoldout ?? null,
       incumbentExclusion: overrides.incumbentExclusion ?? null,
       diversityGuard: overrides.diversityGuard ?? null,
       competability: overrides.competability ?? null,

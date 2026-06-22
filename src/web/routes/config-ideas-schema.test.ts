@@ -6,6 +6,7 @@
 import { describe, expect, it } from "bun:test";
 import { type OpenCrowConfig, opencrowConfigSchema } from "../../config/schema";
 import {
+  abHoldoutOverrideSchema,
   buildIdeasConfigResponse,
   competabilityOverrideSchema,
   diversityGuardOverrideSchema,
@@ -36,6 +37,45 @@ describe("outcomeMemoryOverrideSchema", () => {
 
   it("accepts an empty partial", () => {
     expect(outcomeMemoryOverrideSchema.safeParse({}).success).toBe(true);
+  });
+});
+
+describe("abHoldoutOverrideSchema", () => {
+  it("accepts enabled + a valid holdoutRatio in [0,1]", () => {
+    expect(abHoldoutOverrideSchema.safeParse({ enabled: true, holdoutRatio: 0.3 }).success).toBe(
+      true,
+    );
+    expect(abHoldoutOverrideSchema.safeParse({ holdoutRatio: 0 }).success).toBe(true);
+    expect(abHoldoutOverrideSchema.safeParse({ holdoutRatio: 1 }).success).toBe(true);
+  });
+
+  it("rejects holdoutRatio > 1", () => {
+    expect(abHoldoutOverrideSchema.safeParse({ holdoutRatio: 1.5 }).success).toBe(false);
+  });
+
+  it("rejects a negative holdoutRatio", () => {
+    expect(abHoldoutOverrideSchema.safeParse({ holdoutRatio: -0.1 }).success).toBe(false);
+  });
+
+  it("rejects unknown keys", () => {
+    expect(abHoldoutOverrideSchema.safeParse({ ratio: 0.5 }).success).toBe(false);
+  });
+
+  it("accepts an empty partial", () => {
+    expect(abHoldoutOverrideSchema.safeParse({}).success).toBe(true);
+  });
+
+  it("is registered as an override section under config/smart.abHoldout", () => {
+    const section = IDEAS_OVERRIDE_SECTIONS.find((s) => s.id === "abHoldout");
+    expect(section).toBeDefined();
+    expect(section?.key).toBe("smart.abHoldout");
+    expect(section?.namespace).toBe("config");
+  });
+
+  it("surfaces abHoldout in the effective config response", () => {
+    const res = buildIdeasConfigResponse(baseConfig, {});
+    expect(res.effective.abHoldout).toEqual({ enabled: false, holdoutRatio: 0 });
+    expect(res.overrides.abHoldout).toBeNull();
   });
 });
 

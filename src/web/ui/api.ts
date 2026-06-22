@@ -121,6 +121,72 @@ export function resumeRun(
   return apiFetch(`/api/pipelines-runs/${runId}/resume`, { method: "POST" });
 }
 
+// ── Learning lift (Phase 4 A/B holdout) ──────────────────────────────────
+
+/** Per-run learning lift: arm, idea count, validated counts, injected lessons. */
+export interface RunLiftData {
+  readonly runId: string;
+  readonly arm: "guided" | "blind";
+  readonly holdoutRatio: number;
+  readonly createdAt: number;
+  readonly ideas: number;
+  readonly humanValidated: number;
+  readonly anyValidated: number;
+  readonly injectedLessons: {
+    readonly reinforce: number;
+    readonly avoid: number;
+    readonly graphPath: number;
+  };
+}
+
+interface ArmRatesData {
+  readonly runs: number;
+  readonly ideas: number;
+  readonly validatedRate: number;
+  readonly keptRate: number;
+}
+
+/** Per-lesson lift vs the guided baseline. */
+export interface LessonLiftData {
+  readonly lessonKey: string;
+  readonly lessonKind: "reinforce" | "avoid" | "graph_path";
+  readonly lessonText: string | null;
+  readonly runs: number;
+  readonly ideas: number;
+  readonly validatedRate: number;
+  readonly liftVsBaseline: number;
+}
+
+/** Windowed guided-vs-blind lift summary. */
+export interface LiftSummaryData {
+  readonly sinceSec: number;
+  readonly humanOnly: boolean;
+  readonly lift: {
+    readonly guided: ArmRatesData;
+    readonly blind: ArmRatesData;
+    readonly validatedLift: number;
+    readonly keptLift: number;
+  };
+  readonly lessons: readonly LessonLiftData[];
+}
+
+export function getRunLift(
+  runId: string,
+): Promise<{ success: boolean; data?: RunLiftData; error?: string }> {
+  return apiFetch(`/api/pipelines-runs/${runId}/lift`);
+}
+
+export function getLiftSummary(
+  window?: number,
+  humanOnly = true,
+): Promise<{ success: boolean; data?: LiftSummaryData; error?: string }> {
+  const params = new URLSearchParams();
+  if (window !== undefined) params.set("window", String(window));
+  if (!humanOnly) params.set("humanOnly", "false");
+  const qs = params.toString();
+  return apiFetch(`/api/pipelines/lift-summary${qs ? `?${qs}` : ""}`);
+}
+
 export function resumeInterruptedRuns(): Promise<{
   success: boolean;
   resumed?: number;
