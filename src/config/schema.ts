@@ -610,7 +610,11 @@ export const ingestionConfigSchema = z
     // Rows fetched per source per cycle.
     batchSize: z.number().int().min(1).default(20),
     // Gap between ingestion cycles (run-then-reschedule).
-    pollIntervalMs: z.number().int().min(1_000).default(5 * 60 * 1_000),
+    pollIntervalMs: z
+      .number()
+      .int()
+      .min(1_000)
+      .default(5 * 60 * 1_000),
     // Minimum trimmed content length to pass the quality gate.
     minContentLength: z.number().int().min(1).default(40),
   })
@@ -698,7 +702,9 @@ export const sigeConfigSchema = z.object({
       coalitionStabilityWeight: 0.1,
       signalCredibilityWeight: 0.1,
     }),
-  provider: z.enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"]).default("anthropic"),
+  provider: z
+    .enum(["openrouter", "agent-sdk", "alibaba", "anthropic", "opencode"])
+    .default("anthropic"),
   model: z.string().default("claude-sonnet-4-6"),
   agentModel: z.string().default("claude-sonnet-4-6"),
   workflow: z
@@ -1066,6 +1072,22 @@ export const outcomeMemoryConfigSchema = z
     avoidCap: z.number().int().min(1).max(20).default(5),
     // mem0 search limit per verdict bucket (3 parallel queries).
     searchLimit: z.number().int().min(1).max(50).default(12),
+    // Recency half-life (days) for outcome-memory recall ranking. <=0 disables
+    // temporal decay (composite collapses to raw relevance × staleness factor).
+    halfLifeDays: z.number().min(0).default(45),
+    // Multiplier (0..1) applied to a memory whose promptVersion/model differ from
+    // the current run — down-weights guidance generated under a stale prompt/model.
+    // 1 = no penalty.
+    stalePromptPenalty: z.number().min(0).max(1).default(0.6),
+    // MMR diversity lambda (0..1) for the recall block. 1 = pure relevance (no
+    // diversification); lower trades relevance for less near-duplicate guidance.
+    mmrLambda: z.number().min(0).max(1).default(0.7),
+    // Before writing a real verdict for an ideaId, delete its prior outcome
+    // memories so a re-run supersedes rather than duplicates. Default ON.
+    supersedePriorOnRerun: z.boolean().default(true),
+    // Write stored-pending / verdictSource:"none" memories (no real verdict yet).
+    // Default OFF: un-adjudicated ideas dilute recall. dedup-rejected is unaffected.
+    writePendingMemories: z.boolean().default(false),
   })
   .default({
     writeBack: true,
@@ -1073,6 +1095,11 @@ export const outcomeMemoryConfigSchema = z
     reinforceCap: 5,
     avoidCap: 5,
     searchLimit: 12,
+    halfLifeDays: 45,
+    stalePromptPenalty: 0.6,
+    mmrLambda: 0.7,
+    supersedePriorOnRerun: true,
+    writePendingMemories: false,
   });
 export type OutcomeMemoryConfig = z.infer<typeof outcomeMemoryConfigSchema>;
 
@@ -1523,6 +1550,11 @@ const SMART_IDEAS_DEFAULTS = {
     reinforceCap: 5,
     avoidCap: 5,
     searchLimit: 12,
+    halfLifeDays: 45,
+    stalePromptPenalty: 0.6,
+    mmrLambda: 0.7,
+    supersedePriorOnRerun: true,
+    writePendingMemories: false,
   },
   graphReasoning: {
     enabled: false,
@@ -1544,12 +1576,12 @@ const SMART_IDEAS_DEFAULTS = {
     topNIncumbents: 100,
     hardVeto: true,
     hardVetoThreshold: 4,
-    hardVetoDimensions: [
-      "regulated",
-      "capital",
-      "logistics",
-      "networkEffect",
-    ] as ("regulated" | "capital" | "logistics" | "networkEffect")[],
+    hardVetoDimensions: ["regulated", "capital", "logistics", "networkEffect"] as (
+      | "regulated"
+      | "capital"
+      | "logistics"
+      | "networkEffect"
+    )[],
     builderProfile: {
       capital: "bootstrap",
       teamSize: 1,

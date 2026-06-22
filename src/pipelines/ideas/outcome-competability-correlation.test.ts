@@ -58,7 +58,7 @@ function memory(over: Partial<OutcomeMemory> = {}): OutcomeMemory {
 }
 
 function retrieved(m: OutcomeMemory): RetrievedOutcome {
-  return { memory: "body", metadata: m };
+  return { memory: "body", metadata: m, relevance: 1 };
 }
 
 /** A high-moat ARCHIVED outcome (low can-win + a dominant logistics moat). */

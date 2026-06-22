@@ -44,6 +44,7 @@ import { loadGiantWeights } from "./feedback-bootstrap";
 import type { GiantConfig } from "../../config/schema";
 import { insertIdea } from "../../sources/ideas/store";
 import {
+  buildRecallQuery,
   fetchOutcomeMemoryBlock,
   renderOutcomeSentence,
   toOutcomeMemory,
@@ -275,22 +276,35 @@ export async function runAutonomousSige(
     // a fenced GUIDANCE block and prepend it to each frontier's seedText so the
     // divergent (synthesis-equivalent) pass leans toward proven rigor and away
     // from archived patterns. When OFF this is "" → seedText is byte-identical.
-    const outcomeMemory: string =
-      outcomeMemoryCfg.readAtSynthesis
-        ? await fetchOutcomeMemoryBlock({
-            mem0,
-            userId: ideasUserId,
-            query: [
-              ...trends.trendingCategories.slice(0, 6).map((cat) => cat.category),
-              config.category,
-            ]
-              .filter(Boolean)
-              .join(", "),
-            reinforceCap: outcomeMemoryCfg.reinforceCap,
-            avoidCap: outcomeMemoryCfg.avoidCap,
-            searchLimit: outcomeMemoryCfg.searchLimit,
-          }).catch(() => "")
-        : "";
+    const outcomeMemory: string = outcomeMemoryCfg.readAtSynthesis
+      ? await fetchOutcomeMemoryBlock({
+          mem0,
+          userId: ideasUserId,
+          // Direction-keyed recall: pain-cluster themes lead, trending
+          // categories next, configured category last. pains.clusters is
+          // populated in the BroadCorpus path (defaults to [] on collector
+          // failure), so buildRecallQuery still yields a non-empty query from
+          // trendingCategories+category — never regressing recall to empty.
+          query: buildRecallQuery({
+            painThemes: pains.clusters.slice(0, 6).map((cluster) => cluster.theme),
+            trendingCategories: trends.trendingCategories.slice(0, 6).map((cat) => cat.category),
+            category: config.category,
+          }),
+          reinforceCap: outcomeMemoryCfg.reinforceCap,
+          avoidCap: outcomeMemoryCfg.avoidCap,
+          searchLimit: outcomeMemoryCfg.searchLimit,
+          // Relevance/recency-aware selection (gated by config; no-op values
+          // degrade to legacy first-N).
+          rank: {
+            now: now(),
+            halfLifeDays: outcomeMemoryCfg.halfLifeDays,
+            stalePromptPenalty: outcomeMemoryCfg.stalePromptPenalty,
+            mmrLambda: outcomeMemoryCfg.mmrLambda,
+            currentPromptVersion: PROMPT_VERSION,
+            currentModel: model,
+          },
+        }).catch(() => "")
+      : "";
 
     // ── Step: discovery ───────────────────────────────────────────────────────
     const discovery = await runStep(
@@ -304,8 +318,7 @@ export async function runAutonomousSige(
           userId,
           signal: runSignal,
         }),
-      (d) =>
-        `${d.frontiers.length} frontiers from ${d.candidates.length} broad candidates`,
+      (d) => `${d.frontiers.length} frontiers from ${d.candidates.length} broad candidates`,
     );
 
     if (discovery.frontiers.length === 0 && discovery.candidates.length === 0) {
@@ -391,7 +404,8 @@ export async function runAutonomousSige(
       runId,
       "candidates",
       async () => mergeSigeCandidates(broadMapped, deepCandidates),
-      (cs) => `${cs.length} merged candidates (${deepCandidates.length} deep + ${broadMapped.length} broad)`,
+      (cs) =>
+        `${cs.length} merged candidates (${deepCandidates.length} deep + ${broadMapped.length} broad)`,
     );
 
     log.info("autonomous: candidate pool built", {
@@ -454,7 +468,10 @@ export async function runAutonomousSige(
     }
 
     // ── Back-half: GIANT gate (shadow mode by default) ───────────────────────
-    const giantGateByCandidate = new Map<GeneratedIdeaCandidate, ReturnType<typeof evaluateCandidateGiantGate>>();
+    const giantGateByCandidate = new Map<
+      GeneratedIdeaCandidate,
+      ReturnType<typeof evaluateCandidateGiantGate>
+    >();
     let giantSurvivors: readonly GeneratedIdeaCandidate[] = kept;
 
     if (smart.giant.enabled && kept.length > 0) {
@@ -498,7 +515,10 @@ export async function runAutonomousSige(
     // pair each persisted id with its source candidate. On a checkpoint RESUME
     // the store step is skipped (cached) and this stays empty → the write hook is
     // a no-op, which is correct (write-back already ran on the first attempt).
-    const storedPairs: Array<{ readonly ideaId: string; readonly candidate: GeneratedIdeaCandidate }> = [];
+    const storedPairs: Array<{
+      readonly ideaId: string;
+      readonly candidate: GeneratedIdeaCandidate;
+    }> = [];
     const ideaIds = await runStep(
       runId,
       "store",
@@ -510,9 +530,13 @@ export async function runAutonomousSige(
         for (const candidate of finalSelected) {
           try {
             const reasoning = [
-              candidate.trendIntersection ? `## Trend Intersection\n${candidate.trendIntersection}\n\n` : "",
+              candidate.trendIntersection
+                ? `## Trend Intersection\n${candidate.trendIntersection}\n\n`
+                : "",
               `## Analysis\n${candidate.reasoning}`,
-              candidate.designDescription ? `\n\n## Design & UX\n${candidate.designDescription}` : "",
+              candidate.designDescription
+                ? `\n\n## Design & UX\n${candidate.designDescription}`
+                : "",
               candidate.monetizationDetail
                 ? `\n\n## Monetization\n${candidate.monetizationDetail}`
                 : candidate.revenueModel

@@ -131,6 +131,7 @@ function directive(): string {
         model: "claude-test",
         createdAtSec: 1_000_000,
       },
+      relevance: 1,
     },
     {
       memory: "body2",
@@ -152,6 +153,7 @@ function directive(): string {
         model: "claude-test",
         createdAtSec: 1_000_000,
       },
+      relevance: 1,
     },
   ];
   return buildSegmentDiversityDirective(items);
