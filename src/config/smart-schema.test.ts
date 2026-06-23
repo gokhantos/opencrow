@@ -110,7 +110,7 @@ describe("smartConfigSchema", () => {
         trustWeighting: true,
         proxyAvoidCap: 2,
         reprobe: {
-          enabled: false,
+          enabled: true,
           delayDays: 21,
           tickIntervalMs: 3_600_000,
           scoreDeltaGrew: 0.75,

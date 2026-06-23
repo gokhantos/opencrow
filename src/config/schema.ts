@@ -1107,9 +1107,12 @@ export const outcomeMemoryConfigSchema = z
     // starts, so the pipeline is byte-identical.
     reprobe: z
       .object({
-        // Master switch. Default OFF — gates BOTH the enqueue points and the
-        // cron-side scheduler. Off ⇒ no enqueue rows, no scheduler, no mem0 write.
-        enabled: z.boolean().default(false),
+        // Master switch. Gates BOTH the enqueue points and the cron-side
+        // scheduler. Off ⇒ no enqueue rows, no scheduler, no mem0 write.
+        // ON (2026-06-23): proxy-validated ideas (with a real, above-absence-floor
+        // baseline demand snapshot) are re-probed after delayDays and superseded
+        // with REPROBE-tier ground truth — the real signal the trust tiers rank on.
+        enabled: z.boolean().default(true),
         // How many days after a proxy-validation to re-probe demand.
         delayDays: z.number().int().min(1).default(21),
         // Scheduler tick interval (ms). Default 1h — the work is sparse and DB-bound.
@@ -1123,7 +1126,7 @@ export const outcomeMemoryConfigSchema = z
         batchSize: z.number().int().min(1).max(50).default(5),
       })
       .default({
-        enabled: false,
+        enabled: true,
         delayDays: 21,
         tickIntervalMs: 3_600_000,
         scoreDeltaGrew: 0.75,
@@ -1145,7 +1148,7 @@ export const outcomeMemoryConfigSchema = z
     trustWeighting: true,
     proxyAvoidCap: 2,
     reprobe: {
-      enabled: false,
+      enabled: true,
       delayDays: 21,
       tickIntervalMs: 3_600_000,
       scoreDeltaGrew: 0.75,
@@ -1683,7 +1686,7 @@ const SMART_IDEAS_DEFAULTS = {
     trustWeighting: true,
     proxyAvoidCap: 2,
     reprobe: {
-      enabled: false,
+      enabled: true,
       delayDays: 21,
       tickIntervalMs: 3_600_000,
       scoreDeltaGrew: 0.75,
