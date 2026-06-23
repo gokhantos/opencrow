@@ -20,6 +20,9 @@ function makeIdea(overrides: Partial<GeneratedIdea> = {}): GeneratedIdea {
     competability_json: null,
     demand_json: null,
     demand_score: null,
+    giant_composite: null,
+    segment: null,
+    archetype: null,
     ...overrides,
   };
 }

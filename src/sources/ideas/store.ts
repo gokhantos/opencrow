@@ -2,6 +2,7 @@ import { getDb } from "../../store/db";
 import { createLogger } from "../../logger";
 import type { DemandArtifact } from "../../pipelines/ideas/demand";
 import { demandArtifactSchema } from "../../pipelines/ideas/demand";
+import { type Archetype, ARCHETYPES } from "../../pipelines/ideas/giant";
 import {
   type IdeaFeedbackEvent,
   type IdeaFeedbackRow,
@@ -41,6 +42,19 @@ export interface GeneratedIdea {
    * demand_json is null.
    */
   readonly demand_score: number | null;
+  /**
+   * GIANT composite 0..5 (migration 014): the non-compensatory weighted geometric
+   * mean over the 9 axes. Null when the GIANT gate did not run for this idea.
+   */
+  readonly giant_composite: number | null;
+  /** Candidate segment (consumer / b2b_saas / devtools / …), migration 015. Null when unset. */
+  readonly segment: string | null;
+  /**
+   * Sequoia-style archetype (migration 014). The column is free TEXT, so the mapper
+   * VALIDATES it against the closed {@link Archetype} enum and coerces anything else
+   * to null — never surfacing raw, unvalidated text on the typed domain field.
+   */
+  readonly archetype: Archetype | null;
 }
 
 /**
@@ -117,6 +131,10 @@ export interface GeneratedIdeaRow {
   /** Bun.sql may surface JSONB as an already-parsed object or a JSON string. */
   readonly demand_json: DemandArtifact | string | null;
   readonly demand_score: number | null;
+  readonly giant_composite: number | null;
+  readonly segment: string | null;
+  /** Free TEXT in the DB — validated against the Archetype enum by the mapper. */
+  readonly archetype: string | null;
 }
 
 /**
@@ -163,6 +181,18 @@ export function parseDemandJson(
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Validate the free-TEXT archetype column against the closed {@link Archetype}
+ * enum. Returns the typed archetype when it is one of the known values, else null —
+ * so an unexpected / injected string in the DB never reaches the typed domain
+ * field. Mirrors the defensive safe-parse posture of {@link parseDemandJson}. PURE.
+ */
+export function parseArchetype(value: string | null | undefined): Archetype | null {
+  return value != null && (ARCHETYPES as readonly string[]).includes(value)
+    ? (value as Archetype)
+    : null;
+}
+
 /** Map a raw generated_ideas row onto the readonly {@link GeneratedIdea} domain type. */
 export function rowToGeneratedIdea(row: GeneratedIdeaRow): GeneratedIdea {
   return {
@@ -182,6 +212,9 @@ export function rowToGeneratedIdea(row: GeneratedIdeaRow): GeneratedIdea {
     competability_json: parseCompetabilityJson(row.competability_json),
     demand_json: parseDemandJson(row.demand_json),
     demand_score: row.demand_score,
+    giant_composite: row.giant_composite,
+    segment: row.segment,
+    archetype: parseArchetype(row.archetype),
   };
 }
 
