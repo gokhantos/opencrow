@@ -538,13 +538,15 @@ export function createPipelineRoutes(deps?: {
             ideaId: updated.id,
             title: updated.title,
             stage: body.stage,
-            // generated_ideas carries no segment/archetype/giant-composite
-            // columns; null is fine — the verdict + verdictSource:"human" drive
-            // the learning. (quality_score is a 1-5 rating, not the GIANT
-            // composite, so we deliberately do NOT pass it as giantComposite.)
-            segment: null,
-            archetype: null,
-            giantComposite: null,
+            // generated_ideas DOES carry segment (migration 015), archetype +
+            // giant_composite (migration 014); rowToGeneratedIdea exposes them
+            // (archetype validated to the closed enum). Thread the REAL values so
+            // the human lesson reads "GIANT composite 3.5/5, demand 4/5" instead
+            // of degenerate "n/a/5" noise. (quality_score is a separate 1-5 user
+            // rating, NOT the GIANT composite, so it is deliberately not used.)
+            segment: updated.segment,
+            archetype: updated.archetype,
+            giantComposite: updated.giant_composite,
             // Carry the idea's PERSISTED competability scorecard (migration 027)
             // so the human verdict learns moat ↔ outcome too. Lifted from the
             // generated_ideas row; empty fields when the idea was never scored.

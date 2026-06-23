@@ -68,6 +68,12 @@ mock.module("../../sources/ideas/store", () => ({
           competability_json: null,
           demand_json: mockDemandJson,
           demand_score: mockDemandJson?.score ?? null,
+          // GIANT composite / segment / archetype now live on the row + domain
+          // type (migration 014/015). The route must thread the REAL values into
+          // the human outcome-memory write-back, not hard-pass null.
+          giant_composite: 3.7,
+          segment: "b2b-saas",
+          archetype: "hard-fact",
         },
   ),
   // parseDemandJson: pass through — the route reads demand_json directly off
@@ -220,6 +226,11 @@ describe("PATCH /pipeline-ideas/:id/stage — writeBack ON", () => {
     expect(meta.verdict).toBe("validated");
     expect(meta.verdictSource).toBe("human");
     expect(meta.ideaId).toBe("idea-42");
+    // The real giant_composite / segment / archetype from the idea row are
+    // threaded into the memory — NOT hard-passed null (the degenerate-lesson fix).
+    expect(meta.giantComposite).toBe(3.7);
+    expect(meta.segment).toBe("b2b-saas");
+    expect(meta.archetype).toBe("hard-fact");
   });
 
   test("an archived verdict maps to verdict 'archived'", async () => {

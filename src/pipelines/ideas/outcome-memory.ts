@@ -250,9 +250,20 @@ export function toOutcomeMemory(
 
 // ─── renderOutcomeSentence (PURE) ─────────────────────────────────────────────
 
-/** Render a nullable score as a fixed display, "n/a" when null. */
-function num(value: number | null, digits = 1): string {
-  return value === null ? "n/a" : value.toFixed(digits);
+/**
+ * Render the optional "(segment: …, archetype: …)" qualifier. Each sub-clause is
+ * OMITTED when its value is null, so a memory missing both renders no qualifier at
+ * all (rather than "(segment: n/a, archetype: n/a)"). The segment is free text from
+ * the generated_ideas row, so it is sanitizeScrapedField'd before it enters the
+ * sentence (the archetype is a closed enum and safe). PURE.
+ */
+function segmentArchetypeClause(memory: OutcomeMemory): string {
+  const parts: string[] = [];
+  if (memory.segment !== null) {
+    parts.push(`segment: ${sanitizeScrapedField(memory.segment, 60)}`);
+  }
+  if (memory.archetype !== null) parts.push(`archetype: ${memory.archetype}`);
+  return parts.length > 0 ? ` (${parts.join(", ")})` : "";
 }
 
 /**
@@ -274,10 +285,24 @@ function moatClause(memory: OutcomeMemory): string {
 }
 
 /**
+ * Join a set of optional metric sub-clauses (GIANT composite, demand, failing
+ * axes, convergence-veto) into one "; "-separated phrase, dropping any that are
+ * absent, and terminate it with ".". Returns "" when EVERY metric is absent, so
+ * the caller emits no empty metrics phrase at all. PURE.
+ */
+function metricsPhrase(clauses: readonly string[]): string {
+  return clauses.length > 0 ? `${clauses.join("; ")}.` : "";
+}
+
+/**
  * Render one outcome memory as a single natural-language SENTENCE. The body is
  * presentation only — never parsed for control flow. The title is sanitized
  * (160 chars) so a scraped/LLM-authored title can't smuggle markup into the
- * sentence. Null scores render "n/a". PURE.
+ * sentence; the segment (free text) is likewise sanitized in
+ * {@link segmentArchetypeClause}. A field that is null (GIANT composite, demand,
+ * segment/archetype, failing axes) has its clause OMITTED entirely — never
+ * rendered as "n/a" — so a legitimately-absent score adds no noise while a
+ * fully-populated memory reads exactly as before. PURE.
  */
 export function renderOutcomeSentence(memory: OutcomeMemory, title: string): string {
   // Collapse double-quotes so the title sits cleanly inside the double-quoted
@@ -285,36 +310,47 @@ export function renderOutcomeSentence(memory: OutcomeMemory, title: string): str
   // cosmetic — the round-trip is still defended by re-sanitize + wrapUntrusted on
   // read.
   const t = sanitizeScrapedField(title, 160).replace(/"/g, "'");
-  const s = memory.segment ?? "n/a";
-  const a = memory.archetype ?? "n/a";
-  const g = num(memory.giantComposite);
-  const d = num(memory.demandScore);
+  const qualifier = segmentArchetypeClause(memory);
+  const composite =
+    memory.giantComposite !== null ? `GIANT composite ${memory.giantComposite.toFixed(1)}/5` : null;
+  const demand = memory.demandScore !== null ? `demand ${memory.demandScore.toFixed(1)}/5` : null;
   const vs = memory.verdictSource;
 
   switch (memory.verdict) {
     case "archived": {
-      const axes = memory.failingAxes.length > 0 ? memory.failingAxes.join(", ") : "n/a";
-      const veto = memory.convergenceVeto ? "; jury convergence-veto fired" : "";
+      const axes =
+        memory.failingAxes.length > 0 ? `failing axes: ${memory.failingAxes.join(", ")}` : null;
+      const veto = memory.convergenceVeto ? "jury convergence-veto fired" : null;
+      const metrics = metricsPhrase(
+        [composite, axes, demand, veto].filter((c): c is string => c !== null),
+      );
       return (
-        `Idea "${t}" (segment: ${s}, archetype: ${a}) was ARCHIVED. ` +
-        `GIANT composite ${g}/5 with failing axes: ${axes}; demand ${d}/5${veto}.` +
+        `Idea "${t}"${qualifier} was ARCHIVED.` +
+        `${metrics ? ` ${metrics}` : ""}` +
         `${moatClause(memory)} ` +
         `Verdict source: ${vs}. Avoid regenerating this archetype/segment pattern ` +
         "unless evidence is materially stronger."
       );
     }
-    case "validated":
+    case "validated": {
+      const metrics = metricsPhrase(
+        [composite, demand, "grounded"].filter((c): c is string => c !== null),
+      );
       return (
-        `Idea "${t}" (segment: ${s}, archetype: ${a}) was VALIDATED. ` +
-        `GIANT composite ${g}/5; demand ${d}/5; grounded.` +
+        `Idea "${t}"${qualifier} was VALIDATED.` +
+        `${metrics ? ` ${metrics}` : ""}` +
         `${moatClause(memory)} ` +
         `Verdict source: ${vs}. Reinforce the rigor of this archetype/segment pattern.`
       );
-    case "stored-pending":
+    }
+    case "stored-pending": {
+      const metrics = metricsPhrase([composite, demand].filter((c): c is string => c !== null));
       return (
-        `Idea "${t}" (segment: ${s}, archetype: ${a}) was STORED pending validation. ` +
-        `GIANT composite ${g}/5; demand ${d}/5. Verdict source: none. (Neutral.)`
+        `Idea "${t}"${qualifier} was STORED pending validation.` +
+        `${metrics ? ` ${metrics}` : ""}` +
+        " Verdict source: none. (Neutral.)"
       );
+    }
     case "dedup-rejected":
       return (
         `Theme "${t}" was REJECTED AS A DUPLICATE of an existing idea. ` +
