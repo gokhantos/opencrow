@@ -1092,8 +1092,10 @@ export const outcomeMemoryConfigSchema = z
     // When ON, stable-sort already-ranked recall so GOLD (human) / REPROBE
     // (deferred re-probe) tiers lead PROXY (same-run self-grades) lead NONE
     // (legacy/unknown), and cap proxy-tier AVOID bullets at proxyAvoidCap. Default
-    // OFF: the emitted block is byte-identical to the pre-Phase-2 ranking.
-    trustWeighting: z.boolean().default(false),
+    // ON (2026-06-23): the recall eval confirmed this stops same-run proxy
+    // self-grades from crowding the scarce real (human/reprobe) lessons out of the
+    // AVOID bucket; OFF reverts to the byte-identical pre-Phase-2 ranking.
+    trustWeighting: z.boolean().default(true),
     // Max PROXY-tier AVOID bullets kept when trustWeighting is ON, so self-graded
     // archivals can't crowd out gold/reprobe lessons. Only consulted when ON.
     proxyAvoidCap: z.number().int().min(0).max(20).default(2),
@@ -1140,7 +1142,7 @@ export const outcomeMemoryConfigSchema = z
     mmrLambda: 0.7,
     supersedePriorOnRerun: true,
     writePendingMemories: false,
-    trustWeighting: false,
+    trustWeighting: true,
     proxyAvoidCap: 2,
     reprobe: {
       enabled: false,
@@ -1675,7 +1677,7 @@ const SMART_IDEAS_DEFAULTS = {
     mmrLambda: 0.7,
     supersedePriorOnRerun: true,
     writePendingMemories: false,
-    trustWeighting: false,
+    trustWeighting: true,
     proxyAvoidCap: 2,
     reprobe: {
       enabled: false,
