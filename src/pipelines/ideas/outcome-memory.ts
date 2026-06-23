@@ -632,6 +632,13 @@ export interface HumanOutcomeInput extends CandidateCompetabilityFields {
   readonly promptVersion: string;
   readonly model: string;
   readonly createdAtSec: number;
+  /**
+   * Validation-time demand artifact from generated_ideas.demand_json (migration
+   * 015). When present, the human outcome memory carries the same demand signal as
+   * a run-time write-back (demandScore, whitespace). When absent or null the memory
+   * carries no demand slice — identical to the pre-prereq-3 behavior.
+   */
+  readonly demand?: DemandArtifact | null;
 }
 
 /**
@@ -689,7 +696,7 @@ export async function writeHumanOutcomeMemory(
         competabilityMatchedExpertiseDomain: input.competabilityMatchedExpertiseDomain,
       },
       { verdict, verdictSource: "human" },
-      { gate: null, sigeDissent: null, convergenceVeto: null, demand: null },
+      { gate: null, sigeDissent: null, convergenceVeto: null, demand: input.demand ?? null },
       {
         runId: input.runId,
         promptVersion: input.promptVersion,

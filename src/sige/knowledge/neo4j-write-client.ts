@@ -55,6 +55,10 @@ export interface SeedOutcomeEdge {
   readonly verdict: "validated" | "killed";
   /** Signed numeric weight carried on the edge (already clamped by the caller). */
   readonly weight: number;
+  /** Epoch SECONDS the anchor was created (bound `$param`, stamped ON CREATE only)
+   *  so the retention prune can filter anchors by age. The caller injects the
+   *  clock — this client never calls Date.now() (clock-injection convention). */
+  readonly createdAtSec: number;
 }
 
 /** A materialized per-seed weight projection to SET on existing `:Entity` nodes. */
@@ -85,10 +89,16 @@ const BREAKER_COOLDOWN_MS = 30_000;
  * than creating a duplicate edge. The seed must already exist (MATCH, not MERGE)
  * — this client never creates `:Entity` nodes; the IdeaAnchor is MERGEd because it
  * is a NEW artifact node type this feature owns (never an `:Entity`).
+ *
+ * `ON CREATE SET anchor.createdAtSec = $createdAtSec` stamps the creation time ONLY
+ * the first time the anchor is created (a re-run of the same runId never re-stamps),
+ * so the retention prune ({@link Neo4jWriteClient.pruneIdeaAnchors}) can age anchors
+ * out. createdAtSec is a bound `$param` — never interpolated.
  */
 const UPSERT_VALIDATED_EDGE_CYPHER = `
 MATCH (seed:Entity {name: $seedName})
 MERGE (anchor:IdeaAnchor {runId: $runId})
+ON CREATE SET anchor.createdAtSec = $createdAtSec
 MERGE (seed)-[edge:OPPORTUNITY_VALIDATED]->(anchor)
 SET edge.weight = $weight
 `;
@@ -96,6 +106,7 @@ SET edge.weight = $weight
 const UPSERT_KILLED_EDGE_CYPHER = `
 MATCH (seed:Entity {name: $seedName})
 MERGE (anchor:IdeaAnchor {runId: $runId})
+ON CREATE SET anchor.createdAtSec = $createdAtSec
 MERGE (seed)-[edge:OPPORTUNITY_KILLED]->(anchor)
 SET edge.weight = $weight
 `;
@@ -119,6 +130,29 @@ SET seed.success_weight = $successWeight,
 const ENSURE_WEIGHT_INDEX_CYPHER = `
 CREATE INDEX entity_success_weight IF NOT EXISTS
 FOR (n:Entity) ON (n.success_weight)
+`;
+
+/**
+ * Retention prune for the append-only `:IdeaAnchor` log. Every run MERGEs a NEW
+ * anchor (the MERGE is idempotent per runId, but each new runId is a new node), so
+ * without a prune the anchor set grows unbounded once graphFeedback is enabled.
+ * STATIC, fully-parameterized: `$cutoff` is a bound numeric epoch-seconds param.
+ *
+ * `DETACH DELETE` removes the anchor AND its OPPORTUNITY_* edges in one step. The
+ * read path (OPPORTUNITY_PATHS_CYPHER in ./neo4j-client) ranks `:Entity` nodes by
+ * the materialized `success_weight` / `exposure_count` and recomputes seed weights
+ * from the Postgres `graph_outcome_events` log — it NEVER traverses `:IdeaAnchor`
+ * nodes or OPPORTUNITY_* edges — so pruning aged anchors cannot regress reasoning.
+ *
+ * Legacy anchors written before this change carry NO `createdAtSec`; `< $cutoff`
+ * never matches a null, so they are simply left in place. That is harmless:
+ * graphFeedback has been OFF, so in practice there are ~none.
+ */
+const PRUNE_IDEA_ANCHORS_CYPHER = `
+MATCH (a:IdeaAnchor)
+WHERE a.createdAtSec < $cutoff
+DETACH DELETE a
+RETURN count(a) AS deleted
 `;
 
 // ─── Internal driver typing (structural — avoids a hard type dependency) ──────
@@ -174,6 +208,30 @@ function isConnectionError(err: unknown): boolean {
     msg.includes("failed to connect") ||
     msg.includes("connection acquisition timed out")
   );
+}
+
+/**
+ * Best-effort read of the `deleted` count from a prune result's first record.
+ * neo4j-driver returns `count(a)` as a neo4j `Integer` (which exposes
+ * `.toNumber()`), but a stub/driver may hand back a plain number. Defensive and
+ * never-throwing: an unexpected shape yields 0 (the prune still succeeded; only the
+ * reported count is best-effort). PURE.
+ */
+function extractCount(result: Neo4jResult): number {
+  const first = result.records[0];
+  if (!first || typeof first !== "object") return 0;
+  const record = first as { get?: (key: string) => unknown };
+  if (typeof record.get !== "function") return 0;
+  const value = record.get("deleted");
+  if (typeof value === "number") return value;
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { toNumber?: () => number }).toNumber === "function"
+  ) {
+    return (value as { toNumber: () => number }).toNumber();
+  }
+  return 0;
 }
 
 // ─── Client ───────────────────────────────────────────────────────────────────
@@ -336,6 +394,7 @@ export class Neo4jWriteClient {
           seedName: event.seedName,
           runId: event.runId,
           weight: event.weight,
+          createdAtSec: event.createdAtSec,
         });
         written += 1;
       }
@@ -372,6 +431,31 @@ export class Neo4jWriteClient {
     if (ok) {
       log.debug("projectSeedWeights done", { rows: rows.length, projected });
       return projected;
+    }
+    return 0;
+  }
+
+  /**
+   * Prune `:IdeaAnchor` nodes older than `olderThanSec` (an epoch-seconds cutoff).
+   * Every run MERGEs a new anchor, so this caps the append-only anchor log. STATIC
+   * parameterized Cypher (`$cutoff` bound) via the same breaker-guarded `runWrite`
+   * path, so it NEVER throws — it degrades to a no-op (returns 0) on a missing
+   * password / open breaker / connection failure / query error / timeout, exactly
+   * like the other write methods.
+   *
+   * Safe by construction: the read path never traverses `:IdeaAnchor`, and legacy
+   * anchors without `createdAtSec` are not matched by `< $cutoff` (see the Cypher).
+   * Returns the number of anchors deleted (0 on any failure).
+   */
+  async pruneIdeaAnchors(olderThanSec: number): Promise<number> {
+    let deleted = 0;
+    const ok = await this.runWrite(async (tx) => {
+      const result = await tx.run(PRUNE_IDEA_ANCHORS_CYPHER, { cutoff: olderThanSec });
+      deleted = extractCount(result);
+    });
+    if (ok) {
+      log.debug("pruneIdeaAnchors done", { cutoff: olderThanSec, deleted });
+      return deleted;
     }
     return 0;
   }

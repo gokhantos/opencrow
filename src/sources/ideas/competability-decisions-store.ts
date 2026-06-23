@@ -49,6 +49,15 @@ export interface CompetabilityDecisionInput {
   readonly pipelineRunId?: string | null;
   readonly sessionId?: string | null;
   readonly ideaTitle: string;
+  /**
+   * The DB id of the evaluated idea (`generated_ideas.id`), when available.
+   *
+   * • SIGE path: `idea.id` IS in scope at gate time → set this.
+   * • Pipeline path: the DB id is NOT assigned until AFTER the gate (candidates
+   *   are in-memory structs, not yet persisted rows) → pass `null`.
+   * • Omitting the field is equivalent to `null`.
+   */
+  readonly ideaId?: string | null;
   /** The full persisted scorecard the gate acted on (effective dims + raw + reason). */
   readonly persisted: CompetabilityPersisted;
   /** Did the competability gate reject this idea. */
@@ -70,6 +79,8 @@ export interface CompetabilityDecisionRow {
   readonly session_id: string | null;
   readonly source: CompetabilityDecisionSource;
   readonly idea_title: string;
+  /** FK to `generated_ideas.id`; null for pipeline-path rows and old rows. */
+  readonly idea_id: string | null;
   readonly competability_overall: number;
   readonly competability_raw_overall: number | null;
   readonly competability_json: CompetabilityPersistedJson;
@@ -99,6 +110,7 @@ export function buildCompetabilityDecisionRow(
     session_id: input.sessionId ?? null,
     source: input.source,
     idea_title: truncateTitle(input.ideaTitle),
+    idea_id: input.ideaId ?? null,
     competability_overall: input.persisted.overall,
     competability_raw_overall: input.persisted.raw?.overall ?? null,
     // Cast through the persisted-JSON column type: the in-memory scorecard and the

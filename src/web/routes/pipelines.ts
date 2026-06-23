@@ -32,6 +32,7 @@ import {
   writeHumanOutcomeMemory,
 } from "../../pipelines/ideas/outcome-memory";
 import { enqueueValidatedIdea } from "../../pipelines/ideas/deferred-outcome-store";
+import { clearsAbsenceFloor } from "../../pipelines/ideas/deferred-outcome-reprobe";
 import { runIdeasPipeline } from "../../pipelines/ideas/pipeline";
 import { DEFAULT_PIPELINE_CONFIG } from "../../pipelines/types";
 import {
@@ -549,6 +550,11 @@ export function createPipelineRoutes(deps?: {
             // so the human verdict learns moat ↔ outcome too. Lifted from the
             // generated_ideas row; empty fields when the idea was never scored.
             ...persistedToCandidateCompetability(updated.competability_json),
+            // Carry the stored demand artifact (migration 015) so the human
+            // outcome memory surface demandScore/whitespace, matching the
+            // run-time write-back. parseDemandJson already ran in the mapper;
+            // we re-use the parsed result directly.
+            demand: updated.demand_json,
             runId: HUMAN_VERDICT_RUN_ID,
             promptVersion: HUMAN_VERDICT_PROMPT_VERSION,
             model: HUMAN_VERDICT_MODEL,
@@ -560,22 +566,29 @@ export function createPipelineRoutes(deps?: {
 
       // Deferred re-probe enqueue (Phase 2, gated): a HUMAN validation is ground
       // truth, but a deferred demand re-probe still adds a second external check.
-      // The human path carries NO demand snapshot, so baselineDemand is null — the
-      // re-probe will resolve "inconclusive" and leave the human verdict intact
-      // (it only records a row). Gated on reprobe.enabled; best-effort (the store
-      // helper never throws). delayDays from config; validatedAt = now.
+      // Use the stored demand_json as the baseline so the re-probe can produce a
+      // meaningful "grew" / "decayed" / "flat" verdict instead of always resolving
+      // "inconclusive". Only enqueue when the baseline clears the absence floor
+      // (confidence > ABSENCE_CONFIDENCE_CAP) — an absence-floor baseline produces
+      // an inconclusive diff regardless, so enqueuing it would waste a probe slot.
+      // Gated on reprobe.enabled; best-effort (the store helper never throws).
       if (outcomeMemoryCfg.reprobe.enabled && humanStageToVerdict(body.stage) === "validated") {
-        const validatedAt = Math.floor(Date.now() / 1000);
-        await enqueueValidatedIdea({
-          ideaId: updated.id,
-          title: updated.title,
-          segment: null,
-          archetype: null,
-          validationSource: "human",
-          validatedAt,
-          baselineDemand: null,
-          dueAt: validatedAt + outcomeMemoryCfg.reprobe.delayDays * 86_400,
-        });
+        const baselineDemand = clearsAbsenceFloor(updated.demand_json)
+          ? updated.demand_json
+          : null;
+        if (baselineDemand !== null) {
+          const validatedAt = Math.floor(Date.now() / 1000);
+          await enqueueValidatedIdea({
+            ideaId: updated.id,
+            title: updated.title,
+            segment: null,
+            archetype: null,
+            validationSource: "human",
+            validatedAt,
+            baselineDemand,
+            dueAt: validatedAt + outcomeMemoryCfg.reprobe.delayDays * 86_400,
+          });
+        }
       }
     } catch (err) {
       // Defense in depth: writeHumanOutcomeMemory is already best-effort, but a

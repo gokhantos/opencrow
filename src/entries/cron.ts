@@ -106,6 +106,49 @@ async function main(): Promise<void> {
     });
   }
 
+  // --- Idea-anchor retention prune scheduler (Phase 3, gated, default OFF) ---
+  // The graph outcome-feedback loop MERGEs a NEW :IdeaAnchor per run, so the anchor
+  // log grows unbounded once feedback projects to Neo4j. This bespoke (non-
+  // CronPayload) scheduler DETACH DELETEs anchors older than anchorRetentionDays.
+  // Gated exactly like the projection write-back: only runs when graphFeedback is
+  // enabled, projectToNeo4j is on, AND a sige.neo4j connection is configured.
+  const graphFeedbackCfg = config.pipelines.ideas.smart.graphFeedback;
+  const sigeNeo4j = config.sige?.neo4j;
+  if (
+    graphFeedbackCfg.enabled &&
+    graphFeedbackCfg.projectToNeo4j &&
+    sigeNeo4j?.enabled
+  ) {
+    const { createIdeaAnchorPruneScheduler } = await import(
+      "../cron/idea-anchor-prune-scheduler"
+    );
+    const { Neo4jWriteClient } = await import("../sige/knowledge/neo4j-write-client");
+
+    // Build the WRITE client from sige.neo4j exactly like graph-outcome-feedback.
+    const anchorPruneWriteClient = new Neo4jWriteClient({
+      boltUrl: sigeNeo4j.boltUrl,
+      user: sigeNeo4j.user,
+      queryTimeoutMs: sigeNeo4j.queryTimeoutMs,
+    });
+    const anchorPruneScheduler = createIdeaAnchorPruneScheduler({
+      writeClient: anchorPruneWriteClient,
+      config: {
+        tickIntervalMs: graphFeedbackCfg.pruneTickIntervalMs,
+        anchorRetentionDays: graphFeedbackCfg.anchorRetentionDays,
+      },
+    });
+    anchorPruneScheduler.start();
+    supervisor.onShutdown(async () => {
+      anchorPruneScheduler.stop();
+      await anchorPruneScheduler.drain();
+      await anchorPruneWriteClient.close().catch(() => {});
+    });
+    log.info("Idea-anchor prune scheduler started", {
+      pruneTickIntervalMs: graphFeedbackCfg.pruneTickIntervalMs,
+      anchorRetentionDays: graphFeedbackCfg.anchorRetentionDays,
+    });
+  }
+
   // --- Proactive Monitor ---
   if (config.monitor !== undefined) {
     const primaryUserId = config.channels.telegram.allowedUserIds[0];

@@ -1,5 +1,7 @@
 import { getDb } from "../../store/db";
 import { createLogger } from "../../logger";
+import type { DemandArtifact } from "../../pipelines/ideas/demand";
+import { demandArtifactSchema } from "../../pipelines/ideas/demand";
 import {
   type IdeaFeedbackEvent,
   type IdeaFeedbackRow,
@@ -28,6 +30,17 @@ export interface GeneratedIdea {
    * competability gate did not run for this idea.
    */
   readonly competability_json: CompetabilityPersistedJson | null;
+  /**
+   * Full demand artifact (migration 015): score, confidence, whitespace, evidence.
+   * Null when the demand gate did not run for this idea (pre-feature rows, or
+   * ideas that skipped the demand probe).
+   */
+  readonly demand_json: DemandArtifact | null;
+  /**
+   * Flattened demand score 0..5 (migration 015), for fast filtering. Null when
+   * demand_json is null.
+   */
+  readonly demand_score: number | null;
 }
 
 /**
@@ -101,6 +114,9 @@ export interface GeneratedIdeaRow {
   readonly created_at: number;
   readonly competability_overall: number | null;
   readonly competability_json: CompetabilityPersistedJson | string | null;
+  /** Bun.sql may surface JSONB as an already-parsed object or a JSON string. */
+  readonly demand_json: DemandArtifact | string | null;
+  readonly demand_score: number | null;
 }
 
 /**
@@ -122,6 +138,31 @@ export function parseCompetabilityJson(
   return value;
 }
 
+/**
+ * Tolerantly parse the demand_json column (object | string | null) through
+ * {@link demandArtifactSchema}. Returns null for any value that is absent,
+ * not a valid JSON string, or does not conform to the schema — so old rows
+ * (pre-migration-015) are safely handled. Mirrors parseCompetabilityJson.
+ * Exported so the route and test can reuse the exact same parse path.
+ */
+export function parseDemandJson(
+  value: DemandArtifact | string | null | undefined,
+): DemandArtifact | null {
+  if (value == null) return null;
+  let candidate: unknown;
+  if (typeof value === "string") {
+    try {
+      candidate = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  } else {
+    candidate = value;
+  }
+  const parsed = demandArtifactSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Map a raw generated_ideas row onto the readonly {@link GeneratedIdea} domain type. */
 export function rowToGeneratedIdea(row: GeneratedIdeaRow): GeneratedIdea {
   return {
@@ -139,6 +180,8 @@ export function rowToGeneratedIdea(row: GeneratedIdeaRow): GeneratedIdea {
     created_at: row.created_at,
     competability_overall: row.competability_overall,
     competability_json: parseCompetabilityJson(row.competability_json),
+    demand_json: parseDemandJson(row.demand_json),
+    demand_score: row.demand_score,
   };
 }
 
@@ -216,8 +259,9 @@ export async function updateIdeaStage(
       WHERE id = ${id}
       RETURNING *
     `;
-    const updated = (rows[0] as GeneratedIdea) ?? null;
-    if (!updated) return null;
+    const raw = (rows[0] as GeneratedIdeaRow | undefined) ?? null;
+    if (!raw) return null;
+    const updated = rowToGeneratedIdea(raw);
 
     if (kind) {
       await tx`

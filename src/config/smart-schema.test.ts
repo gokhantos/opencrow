@@ -135,6 +135,8 @@ describe("smartConfigSchema", () => {
         weightHalfLifeDays: 60,
         maxSeedWeight: 5,
         projectToNeo4j: true,
+        anchorRetentionDays: 90,
+        pruneTickIntervalMs: 86_400_000,
       },
       abHoldout: {
         enabled: true,

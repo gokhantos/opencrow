@@ -358,6 +358,24 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
   ) {
     graphFeedbackEnv.maxSeedWeight = graphFeedbackMaxSeedWeight;
   }
+  const graphFeedbackAnchorRetentionDays = Number(
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_ANCHOR_RETENTION_DAYS ?? "",
+  );
+  if (
+    !Number.isNaN(graphFeedbackAnchorRetentionDays) &&
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_ANCHOR_RETENTION_DAYS !== undefined
+  ) {
+    graphFeedbackEnv.anchorRetentionDays = graphFeedbackAnchorRetentionDays;
+  }
+  const graphFeedbackPruneTickIntervalMs = Number(
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_PRUNE_TICK_INTERVAL_MS ?? "",
+  );
+  if (
+    !Number.isNaN(graphFeedbackPruneTickIntervalMs) &&
+    process.env.OPENCROW_SMART_GRAPH_FEEDBACK_PRUNE_TICK_INTERVAL_MS !== undefined
+  ) {
+    graphFeedbackEnv.pruneTickIntervalMs = graphFeedbackPruneTickIntervalMs;
+  }
 
   // OPENCROW_SMART_AB_HOLDOUT_* overrides for the Phase-4 A/B holdout block.
   // EXPLICIT block (like graphFeedbackEnv): the generic deep-merge does not reach

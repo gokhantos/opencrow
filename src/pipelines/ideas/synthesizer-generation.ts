@@ -901,6 +901,10 @@ Return ONLY a JSON array with one entry per idea (in the same order):
             source: "pipeline",
             pipelineRunId: audit.pipelineRunId ?? null,
             ideaTitle: candidate.title,
+            // DB id not yet assigned at gate time — candidates are in-memory
+            // structs that have not been persisted yet.  Null by design;
+            // a future backfill could match on (pipeline_run_id, idea_title).
+            ideaId: null,
             persisted,
             gated: competabilityGated,
             enforced: enforceCompetabilityGate,

@@ -53,6 +53,8 @@ const captured: Captured = {
 };
 
 let mode: "ok" | "connError" | "hang" = "ok";
+// Count the prune's `count(a) AS deleted` record returns (per-test).
+let pruneDeleted = 0;
 
 const WRITE_SENTINEL = { __mode: "WRITE" };
 
@@ -89,6 +91,19 @@ mock.module("neo4j-driver", () => ({
             run: async (q: string, p: Record<string, unknown>) => {
               captured.queries.push({ query: q, params: p });
               if (mode === "hang") return new Promise(() => {});
+              // Prune returns a `count(a) AS deleted` record (a neo4j Integer in
+              // prod; here a plain object exposing .get + .toNumber to exercise both
+              // extraction branches).
+              if (q.includes("DETACH DELETE")) {
+                return {
+                  records: [
+                    {
+                      get: (key: string) =>
+                        key === "deleted" ? { toNumber: () => pruneDeleted } : undefined,
+                    },
+                  ],
+                };
+              }
               return { records: [] };
             },
           };
@@ -127,13 +142,14 @@ beforeEach(() => {
   captured.executeWriteCalled = false;
   mode = "ok";
   password = "test-password";
+  pruneDeleted = 0;
 });
 
 describe("Neo4jWriteClient.upsertSeedOutcomeEdges — write contract", () => {
   test("uses a WRITE-mode session and executeWrite, NEVER executeRead", async () => {
     const client = freshClient();
     await client.upsertSeedOutcomeEdges([
-      { seedName: "slow sync", runId: "run-1", verdict: "validated", weight: 1 },
+      { seedName: "slow sync", runId: "run-1", verdict: "validated", weight: 1, createdAtSec: 1000 },
     ]);
 
     expect(captured.sessionConfigs).toEqual([WRITE_SENTINEL]);
@@ -145,8 +161,8 @@ describe("Neo4jWriteClient.upsertSeedOutcomeEdges — write contract", () => {
   test("writes EXACTLY uppercase OPPORTUNITY_VALIDATED / OPPORTUNITY_KILLED rel types", async () => {
     const client = freshClient();
     await client.upsertSeedOutcomeEdges([
-      { seedName: "good seed", runId: "run-1", verdict: "validated", weight: 2 },
-      { seedName: "bad seed", runId: "run-1", verdict: "killed", weight: -2 },
+      { seedName: "good seed", runId: "run-1", verdict: "validated", weight: 2, createdAtSec: 1000 },
+      { seedName: "bad seed", runId: "run-1", verdict: "killed", weight: -2, createdAtSec: 1000 },
     ]);
 
     expect(captured.queries.length).toBe(2);
@@ -166,7 +182,13 @@ describe("Neo4jWriteClient.upsertSeedOutcomeEdges — write contract", () => {
   test("binds every dynamic value as a $param — none interpolated into Cypher", async () => {
     const client = freshClient();
     await client.upsertSeedOutcomeEdges([
-      { seedName: "slow sync", runId: "run-xyz", verdict: "validated", weight: 3.5 },
+      {
+        seedName: "slow sync",
+        runId: "run-xyz",
+        verdict: "validated",
+        weight: 3.5,
+        createdAtSec: 1717000000,
+      },
     ]);
 
     const { query, params } = captured.queries[0]!;
@@ -174,6 +196,7 @@ describe("Neo4jWriteClient.upsertSeedOutcomeEdges — write contract", () => {
     expect(query).toContain("$seedName");
     expect(query).toContain("$runId");
     expect(query).toContain("$weight");
+    expect(query).toContain("$createdAtSec");
     // The dynamic values must NOT appear as literals in the query text.
     expect(query).not.toContain("slow sync");
     expect(query).not.toContain("run-xyz");
@@ -182,6 +205,22 @@ describe("Neo4jWriteClient.upsertSeedOutcomeEdges — write contract", () => {
     expect(params.seedName).toBe("slow sync");
     expect(params.runId).toBe("run-xyz");
     expect(params.weight).toBe(3.5);
+    expect(params.createdAtSec).toBe(1717000000);
+    await client.close();
+  });
+
+  test("stamps the anchor creation time via ON CREATE SET createdAtSec (bound, never re-stamped)", async () => {
+    const client = freshClient();
+    await client.upsertSeedOutcomeEdges([
+      { seedName: "seed", runId: "run-1", verdict: "validated", weight: 1, createdAtSec: 4242 },
+    ]);
+
+    const { query, params } = captured.queries[0]!;
+    // ON CREATE SET stamps the time only the first time the anchor MERGEs — never
+    // on a re-run of the same runId. The value is a bound $param, not interpolated.
+    expect(query).toContain("ON CREATE SET anchor.createdAtSec = $createdAtSec");
+    expect(query).not.toContain("4242");
+    expect(params.createdAtSec).toBe(4242);
     await client.close();
   });
 
@@ -192,7 +231,7 @@ describe("Neo4jWriteClient.upsertSeedOutcomeEdges — write contract", () => {
     // text, the graph could be injected/destroyed.
     const evil = "x`}) DETACH DELETE n //";
     await client.upsertSeedOutcomeEdges([
-      { seedName: evil, runId: "run-1", verdict: "killed", weight: -1 },
+      { seedName: evil, runId: "run-1", verdict: "killed", weight: -1, createdAtSec: 1000 },
     ]);
 
     const { query, params } = captured.queries[0]!;
@@ -221,7 +260,7 @@ describe("Neo4jWriteClient.upsertSeedOutcomeEdges — write contract", () => {
     const client = freshClient();
 
     const n = await client.upsertSeedOutcomeEdges([
-      { seedName: "s", runId: "run-1", verdict: "validated", weight: 1 },
+      { seedName: "s", runId: "run-1", verdict: "validated", weight: 1, createdAtSec: 1000 },
     ]);
     expect(n).toBe(0);
     expect(client.isUnavailable()).toBe(true);
@@ -229,7 +268,7 @@ describe("Neo4jWriteClient.upsertSeedOutcomeEdges — write contract", () => {
     // Breaker open → the next write short-circuits without running a query.
     const queriesBefore = captured.queries.length;
     const n2 = await client.upsertSeedOutcomeEdges([
-      { seedName: "s2", runId: "run-2", verdict: "killed", weight: -1 },
+      { seedName: "s2", runId: "run-2", verdict: "killed", weight: -1, createdAtSec: 1000 },
     ]);
     expect(n2).toBe(0);
     expect(captured.queries.length).toBe(queriesBefore);
@@ -240,7 +279,7 @@ describe("Neo4jWriteClient.upsertSeedOutcomeEdges — write contract", () => {
     password = undefined;
     const client = freshClient();
     const n = await client.upsertSeedOutcomeEdges([
-      { seedName: "s", runId: "run-1", verdict: "validated", weight: 1 },
+      { seedName: "s", runId: "run-1", verdict: "validated", weight: 1, createdAtSec: 1000 },
     ]);
     expect(n).toBe(0);
     expect(captured.queries.length).toBe(0);
@@ -294,6 +333,50 @@ describe("Neo4jWriteClient.projectSeedWeights — projection contract", () => {
     expect(proj.query).not.toContain(evil);
     expect(proj.query).not.toContain("DETACH DELETE");
     expect(proj.query).not.toContain("`");
+    await client.close();
+  });
+});
+
+describe("Neo4jWriteClient.pruneIdeaAnchors — retention prune contract", () => {
+  test("runs a STATIC parameterized DETACH DELETE with the cutoff bound as $cutoff", async () => {
+    pruneDeleted = 7;
+    const client = freshClient();
+    const deleted = await client.pruneIdeaAnchors(1717000000);
+
+    // WRITE session only — never a read.
+    expect(captured.sessionConfigs).toEqual([WRITE_SENTINEL]);
+    expect(captured.executeWriteCalled).toBe(true);
+    expect(captured.executeReadCalled).toBe(false);
+
+    expect(captured.queries.length).toBe(1);
+    const { query, params } = captured.queries[0]!;
+    // The cutoff is BOUND as $cutoff — never interpolated into the query text.
+    expect(query).toContain("$cutoff");
+    expect(query).toContain("MATCH (a:IdeaAnchor)");
+    expect(query).toContain("DETACH DELETE a");
+    expect(query).not.toContain("1717000000");
+    expect(params.cutoff).toBe(1717000000);
+    // The deleted count is read back from the result record.
+    expect(deleted).toBe(7);
+    await client.close();
+  });
+
+  test("a connection error → 0 and silent no-op (never throws), opens the breaker", async () => {
+    mode = "connError";
+    const client = freshClient();
+    const deleted = await client.pruneIdeaAnchors(1000);
+    expect(deleted).toBe(0);
+    expect(client.isUnavailable()).toBe(true);
+    await client.close();
+  });
+
+  test("missing NEO4J_PASSWORD → 0 (no driver dialed, no query)", async () => {
+    password = undefined;
+    const client = freshClient();
+    const deleted = await client.pruneIdeaAnchors(1000);
+    expect(deleted).toBe(0);
+    expect(captured.queries.length).toBe(0);
+    expect(captured.executeWriteCalled).toBe(false);
     await client.close();
   });
 });

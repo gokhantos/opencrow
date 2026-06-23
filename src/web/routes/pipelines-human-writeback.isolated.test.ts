@@ -1,6 +1,6 @@
 /**
  * Isolated tests for the PATCH /pipeline-ideas/:id/stage human-verdict
- * outcome-memory write-back gating.
+ * outcome-memory write-back gating AND deferred reprobe enqueue.
  *
  * Verifies the default-OFF correctness bar and the on-path behavior without a DB
  * or a live mem0 sidecar:
@@ -10,13 +10,18 @@
  *     carrying the updated idea id/title and verdictSource:"human".
  *   - A mem0 failure does NOT affect the stage-update HTTP response (still 200).
  *   - When updateIdeaStage returns null (idea not found), no write is attempted.
+ *   - Reprobe enqueue: when reprobe.enabled and the idea's demand_json clears the
+ *     absence floor, enqueueValidatedIdea is called with baselineDemand set.
+ *   - When demand_json is null or below the floor, no enqueue is attempted.
+ *   - When reprobe is disabled, no enqueue is attempted regardless of demand_json.
  *
- * Mocks ONLY the store, config loader, and the Mem0Client transport — the
- * outcome-memory module is the REAL one (mock.module leaks across the shared
- * isolated process, so we must not replace a module other isolated suites
+ * Mocks ONLY the store, config loader, Mem0Client transport, and deferred-outcome-
+ * store — the outcome-memory module is the REAL one (mock.module leaks across the
+ * shared isolated process, so we must not replace a module other isolated suites
  * import). Lane: *.isolated.test.ts.
  */
 import { describe, test, expect, mock, beforeEach } from "bun:test";
+import type { DemandArtifact } from "../../pipelines/ideas/demand";
 
 // ── Mutable test state captured by the mocks ──────────────────────────────────
 
@@ -29,6 +34,13 @@ let addMemoriesCalls: Array<{
   enableGraph?: boolean;
 }> = [];
 let addMemoriesThrows = false;
+
+/** demand_json that the mock updateIdeaStage will embed in the returned idea. */
+let mockDemandJson: DemandArtifact | null = null;
+/** whether reprobe is enabled in the mocked config */
+let reprobeEnabled = false;
+/** captured calls to enqueueValidatedIdea */
+let enqueueCalls: Array<Record<string, unknown>> = [];
 
 // ── Module mocks BEFORE importing the route ──────────────────────────────────
 
@@ -48,8 +60,20 @@ mock.module("../../sources/ideas/store", () => ({
   updateIdeaStage: mock(async (id: string, stage: string) =>
     updateReturnsNull
       ? null
-      : { id, title: "A grounded idea", quality_score: 4, pipeline_stage: stage },
+      : {
+          id,
+          title: "A grounded idea",
+          quality_score: 4,
+          pipeline_stage: stage,
+          competability_json: null,
+          demand_json: mockDemandJson,
+          demand_score: mockDemandJson?.score ?? null,
+        },
   ),
+  // parseDemandJson: pass through — the route reads demand_json directly off
+  // the returned idea object (already parsed by rowToGeneratedIdea in prod);
+  // we surface it as-is from the mock so no real parse is needed here.
+  parseDemandJson: (v: unknown) => v as DemandArtifact | null,
 }));
 
 mock.module("../../config/loader", () => ({
@@ -58,7 +82,13 @@ mock.module("../../config/loader", () => ({
       ideas: {
         smart: {
           sigeAuto: { enabled: false },
-          outcomeMemory: { writeBack: writeBackEnabled },
+          outcomeMemory: {
+            writeBack: writeBackEnabled,
+            reprobe: {
+              enabled: reprobeEnabled,
+              delayDays: 30,
+            },
+          },
         },
       },
     },
@@ -69,6 +99,13 @@ mock.module("../../config/loader", () => ({
         ideasUserId: "sige-ideas",
       },
     },
+  }),
+}));
+
+mock.module("../../pipelines/ideas/deferred-outcome-store", () => ({
+  enqueueValidatedIdea: mock(async (input: Record<string, unknown>) => {
+    enqueueCalls.push(input);
+    return true;
   }),
 }));
 
@@ -144,6 +181,9 @@ beforeEach(() => {
   mem0Constructed = 0;
   addMemoriesCalls = [];
   addMemoriesThrows = false;
+  mockDemandJson = null;
+  reprobeEnabled = false;
+  enqueueCalls = [];
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -216,5 +256,79 @@ describe("PATCH /pipeline-ideas/:id/stage — writeBack ON", () => {
     expect(res.status).toBe(404);
     expect(addMemoriesCalls.length).toBe(0);
     expect(mem0Constructed).toBe(0);
+  });
+});
+
+// ─── A demand artifact that clears the absence floor (confidence > 0.2) ───────
+const DEMAND_ABOVE_FLOOR: DemandArtifact = {
+  score: 3.0,
+  confidence: 0.55,
+  whitespace: 0.4,
+  evidence: [{ kind: "reddit_intent", query: "async tasks", count: 3 }],
+};
+
+describe("PATCH /pipeline-ideas/:id/stage — deferred reprobe enqueue (prereq #3)", () => {
+  test("enqueues with real baselineDemand when reprobe.enabled and demand_json clears the floor", async () => {
+    reprobeEnabled = true;
+    mockDemandJson = DEMAND_ABOVE_FLOOR;
+    const res = await patchStage("validated", "idea-reprobe-1");
+    expect(res.status).toBe(200);
+    expect(enqueueCalls.length).toBe(1);
+    const call = enqueueCalls[0]!;
+    expect(call.ideaId).toBe("idea-reprobe-1");
+    expect(call.validationSource).toBe("human");
+    expect(call.baselineDemand).toEqual(DEMAND_ABOVE_FLOOR);
+    // dueAt must be in the future (validatedAt + 30 * 86400 seconds)
+    expect(typeof call.dueAt).toBe("number");
+    expect((call.dueAt as number)).toBeGreaterThan(Math.floor(Date.now() / 1000));
+  });
+
+  test("does NOT enqueue when demand_json is null (no real baseline)", async () => {
+    reprobeEnabled = true;
+    mockDemandJson = null;
+    const res = await patchStage("validated");
+    expect(res.status).toBe(200);
+    expect(enqueueCalls.length).toBe(0);
+  });
+
+  test("does NOT enqueue when demand_json confidence is at the absence floor (0.2 is NOT > 0.2)", async () => {
+    reprobeEnabled = true;
+    mockDemandJson = { score: 1, confidence: 0.2, whitespace: 0, evidence: [] };
+    const res = await patchStage("validated");
+    expect(res.status).toBe(200);
+    expect(enqueueCalls.length).toBe(0);
+  });
+
+  test("does NOT enqueue when reprobe is disabled", async () => {
+    reprobeEnabled = false;
+    mockDemandJson = DEMAND_ABOVE_FLOOR;
+    const res = await patchStage("validated");
+    expect(res.status).toBe(200);
+    expect(enqueueCalls.length).toBe(0);
+  });
+
+  test("does NOT enqueue for archived stage (only validated triggers reprobe)", async () => {
+    reprobeEnabled = true;
+    mockDemandJson = DEMAND_ABOVE_FLOOR;
+    const res = await patchStage("archived");
+    expect(res.status).toBe(200);
+    expect(enqueueCalls.length).toBe(0);
+  });
+
+  test("does NOT enqueue for restore stage (idea)", async () => {
+    reprobeEnabled = true;
+    mockDemandJson = DEMAND_ABOVE_FLOOR;
+    const res = await patchStage("idea");
+    expect(res.status).toBe(200);
+    expect(enqueueCalls.length).toBe(0);
+  });
+
+  test("HTTP response is still 200 regardless of reprobe path taken", async () => {
+    reprobeEnabled = true;
+    mockDemandJson = DEMAND_ABOVE_FLOOR;
+    const res = await patchStage("validated");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean };
+    expect(body.success).toBe(true);
   });
 });

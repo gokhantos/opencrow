@@ -967,6 +967,7 @@ export async function runOutcomeMemoryWriteBack(params: {
             runId: e.runId,
             verdict: e.verdict,
             weight: e.weight,
+            createdAtSec: e.createdAtSec,
           })),
         );
         await projectLearnedWeights(graphWriteClient);

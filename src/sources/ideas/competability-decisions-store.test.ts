@@ -95,4 +95,19 @@ describe("buildCompetabilityDecisionRow (pure)", () => {
     const row = buildCompetabilityDecisionRow(input({ ideaTitle: "short" }));
     expect(row.idea_title).toBe("short");
   });
+
+  it("carries the supplied ideaId on the row", () => {
+    const row = buildCompetabilityDecisionRow(input({ ideaId: "idea-abc-123" }));
+    expect(row.idea_id).toBe("idea-abc-123");
+  });
+
+  it("defaults idea_id to null when ideaId is omitted", () => {
+    const row = buildCompetabilityDecisionRow(input());
+    expect(row.idea_id).toBeNull();
+  });
+
+  it("defaults idea_id to null when ideaId is explicitly null (pipeline path)", () => {
+    const row = buildCompetabilityDecisionRow(input({ ideaId: null }));
+    expect(row.idea_id).toBeNull();
+  });
 });
