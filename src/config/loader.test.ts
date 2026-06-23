@@ -304,6 +304,43 @@ describe("deepMergeSigeOverride", () => {
  * Save and restore a set of env vars around each test so leaks cannot affect
  * other unit tests in the same process.
  */
+describe("loadConfig — giant.enforceGates env toggle", () => {
+  const VAR = "OPENCROW_SMART_GIANT_ENFORCE_GATES";
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env[VAR];
+    delete process.env[VAR];
+  });
+
+  afterEach(() => {
+    if (saved === undefined) {
+      delete process.env[VAR];
+    } else {
+      process.env[VAR] = saved;
+    }
+  });
+
+  test("no env var set → enforceGates carries schema default (false, shadow mode)", () => {
+    const cfg = loadConfig();
+    expect(cfg.pipelines.ideas.smart.giant.enforceGates).toBe(false);
+  });
+
+  test("OPENCROW_SMART_GIANT_ENFORCE_GATES=true → enforceGates overrides to true", () => {
+    process.env.OPENCROW_SMART_GIANT_ENFORCE_GATES = "true";
+    const cfg = loadConfig();
+    expect(cfg.pipelines.ideas.smart.giant.enforceGates).toBe(true);
+    // Sibling giant fields (the weights) must survive the shallow merge.
+    expect(cfg.pipelines.ideas.smart.giant.weights.acuteProblem).toBeGreaterThan(0);
+  });
+
+  test("OPENCROW_SMART_GIANT_ENFORCE_GATES=false → stays false (explicit opt-out)", () => {
+    process.env.OPENCROW_SMART_GIANT_ENFORCE_GATES = "false";
+    const cfg = loadConfig();
+    expect(cfg.pipelines.ideas.smart.giant.enforceGates).toBe(false);
+  });
+});
+
 const OUTCOME_MEMORY_VARS = [
   "OPENCROW_SMART_OUTCOME_MEMORY_WRITEBACK",
   "OPENCROW_SMART_OUTCOME_MEMORY_READ_AT_SYNTHESIS",
