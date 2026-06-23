@@ -74,7 +74,7 @@ describe("abHoldoutOverrideSchema", () => {
 
   it("surfaces abHoldout in the effective config response", () => {
     const res = buildIdeasConfigResponse(baseConfig, {});
-    expect(res.effective.abHoldout).toEqual({ enabled: false, holdoutRatio: 0 });
+    expect(res.effective.abHoldout).toEqual({ enabled: true, holdoutRatio: 0.5 });
     expect(res.overrides.abHoldout).toBeNull();
   });
 });

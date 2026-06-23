@@ -1242,14 +1242,17 @@ export type GraphFeedbackConfig = z.infer<typeof graphFeedbackConfigSchema>;
 export const abHoldoutConfigSchema = z
   .object({
     // Master switch. OFF → no arm assignment, no lesson recording, all guided.
-    enabled: z.boolean().default(false),
+    // ON (2026-06-23): measure the lift of the outcome-memory learning (now that
+    // trustWeighting is the default) against a blind control arm.
+    enabled: z.boolean().default(true),
     // Fraction of runs assigned the BLIND arm. 0 → never blind (always guided);
-    // 1 → always blind. Deterministic per run id (no RNG).
-    holdoutRatio: z.number().min(0).max(1).default(0),
+    // 1 → always blind. Deterministic per run id (no RNG). 0.5 → balanced arms for
+    // the fastest, cleanest lift readout (lift summary reports at ≥20 runs/arm).
+    holdoutRatio: z.number().min(0).max(1).default(0.5),
   })
   .default({
-    enabled: false,
-    holdoutRatio: 0,
+    enabled: true,
+    holdoutRatio: 0.5,
   });
 export type AbHoldoutConfig = z.infer<typeof abHoldoutConfigSchema>;
 
@@ -1707,8 +1710,8 @@ const SMART_IDEAS_DEFAULTS = {
     projectToNeo4j: true,
   },
   abHoldout: {
-    enabled: false,
-    holdoutRatio: 0,
+    enabled: true,
+    holdoutRatio: 0.5,
   },
   incumbentExclusion: {
     enabled: true,
