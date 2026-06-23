@@ -1226,6 +1226,14 @@ export const graphFeedbackConfigSchema = z
     // only step that opens a WRITE session). When false, bookkeeping still runs in
     // Postgres but the graph is untouched.
     projectToNeo4j: z.boolean().default(true),
+    // Retention (days) for the append-only `:IdeaAnchor` log. Each run MERGEs a NEW
+    // anchor node, so without a prune the anchor set grows unbounded once feedback
+    // is enabled. The cron-side prune scheduler DETACH DELETEs anchors older than
+    // this (safe — the read path never traverses :IdeaAnchor).
+    anchorRetentionDays: z.number().int().min(1).default(90),
+    // How often the prune scheduler runs (ms). Default daily — anchor growth is
+    // slow (one per run) so a sparse cadence is plenty.
+    pruneTickIntervalMs: z.number().int().min(60_000).default(86_400_000),
   })
   .default({
     enabled: false,
@@ -1234,6 +1242,8 @@ export const graphFeedbackConfigSchema = z
     weightHalfLifeDays: 60,
     maxSeedWeight: 5,
     projectToNeo4j: true,
+    anchorRetentionDays: 90,
+    pruneTickIntervalMs: 86_400_000,
   });
 export type GraphFeedbackConfig = z.infer<typeof graphFeedbackConfigSchema>;
 
@@ -1711,6 +1721,8 @@ const SMART_IDEAS_DEFAULTS = {
     weightHalfLifeDays: 60,
     maxSeedWeight: 5,
     projectToNeo4j: true,
+    anchorRetentionDays: 90,
+    pruneTickIntervalMs: 86_400_000,
   },
   abHoldout: {
     enabled: true,

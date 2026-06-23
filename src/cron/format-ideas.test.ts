@@ -18,6 +18,8 @@ function makeIdea(overrides: Partial<GeneratedIdea> = {}): GeneratedIdea {
     created_at: Math.floor(Date.now() / 1000),
     competability_overall: null,
     competability_json: null,
+    demand_json: null,
+    demand_score: null,
     ...overrides,
   };
 }

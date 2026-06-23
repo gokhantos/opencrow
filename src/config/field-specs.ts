@@ -389,6 +389,20 @@ export const CONFIG_FIELD_SPECS: readonly ConfigDomainSpec[] = [
         "projectToNeo4j",
         "boolean",
       ),
+      f(
+        "pipelines.ideas.smart.graphFeedback.anchorRetentionDays",
+        ["OPENCROW_SMART_GRAPH_FEEDBACK_ANCHOR_RETENTION_DAYS"],
+        "config/smart.graphFeedback",
+        "anchorRetentionDays",
+        "number",
+      ),
+      f(
+        "pipelines.ideas.smart.graphFeedback.pruneTickIntervalMs",
+        ["OPENCROW_SMART_GRAPH_FEEDBACK_PRUNE_TICK_INTERVAL_MS"],
+        "config/smart.graphFeedback",
+        "pruneTickIntervalMs",
+        "number",
+      ),
     ],
   },
   {

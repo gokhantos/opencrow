@@ -299,6 +299,8 @@ export async function gateSigeIdeasOnCompetability(params: {
       source: "sige",
       sessionId,
       ideaTitle: idea.title,
+      // idea.id (ScoredIdea.id) is the DB id — in scope at SIGE gate time.
+      ideaId: idea.id,
       persisted,
       gated,
       enforced: enforce,
