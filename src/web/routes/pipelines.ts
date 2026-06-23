@@ -68,7 +68,6 @@ const VALID_CATEGORIES = [
   "mobile_app",
   "crypto_project",
   "ai_app",
-  "open_source",
   "general",
 ] as const;
 

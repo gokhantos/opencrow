@@ -48,7 +48,11 @@ import {
   mentionsIncumbent,
   INCUMBENT_DOWNRANK_FACTOR,
 } from "./incumbents";
-import { buildPainSeedSummary, isEchoChamberSignal } from "./collector-focus";
+import {
+  buildPainSeedSummary,
+  isEchoChamberSignal,
+  isExcludedSourceSignal,
+} from "./collector-focus";
 import type {
   TrendData,
   CategoryTrend,
@@ -1368,6 +1372,31 @@ export async function scanCapabilities(
           } satisfies RawCandidate;
         }),
     });
+
+    // ── Source-pick HARD DROP: audience + region-lock exclusion ─────────────
+    // The EARLIEST layer of layered junk elimination: drop signals whose
+    // audience is a LOCAL / SMB SERVICE BUSINESS or whose core is REGION-LOCKED
+    // BEFORE they can become candidates (mirrors the generation-time
+    // NEVER_GENERATE_BLOCK at source-pick time). Distinct from the echo-chamber
+    // DOWN-WEIGHT below. Degrade-safe: a no-op when the flag is off. Pure filter
+    // — preserves order, builds new arrays (no in-place mutation).
+    if (smart.sourceExclusion.excludeSourceAudienceRegion) {
+      for (let i = 0; i < pools.length; i++) {
+        const pool = pools[i];
+        if (!pool) continue;
+        const kept = pool.candidates.filter(
+          (c) => !(c.echoChamber && isExcludedSourceSignal(c.echoChamber)),
+        );
+        const dropped = pool.candidates.length - kept.length;
+        if (dropped > 0) {
+          pools[i] = { ...pool, candidates: kept };
+          log.info("source-exclusion dropped signals", {
+            source: pool.table,
+            dropped,
+          });
+        }
+      }
+    }
 
     // ── Cross-source corroboration over the full fresh union ────────────────
     const allCandidates = pools.flatMap((pool) => pool.candidates);

@@ -26,6 +26,8 @@ const STRONG: GiantAxisScores = {
   acuteProblem: 4,
   whyNow: 4,
   demand: 4,
+  monetization: 4,
+  feasibility: 4,
   nonObviousness: 4,
   defensibility: 4,
   marketShape: 4,
@@ -36,6 +38,8 @@ const WEAK: GiantAxisScores = {
   acuteProblem: 1,
   whyNow: 1,
   demand: 1,
+  monetization: 1,
+  feasibility: 1,
   nonObviousness: 1,
   defensibility: 1,
   marketShape: 1,
@@ -319,5 +323,5 @@ describe("synthesizeEnrichedSeed", () => {
 
 // Touch GIANT_DEFAULT_WEIGHTS so the import is meaningful for composite intent.
 test("GIANT default weights are present (composite uses them via aggregateGiant)", () => {
-  expect(Object.keys(GIANT_DEFAULT_WEIGHTS).length).toBe(7);
+  expect(Object.keys(GIANT_DEFAULT_WEIGHTS).length).toBe(9);
 });

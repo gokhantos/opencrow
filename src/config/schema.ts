@@ -722,18 +722,22 @@ export const sigeConfigSchema = z.object({
     }),
 });
 
-// Default weights for the 7 GIANT rubric axes. They are non-compensatory
+// Default weights for the 9 GIANT rubric axes. They are non-compensatory
 // inputs into a weighted geometric mean; the values intentionally sum to 1.0
 // but are not normalized here (the aggregation math owns that). Each axis is
-// scored 0..5; acuteProblem/whyNow are hard gates and demand is evidence-gated.
+// scored 0..5; acuteProblem/whyNow/monetization/feasibility are hard gates and
+// demand is evidence-gated.
+// MUST stay in lockstep with src/pipelines/ideas/giant.ts GIANT_AXES weights.
 export const GIANT_DEFAULT_WEIGHTS = {
-  acuteProblem: 0.22,
-  whyNow: 0.18,
-  demand: 0.18,
-  nonObviousness: 0.15,
-  defensibility: 0.12,
-  marketShape: 0.08,
-  founderFit: 0.07,
+  acuteProblem: 0.2,
+  whyNow: 0.15,
+  demand: 0.15,
+  monetization: 0.13,
+  feasibility: 0.12,
+  nonObviousness: 0.1,
+  defensibility: 0.07,
+  marketShape: 0.04,
+  founderFit: 0.04,
 } as const;
 
 // The single shared GIANT optimization target. Default: compute + store in
@@ -754,6 +758,8 @@ export const giantConfigSchema = z
         acuteProblem: z.number().default(GIANT_DEFAULT_WEIGHTS.acuteProblem),
         whyNow: z.number().default(GIANT_DEFAULT_WEIGHTS.whyNow),
         demand: z.number().default(GIANT_DEFAULT_WEIGHTS.demand),
+        monetization: z.number().default(GIANT_DEFAULT_WEIGHTS.monetization),
+        feasibility: z.number().default(GIANT_DEFAULT_WEIGHTS.feasibility),
         nonObviousness: z.number().default(GIANT_DEFAULT_WEIGHTS.nonObviousness),
         defensibility: z.number().default(GIANT_DEFAULT_WEIGHTS.defensibility),
         marketShape: z.number().default(GIANT_DEFAULT_WEIGHTS.marketShape),
@@ -1512,6 +1518,20 @@ export const seedDiversityConfigSchema = z
   });
 export type SeedDiversityConfig = z.infer<typeof seedDiversityConfigSchema>;
 
+// SOURCE-PICK HARD-DROP exclusion: eliminate signals whose audience is a
+// LOCAL / SMB SERVICE BUSINESS or whose core is REGION-LOCKED, at collector time
+// (before they can become candidates) — the earliest layer of the layered
+// elimination (generation prompt + jury are the later layers). Degrade-safe:
+// when off, the collector filter is a pure no-op. Default ON, pure-logic.
+export const sourceExclusionConfigSchema = z
+  .object({
+    // Master switch. When false the collector-stage filter is a no-op (signals
+    // are kept and only the later generation/jury layers apply). Default ON.
+    excludeSourceAudienceRegion: z.boolean().default(true),
+  })
+  .default({ excludeSourceAudienceRegion: true });
+export type SourceExclusionConfig = z.infer<typeof sourceExclusionConfigSchema>;
+
 export const smartConfigSchema = z.object({
   // External-service / expensive-LLM gates: default OFF so the pipeline's
   // default runtime path and existing tests are unchanged.
@@ -1588,6 +1608,9 @@ export const smartConfigSchema = z.object({
   // (focus-category rotation + specific-pain-theme lead + echo-chamber
   // down-weight). Default ON, pure-logic. Fully defaulted -> backward-compatible.
   seedDiversity: seedDiversityConfigSchema,
+  // SOURCE-PICK HARD-DROP exclusion: drop local/SMB-service-business-audience and
+  // region-locked signals at collector time. Default ON, pure-logic, reversible.
+  sourceExclusion: sourceExclusionConfigSchema,
   // MAIN-pipeline independent jury: blend a cross-family jury verdict into
   // quality_score under a one-sided min-lean penalty so quality is not a pure
   // self-grade. Default ON; gracefully no-ops without a judge key. Fully
@@ -1771,6 +1794,9 @@ const SMART_IDEAS_DEFAULTS = {
     maxLeadingPainThemes: 15,
     echoChamberDownweight: true,
     echoChamberFactor: 0.5,
+  },
+  sourceExclusion: {
+    excludeSourceAudienceRegion: true,
   },
   independentJury: {
     enabled: true,

@@ -13,7 +13,6 @@ export type IdeaCategory =
   | "mobile_app"
   | "crypto_project"
   | "ai_app"
-  | "open_source"
   | "general";
 
 export interface PipelineConfig {
@@ -138,17 +137,6 @@ export const PIPELINE_DEFINITIONS: readonly PipelineDefinition[] = [
     defaultConfig: {
       ...DEFAULT_PIPELINE_CONFIG,
       category: "crypto_project",
-    },
-  },
-  {
-    id: "open-source-ideas",
-    name: "Open Source Ideas",
-    description:
-      "Analyzes GitHub trends, HN discussions, and Reddit for open source project ideas.",
-    category: "open_source",
-    defaultConfig: {
-      ...DEFAULT_PIPELINE_CONFIG,
-      category: "open_source",
     },
   },
 ];

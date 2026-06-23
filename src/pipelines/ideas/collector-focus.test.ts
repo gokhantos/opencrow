@@ -3,9 +3,12 @@ import {
   selectFocusCategories,
   buildPainSeedSummary,
   isEchoChamberSignal,
+  isExcludedSourceSignal,
   normalizeCategory,
   META_SUBREDDITS,
+  EXCLUDED_AUDIENCE_SUBREDDITS,
   type CategoryStat,
+  type EchoChamberInput,
 } from "./collector-focus";
 
 // A small distribution: a couple of acute low-rated heads + a broad mid/long tail.
@@ -202,6 +205,77 @@ describe("isEchoChamberSignal", () => {
     expect(ranked[0]).toBe("real-mid");
     expect(ranked).toContain("meta-hi"); // reduced, not removed
     expect(score(candidates[0]!)).toBeCloseTo(0.5, 10);
+  });
+});
+
+// ── Source-pick HARD-DROP: isExcludedSourceSignal ────────────────────────────
+
+describe("isExcludedSourceSignal (audience + region-lock HARD DROP)", () => {
+  test("drops a skilled-trades / field-service subreddit", () => {
+    expect(isExcludedSourceSignal({ subreddit: "hvac" })).toBe(true);
+    expect(isExcludedSourceSignal({ subreddit: "Electricians" })).toBe(true); // case-insensitive
+    expect(isExcludedSourceSignal({ subreddit: "plumbing" })).toBe(true);
+  });
+
+  test("drops a local service-business subreddit", () => {
+    expect(isExcludedSourceSignal({ subreddit: "restaurateur" })).toBe(true);
+    expect(isExcludedSourceSignal({ subreddit: "salon" })).toBe(true);
+    expect(isExcludedSourceSignal({ subreddit: "dentistry" })).toBe(true);
+  });
+
+  test("drops a local/SMB service-business AUDIENCE phrase", () => {
+    expect(isExcludedSourceSignal({ text: "Scheduling app for restaurants" })).toBe(true);
+    expect(isExcludedSourceSignal({ text: "invoicing for plumbers and HVAC techs" })).toBe(true);
+    expect(isExcludedSourceSignal({ tag: "field service business", text: "" })).toBe(true);
+  });
+
+  test("drops a region-locked national-system / payment-rail token", () => {
+    expect(isExcludedSourceSignal({ text: "Send money with a UPI payment in seconds" })).toBe(true);
+    expect(isExcludedSourceSignal({ text: "Automated GST filing for sellers" })).toBe(true);
+    expect(isExcludedSourceSignal({ text: "Aadhaar-based onboarding" })).toBe(true);
+  });
+
+  test("does NOT drop a neutral, globally-applicable signal", () => {
+    expect(isExcludedSourceSignal({ subreddit: "personalfinance", text: "Budget tracker app" })).toBe(false);
+    expect(isExcludedSourceSignal({ text: "Open-source note-taking with end-to-end sync" })).toBe(false);
+    expect(isExcludedSourceSignal({})).toBe(false);
+    expect(isExcludedSourceSignal({ subreddit: null, tag: null, text: null })).toBe(false);
+  });
+
+  test("precision intent: a passing region mention without a locked token is NOT dropped", () => {
+    // "launches in India first" is a beachhead, not a region-lock — the tight
+    // token list (e.g. 'upi payment', 'aadhaar') is what triggers a drop, so a
+    // globally-applicable idea that merely names a market survives.
+    expect(
+      isExcludedSourceSignal({ text: "A global expense app launching in India first" }),
+    ).toBe(false);
+  });
+
+  test("is SEPARATE from isEchoChamberSignal (a meta signal is not auto-excluded)", () => {
+    const meta: EchoChamberInput = { subreddit: "vibecoding", text: "agent framework" };
+    expect(isEchoChamberSignal(meta)).toBe(true);
+    expect(isExcludedSourceSignal(meta)).toBe(false);
+  });
+
+  test("EXCLUDED_AUDIENCE_SUBREDDITS is non-trivial and lowercased", () => {
+    expect(EXCLUDED_AUDIENCE_SUBREDDITS.size).toBeGreaterThan(20);
+    for (const s of EXCLUDED_AUDIENCE_SUBREDDITS) expect(s).toBe(s.toLowerCase());
+  });
+
+  // Mirrors the collectors hard-drop: when the flag is ON the excluded rows are
+  // removed before scoring; when OFF the filter is a pure no-op. Pinned here on
+  // the predicate (the collector path itself is DB-bound).
+  test("hard-drop filter removes excluded rows when on, keeps all when off", () => {
+    const rows: ReadonlyArray<{ id: string; ec: EchoChamberInput }> = [
+      { id: "trade", ec: { subreddit: "plumbing", text: "leaky pipe" } },
+      { id: "smb", ec: { text: "POS for salons" } },
+      { id: "region", ec: { text: "UPI payment splitter" } },
+      { id: "global", ec: { subreddit: "productivity", text: "calendar app" } },
+    ];
+    const on = rows.filter((r) => !isExcludedSourceSignal(r.ec)).map((r) => r.id);
+    expect(on).toEqual(["global"]); // order preserved, excluded removed
+    const off = rows.map((r) => r.id); // flag off = no-op
+    expect(off).toEqual(["trade", "smb", "region", "global"]);
   });
 });
 

@@ -16,6 +16,8 @@ function giantWith(overrides: {
       acuteProblem: 4,
       whyNow: 4,
       demand: 5,
+      monetization: 4,
+      feasibility: 4,
       nonObviousness: 3,
       defensibility: 3,
       marketShape: 3,

@@ -270,11 +270,13 @@ describe("bounded nudges — never override the rubric spine", () => {
     expect(down.cells.demand.nudge).toBeGreaterThanOrEqual(1 - maxNudge - 1e-9);
   });
 
-  test("SPINE axes (acuteProblem/whyNow) use the tighter cap", () => {
+  test("SPINE axes (hard gates) use the tighter cap", () => {
     const { maxSpineNudge } = DEFAULT_GIANT_WEIGHT_OPTIONS;
     const spineAxes = GIANT_AXIS_KEYS.filter((k) => GIANT_AXES[k].hardGate);
     expect(spineAxes).toContain("acuteProblem");
     expect(spineAxes).toContain("whyNow");
+    expect(spineAxes).toContain("monetization");
+    expect(spineAxes).toContain("feasibility");
 
     for (const axis of spineAxes) {
       const up = computeGiantWeightCalibration(highOnAxis(axis, 200, 1.0));

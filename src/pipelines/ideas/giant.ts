@@ -4,20 +4,23 @@
  * candidate idea against THIS scorecard so the whole pipeline pulls toward one
  * definition of a "giant" outcome.
  *
- * 7 axes, each 0..5, plus a Sequoia-style archetype tag and per-axis evidence
+ * 9 axes, each 0..5, plus a Sequoia-style archetype tag and per-axis evidence
  * citation. Aggregation is intentionally NON-COMPENSATORY: a weighted GEOMETRIC
  * mean (so a near-zero axis can't be bought back by strong axes) layered with
  * HARD GATES and an evidence-gated demand axis.
  *
- *   1. acuteProblem    (0.22)  HARD GATE  — painkiller, not vitamin.
- *   2. whyNow          (0.18)  HARD GATE  — a dated, source-bound enabling shift.
- *   3. demand          (0.18)  EVIDENCE-GATED — capped <=2 without a cited artifact.
- *   4. nonObviousness  (0.15)  embedding-distance / anti-template.
- *   5. defensibility   (0.12)  a 6-month-uncopyable moat.
- *   6. marketShape     (0.08)  beachhead → large TAM (well, not hole).
- *   7. founderFit      (0.07)  execution difficulty vs the idea's archetype.
+ *   1. acuteProblem    (0.20)  HARD GATE  — painkiller, not vitamin.
+ *   2. whyNow          (0.15)  HARD GATE  — a dated, source-bound enabling shift.
+ *   3. demand          (0.15)  EVIDENCE-GATED — capped <=2 without a cited artifact.
+ *   4. monetization    (0.13)  HARD GATE  — credible who-pays + how-much + ARR path.
+ *   5. feasibility     (0.12)  HARD GATE  — buildable today (no fictional data/compute).
+ *   6. nonObviousness  (0.10)  embedding-distance / anti-template.
+ *   7. defensibility   (0.07)  a 6-month-uncopyable moat.
+ *   8. marketShape     (0.04)  beachhead → large TAM (well, not hole).
+ *   9. founderFit      (0.04)  execution difficulty vs the idea's archetype.
  *
- * Hard gates (acuteProblem<=1 OR whyNow<=1) and the demand evidence-gate set
+ * Hard gates (acuteProblem/whyNow/monetization/feasibility <=1) and the demand
+ * evidence-gate set
  * `gated` and record `gateReasons` REGARDLESS of enforcement. Enforcement is
  * SHADOW-MODE by default: the CALLER decides whether to actually drop a gated
  * idea (only when smart.giant.enforceGates is true) — this module only computes
@@ -32,11 +35,13 @@ import { z } from "zod";
 
 // ── Axis table ───────────────────────────────────────────────────────────────
 
-/** The 7 GIANT axis keys, in canonical (weight-descending) order. */
+/** The 9 GIANT axis keys, in canonical (weight-descending) order. */
 export const GIANT_AXIS_KEYS = [
   "acuteProblem",
   "whyNow",
   "demand",
+  "monetization",
+  "feasibility",
   "nonObviousness",
   "defensibility",
   "marketShape",
@@ -48,7 +53,7 @@ export type GiantAxisKey = (typeof GIANT_AXIS_KEYS)[number];
 /** Static descriptor for one GIANT axis: its default weight + gating semantics. */
 export interface GiantAxisSpec {
   readonly key: GiantAxisKey;
-  /** Default aggregation weight (the 7 sum to 1.0). */
+  /** Default aggregation weight (the 9 sum to 1.0). */
   readonly weight: number;
   /** Hard-gate axes are rejected when their score is <= {@link HARD_GATE_THRESHOLD}. */
   readonly hardGate: boolean;
@@ -58,13 +63,14 @@ export interface GiantAxisSpec {
 }
 
 /**
- * The default GIANT axis table. Weights: 0.22/0.18/0.18/0.15/0.12/0.08/0.07.
+ * The default GIANT axis table.
+ * Weights: 0.20/0.15/0.15/0.13/0.12/0.10/0.07/0.04/0.04 (sum 1.0).
  * Keyed by axis for direct lookup; iterate {@link GIANT_AXIS_KEYS} for order.
  */
 export const GIANT_AXES: Readonly<Record<GiantAxisKey, GiantAxisSpec>> = {
   acuteProblem: {
     key: "acuteProblem",
-    weight: 0.22,
+    weight: 0.2,
     hardGate: true,
     evidenceGated: false,
     description:
@@ -72,7 +78,7 @@ export const GIANT_AXES: Readonly<Record<GiantAxisKey, GiantAxisSpec>> = {
   },
   whyNow: {
     key: "whyNow",
-    weight: 0.18,
+    weight: 0.15,
     hardGate: true,
     evidenceGated: false,
     description:
@@ -80,15 +86,31 @@ export const GIANT_AXES: Readonly<Record<GiantAxisKey, GiantAxisSpec>> = {
   },
   demand: {
     key: "demand",
-    weight: 0.18,
+    weight: 0.15,
     hardGate: false,
     evidenceGated: true,
     description:
       "Capped LOW (<=2) unless a cited demand artifact exists (search delta, job count, funding, waitlist).",
   },
+  monetization: {
+    key: "monetization",
+    weight: 0.13,
+    hardGate: true,
+    evidenceGated: false,
+    description:
+      "Credible who-pays + how-much + path to revenue (pricing, buyer, ARR path). HARD GATE: score <=1 when free-only, 'ads/enterprise/tokens someday', or no nameable buyer.",
+  },
+  feasibility: {
+    key: "feasibility",
+    weight: 0.12,
+    hardGate: true,
+    evidenceGated: false,
+    description:
+      "Buildable & shippable by a small team with APIs/data/compute that EXIST TODAY. HARD GATE: score <=1 when it needs private app-data exports (DoorDash/Uber/bank), impractical on-device compute (e.g. running an LLM locally on a phone), or integrations/data access that don't exist.",
+  },
   nonObviousness: {
     key: "nonObviousness",
-    weight: 0.15,
+    weight: 0.1,
     hardGate: false,
     evidenceGated: false,
     description:
@@ -96,7 +118,7 @@ export const GIANT_AXES: Readonly<Record<GiantAxisKey, GiantAxisSpec>> = {
   },
   defensibility: {
     key: "defensibility",
-    weight: 0.12,
+    weight: 0.07,
     hardGate: false,
     evidenceGated: false,
     description:
@@ -104,7 +126,7 @@ export const GIANT_AXES: Readonly<Record<GiantAxisKey, GiantAxisSpec>> = {
   },
   marketShape: {
     key: "marketShape",
-    weight: 0.08,
+    weight: 0.04,
     hardGate: false,
     evidenceGated: false,
     description:
@@ -112,7 +134,7 @@ export const GIANT_AXES: Readonly<Record<GiantAxisKey, GiantAxisSpec>> = {
   },
   founderFit: {
     key: "founderFit",
-    weight: 0.07,
+    weight: 0.04,
     hardGate: false,
     evidenceGated: false,
     description:
@@ -125,6 +147,8 @@ export const GIANT_DEFAULT_WEIGHTS: Readonly<Record<GiantAxisKey, number>> = {
   acuteProblem: GIANT_AXES.acuteProblem.weight,
   whyNow: GIANT_AXES.whyNow.weight,
   demand: GIANT_AXES.demand.weight,
+  monetization: GIANT_AXES.monetization.weight,
+  feasibility: GIANT_AXES.feasibility.weight,
   nonObviousness: GIANT_AXES.nonObviousness.weight,
   defensibility: GIANT_AXES.defensibility.weight,
   marketShape: GIANT_AXES.marketShape.weight,
@@ -158,9 +182,22 @@ export const DEMAND_EVIDENCE_CAP = 2;
  */
 export const GEOMEAN_EPSILON = 0.01;
 
+/**
+ * Safety valve for the missing-axis leniency. A model that OMITS a hard-gate
+ * axis (a formatting failure, not a real signal) should NOT be falsely rejected,
+ * so a MISSING hard-gate axis is treated as "not scored" (skip its gate, drop it
+ * from the geomean) — but ONLY when the rest of the response is substantially
+ * complete. A garbage / near-empty response must NOT slip through as a perfect
+ * idea, so leniency is granted only when BOTH original-required hard gates
+ * (acuteProblem AND whyNow) were emitted AND at least this many of the 9 axes are
+ * present. Below the bar we keep today's strict behavior: missing → 0 → gates /
+ * tanks. 5 of 9 = a strict majority of the rubric was actually scored.
+ */
+export const MIN_PRESENT_AXES_FOR_LENIENCY = 5;
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
-/** The 7 axis scores, each a number in [0, 5]. */
+/** The 9 axis scores, each a number in [0, 5]. */
 export type GiantAxisScores = Record<GiantAxisKey, number>;
 
 /** Sequoia-style archetype tag for the idea. */
@@ -197,9 +234,9 @@ export interface WhyNowShift {
 /** The full ordered list of why-now shifts backing the whyNow axis. */
 export type WhyNow = readonly WhyNowShift[];
 
-/** The aggregated, non-compensatory verdict over the 7 axes. */
+/** The aggregated, non-compensatory verdict over the 9 axes. */
 export interface GiantAggregate {
-  /** Weighted geometric mean over the 7 (evidence-adjusted) axes, in [0, 5]. */
+  /** Weighted geometric mean over the 9 (evidence-adjusted) axes, in [0, 5]. */
   readonly composite: number;
   /** true when any hard gate fired (set REGARDLESS of enforcement). */
   readonly gated: boolean;
@@ -250,18 +287,32 @@ export interface AggregateGiantOptions {
    * axis fed into the geomean is capped at {@link DEMAND_EVIDENCE_CAP}.
    */
   readonly hasDemandEvidence?: boolean;
+  /**
+   * Axes the model did NOT emit (already passed the safety valve — see
+   * {@link parseGiant} / {@link MIN_PRESENT_AXES_FOR_LENIENCY}). A missing axis is
+   * "not scored": its hard gate is SKIPPED and it is EXCLUDED from the weighted
+   * geomean (its weight is dropped from the denominator) so an omission neither
+   * gates nor depresses the composite. A non-gating note is recorded so the
+   * omission stays observable. The CALLER is responsible for only listing axes
+   * that earned leniency; aggregateGiant honors exactly what it's given.
+   */
+  readonly missingAxes?: readonly GiantAxisKey[];
 }
 
 /**
- * Aggregate the 7 GIANT axis scores into a non-compensatory composite, applying
+ * Aggregate the 9 GIANT axis scores into a non-compensatory composite, applying
  * the hard gates and the demand evidence-gate. PURE — deterministic, no DB /
  * clock / rng.
  *
- *   composite  = weighted GEOMETRIC mean over the 7 evidence-adjusted axes,
- *                each clamped to >= {@link GEOMEAN_EPSILON} so a 0 axis tanks
- *                (but doesn't NaN) the result.
- *   gated      = true when acuteProblem<=1 OR whyNow<=1 (hard gates).
- *   gateReasons= one entry per gate/cap that fired (hard gates + demand cap).
+ *   composite  = weighted GEOMETRIC mean over the PRESENT evidence-adjusted axes
+ *                (axes in `opts.missingAxes` are excluded — their weight is
+ *                dropped from the denominator), each clamped to >=
+ *                {@link GEOMEAN_EPSILON} so a 0 axis tanks (but doesn't NaN) it.
+ *   gated      = true when any PRESENT hard-gate axis (acuteProblem / whyNow /
+ *                monetization / feasibility) is <=1. A MISSING hard-gate axis
+ *                does NOT gate (it was not scored — see `opts.missingAxes`).
+ *   gateReasons= one entry per gate/cap that fired, plus a non-gating
+ *                `missing-axis:<key> (not scored)` note for each omitted axis.
  *
  * `gated` reflects gate violations regardless of `opts.enforceGates`; the caller
  * decides whether to drop the idea based on enforcement.
@@ -272,14 +323,21 @@ export function aggregateGiant(
 ): GiantAggregate {
   const hasDemandEvidence = opts.hasDemandEvidence === true;
   const weights = opts.weights ?? {};
+  const missing = new Set<GiantAxisKey>(opts.missingAxes ?? []);
 
   const gateReasons: string[] = [];
   let gated = false;
 
-  // Hard gates: acuteProblem / whyNow at or below the threshold reject.
+  // Hard gates: a hard-gate axis at or below the threshold rejects — UNLESS the
+  // axis was not emitted (missing). A MISSING hard-gate axis is "not scored": it
+  // skips the gate and records a non-gating note instead of a false rejection.
   for (const key of GIANT_AXIS_KEYS) {
     const spec = GIANT_AXES[key];
     if (!spec.hardGate) continue;
+    if (missing.has(key)) {
+      gateReasons.push(`missing-axis:${key} (not scored)`);
+      continue;
+    }
     const raw = clampAxisScore(scores[key]);
     if (raw <= HARD_GATE_THRESHOLD) {
       gated = true;
@@ -289,9 +347,18 @@ export function aggregateGiant(
     }
   }
 
-  // Demand evidence-gate: without a cited artifact, cap the demand value used
-  // in aggregation (the raw asserted score is preserved on the scorecard).
-  if (!hasDemandEvidence) {
+  // Non-gating note for any MISSING non-hard-gate axis too, so every omission is
+  // observable (the hard-gate ones were already noted above).
+  for (const key of GIANT_AXIS_KEYS) {
+    if (missing.has(key) && !GIANT_AXES[key].hardGate) {
+      gateReasons.push(`missing-axis:${key} (not scored)`);
+    }
+  }
+
+  // Demand evidence-gate: without a cited artifact, cap the demand value used in
+  // aggregation (the raw asserted score is preserved on the scorecard). Skipped
+  // when demand itself was not emitted (it is excluded from the geomean below).
+  if (!hasDemandEvidence && !missing.has("demand")) {
     const rawDemand = clampAxisScore(scores.demand);
     if (rawDemand > DEMAND_EVIDENCE_CAP) {
       gateReasons.push(
@@ -300,10 +367,14 @@ export function aggregateGiant(
     }
   }
 
-  // Build the evidence-adjusted, epsilon-clamped axis vector for the geomean.
+  // Build the evidence-adjusted, epsilon-clamped axis vector for the geomean. A
+  // MISSING axis is EXCLUDED entirely (its weight is dropped from the
+  // denominator) so the composite is the weighted geomean over PRESENT axes only
+  // — an omission neither gates nor depresses the score.
   let weightedLogSum = 0;
   let weightSum = 0;
   for (const key of GIANT_AXIS_KEYS) {
+    if (missing.has(key)) continue;
     let axisValue = clampAxisScore(scores[key]);
     if (key === "demand" && !hasDemandEvidence) {
       axisValue = Math.min(axisValue, DEMAND_EVIDENCE_CAP);
@@ -335,12 +406,14 @@ export function aggregateGiant(
 /** A lenient axis-score schema: accepts any number, clamped later. */
 const rawAxisScoreSchema = z.number();
 
-/** Zod schema for the raw 7-axis + archetype + whyNow LLM output. */
+/** Zod schema for the raw 9-axis + archetype + whyNow LLM output. */
 export const rawGiantSchema = z.object({
   scores: z.object({
     acuteProblem: rawAxisScoreSchema,
     whyNow: rawAxisScoreSchema,
     demand: rawAxisScoreSchema,
+    monetization: rawAxisScoreSchema,
+    feasibility: rawAxisScoreSchema,
     nonObviousness: rawAxisScoreSchema,
     defensibility: rawAxisScoreSchema,
     marketShape: rawAxisScoreSchema,
@@ -420,6 +493,23 @@ function coerceEvidence(value: unknown): Record<GiantAxisKey, string> {
   return out;
 }
 
+/**
+ * True when a raw axis value was actually EMITTED by the model: a finite number,
+ * or a non-empty string that parses to a finite number. A missing key,
+ * null/undefined, or a non-numeric string is NOT present ("not scored"). This is
+ * the distinction that lets a hard-gate axis the model simply OMITTED be treated
+ * as un-scored (skip gate, drop from the geomean) rather than as a genuine 0.
+ */
+export function isAxisValuePresent(raw: unknown): boolean {
+  if (typeof raw === "number") return Number.isFinite(raw);
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return false;
+    return Number.isFinite(Number(trimmed));
+  }
+  return false;
+}
+
 function coerceScores(value: unknown): GiantAxisScores {
   const source =
     value !== null && typeof value === "object"
@@ -433,19 +523,66 @@ function coerceScores(value: unknown): GiantAxisScores {
   return out;
 }
 
+/**
+ * The set of axes the model did NOT emit (per {@link isAxisValuePresent}). The
+ * `scores` vector still fills these with 0 for type completeness; this set
+ * records WHICH of those zeros are "not scored" vs a genuine asserted 0 — used
+ * by the safety valve + {@link aggregateGiant}'s missing-axis leniency.
+ */
+function detectMissingAxes(value: unknown): readonly GiantAxisKey[] {
+  const source =
+    value !== null && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  return GIANT_AXIS_KEYS.filter((key) => !isAxisValuePresent(source[key]));
+}
+
 /** Pieces produced by {@link parseGiant} before aggregation. */
 export interface ParsedGiant {
   readonly scores: GiantAxisScores;
   readonly archetype: Archetype;
   readonly whyNow: WhyNow;
   readonly evidence: Readonly<Record<GiantAxisKey, string>>;
+  /**
+   * Axes the model OMITTED that are eligible for lenient ("not scored")
+   * treatment in {@link aggregateGiant} (skip hard gate, drop from the geomean).
+   * The safety valve is already applied here: this is EMPTY for a malformed /
+   * near-empty response (see {@link MIN_PRESENT_AXES_FOR_LENIENCY}), so such a
+   * response keeps today's strict behavior (missing → 0 → gates / tanks). The
+   * `scores` vector still fills omitted axes with 0 for type completeness.
+   */
+  readonly missingAxes: readonly GiantAxisKey[];
+}
+
+/**
+ * Decide which OMITTED axes earn lenient ("not scored") treatment, applying the
+ * safety valve. Leniency is granted ONLY when the response is substantially
+ * complete: BOTH original-required hard gates (acuteProblem, whyNow) were
+ * emitted AND at least {@link MIN_PRESENT_AXES_FOR_LENIENCY} of the 9 axes are
+ * present. Otherwise returns [] so the strict missing→0 behavior holds. PURE.
+ */
+function lenientMissingAxes(rawMissing: readonly GiantAxisKey[]): readonly GiantAxisKey[] {
+  if (rawMissing.length === 0) return [];
+  const presentCount = GIANT_AXIS_KEYS.length - rawMissing.length;
+  const missingSet = new Set<GiantAxisKey>(rawMissing);
+  const spineEmitted = !missingSet.has("acuteProblem") && !missingSet.has("whyNow");
+  if (!spineEmitted || presentCount < MIN_PRESENT_AXES_FOR_LENIENCY) {
+    return [];
+  }
+  return rawMissing;
 }
 
 /**
  * Tolerantly parse a raw LLM GIANT output into normalized pieces, defaulting and
  * clamping bad values rather than throwing. Accepts unknown input (e.g. a parsed
- * JSON blob); always returns a usable {@link ParsedGiant} with all 7 axes
+ * JSON blob); always returns a usable {@link ParsedGiant} with all 9 axes
  * present, clamped to [0, 5], a valid archetype, and a cleaned whyNow list.
+ *
+ * MISSING vs LOW: an axis the model did not emit is recorded in `missingAxes`
+ * (subject to the safety valve) so aggregation can treat it as "not scored"
+ * rather than a genuine 0 — a formatting omission must not falsely trip a hard
+ * gate or tank the composite. A GENUINE low score (the model emitted 0 or 1) is
+ * NOT missing and still gates / counts as today.
  *
  * PURE — never throws, never touches IO. The optional GIANT path failing must
  * not break the pipeline default path, so this degrades to safe defaults.
@@ -460,6 +597,7 @@ export function parseGiant(input: unknown): ParsedGiant {
     archetype: coerceArchetype(source.archetype),
     whyNow: coerceWhyNow(source.whyNow),
     evidence: coerceEvidence(source.evidence),
+    missingAxes: lenientMissingAxes(detectMissingAxes(source.scores)),
   };
 }
 
@@ -474,7 +612,12 @@ export function evaluateGiant(
   opts: AggregateGiantOptions = {},
 ): GiantEvaluation {
   const parsed = parseGiant(input);
-  const aggregate = aggregateGiant(parsed.scores, opts);
+  // Honor the model's omitted axes (safety-valve-filtered by parseGiant) unless
+  // the caller explicitly supplies its own missingAxes.
+  const aggregate = aggregateGiant(parsed.scores, {
+    ...opts,
+    missingAxes: opts.missingAxes ?? parsed.missingAxes,
+  });
   return {
     scores: parsed.scores,
     archetype: parsed.archetype,

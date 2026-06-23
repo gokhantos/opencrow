@@ -21,7 +21,7 @@ import {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/** Build a full 7-axis score vector, defaulting every axis to `fill`. */
+/** Build a full 9-axis score vector, defaulting every axis to `fill`. */
 function scores(
   fill: number,
   overrides: Partial<GiantAxisScores> = {},
@@ -53,11 +53,13 @@ function refGeomean(
 // ── axis table ────────────────────────────────────────────────────────────────
 
 describe("GIANT axis table", () => {
-  test("has exactly 7 axes in canonical order", () => {
+  test("has exactly 9 axes in canonical order", () => {
     expect(GIANT_AXIS_KEYS).toEqual([
       "acuteProblem",
       "whyNow",
       "demand",
+      "monetization",
+      "feasibility",
       "nonObviousness",
       "defensibility",
       "marketShape",
@@ -65,14 +67,16 @@ describe("GIANT axis table", () => {
     ]);
   });
 
-  test("default weights are 0.22/0.18/0.18/0.15/0.12/0.08/0.07", () => {
-    expect(GIANT_DEFAULT_WEIGHTS.acuteProblem).toBeCloseTo(0.22, 10);
-    expect(GIANT_DEFAULT_WEIGHTS.whyNow).toBeCloseTo(0.18, 10);
-    expect(GIANT_DEFAULT_WEIGHTS.demand).toBeCloseTo(0.18, 10);
-    expect(GIANT_DEFAULT_WEIGHTS.nonObviousness).toBeCloseTo(0.15, 10);
-    expect(GIANT_DEFAULT_WEIGHTS.defensibility).toBeCloseTo(0.12, 10);
-    expect(GIANT_DEFAULT_WEIGHTS.marketShape).toBeCloseTo(0.08, 10);
-    expect(GIANT_DEFAULT_WEIGHTS.founderFit).toBeCloseTo(0.07, 10);
+  test("default weights are 0.20/0.15/0.15/0.13/0.12/0.10/0.07/0.04/0.04", () => {
+    expect(GIANT_DEFAULT_WEIGHTS.acuteProblem).toBeCloseTo(0.2, 10);
+    expect(GIANT_DEFAULT_WEIGHTS.whyNow).toBeCloseTo(0.15, 10);
+    expect(GIANT_DEFAULT_WEIGHTS.demand).toBeCloseTo(0.15, 10);
+    expect(GIANT_DEFAULT_WEIGHTS.monetization).toBeCloseTo(0.13, 10);
+    expect(GIANT_DEFAULT_WEIGHTS.feasibility).toBeCloseTo(0.12, 10);
+    expect(GIANT_DEFAULT_WEIGHTS.nonObviousness).toBeCloseTo(0.1, 10);
+    expect(GIANT_DEFAULT_WEIGHTS.defensibility).toBeCloseTo(0.07, 10);
+    expect(GIANT_DEFAULT_WEIGHTS.marketShape).toBeCloseTo(0.04, 10);
+    expect(GIANT_DEFAULT_WEIGHTS.founderFit).toBeCloseTo(0.04, 10);
   });
 
   test("weights sum to 1.0", () => {
@@ -80,12 +84,17 @@ describe("GIANT axis table", () => {
       (acc, k) => acc + GIANT_DEFAULT_WEIGHTS[k],
       0,
     );
-    expect(sum).toBeCloseTo(1.0, 10);
+    expect(Math.abs(sum - 1.0)).toBeLessThanOrEqual(1e-9);
   });
 
-  test("only acuteProblem and whyNow are hard gates", () => {
+  test("acuteProblem, whyNow, monetization, feasibility are the hard gates", () => {
     const gates = GIANT_AXIS_KEYS.filter((k) => GIANT_AXES[k].hardGate);
-    expect(gates).toEqual(["acuteProblem", "whyNow"]);
+    expect(gates).toEqual([
+      "acuteProblem",
+      "whyNow",
+      "monetization",
+      "feasibility",
+    ]);
   });
 
   test("only demand is evidence-gated", () => {
@@ -157,12 +166,15 @@ describe("aggregateGiant geometric mean", () => {
 
 describe("aggregateGiant non-compensatory behavior", () => {
   test("a single near-zero non-gate axis tanks an otherwise perfect idea", () => {
-    const s = scores(5, { defensibility: 0 });
+    // Use a heavily-weighted non-gate axis (nonObviousness) so the epsilon-floor
+    // pull is large even after the 9-axis weight rebalance.
+    const s = scores(5, { nonObviousness: 0 });
     const out = aggregateGiant(s, { hasDemandEvidence: true });
-    // exp of epsilon-clamped geomean — far below the arithmetic mean (~4.3).
+    const clean = aggregateGiant(scores(5), { hasDemandEvidence: true });
+    // exp of epsilon-clamped geomean — well below the all-5 clean composite.
     expect(out.composite).toBeCloseTo(refGeomean(s, true), 10);
-    expect(out.composite).toBeLessThan(3);
-    // and the gate did NOT fire — defensibility is not a hard gate.
+    expect(out.composite).toBeLessThan(clean.composite - 1);
+    // and the gate did NOT fire — nonObviousness is not a hard gate.
     expect(out.gated).toBe(false);
   });
 
@@ -171,7 +183,9 @@ describe("aggregateGiant non-compensatory behavior", () => {
       hasDemandEvidence: true,
     });
     const clean = aggregateGiant(scores(5), { hasDemandEvidence: true });
-    expect(tanked.composite).toBeLessThan(clean.composite - 1.5);
+    // The epsilon-floored zero axis pulls the geomean meaningfully below clean,
+    // even though marketShape is the lowest-weighted axis.
+    expect(tanked.composite).toBeLessThan(clean.composite - 0.5);
   });
 
   test("uses the epsilon floor so a 0 axis stays finite (not 0 or NaN)", () => {
@@ -201,12 +215,66 @@ describe("aggregateGiant hard gates", () => {
     expect(out.gateReasons.some((r) => r.includes("whyNow"))).toBe(true);
   });
 
+  test("monetization <= 1 gates the idea (no money-making plan)", () => {
+    const out = aggregateGiant(scores(5, { monetization: 1 }), {
+      hasDemandEvidence: true,
+    });
+    expect(out.gated).toBe(true);
+    expect(out.gateReasons.some((r) => r.includes("monetization"))).toBe(true);
+  });
+
+  test("feasibility <= 1 gates the idea (technically infeasible)", () => {
+    const out = aggregateGiant(scores(5, { feasibility: 0 }), {
+      hasDemandEvidence: true,
+    });
+    expect(out.gated).toBe(true);
+    expect(out.gateReasons.some((r) => r.includes("feasibility"))).toBe(true);
+  });
+
+  test("a fully-strong 9-axis idea is NOT gated", () => {
+    const out = aggregateGiant(scores(5), { hasDemandEvidence: true });
+    expect(out.gated).toBe(false);
+    expect(out.gateReasons).toEqual([]);
+  });
+
   test("both hard gates can fire and record both reasons", () => {
     const out = aggregateGiant(scores(5, { acuteProblem: 1, whyNow: 1 }), {
       hasDemandEvidence: true,
     });
     expect(out.gated).toBe(true);
     expect(out.gateReasons).toHaveLength(2);
+  });
+
+  test("all four hard gates can fire and record four reasons", () => {
+    const out = aggregateGiant(
+      scores(5, {
+        acuteProblem: 1,
+        whyNow: 1,
+        monetization: 1,
+        feasibility: 1,
+      }),
+      { hasDemandEvidence: true },
+    );
+    expect(out.gated).toBe(true);
+    expect(out.gateReasons).toHaveLength(4);
+  });
+
+  // SAFETY VALVE: a near-empty payload (only 3 of 9 axes present) is BELOW the
+  // leniency bar, so the missing axes are NOT treated as "not scored" — they
+  // coerce to 0 and STILL trip the monetization + feasibility hard gates. A
+  // garbage response must never slip through as a perfect idea.
+  test("malformed payload (most axes missing) coerces to 0 and gates (safety valve)", () => {
+    const out = evaluateGiant(
+      {
+        scores: { acuteProblem: 5, whyNow: 5, demand: 5 },
+      },
+      { hasDemandEvidence: true },
+    );
+    expect(out.scores.monetization).toBe(0);
+    expect(out.scores.feasibility).toBe(0);
+    expect(out.gated).toBe(true);
+    expect(out.gateReasons.some((r) => r.includes("monetization"))).toBe(true);
+    expect(out.gateReasons.some((r) => r.includes("feasibility"))).toBe(true);
   });
 
   test("a score just above the threshold (2) does NOT gate", () => {
@@ -360,6 +428,8 @@ describe("rawGiantSchema", () => {
         acuteProblem: 5,
         whyNow: 4,
         demand: 3,
+        monetization: 4,
+        feasibility: 4,
         nonObviousness: 4,
         defensibility: 3,
         marketShape: 2,
@@ -385,7 +455,7 @@ describe("rawGiantSchema", () => {
 // ── parseGiant (tolerant coercion) ────────────────────────────────────────────
 
 describe("parseGiant", () => {
-  test("clamps out-of-range scores and fills all 7 axes", () => {
+  test("clamps out-of-range scores and fills all 9 axes", () => {
     const parsed = parseGiant({
       scores: {
         acuteProblem: 9,
@@ -494,6 +564,8 @@ describe("evaluateGiant", () => {
           acuteProblem: 5,
           whyNow: 4,
           demand: 5,
+          monetization: 4,
+          feasibility: 4,
           nonObviousness: 4,
           defensibility: 4,
           marketShape: 3,
@@ -538,7 +610,123 @@ describe("evaluateGiant", () => {
     const evaluation = evaluateGiant(null);
     expect(Number.isFinite(evaluation.composite)).toBe(true);
     expect(evaluation.archetype).toBe("hair-on-fire");
-    // all-zero scores → both hard gates fire.
+    // all-zero scores → every hard gate fires.
     expect(evaluation.gated).toBe(true);
+  });
+});
+
+// ── missing-axis leniency (omitted ≠ scored-0) ────────────────────────────────
+
+describe("missing-axis leniency", () => {
+  // A mostly-complete raw scores object (8 of 9 axes strong) with ONE axis key
+  // omitted, so the response clears the safety valve and the omitted axis earns
+  // lenient "not scored" treatment.
+  function rawScoresOmitting(omit: string): Record<string, number> {
+    const all: Record<string, number> = {
+      acuteProblem: 5,
+      whyNow: 5,
+      demand: 5,
+      monetization: 5,
+      feasibility: 5,
+      nonObviousness: 5,
+      defensibility: 5,
+      marketShape: 5,
+      founderFit: 5,
+    };
+    delete all[omit];
+    return all;
+  }
+
+  test("monetization OMITTED on an otherwise-strong idea → NOT gated, composite not tanked", () => {
+    const out = evaluateGiant(
+      { scores: rawScoresOmitting("monetization") },
+      { hasDemandEvidence: true },
+    );
+    expect(out.gated).toBe(false);
+    // all PRESENT axes are 5 → geomean over present-only axes ≈ 5 (not tanked).
+    expect(out.composite).toBeCloseTo(5, 6);
+    // The omission is observable as a NON-gating note.
+    expect(out.gateReasons.some((r) => r === "missing-axis:monetization (not scored)")).toBe(true);
+    expect(out.gateReasons.some((r) => r.startsWith("hard-gate:monetization"))).toBe(false);
+  });
+
+  test("feasibility OMITTED → NOT gated", () => {
+    const out = evaluateGiant(
+      { scores: rawScoresOmitting("feasibility") },
+      { hasDemandEvidence: true },
+    );
+    expect(out.gated).toBe(false);
+    expect(out.gateReasons.some((r) => r === "missing-axis:feasibility (not scored)")).toBe(true);
+  });
+
+  test("monetization EMITTED as 0 → STILL gated (genuine low ≠ missing)", () => {
+    const out = evaluateGiant(
+      { scores: { ...rawScoresOmitting("nonObviousness"), monetization: 0 } },
+      { hasDemandEvidence: true },
+    );
+    expect(out.gated).toBe(true);
+    expect(out.gateReasons.some((r) => r.startsWith("hard-gate:monetization"))).toBe(true);
+  });
+
+  test("feasibility EMITTED as 1 → STILL gated (boundary, genuine low)", () => {
+    const out = evaluateGiant(
+      { scores: { ...rawScoresOmitting("nonObviousness"), feasibility: 1 } },
+      { hasDemandEvidence: true },
+    );
+    expect(out.gated).toBe(true);
+    expect(out.gateReasons.some((r) => r.startsWith("hard-gate:feasibility"))).toBe(true);
+  });
+
+  test("acuteProblem / whyNow present-low still gate (unchanged)", () => {
+    const lowAcute = evaluateGiant(
+      { scores: { ...rawScoresOmitting("monetization"), acuteProblem: 1 } },
+      { hasDemandEvidence: true },
+    );
+    expect(lowAcute.gated).toBe(true);
+    expect(lowAcute.gateReasons.some((r) => r.startsWith("hard-gate:acuteProblem"))).toBe(true);
+  });
+
+  test("safety valve: a missing SPINE axis (acuteProblem) is NOT lenient → still gates", () => {
+    // Even though 8 of 9 are present, omitting a required spine hard-gate means
+    // the response is treated as malformed: missing → 0 → gates.
+    const out = evaluateGiant(
+      { scores: rawScoresOmitting("acuteProblem") },
+      { hasDemandEvidence: true },
+    );
+    expect(out.gated).toBe(true);
+    expect(out.gateReasons.some((r) => r.startsWith("hard-gate:acuteProblem"))).toBe(true);
+    // It is NOT recorded as a lenient missing-axis note.
+    expect(out.gateReasons.some((r) => r === "missing-axis:acuteProblem (not scored)")).toBe(false);
+  });
+
+  test("parseGiant reports lenient missingAxes only when the safety valve passes", () => {
+    // Mostly-complete (8/9, spine present) → the omitted axis is lenient.
+    const lenient = parseGiant({ scores: rawScoresOmitting("monetization") });
+    expect(lenient.missingAxes).toEqual(["monetization"]);
+
+    // Near-empty (3/9) → below the bar → no lenient axes (strict missing→0).
+    const malformed = parseGiant({ scores: { acuteProblem: 5, whyNow: 5, demand: 5 } });
+    expect(malformed.missingAxes).toEqual([]);
+
+    // Spine axis missing → not lenient even though count is high.
+    const noSpine = parseGiant({ scores: rawScoresOmitting("whyNow") });
+    expect(noSpine.missingAxes).toEqual([]);
+  });
+
+  test("geomean over present-only axes: dropping an axis matches the reference", () => {
+    // Omit founderFit; the composite must equal the weighted geomean over the
+    // remaining 8 axes (founderFit's weight dropped from the denominator).
+    const raw = { ...rawScoresOmitting("founderFit"), defensibility: 2 };
+    const out = evaluateGiant({ scores: raw }, { hasDemandEvidence: true });
+
+    let logSum = 0;
+    let weightSum = 0;
+    for (const key of GIANT_AXIS_KEYS) {
+      if (key === "founderFit") continue;
+      const v = Math.max(raw[key as keyof typeof raw] as number, GEOMEAN_EPSILON);
+      logSum += GIANT_DEFAULT_WEIGHTS[key] * Math.log(v);
+      weightSum += GIANT_DEFAULT_WEIGHTS[key];
+    }
+    expect(out.composite).toBeCloseTo(Math.exp(logSum / weightSum), 10);
   });
 });

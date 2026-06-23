@@ -32,13 +32,15 @@ describe("smartConfigSchema", () => {
         enabled: true,
         enforceGates: false,
         weights: {
-          acuteProblem: 0.22,
-          whyNow: 0.18,
-          demand: 0.18,
-          nonObviousness: 0.15,
-          defensibility: 0.12,
-          marketShape: 0.08,
-          founderFit: 0.07,
+          acuteProblem: 0.2,
+          whyNow: 0.15,
+          demand: 0.15,
+          monetization: 0.13,
+          feasibility: 0.12,
+          nonObviousness: 0.1,
+          defensibility: 0.07,
+          marketShape: 0.04,
+          founderFit: 0.04,
         },
       },
       generateWide: {
@@ -181,6 +183,9 @@ describe("smartConfigSchema", () => {
         echoChamberDownweight: true,
         echoChamberFactor: 0.5,
       },
+      sourceExclusion: {
+        excludeSourceAudienceRegion: true,
+      },
       independentJury: {
         enabled: true,
         penaltyWeight: 0.7,
@@ -222,6 +227,14 @@ describe("smartConfigSchema", () => {
     expect(parsed.seedDiversity.enabled).toBe(false);
     expect(parsed.seedDiversity.focusRotation).toBe(false);
     expect(parsed.seedDiversity.echoChamberFactor).toBe(0.25);
+  });
+
+  test("sourceExclusion.excludeSourceAudienceRegion defaults ON and is overridable", () => {
+    expect(smartConfigSchema.parse({}).sourceExclusion.excludeSourceAudienceRegion).toBe(true);
+    const off = smartConfigSchema.parse({
+      sourceExclusion: { excludeSourceAudienceRegion: false },
+    });
+    expect(off.sourceExclusion.excludeSourceAudienceRegion).toBe(false);
   });
 
   test("Stage 2 shallowIdeation defaults OFF (reversible) with conservative knobs", () => {
@@ -427,16 +440,18 @@ describe("giantConfigSchema", () => {
     expect(parsed.enforceGates).toBe(false);
   });
 
-  test("applies the 7 default axis weights", () => {
+  test("applies the 9 default axis weights", () => {
     const parsed = giantConfigSchema.parse({});
     expect(parsed.weights).toEqual({
-      acuteProblem: 0.22,
-      whyNow: 0.18,
-      demand: 0.18,
-      nonObviousness: 0.15,
-      defensibility: 0.12,
-      marketShape: 0.08,
-      founderFit: 0.07,
+      acuteProblem: 0.2,
+      whyNow: 0.15,
+      demand: 0.15,
+      monetization: 0.13,
+      feasibility: 0.12,
+      nonObviousness: 0.1,
+      defensibility: 0.07,
+      marketShape: 0.04,
+      founderFit: 0.04,
     });
   });
 
@@ -463,8 +478,10 @@ describe("giantConfigSchema", () => {
       weights: { acuteProblem: 0.3 },
     });
     expect(parsed.weights.acuteProblem).toBe(0.3);
-    expect(parsed.weights.whyNow).toBe(0.18);
-    expect(parsed.weights.founderFit).toBe(0.07);
+    expect(parsed.weights.whyNow).toBe(0.15);
+    expect(parsed.weights.monetization).toBe(0.13);
+    expect(parsed.weights.feasibility).toBe(0.12);
+    expect(parsed.weights.founderFit).toBe(0.04);
   });
 
   test("is reachable via the documented smart.giant access path", () => {
@@ -472,7 +489,9 @@ describe("giantConfigSchema", () => {
     const giant = cfg.pipelines.ideas.smart.giant;
     expect(giant.enabled).toBe(true);
     expect(giant.enforceGates).toBe(false);
-    expect(giant.weights.demand).toBe(0.18);
+    expect(giant.weights.demand).toBe(0.15);
+    expect(giant.weights.monetization).toBe(0.13);
+    expect(giant.weights.feasibility).toBe(0.12);
   });
 });
 

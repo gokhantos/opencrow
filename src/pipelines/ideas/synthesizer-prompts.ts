@@ -47,16 +47,27 @@ export const SCHLEP_INSTRUCTION = `SCHLEP & DEFENSIBILITY (CRITICAL):
 // exclusion (the gate in competability.ts is the runtime backstop). Steers the
 // model to NEVER PROPOSE ideas whose core REQUIRES regulation/licensing, heavy
 // capital, physical logistics/field-ops, or a network-effect cold-start — the
-// four moat families a solo builder cannot win in v1. Injected into BOTH
-// generation prompts alongside SCHLEP_INSTRUCTION. Exported so a test can assert
-// its presence in the assembled prompts.
+// four moat families a solo builder cannot win in v1. PLUS audience/scope
+// exclusions: never target a LOCAL / SMB SERVICE BUSINESS (its owner or
+// trade/field workers) — restaurants, salons, clinics, electricians/plumbers/
+// HVAC, etc. — and never propose a REGION-LOCKED core (bound to one nation's
+// rules/taxes, a local payment rail, a national identity system, or a single
+// locale). Deep vertical/ops software for LARGER, non-local industries stays in
+// scope, and a globally-applicable idea that merely beachheads in one market
+// first is fine (keeps SCHLEP_INSTRUCTION's pro-vertical + the marketShape
+// wedge→TAM steer intact). Injected into the generation prompts alongside
+// SCHLEP_INSTRUCTION. Exported so a test can assert its presence in the
+// assembled prompts.
 export const NEVER_GENERATE_BLOCK = `NEVER GENERATE — UNCOMPETABLE FOR A SOLO/BOOTSTRAPPED BUILDER (HARD RULE):
-Do NOT propose any idea whose CORE requires any of these four families. They are out of scope for a solo builder, no matter how acute the pain:
+Do NOT propose any idea whose CORE requires any of these moat families. They are out of scope for a solo builder, no matter how acute the pain:
 - REGULATED / LICENSED: banking, neobank, lending, insurance, brokerage/securities, money transmission, KYC/AML-bound fintech, healthcare needing HIPAA/FDA/clinical standing, telehealth-as-provider, pharmacy/pharma, legal practice, cannabis, gambling.
 - HIGH CAPITAL / CAPEX: hardware, devices, robotics, deep-tech/biotech, subsidized unit economics, content-licensing/streaming catalogs, large upfront inventory or infrastructure.
 - PHYSICAL LOGISTICS / FIELD-OPS: food/grocery/parcel delivery, last-mile, courier, fulfillment, warehousing, ride-hail, fleets, on-the-ground service networks.
 - NETWORK-EFFECT / COLD-START: two-sided marketplaces worthless until both sides reach critical mass, social networks, dating apps, gig marketplaces — anything with no standalone v1 value.
-If an idea's ONLY moat is regulatory capture, capital intensity, physical logistics, or a network effect, DISCARD it — a solo builder cannot win it in v1.`;
+ALSO NEVER GENERATE — EXCLUDED AUDIENCE (independent of moat; HARD RULE):
+- LOCAL / SMB SERVICE-BUSINESS AUDIENCE: Do NOT propose products whose PRIMARY target user is a local or small service business, its owner, or its frontline/field workers. This includes (a) skilled trades & field-service: electricians, plumbers, HVAC technicians, general contractors, landscapers, handymen, auto mechanics, cleaners, movers, field/repair technicians; and (b) local service businesses: restaurants/cafes, bars, salons/barbers/spas, gyms/fitness studios, dental/veterinary/medical clinics, local retail shops, auto shops, real-estate brokerages, and similar owner-operated local services. (Deep vertical / ops software for LARGER, non-local industries remains in scope — this rule excludes only local/SMB service-business targets.)
+- REGION-LOCKED CORE: Do NOT propose ideas whose CORE only works in one country/region because it is bound to a specific nation's regulations/taxes, a local payment rail (e.g. UPI, Pix, iDEAL, ACH-only), a national government/identity system, or a single language/locale with no path to others. Prefer GLOBALLY-APPLICABLE ideas. (An idea that is globally applicable but launches in one beachhead market first is FINE — exclude only ideas that CANNOT generalize beyond one region.)
+If an idea's ONLY moat is regulatory capture, capital intensity, physical logistics, or a network effect, OR its primary audience is a local/SMB service business or its trade/field workers, OR its core is region-locked to a single country/region, DISCARD it — a solo builder cannot win it in v1.`;
 
 // ── Category Context ─────────────────────────────────────────────────────
 
@@ -95,17 +106,6 @@ WHAT MAKES A GREAT AI APP IDEA:
 - Can be built on top of existing model APIs (OpenAI, Anthropic, open source) — no custom training needed for v1
 
 AVOID: "ChatGPT wrapper" ideas with no unique data or workflow, ideas where AI accuracy needs to be 99%+ to be useful, ideas that compete directly with foundation model providers.`,
-
-  open_source: `Generate open source project ideas (developer tools, libraries, frameworks, infrastructure).
-
-WHAT MAKES A GREAT OPEN SOURCE IDEA:
-- Solves a pain that developers experience weekly and currently hack around with scripts/glue code
-- Has a clear "aha moment" in the README — one code example that shows why this is better
-- Can be adopted incrementally (doesn't require ripping out existing tools)
-- Has a natural community of contributors (people who want this to exist for their own use)
-- Business model path: hosting, enterprise features, support, or SaaS layer on top
-
-AVOID: "Better version of X" where X is already good enough, frameworks that require full buy-in, tools that only matter at massive scale.`,
 
   general: `Generate tech product ideas across any category.
 
@@ -541,15 +541,17 @@ export function seedToCandidate(
 // ── GIANT critique prompt + scoring helpers ─────────────────────────────────
 
 /** Strong per-axis anchors for the GIANT critique prompt (high vs low). */
-export const GIANT_RUBRIC_PROMPT = `Score each idea against THE GIANT RUBRIC — 7 axes, each 0..5. Be ruthless; reserve 4-5 for genuine outliers. Reward HARD, UNGLAMOROUS, DEFENSIBLE ideas; penalize templated "X for Y app" clones.
+export const GIANT_RUBRIC_PROMPT = `Score each idea against THE GIANT RUBRIC — 9 axes, each 0..5. Be ruthless; reserve 4-5 for genuine outliers. Reward HARD, UNGLAMOROUS, DEFENSIBLE ideas; penalize templated "X for Y app" clones.
 
 1. acuteProblem (0..5) — Is this a PAINKILLER a nameable user wants v1 NOW, backed by complaint-cluster size/recency? HIGH(5): a specific user is bleeding from this today and hacking a workaround. LOW(0-1): a "nice to have" vitamin, no one is actively hurting. SCORE <=1 IS A HARD GATE — reject-worthy.
 2. whyNow (0..5) — Is there >=1 DATED, source-bound enabling shift (technological/regulatory/behavioral/economic) that makes this possible/necessary NOW? HIGH(5): a concrete dated shift you can cite. LOW(0-1): "AI is hot" hand-waving, nothing recent actually changed. SCORE <=1 IS A HARD GATE.
 3. demand (0..5) — MUST cite a real demand artifact (search-volume delta, job-posting count, funding round, waitlist size, "looking for a tool that..." posts). HIGH(5): a quantified, cited artifact. LOW(<=2): no cited artifact — if you cannot cite one, score this <=2. Never free-score demand on vibes.
-4. nonObviousness (0..5) — How far is this from the known-product corpus AND its in-batch siblings? HIGH(5): unsexy-but-defensible, would NOT show up on a "top AI app ideas" list. LOW(0-1): an obvious template ("Notion for X", "Uber for Y", "ChatGPT wrapper for Z").
-5. defensibility (0..5) — Is there a moat a fast-follower CANNOT copy in ~6 months (counter-positioning, accruable advantage, hard-won data/integration)? HIGH(5): a structural advantage. LOW(0-1): a thin UI a weekend hacker reproduces.
-6. marketShape (0..5) — Is there a deep BEACHHEAD user with an acute need plus a named path to a large TAM (a well, not a hole)? HIGH(5): narrow wedge → big market. LOW(0-1): a shallow hole with no expansion path.
-7. founderFit (0..5) — Execution difficulty judged AGAINST THE IDEA'S ARCHETYPE (not uniformly). A hard-fact idea SHOULD be hard; reward ideas whose difficulty matches a defensible archetype rather than easy-but-trivial.
+4. monetization (0..5) — Is there a CREDIBLE who-pays + how-much + path to revenue (a nameable buyer, concrete pricing, a path to ARR)? HIGH(5): a specific buyer with budget and a believable price point. LOW(0-1): free-only, "ads/enterprise/tokens someday", or no nameable buyer. SCORE <=1 IS A HARD GATE.
+5. feasibility (0..5) — Is this BUILDABLE & shippable by a small team using APIs/data/compute that EXIST TODAY? HIGH(5): all pieces are available right now. LOW(0-1): needs private app-data exports (DoorDash/Uber/bank order history), impractical on-device compute (e.g. running an LLM locally on a phone), or integrations/data access that don't exist. SCORE <=1 IS A HARD GATE.
+6. nonObviousness (0..5) — How far is this from the known-product corpus AND its in-batch siblings? HIGH(5): unsexy-but-defensible, would NOT show up on a "top AI app ideas" list. LOW(0-1): an obvious template ("Notion for X", "Uber for Y", "ChatGPT wrapper for Z").
+7. defensibility (0..5) — Is there a moat a fast-follower CANNOT copy in ~6 months (counter-positioning, accruable advantage, hard-won data/integration)? HIGH(5): a structural advantage. LOW(0-1): a thin UI a weekend hacker reproduces.
+8. marketShape (0..5) — Is there a deep BEACHHEAD user with an acute need plus a named path to a large TAM (a well, not a hole)? HIGH(5): narrow wedge → big market. LOW(0-1): a shallow hole with no expansion path.
+9. founderFit (0..5) — Execution difficulty judged AGAINST THE IDEA'S ARCHETYPE (not uniformly). A hard-fact idea SHOULD be hard; reward ideas whose difficulty matches a defensible archetype rather than easy-but-trivial.
 
 Also tag ARCHETYPE: "hair-on-fire" (acute pain, sell aspirin today) | "hard-fact" (a non-obvious truth about the world) | "future-vision" (bet on where things are going).
 Provide a structured whyNow array of dated, source-bound enabling shifts.
@@ -563,7 +565,7 @@ Provide painSeverity = the acuteProblem axis value (0..5), for fast pain filteri
  * when there is concrete evidence — un-evidenced demand stays capped (the GIANT
  * default). Pure.
  */
-export function hasDemandEvidence(parsed: ParsedGiant): boolean {
+export function hasDemandEvidence(parsed: Pick<ParsedGiant, "evidence" | "whyNow">): boolean {
   const demandEvidence = parsed.evidence.demand?.trim() ?? "";
   if (demandEvidence.length > 0) return true;
   return parsed.whyNow.some(
