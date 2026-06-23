@@ -107,7 +107,7 @@ describe("smartConfigSchema", () => {
         mmrLambda: 0.7,
         supersedePriorOnRerun: true,
         writePendingMemories: false,
-        trustWeighting: false,
+        trustWeighting: true,
         proxyAvoidCap: 2,
         reprobe: {
           enabled: false,
