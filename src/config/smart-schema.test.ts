@@ -137,8 +137,8 @@ describe("smartConfigSchema", () => {
         projectToNeo4j: true,
       },
       abHoldout: {
-        enabled: false,
-        holdoutRatio: 0,
+        enabled: true,
+        holdoutRatio: 0.5,
       },
       incumbentExclusion: {
         enabled: true,
