@@ -21,7 +21,7 @@ import type { AgentResponse } from "../../agent/types";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-/** Build a full 7-axis score vector, defaulting every axis to `fill`. */
+/** Build a full 9-axis score vector, defaulting every axis to `fill`. */
 function scores(
   fill: number,
   overrides: Partial<GiantAxisScores> = {},
@@ -333,7 +333,7 @@ describe("judgeWithJury", () => {
   function uniformJudgeText(fill: number): string {
     const rows = cands.map(
       (c) =>
-        `{"id":"${c.id}","scores":{"acuteProblem":${fill},"whyNow":${fill},"demand":${fill},"nonObviousness":${fill},"defensibility":${fill},"marketShape":${fill},"founderFit":${fill}},"hasDemandEvidence":false}`,
+        `{"id":"${c.id}","scores":{"acuteProblem":${fill},"whyNow":${fill},"demand":${fill},"monetization":${fill},"feasibility":${fill},"nonObviousness":${fill},"defensibility":${fill},"marketShape":${fill},"founderFit":${fill}},"hasDemandEvidence":false}`,
     );
     return `[${rows.join(",")}]`;
   }

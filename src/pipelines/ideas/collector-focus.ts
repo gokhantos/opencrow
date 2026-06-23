@@ -237,3 +237,131 @@ export function isEchoChamberSignal(input: EchoChamberInput): boolean {
   if (!haystack.trim()) return false;
   return META_PHRASES.some((p) => haystack.includes(p));
 }
+
+// ── Source-pick HARD-DROP exclusion (audience + region-lock) ─────────────────
+//
+// A parallel of the echo-chamber lever, but a HARD ELIMINATION (drop the signal
+// before it can become a candidate) rather than a down-weight. It mirrors the
+// generation-time NEVER_GENERATE_BLOCK exclusions at SOURCE-PICK time so junk is
+// gone earliest: signals whose audience is a LOCAL / SMB SERVICE BUSINESS (its
+// owner or trade/field workers), and signals whose core is REGION-LOCKED to a
+// single nation's system / payment rail / locale. Distinct from
+// isEchoChamberSignal — keep the two predicates separate.
+
+/**
+ * Curated skilled-trades / field-service + local-SMB-service-business
+ * subreddits. Lowercased, no "r/" prefix. A signal originating from one of these
+ * is about a LOCAL / SMB SERVICE BUSINESS audience, which is out of scope, so it
+ * is HARD-DROPPED. Curated for high precision — extend conservatively (a too-broad
+ * entry risks dropping legitimately-global signals; the generation/jury layers
+ * are the backstop, not this list).
+ */
+export const EXCLUDED_AUDIENCE_SUBREDDITS: ReadonlySet<string> = new Set([
+  // skilled trades & field-service
+  "hvac",
+  "hvacadvice",
+  "plumbing",
+  "plumbingrepair",
+  "electricians",
+  "electrical",
+  "askelectricians",
+  "construction",
+  "contractor",
+  "handyman",
+  "landscaping",
+  "lawncare",
+  "autorepair",
+  "mechanicadvice",
+  "autodetailing",
+  "cleaning",
+  // local service businesses
+  "restaurateur",
+  "kitchenconfidential",
+  "restaurant",
+  "bartenders",
+  "salon",
+  "hairstylist",
+  "barber",
+  "esthetics",
+  "personaltraining",
+  "fitnesstrainers",
+  "dentistry",
+  "veterinary",
+  "realestate",
+  "realtors",
+]);
+
+/**
+ * Substring markers (lowercased) for a LOCAL / SMB SERVICE-BUSINESS AUDIENCE.
+ * Matched against the `${tag} ${text}` haystack. High-precision "for X" forms
+ * are preferred over bare nouns so a passing mention of a trade doesn't drop a
+ * globally-applicable signal.
+ */
+export const EXCLUDED_AUDIENCE_PHRASES: readonly string[] = [
+  "for electricians",
+  "for plumbers",
+  "for hvac",
+  "for contractors",
+  "for landscapers",
+  "for cleaners",
+  "for restaurants",
+  "for cafes",
+  "for salons",
+  "for barbershops",
+  "for gyms",
+  "for dental practices",
+  "for vet clinics",
+  "field service business",
+  "home service business",
+  "for local businesses",
+  "for small service businesses",
+];
+
+/**
+ * HIGH-PRECISION national-system / payment-rail tokens that mark a signal's core
+ * as REGION-LOCKED to a single country/region. Region detection on raw text is
+ * noisy, so this list is intentionally TIGHT — only tokens that strongly imply a
+ * non-generalizable, single-nation binding. FALSE-POSITIVE RISK: a globally
+ * applicable signal that merely mentions one of these in passing could be
+ * dropped; we accept that tradeoff because the generation prompt
+ * (NEVER_GENERATE_BLOCK) and the jury are the broader backstop, and we keep the
+ * tokens specific to reduce it.
+ */
+export const REGION_LOCKED_PHRASES: readonly string[] = [
+  "upi payment",
+  "upi id",
+  "pix payment",
+  "ideal payment",
+  "sepa direct debit",
+  "aadhaar",
+  "pan card",
+  "gst filing",
+  "gst return",
+  "tds filing",
+  "irs tax filing",
+  "1099 filing",
+  "hmrc",
+  "self assessment tax",
+  "section 8 housing",
+  "nhs",
+  "medicare billing",
+  "cpf",
+  "pix key",
+];
+
+/**
+ * True when a source signal should be HARD-DROPPED at pick time: it originates
+ * from an excluded local/SMB service-business subreddit, OR its tag/text matches
+ * a local/SMB service-business AUDIENCE phrase or a REGION-LOCKED token. Pure;
+ * mirrors {@link isEchoChamberSignal}'s structure but is a DROP, not a
+ * down-weight. Distinct from isEchoChamberSignal — do not conflate them.
+ */
+export function isExcludedSourceSignal(input: EchoChamberInput): boolean {
+  const sub = input.subreddit?.trim().toLowerCase();
+  if (sub && EXCLUDED_AUDIENCE_SUBREDDITS.has(sub)) return true;
+
+  const haystack = `${input.tag ?? ""} ${input.text ?? ""}`.toLowerCase();
+  if (!haystack.trim()) return false;
+  if (EXCLUDED_AUDIENCE_PHRASES.some((p) => haystack.includes(p))) return true;
+  return REGION_LOCKED_PHRASES.some((p) => haystack.includes(p));
+}

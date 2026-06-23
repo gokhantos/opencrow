@@ -13,6 +13,8 @@ function fullScores(overrides: Partial<Record<string, number>> = {}) {
     acuteProblem: 4,
     whyNow: 4,
     demand: 4,
+    monetization: 4,
+    feasibility: 4,
     nonObviousness: 3,
     defensibility: 3,
     marketShape: 3,
@@ -24,7 +26,7 @@ function fullScores(overrides: Partial<Record<string, number>> = {}) {
 // ── parseJudgeVerdicts (pure, GIANT) ────────────────────────────────────────────
 
 describe("parseJudgeVerdicts (GIANT)", () => {
-  test("emits the full 7-axis GIANT vector + archetype + composite", () => {
+  test("emits the full 9-axis GIANT vector + archetype + composite", () => {
     const verdicts = parseJudgeVerdicts(
       {
         verdicts: [

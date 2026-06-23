@@ -12,7 +12,7 @@
  * Two layers, cleanly split for testability:
  *
  *   1. judgeWithJury (IMPURE)  — for each judge model, score every candidate on
- *      the GIANT 7-axis rubric. Candidates are ANONYMIZED (author/source/score
+ *      the GIANT rubric. Candidates are ANONYMIZED (author/source/score
  *      stripped so a judge can't recognize and favor its own family's output)
  *      and POSITION-SWITCHED (order rotated per judge to defeat position bias).
  *      A judge whose provider has no API key — or that errors — is GRACEFULLY
@@ -183,7 +183,7 @@ function buildRubricBlock(): string {
       : "";
     return `${i + 1}. ${key} (0..5) — ${spec.description}${gate}${evidence}`;
   }).join("\n");
-  return `Score each candidate against THE GIANT RUBRIC — 7 axes, each 0..5. Be ruthless; reserve 4-5 for genuine outliers. Reward HARD, UNGLAMOROUS, DEFENSIBLE ideas; penalize templated "X for Y app" clones.\n\n${axes}`;
+  return `Score each candidate against THE GIANT RUBRIC — ${GIANT_AXIS_KEYS.length} axes, each 0..5. Be ruthless; reserve 4-5 for genuine outliers. Reward HARD, UNGLAMOROUS, DEFENSIBLE ideas; penalize templated "X for Y app" clones.\n\n${axes}`;
 }
 
 function buildJudgePrompt(candidates: readonly JuryCandidate[]): string {
@@ -208,6 +208,8 @@ Return ONLY a JSON array with one entry per candidate (you may use any order; bi
       "acuteProblem": number,
       "whyNow": number,
       "demand": number,
+      "monetization": number,
+      "feasibility": number,
       "nonObviousness": number,
       "defensibility": number,
       "marketShape": number,
@@ -256,7 +258,7 @@ export function parseJudgeResponse(
     const id = row.data.id.trim();
     if (!validIds.has(id) || seen.has(id)) continue;
     seen.add(id);
-    // Reuse the GIANT parser's tolerant coercion for the 7 axes.
+    // Reuse the GIANT parser's tolerant coercion for the axes.
     const { scores } = parseGiant({ scores: row.data.scores });
     out.push({
       candidateId: id,

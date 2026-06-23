@@ -519,8 +519,9 @@ Return ONLY a JSON array of {idea, probability} seeds (${seedsPer} per hypothesi
 // ── Pass 3: GIANT Critique ─────────────────────────────────────────────────
 //
 // The critique LLM pass now scores each idea against THE GIANT RUBRIC — the
-// single shared 7-axis optimization target (acuteProblem, whyNow, demand,
-// nonObviousness, defensibility, marketShape, founderFit, each 0..5) plus a
+// single shared 9-axis optimization target (acuteProblem, whyNow, demand,
+// monetization, feasibility, nonObviousness, defensibility, marketShape,
+// founderFit, each 0..5) plus a
 // Sequoia archetype tag, a structured dated whyNow array, and a painSeverity.
 // It is still a SINGLE LLM call (no added cost) — only WHAT it scores changed.
 //
@@ -628,6 +629,8 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       "acuteProblem": number,
       "whyNow": number,
       "demand": number,
+      "monetization": number,
+      "feasibility": number,
       "nonObviousness": number,
       "defensibility": number,
       "marketShape": number,
@@ -648,6 +651,8 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       "acuteProblem": "string — per-axis evidence citation",
       "whyNow": "string",
       "demand": "string — MUST cite a demand artifact or leave empty (demand is then capped low)",
+      "monetization": "string — name the buyer + pricing/ARR path",
+      "feasibility": "string — what exists TODAY that makes this buildable now",
       "nonObviousness": "string",
       "defensibility": "string",
       "marketShape": "string",
@@ -792,6 +797,11 @@ Return ONLY a JSON array with one entry per idea (in the same order):
       weights: giant.weights,
       enforceGates,
       hasDemandEvidence: demandEvidence,
+      // A hard-gate axis the critic OMITTED (formatting failure) is "not scored"
+      // — it must not falsely reject the idea under enforcement. Safety-valved in
+      // parseGiant: a near-empty/malformed critique reports no missing axes and
+      // keeps the strict missing→0 gate behavior.
+      missingAxes: parsed.missingAxes,
     });
 
     const qualityScore = compositeToQualityScore(aggregate.composite);

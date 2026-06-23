@@ -53,6 +53,8 @@ const STRONG_SCORES: GiantAxisScores = {
   acuteProblem: 4,
   whyNow: 4,
   demand: 5,
+  monetization: 4,
+  feasibility: 4,
   nonObviousness: 4,
   defensibility: 4,
   marketShape: 4,

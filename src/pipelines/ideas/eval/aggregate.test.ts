@@ -429,6 +429,8 @@ function scores(overrides: Partial<GiantAxisScores> = {}): GiantAxisScores {
     acuteProblem: 4,
     whyNow: 4,
     demand: 4,
+    monetization: 4,
+    feasibility: 4,
     nonObviousness: 3,
     defensibility: 3,
     marketShape: 3,
@@ -642,7 +644,7 @@ describe("computeEmbeddingNovelty", () => {
 
 // ── compareSigeAb (SIGE-hardened vs self-critique A/B) ──────────────────────────
 
-/** Build a full 7-axis GIANT vector; every axis defaults to `base`. */
+/** Build a full 9-axis GIANT vector; every axis defaults to `base`. */
 function giant(
   base: number,
   over: Partial<GiantAxisScores> = {},
@@ -690,13 +692,13 @@ describe("compareSigeAb", () => {
   });
 
   test("sigeLift is the mean of per-axis deltas, not a per-idea mean", () => {
-    // One axis up by 7, the rest flat → lift = 7/7 = 1.
+    // One axis up by 7, the rest flat → lift = 7 / (number of axes).
     const sige = giant(3, { acuteProblem: 10 });
     const critique = giant(3, { acuteProblem: 3 });
     const r = compareSigeAb([pair("a", sige, critique)]);
     expect(r.axisDeltas.acuteProblem).toBe(7);
     expect(r.axisDeltas.whyNow).toBe(0);
-    expect(r.sigeLift).toBeCloseTo(1, 6); // 7 / 7 axes
+    expect(r.sigeLift).toBeCloseTo(7 / GIANT_AXIS_KEYS.length, 3);
   });
 
   test("groundedness regression vetoes the gate even when lift is positive", () => {
