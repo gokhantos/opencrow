@@ -65,6 +65,10 @@ export async function provisionQdrant(p: NativePaths): Promise<void> {
     workingDirectory: path.dirname(p.qdrantStorage),
     stdoutPath: path.join(p.logDir, "qdrant.log"),
     stderrPath: path.join(p.logDir, "qdrant.err.log"),
+    // RocksDB / multi-collection Qdrant needs far more open files than launchd's
+    // default soft cap of 256. Without this, a reprovision regenerates the plist
+    // back to 256 and Qdrant crash-loops ("Too many open files") loading collections.
+    fileLimit: 65536,
   });
   const dest = plistPath(QDRANT_LABEL);
   await fs.mkdir(path.dirname(dest), { recursive: true });
