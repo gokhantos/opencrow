@@ -469,6 +469,18 @@ export const CONFIG_FIELD_SPECS: readonly ConfigDomainSpec[] = [
     ],
   },
   {
+    domain: "smart.giant",
+    fields: [
+      f(
+        "pipelines.ideas.smart.giant.enforceGates",
+        ["OPENCROW_SMART_GIANT_ENFORCE_GATES"],
+        "config/giant",
+        "enforceGates",
+        "boolean",
+      ),
+    ],
+  },
+  {
     domain: "smart.competability",
     fields: [
       f(

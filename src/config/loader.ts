@@ -435,6 +435,13 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     competabilityEnv.topNIncumbents = competabilityTopN;
   }
 
+  // OPENCROW_SMART_GIANT_* override for the GIANT hard-gate enforcement switch.
+  // Mirrors the competability gate: the gate math always runs in shadow mode;
+  // this flips it from shadow -> ENFORCE (gated ideas are actually dropped).
+  const giantEnv: Record<string, unknown> = {};
+  const giantEnforce = boolEnv("OPENCROW_SMART_GIANT_ENFORCE_GATES");
+  if (giantEnforce !== undefined) giantEnv.enforceGates = giantEnforce;
+
   // OPENCROW_SMART_COMPETABILITY_BUILDER_* — the builder profile sub-block.
   const builderProfileEnv: Record<string, unknown> = {};
   if (process.env.OPENCROW_SMART_COMPETABILITY_BUILDER_CAPITAL) {
@@ -646,6 +653,7 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     Object.keys(graphFeedbackEnv).length > 0 ||
     Object.keys(abHoldoutEnv).length > 0 ||
     Object.keys(incumbentExclusionEnv).length > 0 ||
+    Object.keys(giantEnv).length > 0 ||
     Object.keys(competabilityEnv).length > 0 ||
     Object.keys(demandEnv).length > 0 ||
     Object.keys(diversityGuardEnv).length > 0 ||
@@ -691,6 +699,10 @@ function applyEnvOverrides(config: Record<string, unknown>): Record<string, unkn
     if (Object.keys(incumbentExclusionEnv).length > 0) {
       const existing = (existingSmart.incumbentExclusion ?? {}) as Record<string, unknown>;
       smart.incumbentExclusion = { ...existing, ...incumbentExclusionEnv };
+    }
+    if (Object.keys(giantEnv).length > 0) {
+      const existing = (existingSmart.giant ?? {}) as Record<string, unknown>;
+      smart.giant = { ...existing, ...giantEnv };
     }
     if (Object.keys(competabilityEnv).length > 0) {
       const existing = (existingSmart.competability ?? {}) as Record<string, unknown>;
