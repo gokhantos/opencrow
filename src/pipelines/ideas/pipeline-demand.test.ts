@@ -28,6 +28,7 @@ import type { DemandArtifact, DemandEvidence } from "./demand";
 const GIANT_SHADOW: GiantConfig = {
   enabled: true,
   enforceGates: false,
+  critiqueBatchSize: 7,
   weights: { ...GIANT_DEFAULT_WEIGHTS },
 };
 

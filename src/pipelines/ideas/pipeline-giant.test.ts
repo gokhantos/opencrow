@@ -20,12 +20,14 @@ import type { GeneratedIdeaCandidate } from "./types";
 const GIANT_CONFIG_SHADOW: GiantConfig = {
   enabled: true,
   enforceGates: false,
+  critiqueBatchSize: 7,
   weights: { ...GIANT_DEFAULT_WEIGHTS },
 };
 
 const GIANT_CONFIG_ENFORCE: GiantConfig = {
   enabled: true,
   enforceGates: true,
+  critiqueBatchSize: 7,
   weights: { ...GIANT_DEFAULT_WEIGHTS },
 };
 
@@ -228,6 +230,7 @@ describe("evaluateCandidateGiantGate", () => {
     const skewed: GiantConfig = {
       enabled: true,
       enforceGates: false,
+      critiqueBatchSize: 7,
       weights: { ...GIANT_DEFAULT_WEIGHTS, demand: 0 },
     };
     const gate = evaluateCandidateGiantGate(c, skewed);
