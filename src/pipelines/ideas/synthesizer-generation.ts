@@ -14,6 +14,7 @@
  */
 
 import { chat } from "../../agent/chat";
+import { resolveLlmCallTimeoutMs } from "../../agent/llm-timeout";
 import type { ConversationMessage } from "../../agent/types";
 import { createLogger } from "../../logger";
 import { UNTRUSTED_PREAMBLE } from "../../sige/untrusted";
@@ -451,11 +452,14 @@ Return ONLY a JSON array of {idea, probability} seeds (${seedsPer} per hypothesi
       // pair it with the truncation-tolerant parser below so the pool never
       // silently collapses.
       maxOutputTokens: 32000,
-      // Defense-in-depth: give each chunk call slightly more than the default
-      // 210s LLM deadline. Chunking is the primary fix (each call now stays in
-      // the proven ~90s regime); this just avoids a borderline chunk tipping
-      // over the global default.
-      callTimeoutMs: 240_000,
+      // Defense-in-depth: give each chunk call more than the default 210s LLM
+      // deadline. Chunking is the primary fix (each call now stays in the proven
+      // ~90s regime); this floor avoids a borderline chunk tipping over the
+      // global default. Keep a 240s floor BUT let LLM_CALL_TIMEOUT_MS raise it —
+      // slower routes (e.g. deepseek via OpenCode Zen, which can take >240s for a
+      // large ~20k-token synthesis response) need a higher ceiling or the pool
+      // collapses to zero ideas.
+      callTimeoutMs: Math.max(240_000, resolveLlmCallTimeoutMs()),
       systemPrompt: `${UNTRUSTED_PREAMBLE}\n\nYou are a product strategist emitting a DIVERSE DISTRIBUTION of grounded product ideas via Verbalized Sampling. Each idea is a {idea, probability} pair. Output only a valid JSON array.`,
     });
 
