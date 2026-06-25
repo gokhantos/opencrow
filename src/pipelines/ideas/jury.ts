@@ -565,12 +565,20 @@ export function fuseJury(
 // ── Default jury panel ───────────────────────────────────────────────────────
 
 /**
- * A cross-family default panel: anthropic (Agent SDK / OAuth, no explicit key
- * required) + openrouter + alibaba. Providers without a key are skipped by
+ * A cross-family default panel: opencode (OpenCode Zen deepseek) + openrouter +
+ * alibaba — three distinct model families, NONE on the personal Claude login.
+ * Every judge is key-gated; providers without their key are skipped by
  * {@link judgeWithJury}, so this panel degrades to whatever is configured.
+ * (The former anthropic/OAuth judge was removed: it had no requiredSecret, so it
+ * was "always available" and silently billed the personal Claude account.)
  */
 export const DEFAULT_JURY_PANEL: readonly JudgeModel[] = [
-  { label: "anthropic-sonnet", provider: "anthropic", model: "claude-sonnet-4-6" },
+  {
+    label: "opencode-deepseek",
+    provider: "opencode",
+    model: "deepseek-v4-flash",
+    requiredSecret: "OPENCODE_API_KEY",
+  },
   {
     label: "openrouter-gpt",
     provider: "openrouter",
