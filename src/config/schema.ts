@@ -751,6 +751,14 @@ export const giantConfigSchema = z
     // SHADOW mode by default: log would-kill decisions but do NOT drop gated
     // ideas. Set true to actually enforce the hard gates / evidence gate.
     enforceGates: z.boolean().default(false),
+    // How many candidates to score per GIANT-critique LLM call. The critic is
+    // CHUNKED: scoring the whole over-generated pool (~20) in one call made the
+    // 38-41k-char response TRUNCATE (even at a 32k cap), so the back-half
+    // scorecards were dropped and NO candidate bound a GIANT critique (every
+    // giant_* column persisted NULL). A small batch fits the budget, parses
+    // cleanly, and stays positionally aligned per batch. 0 disables chunking
+    // (single call over the whole pool — legacy behavior).
+    critiqueBatchSize: z.number().int().min(0).max(40).default(7),
     // Per-axis weights for the weighted geometric mean. Optional + fully
     // defaulted so existing config stays backward-compatible.
     weights: z
@@ -770,6 +778,7 @@ export const giantConfigSchema = z
   .default({
     enabled: true,
     enforceGates: false,
+    critiqueBatchSize: 7,
     weights: { ...GIANT_DEFAULT_WEIGHTS },
   });
 
@@ -1652,6 +1661,7 @@ const SMART_IDEAS_DEFAULTS = {
   giant: {
     enabled: true,
     enforceGates: false,
+    critiqueBatchSize: 7,
     weights: { ...GIANT_DEFAULT_WEIGHTS },
   },
   generateWide: {

@@ -31,6 +31,7 @@ describe("smartConfigSchema", () => {
       giant: {
         enabled: true,
         enforceGates: false,
+        critiqueBatchSize: 7,
         weights: {
           acuteProblem: 0.2,
           whyNow: 0.15,

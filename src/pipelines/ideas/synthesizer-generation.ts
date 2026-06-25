@@ -28,17 +28,11 @@ import type {
   IntersectionHypothesis,
   SynthesisResult,
 } from "./types";
-import {
-  parseGiant,
-  aggregateGiant,
-  type ParsedGiant,
-} from "./giant";
+import { aggregateGiant } from "./giant";
 import {
   buildCompetabilityPersisted,
-  parseCompetability,
   heuristicMoatFlags,
   hardVetoCompetability,
-  type CompetabilityScore,
 } from "./competability";
 import {
   type CompetabilityDecisionInput,
@@ -48,7 +42,6 @@ import {
   DEFAULT_BUILDER_PROFILE,
   type BuilderProfile,
   decideCompetabilityForProfile,
-  describeBuilderProfile,
   matchExpertiseDomain,
 } from "./builder-profile";
 import type {
@@ -68,9 +61,14 @@ import {
   sanitizeForPrompt,
 } from "./synthesizer";
 import { chunkIntersections, mergeWithCap } from "./overgen-chunking";
+import { bindCritiques, type CritiqueBatch } from "./giant-critique-binding";
+import {
+  DEFAULT_CRITIQUE_BATCH_SIZE,
+  type GiantCritiqueContext,
+  runCritiqueBatch,
+} from "./giant-critique";
 import {
   CATEGORY_CONTEXT,
-  GIANT_RUBRIC_PROMPT,
   SCHLEP_INSTRUCTION,
   NEVER_GENERATE_BLOCK,
   antiExemplarSection,
@@ -535,21 +533,20 @@ Return ONLY a JSON array of {idea, probability} seeds (${seedsPer} per hypothesi
 // smart.giant.enforceGates is true. The composite (0..5) becomes qualityScore
 // so existing downstream code keeps working.
 
-/** One parsed GIANT critique entry, keyed back to its idea by title. */
-interface GiantCritiqueEntry {
-  readonly title: string;
-  readonly parsed: ParsedGiant;
-  readonly painSeverity: number;
-  readonly verdict: string;
-  /** Layer B: parsed competability moat score (present only when emitted). */
-  readonly competability?: CompetabilityScore;
-}
+// GiantCritiqueEntry (the parsed-and-bound scorecard) + the parse/bind helpers
+// now live in ./giant-critique-binding so they can be unit-tested without a chat
+// client; critiqueIdeas chunks the candidate pool and binds per batch.
+
+// The Pass-3 prompt builder + per-batch chat call live in ./giant-critique
+// (DEFAULT_CRITIQUE_BATCH_SIZE / runCritiqueBatch / GiantCritiqueContext). This
+// file keeps the survival + gating loop that consumes the bound critiques.
 
 /**
- * Score candidates against the GIANT rubric in a single LLM call, then aggregate
- * each into the non-compensatory composite. Shadow-mode by default: gated ideas
- * are KEPT (with their GIANT scorecard attached) and merely logged unless
- * `giant.enforceGates` is true, in which case gated ideas are dropped.
+ * Score candidates against the GIANT rubric (CHUNKED into small per-batch LLM
+ * calls) then aggregate each into the non-compensatory composite. Shadow-mode by
+ * default: gated ideas are KEPT (with their GIANT scorecard attached) and merely
+ * logged unless `giant.enforceGates` is true, in which case gated ideas are
+ * dropped.
  *
  * Backward-compatible: on any parse/LLM failure the original candidates are
  * returned unchanged so the optional GIANT path can't break the pipeline.
@@ -583,188 +580,60 @@ export async function critiqueIdeas(
   // (identity transform) when no profile is configured.
   const builderProfile: BuilderProfile =
     competability?.builderProfile ?? DEFAULT_BUILDER_PROFILE;
-  const ideaList = candidates.map((c, i) =>
-    `${i + 1}. "${c.title}"\n   Summary: ${c.summary.slice(0, 300)}\n   Reasoning: ${c.reasoning.slice(0, 200)}\n   Target: ${c.targetAudience}\n   Features: ${c.keyFeatures.slice(0, 4).join(", ")}`,
-  ).join("\n\n");
+  // Shared, batch-invariant context. Injects the negative-archetype block so the
+  // critic PENALIZES nonObviousness / defensibility for ideas matching the
+  // generic patterns we steered away from.
+  const critiqueCtx: GiantCritiqueContext = {
+    antiSection: antiExemplarSection(antiExemplars),
+    competabilityOn,
+    builderProfile,
+    rawContext: [
+      "=== RAW TRENDS SUMMARY ===",
+      sanitizeForPrompt(trendsSummary || "").slice(0, 8000),
+      "=== RAW PAINS SUMMARY ===",
+      sanitizeForPrompt(painsSummary || "").slice(0, 8000),
+      "=== RAW CAPABILITIES SUMMARY ===",
+      sanitizeForPrompt(capabilitiesSummary || "").slice(0, 8000),
+    ].join("\n"),
+  };
 
-  // Inject the negative archetype block so the critic PENALIZES nonObviousness /
-  // defensibility for ideas that match the generic patterns we steered away from.
-  const antiSection = antiExemplarSection(antiExemplars);
+  // CHUNK the critique so each LLM call scores a small batch that fits the token
+  // budget and fully parses. Scoring the whole over-generated pool (~20) in one
+  // call made the 38-41k-char response TRUNCATE even at a 32k cap, so the strict
+  // parse fell to lenient EVERY run, lenient salvaged only the front-half
+  // scorecards, the whole-pool positional fallback then refused to bind, and NO
+  // candidate received a GIANT scorecard → every giant_* column persisted NULL.
+  // Per batch the response parses cleanly and positional alignment holds.
+  // batchSize 0 => one batch over the whole pool (legacy single-call behavior).
+  const configuredBatch = giant.critiqueBatchSize ?? DEFAULT_CRITIQUE_BATCH_SIZE;
+  const batchSize = configuredBatch > 0 ? configuredBatch : candidates.length || 1;
+  const batches = chunkIntersections(candidates, batchSize);
 
-  const rawContext = [
-    "=== RAW TRENDS SUMMARY ===",
-    sanitizeForPrompt(trendsSummary || "").slice(0, 8000),
-    "=== RAW PAINS SUMMARY ===",
-    sanitizeForPrompt(painsSummary || "").slice(0, 8000),
-    "=== RAW CAPABILITIES SUMMARY ===",
-    sanitizeForPrompt(capabilitiesSummary || "").slice(0, 8000),
-  ].join("\n");
-
-  const prompt = `You are a ruthless product idea critic. Score each idea honestly against the raw market data.
-
-${rawContext}
-${antiSection}
-
-=== IDEAS TO CRITIQUE ===
-${ideaList}
-
-${GIANT_RUBRIC_PROMPT}
-${
-  competabilityOn
-    ? `
-=== COMPETABILITY (can a SMALL / solo builder realistically WIN this market?) ===
-This is the INVERSE of defensibility: score the INCUMBENT moat the small builder must OVERCOME.
-Context: ${describeBuilderProfile(builderProfile)} Score the OBJECTIVE, profile-independent moat barriers below — do NOT adjust for the builder; the system applies the builder's resources separately.
-Each moat dimension is 0..5 where 5 = the moat is OVERWHELMING for a small builder:
-  - capital: capex / sustained funding burn to even launch (fleets, hardware, content licensing, deep subsidies).
-  - networkEffect: value needs critical-mass users/supply already locked up by incumbents (two-sided marketplaces, social).
-  - logistics: physical ops / fulfillment / field operations at scale.
-  - regulated: licensing / compliance / regulatory capture as a barrier.
-Then give ONE overall 0..5 score for "a small builder CAN realistically win v1" (5 = wide open, 0 = impossible).
-A "build a DoorDash / Uber / Spotify" idea must score overall LOW (<=1.5). A sharp niche tool a solo dev can ship scores HIGH.`
-    : ""
-}
-
-Return ONLY a JSON array with one entry per idea (in the same order):
-[
-  {
-    "title": "string — must match exactly",
-    "scores": {
-      "acuteProblem": number,
-      "whyNow": number,
-      "demand": number,
-      "monetization": number,
-      "feasibility": number,
-      "nonObviousness": number,
-      "defensibility": number,
-      "marketShape": number,
-      "founderFit": number
-    },
-    "archetype": "hair-on-fire" | "hard-fact" | "future-vision",
-    "painSeverity": number,
-    "whyNow": [
-      {
-        "axis": "technological" | "regulatory" | "behavioral" | "economic",
-        "claim": "string — the dated enabling shift",
-        "boundSignalId": "string — a [id:...] token if this is bound to a real signal (optional)",
-        "date": "string — ISO-ish date of the shift (optional)",
-        "strength": number
-      }
-    ],
-    "evidence": {
-      "acuteProblem": "string — per-axis evidence citation",
-      "whyNow": "string",
-      "demand": "string — MUST cite a demand artifact or leave empty (demand is then capped low)",
-      "monetization": "string — name the buyer + pricing/ARR path",
-      "feasibility": "string — what exists TODAY that makes this buildable now",
-      "nonObviousness": "string",
-      "defensibility": "string",
-      "marketShape": "string",
-      "founderFit": "string"
-    },${
-      competabilityOn
-        ? `
-    "competability": {
-      "dimensions": {
-        "capital": number,
-        "networkEffect": number,
-        "logistics": number,
-        "regulated": number
-      },
-      "overall": number,
-      "rationale": "string"
-    },`
-        : ""
-    }
-    "verdict": "string — one sentence on the idea's core strength or fatal flaw"
-  }
-]`;
-
-  const messages: ConversationMessage[] = [
-    { role: "user", content: prompt, timestamp: Date.now() },
-  ];
-
-  const response = await chat(messages, {
-    ...buildChatOptions(model, provider),
-    // The GIANT critique scales with the (over-generated) pool: one scorecard per
-    // candidate, each ~7 scores + 7 evidence strings + a whyNow array + verdict.
-    // With generate-wide ON (default, up to maxCandidates ideas) the default 16k
-    // output cap TRUNCATES this array mid-stream. A truncated response made the
-    // non-lenient parser below yield ZERO critiques → every candidate fell through
-    // the "no critique" branch WITHOUT a GIANT scorecard, so candidate.giant stayed
-    // undefined all the way to the store and giant_* columns persisted NULL on live
-    // runs. Raise the budget to match the wide over-generation pass.
-    maxOutputTokens: 32000,
-    systemPrompt:
-      "You are a ruthless product idea critic scoring ideas against the GIANT rubric. Score honestly; cite per-axis evidence. Output only valid JSON arrays.",
-  });
-
-  log.info("Pass 3 (GIANT critique) raw response", {
-    length: response.text.length,
-    preview: response.text.slice(0, 200),
-  });
-
-  // Truncation-tolerant parse (mirrors the wide over-generation pass): recover
-  // every COMPLETE scorecard even if the array was cut off at the token cap. The
-  // legacy non-lenient parser yielded NOTHING on truncation, which silently
-  // stripped GIANT from the entire pool. Fall back to the lenient walker whenever
-  // the strict parse comes back empty so a single late-truncated entry can no
-  // longer drop the GIANT scorecards the model DID emit.
-  let rawCritiques = parseJsonFromResponse<unknown[]>(response.text, []);
-  if (rawCritiques.length === 0) {
-    const recovered = parseJsonArrayLenient(response.text);
-    if (recovered.length > 0) {
-      log.info("Pass 3 strict parse empty; recovered critiques leniently", {
-        recovered: recovered.length,
-      });
-      rawCritiques = recovered;
-    }
+  const critiqueBatches: CritiqueBatch[] = [];
+  for (const batch of batches) {
+    // Sequential per-batch: bounded concurrency keeps the routed-provider call
+    // pattern identical to the legacy single call (no burst of parallel calls).
+    critiqueBatches.push(await runCritiqueBatch(batch, critiqueCtx, model, provider));
   }
 
-  if (rawCritiques.length === 0) {
+  const totalRecovered = critiqueBatches.reduce((n, b) => n + b.entries.length, 0);
+  log.info("Pass 3 (GIANT critique) chunked", {
+    poolSize: candidates.length,
+    batches: batches.length,
+    batchSize,
+    recovered: totalRecovered,
+  });
+
+  if (totalRecovered === 0) {
     log.warn("Pass 3 returned no parseable critiques, returning candidates as-is");
     return candidates;
   }
 
-  // Tolerantly parse each raw critique into a normalized GIANT entry, keyed by
-  // title AND retained in emission order. parseGiant never throws, so a malformed
-  // row degrades to safe defaults rather than killing the whole pass. The ordered
-  // list backs a POSITIONAL fallback below: the critic is instructed to return one
-  // entry per idea "in the same order", so when the model lightly rewords a title
-  // (common on the wide path) we can still bind the scorecard by index instead of
-  // dropping GIANT for that candidate.
-  const critiqueByTitle = new Map<string, GiantCritiqueEntry>();
-  const critiquesInOrder: GiantCritiqueEntry[] = [];
-  for (const raw of rawCritiques) {
-    if (raw === null || typeof raw !== "object") continue;
-    const r = raw as Record<string, unknown>;
-    const title = typeof r.title === "string" ? r.title : "";
-    if (title.trim().length === 0) continue;
-    const parsed = parseGiant(raw);
-    const painSeverity =
-      typeof r.painSeverity === "number"
-        ? Math.min(5, Math.max(0, r.painSeverity))
-        : parsed.scores.acuteProblem;
-    // Layer B: tolerantly parse the competability moat object when present.
-    const competabilityScore =
-      competabilityOn && "competability" in r
-        ? parseCompetability(r.competability)
-        : undefined;
-    const entry: GiantCritiqueEntry = {
-      title,
-      parsed,
-      painSeverity,
-      verdict: typeof r.verdict === "string" ? r.verdict : "",
-      ...(competabilityScore ? { competability: competabilityScore } : {}),
-    };
-    critiqueByTitle.set(title.toLowerCase().trim(), entry);
-    critiquesInOrder.push(entry);
-  }
-
-  // Positional fallback is only sound when the critic returned exactly one entry
-  // per candidate (the prompt's "same order" contract). Otherwise we never guess
-  // by index and fall back to keeping the original score.
-  const positionalAligned = critiquesInOrder.length === candidates.length;
+  // Bind each candidate to its critique: exact title first, then a PER-BATCH
+  // positional fallback (sound when a batch returned one entry per candidate).
+  // Per-batch alignment means one truncated batch can no longer disable
+  // positional binding for the WHOLE pool (the legacy single-call failure).
+  const binder = bindCritiques(critiqueBatches);
 
   const enforceGates = giant.enforceGates === true;
   const survived: GeneratedIdeaCandidate[] = [];
@@ -782,9 +651,7 @@ Return ONLY a JSON array with one entry per idea (in the same order):
 
   for (let idx = 0; idx < candidates.length; idx++) {
     const candidate = candidates[idx]!;
-    const critique =
-      critiqueByTitle.get(candidate.title.toLowerCase().trim()) ??
-      (positionalAligned ? critiquesInOrder[idx] : undefined);
+    const critique = binder.lookup(idx, candidate.title);
 
     if (!critique) {
       // No critique found — keep with original score (degrade gracefully).
