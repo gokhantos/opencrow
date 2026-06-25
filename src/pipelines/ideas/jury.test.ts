@@ -462,11 +462,13 @@ describe("judgeWithJury", () => {
 describe("DEFAULT_JURY_PANEL", () => {
   test("spans three distinct model-family providers", () => {
     const providers = new Set(DEFAULT_JURY_PANEL.map((j) => j.provider));
-    expect(providers).toEqual(new Set(["anthropic", "openrouter", "alibaba"]));
+    expect(providers).toEqual(new Set(["opencode", "openrouter", "alibaba"]));
   });
-  test("non-anthropic judges are key-gated", () => {
+  test("every judge is key-gated (no implicit-OAuth provider that bills Claude)", () => {
     for (const j of DEFAULT_JURY_PANEL) {
-      if (j.provider !== "anthropic") expect(j.requiredSecret).toBeTruthy();
+      expect(j.requiredSecret).toBeTruthy();
     }
+    // The panel must not contain an anthropic/OAuth judge.
+    expect(DEFAULT_JURY_PANEL.some((j) => j.provider === "anthropic")).toBe(false);
   });
 });
