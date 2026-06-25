@@ -71,7 +71,7 @@ describe("smartConfigSchema", () => {
       sige: {
         independentJudge: true,
         judgeModels: [
-          { provider: "anthropic", model: "claude-haiku-4-5" },
+          { provider: "opencode", model: "deepseek-v4-flash" },
           { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
           { provider: "alibaba", model: "qwen3.7-plus" },
         ],
@@ -511,7 +511,7 @@ describe("sigeHardeningConfigSchema", () => {
     const providers = new Set(parsed.judgeModels.map((m) => m.provider));
     expect(providers.size).toBeGreaterThanOrEqual(2);
     expect(parsed.judgeModels).toEqual([
-      { provider: "anthropic", model: "claude-haiku-4-5" },
+      { provider: "opencode", model: "deepseek-v4-flash" },
       { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
       { provider: "alibaba", model: "qwen3.7-plus" },
     ]);
