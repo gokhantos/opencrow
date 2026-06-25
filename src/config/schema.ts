@@ -916,8 +916,10 @@ export const demandConfigSchema = z
 // instantiated when smart.sigeValuation is ON; any provider without a key is
 // gracefully skipped at runtime. The mix is intentionally multi-family so the
 // independent judge does not share a model lineage with the generators.
+// NOTE: no anthropic entry here — the default panel must not bill the personal
+// Claude OAuth account. Users can still configure anthropic via judgeModels override.
 export const SIGE_DEFAULT_JUDGE_MODELS: readonly { provider: string; model: string }[] = [
-  { provider: "anthropic", model: "claude-haiku-4-5" },
+  { provider: "opencode", model: "deepseek-v4-flash" },
   { provider: "openrouter", model: "deepseek/deepseek-chat-v3.1" },
   { provider: "alibaba", model: "qwen3.7-plus" },
 ];
