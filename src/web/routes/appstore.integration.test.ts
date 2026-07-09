@@ -147,6 +147,34 @@ describe("appstore opportunities routes", () => {
       const body = await json<{ success: boolean }>(res);
       expect(body.success).toBe(false);
     });
+
+    it("200 with empty genreZone ignores filter, returns seeded keyword", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        {
+          keyword: "zzz-web-gap-low opportunity keyword",
+          genreZone: "health",
+          source: "seed",
+        },
+      ]);
+      await insertScan(
+        makeScan({
+          keyword: "zzz-web-gap-low opportunity keyword",
+          opportunity: 0.3,
+          scannedAt: now,
+        }),
+      );
+
+      const app = makeApp();
+      const res = await get(app, "/appstore/opportunities?genreZone=");
+      expect(res.status).toBe(200);
+
+      const body = await json<{ success: boolean; data: OpportunityRow[] }>(res);
+      expect(body.success).toBe(true);
+      expect(body.data.map((r) => r.keyword)).toContain(
+        "zzz-web-gap-low opportunity keyword",
+      );
+    });
   });
 
   describe("GET /appstore/opportunities/:keyword", () => {

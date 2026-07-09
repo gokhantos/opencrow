@@ -62,7 +62,7 @@ export function createAppStoreRoutes(
     const rawQuery: Record<string, string> = {};
     for (const key of ["limit", "genreZone", "trend"] as const) {
       const value = c.req.query(key);
-      if (value !== undefined) rawQuery[key] = value;
+      if (value) rawQuery[key] = value;
     }
 
     const parsed = opportunitiesQuerySchema.safeParse(rawQuery);
