@@ -15,6 +15,8 @@ import { createDigestTool } from "./digest-factory";
 import { getEnum } from "./input-helpers";
 import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
+import { scanKeyword } from "../sources/appstore/keyword-gaps";
+import { formatGapProfile } from "../sources/appstore/format-gap-profile";
 
 const log = createLogger("tool:appstore");
 
@@ -317,6 +319,34 @@ export function createAppStoreTools(
           const msg = getErrorMessage(err);
           log.error("search_appstore_apps failed", { query, error: msg });
           return { output: `Error searching App Store: ${msg}`, isError: true };
+        }
+      },
+    },
+    {
+      name: "analyze_keyword_gap",
+      description:
+        "Analyze a live App Store keyword-gap profile: competitiveness, demand, incumbent weakness, and opportunity for a given search phrase. Use to find underserved keywords worth targeting.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          keyword: {
+            type: "string",
+            description:
+              "App Store search phrase to analyze for a supply/demand gap (e.g. 'fatty liver diet').",
+          },
+        },
+        required: ["keyword"],
+      },
+      categories: ["research"] as const,
+      async execute(input) {
+        const keyword = String(input.keyword ?? "");
+        try {
+          const profile = await scanKeyword(keyword);
+          return { output: formatGapProfile(profile), isError: false };
+        } catch (err) {
+          const msg = getErrorMessage(err);
+          log.error("analyze_keyword_gap failed", { keyword, error: msg });
+          return { output: `Error analyzing keyword gap: ${msg}`, isError: true };
         }
       },
     },
