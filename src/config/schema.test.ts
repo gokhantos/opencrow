@@ -410,16 +410,16 @@ describe("sigeAutoConfigSchema", () => {
 // ── appstoreKeywordGap config ─────────────────────────────────────────────────
 
 describe("appstoreKeywordGap config", () => {
-  test("empty config parses with safe-by-default (off) values", () => {
+  test("empty config parses with the feature ON by default", () => {
     const cfg = opencrowConfigSchema.parse({});
     const g = cfg.appstoreKeywordGap;
-    expect(g.enabled).toBe(false);
+    expect(g.enabled).toBe(true);
     expect(g.topN).toBe(20);
     expect(g.scanIntervalMs).toBe(21_600_000);
     expect(g.dailyKeywordBudget).toBe(300);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.4);
-    expect(g.autocompleteExpansion.enabled).toBe(false);
+    expect(g.autocompleteExpansion.enabled).toBe(true);
   });
 
   test("is tunable via config", () => {
@@ -433,5 +433,16 @@ describe("appstoreKeywordGap config", () => {
     expect(cfg.appstoreKeywordGap.enabled).toBe(true);
     expect(cfg.appstoreKeywordGap.topN).toBe(10);
     expect(cfg.appstoreKeywordGap.autocompleteExpansion.enabled).toBe(true);
+  });
+
+  test("can be disabled via config", () => {
+    const cfg = opencrowConfigSchema.parse({
+      appstoreKeywordGap: {
+        enabled: false,
+        autocompleteExpansion: { enabled: false },
+      },
+    });
+    expect(cfg.appstoreKeywordGap.enabled).toBe(false);
+    expect(cfg.appstoreKeywordGap.autocompleteExpansion.enabled).toBe(false);
   });
 });
