@@ -91,10 +91,16 @@ describe("keyword-store", () => {
   });
 
   it("upserts corpus and reads a stale slice", async () => {
+    // Dedicated zzz-prefixed genre zone (matching the convention used by the
+    // other tests in this file) so this assertion is not affected by the
+    // real seed corpus (scripts/seed-appstore-keywords.ts) that may already
+    // be loaded into the shared "health" zone with no scan history — a
+    // shared real zone plus an unqualified ORDER BY last_scanned_at ASC
+    // NULLS FIRST / LIMIT 10 makes membership in the top slice non-deterministic.
     await upsertKeywords([
-      { keyword: "zzz-fatty-liver-diet", genreZone: "health", source: "seed" },
+      { keyword: "zzz-fatty-liver-diet", genreZone: "zzz-stale-slice-zone", source: "seed" },
     ]);
-    const stale = await getStaleKeywords("health", 10);
+    const stale = await getStaleKeywords("zzz-stale-slice-zone", 10);
     expect(stale).toContain("zzz-fatty-liver-diet");
   });
 
