@@ -530,6 +530,50 @@ export const redditCorpusConfigSchema = z
     includeSubscriptions: false,
   });
 
+// ─── App Store keyword-gap scanner ─────────────────────────────────────────
+// Standalone scanner feature (independent of the SIGE ideas pipeline, like
+// `ingestion`/`redditCorpus` above): scans App Store keywords for volume/
+// difficulty gaps against the app's current ranking, optionally seeding from
+// autocomplete expansion. Fully Zod-defaulted so `parse({})` is safe and the
+// feature is OFF by default for first ship — flip `enabled: true` to turn on
+// the scan loop without a code change.
+export const appstoreKeywordGapConfigSchema = z
+  .object({
+    // Master switch. Default OFF for a first ship.
+    enabled: z.boolean().default(false),
+    // Gap between scan cycles (run-then-reschedule). Default 6h (daily-ish
+    // cadence without hammering App Store lookups).
+    scanIntervalMs: z.number().int().min(60_000).default(21_600_000),
+    // How many keyword lookups may be spent per calendar day (cost/rate
+    // ceiling against the App Store scraping surface).
+    dailyKeywordBudget: z.number().int().min(1).max(2000).default(300),
+    // How many top-ranked gap candidates to surface per scan.
+    topN: z.number().int().min(5).max(50).default(20),
+    // Weight applied to demand-side signal when scoring a keyword gap.
+    // Modest default so demand nudges but does not dominate ranking/difficulty.
+    demandWeight: z.number().min(0).max(5).default(1),
+    // Minimum opportunity score (0..1) a keyword must clear before it is fed
+    // back as a seed into further expansion/generation.
+    opportunityThresholdForSeed: z.number().min(0).max(1).default(0.4),
+    // Optional autocomplete-based keyword expansion (widens the candidate
+    // pool via App Store search-suggest). Default OFF.
+    autocompleteExpansion: z
+      .object({
+        enabled: z.boolean().default(false),
+      })
+      .default({ enabled: false }),
+  })
+  .default({
+    enabled: false,
+    scanIntervalMs: 21_600_000,
+    dailyKeywordBudget: 300,
+    topN: 20,
+    demandWeight: 1,
+    opportunityThresholdForSeed: 0.4,
+    autocompleteExpansion: { enabled: false },
+  });
+export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
+
 export const processesConfigSchema = z
   .object({
     static: z.array(processSpecSchema).default([]),
@@ -1914,6 +1958,9 @@ export const opencrowConfigSchema = z.object({
   ingestion: ingestionConfigSchema,
   // Reddit corpus de-bias: curated allowlist + echo-chamber/crypto denylist.
   redditCorpus: redditCorpusConfigSchema,
+  // App Store keyword-gap scanner: standalone feature, independent of the
+  // SIGE ideas pipeline. Default OFF (see appstoreKeywordGapConfigSchema).
+  appstoreKeywordGap: appstoreKeywordGapConfigSchema,
   pipelines: pipelinesConfigSchema.default({
     ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
   }),
@@ -1959,5 +2006,7 @@ export type TasteConfig = z.infer<typeof tasteConfigSchema>;
 export type IdeasPipelineConfig = z.infer<typeof ideasPipelineConfigSchema>;
 export type PipelinesConfig = z.infer<typeof pipelinesConfigSchema>;
 export type RedditCorpusConfig = z.infer<typeof redditCorpusConfigSchema>;
+// AppstoreKeywordGapConfig is also exported directly from its schema
+// declaration above.
 // SigeAutoConfig and OutcomeMemoryConfig are also exported directly from their
 // schema declarations above.
