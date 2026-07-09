@@ -44,6 +44,7 @@ import Sige from "./views/Sige";
 import SigeIdeas from "./views/SigeIdeas";
 import Pipelines from "./views/Pipelines";
 import PipelineIdeas from "./views/PipelineIdeas";
+import KeywordResearch from "./views/KeywordResearch";
 
 interface StatusResponse {
   uptime: number;
@@ -317,6 +318,7 @@ function App() {
             {tab === "appstore" && <AppStore />}
             {tab === "playstore" && <PlayStore />}
             {tab === "news" && <News />}
+            {tab === "keyword-research" && <KeywordResearch navigateTo={navigateTo} />}
             {tab === "pipelines" && <Pipelines />}
             {tab === "pipeline-ideas" && <PipelineIdeas />}
             {tab === "memory" && <Memory />}

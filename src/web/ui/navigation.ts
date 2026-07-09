@@ -27,6 +27,7 @@ import {
   Zap,
   Lightbulb,
   Sparkles,
+  Search,
 } from "lucide-react";
 
 export type Tab =
@@ -57,7 +58,8 @@ export type Tab =
   | "sige"
   | "sige-ideas"
   | "pipelines"
-  | "pipeline-ideas";
+  | "pipeline-ideas"
+  | "keyword-research";
 
 export interface NavItem {
   readonly id: Tab;
@@ -78,6 +80,7 @@ export const VALID_TABS = new Set<Tab>([
   "news", "cron",
   "processes", "system", "tools", "agent-metrics", "routing",
   "memory", "logs", "settings", "workflows", "sige", "sige-ideas", "pipelines", "pipeline-ideas",
+  "keyword-research",
 ]);
 
 export const TAB_TITLES: Record<Tab, string> = {
@@ -109,6 +112,7 @@ export const TAB_TITLES: Record<Tab, string> = {
   "sige-ideas": "SIGE Ideas",
   pipelines: "Pipelines",
   "pipeline-ideas": "Pipeline Ideas",
+  "keyword-research": "Keyword Research",
 };
 
 export const NAV_SECTIONS: readonly NavSection[] = [
@@ -150,6 +154,7 @@ export const NAV_SECTIONS: readonly NavSection[] = [
     collapsible: true,
     items: [
       { id: "news", label: "News Feed", Icon: Newspaper },
+      { id: "keyword-research", label: "Keyword Research", Icon: Search },
       { id: "pipelines", label: "Pipelines", Icon: Zap },
       { id: "pipeline-ideas", label: "Pipeline Ideas", Icon: Lightbulb },
       { id: "sige", label: "SIGE", Icon: Swords },

@@ -20,6 +20,10 @@ test("navigation includes core tabs", () => {
   }
 });
 
+test("navigation includes keyword-research", () => {
+  expect(NAV_IDS).toContain("keyword-research" as Tab);
+});
+
 test("every section has a title and at least one item", () => {
   for (const section of NAV_SECTIONS) {
     expect(section.title.length).toBeGreaterThan(0);

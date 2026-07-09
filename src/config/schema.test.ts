@@ -415,8 +415,9 @@ describe("appstoreKeywordGap config", () => {
     const g = cfg.appstoreKeywordGap;
     expect(g.enabled).toBe(true);
     expect(g.topN).toBe(20);
-    expect(g.scanIntervalMs).toBe(21_600_000);
-    expect(g.dailyKeywordBudget).toBe(300);
+    expect(g.scanIntervalMs).toBe(300_000);
+    expect(g.dailyKeywordBudget).toBe(5000);
+    expect(g.keywordsPerSweep).toBe(25);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.4);
     expect(g.autocompleteExpansion.enabled).toBe(true);

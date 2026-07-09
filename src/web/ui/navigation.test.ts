@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { NAV_SECTIONS } from "./navigation";
+import { NAV_SECTIONS, VALID_TABS, TAB_TITLES } from "./navigation";
 
 test("NAV_SECTIONS has expected section titles", () => {
   const titles = NAV_SECTIONS.map((s) => s.title);
@@ -60,4 +60,12 @@ test("agents section contains expected items", () => {
 test("total nav items count is at least 20", () => {
   const total = NAV_SECTIONS.reduce((sum, s) => sum + s.items.length, 0);
   expect(total).toBeGreaterThanOrEqual(20);
+});
+
+test("keyword-research is a valid tab with a title and lives in Intelligence", () => {
+  expect(VALID_TABS.has("keyword-research")).toBe(true);
+  expect(TAB_TITLES["keyword-research"]).toBe("Keyword Research");
+  const intelligence = NAV_SECTIONS.find((s) => s.title === "Intelligence")!;
+  const ids = intelligence.items.map((i) => i.id);
+  expect(ids).toContain("keyword-research");
 });
