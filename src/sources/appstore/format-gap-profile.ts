@@ -3,15 +3,23 @@
 // isolation from the network-dependent `scanKeyword` orchestration.
 
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
+import { sanitizeScrapedField } from "../../sige/untrusted";
 
 const MAX_TOP_APPS_SHOWN = 5;
+// App Store app names are attacker-controlled scraped text (any developer can
+// name their app anything). This formatter's string is returned verbatim from
+// the `analyze_keyword_gap` tool and replayed into the LLM's conversation, so
+// every incumbent name is run through the same scraped-text chokepoint used
+// elsewhere before it enters a prompt.
+const MAX_APP_NAME_LEN = 200;
 
 function toPercent(fraction: number): string {
   return `${Math.round(fraction * 100)}%`;
 }
 
 function formatTopApp(app: TopApp, i: number): string {
-  return `  ${i + 1}. ${app.name} — ${app.reviews.toLocaleString()} reviews, ${app.rating.toFixed(1)}★`;
+  const safeName = sanitizeScrapedField(app.name, MAX_APP_NAME_LEN);
+  return `  ${i + 1}. ${safeName} — ${app.reviews.toLocaleString()} reviews, ${app.rating.toFixed(1)}★`;
 }
 
 export function formatGapProfile(p: KeywordGapProfile): string {

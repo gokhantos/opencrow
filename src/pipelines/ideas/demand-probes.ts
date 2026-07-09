@@ -20,6 +20,7 @@
  */
 
 import { getDb } from "../../store/db";
+import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import { getErrorMessage } from "../../lib/error-serialization";
 import { parseTopComments } from "./collector-ranking";
@@ -829,6 +830,11 @@ function selectProbes(
     if (p.name === SEMANTIC_PROBE_NAME) return cfg.semanticDemand !== false;
     if (p.name === "xIntent") return cfg.xIntent !== false;
     if (p.name === "externalTrends") return cfg.externalTrends === true;
+    // Measured App Store supply/demand gap probe — reads appstore_keyword_scans,
+    // a table that is only ever populated when the standalone scanner feature is
+    // enabled. Gate it on the feature's own master switch (default OFF) so it
+    // never runs a wasted query when the feature is disabled.
+    if (p.name === "appstoreGap") return loadConfig().appstoreKeywordGap.enabled === true;
     return true; // unknown custom probes run by default
   });
 }

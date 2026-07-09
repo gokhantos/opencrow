@@ -551,6 +551,11 @@ export const appstoreKeywordGapConfigSchema = z
     topN: z.number().int().min(5).max(50).default(20),
     // Weight applied to demand-side signal when scoring a keyword gap.
     // Modest default so demand nudges but does not dominate ranking/difficulty.
+    // RESERVED — not yet applied to demand weighting. DEMAND_KIND_WEIGHTS
+    // .appstore_gap in src/pipelines/ideas/demand.ts is hardcoded to 1.0 and
+    // does not read this field yet. Kept in the schema (rather than removed)
+    // so the config surface is stable once it IS wired in; do not assume it
+    // has any effect until DEMAND_KIND_WEIGHTS reads it.
     demandWeight: z.number().min(0).max(5).default(1),
     // Minimum opportunity score (0..1) a keyword must clear before it is fed
     // back as a seed into further expansion/generation.

@@ -22,6 +22,7 @@
 import { loadConfig } from "../../config/loader";
 import { getErrorMessage } from "../../lib/error-serialization";
 import { createLogger } from "../../logger";
+import { sanitizeScrapedField } from "../../sige/untrusted";
 import type { TopApp } from "../../sources/appstore/keyword-types";
 import { getDb } from "../../store/db";
 import type { DemandEvidence, DemandProbe, DemandProbeOptions } from "./demand";
@@ -53,16 +54,24 @@ function weakestIncumbent(topApps: readonly TopApp[]): TopApp | undefined {
   return topApps.reduce((weakest, app) => (app.rating < weakest.rating ? app : weakest));
 }
 
+// Same scraped-text chokepoint applied to the incumbent name in
+// format-gap-profile.ts — DemandEvidence.quote can be replayed verbatim into a
+// GIANT-critique LLM prompt via buildDemandEvidenceString, so this is
+// defense-in-depth against a malicious App Store app name.
+const MAX_INCUMBENT_NAME_LEN = 200;
+
 /**
  * Human-readable, auditable quote naming the measured opportunity and (when
  * available) the weakest incumbent app the scan observed. Never invented —
- * every value is read straight off the scan row.
+ * every value is read straight off the scan row. The incumbent name is
+ * attacker-controlled scraped text, so it is sanitized before interpolation.
  */
 function buildQuote(keyword: string, opportunity: number, topApps: readonly TopApp[]): string {
   const base = `${keyword}: opportunity ${opportunity.toFixed(2)}`;
   const incumbent = weakestIncumbent(topApps);
   if (!incumbent) return base;
-  return `${base}, weak incumbent ${incumbent.name} (${incumbent.rating.toFixed(1)}★)`;
+  const safeName = sanitizeScrapedField(incumbent.name, MAX_INCUMBENT_NAME_LEN);
+  return `${base}, weak incumbent ${safeName} (${incumbent.rating.toFixed(1)}★)`;
 }
 
 /**
