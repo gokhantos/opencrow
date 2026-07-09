@@ -4,6 +4,7 @@
 // scoring core in `keyword-scoring.ts` to produce a `KeywordGapProfile`.
 
 import { z } from "zod";
+import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import { ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
 import {
@@ -14,7 +15,7 @@ import {
   computeOpportunity,
 } from "./keyword-scoring";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
-import { getLatestScan } from "./keyword-store";
+import { getLatestScan, getStaleKeywords, insertScan, markScanned } from "./keyword-store";
 
 const log = createLogger("appstore:keyword-gaps");
 
@@ -156,4 +157,47 @@ export async function scanKeyword(
     topApps,
     scannedAt: Math.floor(Date.now() / 1000),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Daily sweep — scans a genre-zone slice of stale keywords within a budget,
+// throttled between requests. A single bad keyword must never abort the
+// sweep: failures are counted and logged, not thrown.
+// ---------------------------------------------------------------------------
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function runScanSlice(opts: {
+  readonly genreZone: string;
+  readonly budget: number;
+  readonly delayMs: number;
+}): Promise<{ scanned: number; failed: number }> {
+  const { topN } = loadConfig().appstoreKeywordGap;
+  const keywords = await getStaleKeywords(opts.genreZone, opts.budget);
+
+  const succeeded: string[] = [];
+  let scanned = 0;
+  let failed = 0;
+
+  for (const keyword of keywords) {
+    try {
+      const profile = await scanKeyword(keyword, { topN });
+      await insertScan(profile);
+      succeeded.push(keyword);
+      scanned++;
+    } catch (err) {
+      failed++;
+      log.warn("Keyword scan failed — skipping", { keyword, genreZone: opts.genreZone, error: err });
+    }
+
+    await sleep(opts.delayMs);
+  }
+
+  if (succeeded.length > 0) {
+    await markScanned(succeeded, Math.floor(Date.now() / 1000));
+  }
+
+  return { scanned, failed };
 }

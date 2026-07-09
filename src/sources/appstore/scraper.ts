@@ -1,5 +1,8 @@
+import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
+import { GENRE_ZONES } from "./keyword-corpus";
+import { runScanSlice } from "./keyword-gaps";
 import {
   upsertRankings,
   upsertReviews,
@@ -581,6 +584,33 @@ export function createAppStoreScraper(config?: {
       // Index unindexed content into memory
       await indexUnindexedReviews();
       await indexUnindexedRankings();
+
+      // Keyword-gap daily sweep: scan one genre zone's stale slice, gated by
+      // config. Never allowed to break the rest of the scrape cycle — a scan
+      // failure is logged and swallowed here.
+      try {
+        const cfg = loadConfig().appstoreKeywordGap;
+        if (cfg.enabled) {
+          const dayIndex = Math.floor(Date.now() / 1000 / 86_400);
+          const zone = GENRE_ZONES[dayIndex % GENRE_ZONES.length];
+          if (zone) {
+            const sliceResult = await runScanSlice({
+              genreZone: zone,
+              budget: cfg.dailyKeywordBudget,
+              delayMs: REQUEST_DELAY_MS,
+            });
+            log.info("Keyword-gap daily sweep complete", {
+              genreZone: zone,
+              scanned: sliceResult.scanned,
+              failed: sliceResult.failed,
+            });
+          } else {
+            log.warn("Keyword-gap sweep skipped — no genre zone resolved", { dayIndex });
+          }
+        }
+      } catch (err) {
+        log.warn("Keyword-gap daily sweep failed", { error: getErrorMessage(err) });
+      }
 
       return { ok: true, rankings: rankingsCount, reviews: totalReviews };
     } catch (err) {
