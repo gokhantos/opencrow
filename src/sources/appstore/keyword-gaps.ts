@@ -15,7 +15,14 @@ import {
   computeOpportunity,
 } from "./keyword-scoring";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
-import { getLatestScan, getStaleKeywords, insertScan, markScanned } from "./keyword-store";
+import {
+  countScansSince,
+  getLatestScan,
+  getStaleKeywords,
+  getStaleKeywordsAcrossZones,
+  insertScan,
+  markScanned,
+} from "./keyword-store";
 
 const log = createLogger("appstore:keyword-gaps");
 
@@ -160,36 +167,34 @@ export async function scanKeyword(
 }
 
 // ---------------------------------------------------------------------------
-// Daily sweep — scans a genre-zone slice of stale keywords within a budget,
-// throttled between requests. A single bad keyword must never abort the
-// sweep: failures are counted and logged, not thrown.
+// Sweeps — scan a slice of stale keywords within a budget, throttled between
+// requests. A single bad keyword must never abort a sweep: failures are
+// counted and logged, not thrown. `runScanSlice` scans one genre zone;
+// `runKeywordSweep` (below) scans the stalest keywords across the whole
+// corpus and is what the timer-driven scraper actually calls.
 // ---------------------------------------------------------------------------
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function runScanSlice(opts: {
-  readonly genreZone: string;
-  readonly budget: number;
-  readonly delayMs: number;
-}): Promise<{ scanned: number; failed: number }> {
-  const { topN } = loadConfig().appstoreKeywordGap;
-  const keywords = await getStaleKeywords(opts.genreZone, opts.budget);
-
+async function scanAndRecord(
+  keywords: readonly string[],
+  opts: { readonly topN: number; readonly delayMs: number; readonly logContext?: Record<string, unknown> },
+): Promise<{ scanned: number; failed: number }> {
   const succeeded: string[] = [];
   let scanned = 0;
   let failed = 0;
 
   for (const keyword of keywords) {
     try {
-      const profile = await scanKeyword(keyword, { topN });
+      const profile = await scanKeyword(keyword, { topN: opts.topN });
       await insertScan(profile);
       succeeded.push(keyword);
       scanned++;
     } catch (err) {
       failed++;
-      log.warn("Keyword scan failed — skipping", { keyword, genreZone: opts.genreZone, error: err });
+      log.warn("Keyword scan failed — skipping", { keyword, ...opts.logContext, error: err });
     }
 
     await sleep(opts.delayMs);
@@ -200,4 +205,48 @@ export async function runScanSlice(opts: {
   }
 
   return { scanned, failed };
+}
+
+export async function runScanSlice(opts: {
+  readonly genreZone: string;
+  readonly budget: number;
+  readonly delayMs: number;
+}): Promise<{ scanned: number; failed: number }> {
+  const { topN } = loadConfig().appstoreKeywordGap;
+  const keywords = await getStaleKeywords(opts.genreZone, opts.budget);
+  return scanAndRecord(keywords, {
+    topN,
+    delayMs: opts.delayMs,
+    logContext: { genreZone: opts.genreZone },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Timer-driven sweep — scans the globally stalest `limit` keywords across the
+// WHOLE corpus (no genre-zone rotation) each cycle. The cadence comes from
+// the caller's own timer (see scraper.ts), not from an interval gate here.
+// Enforces `dailyKeywordBudget` as a rolling 24h safety ceiling: if the
+// corpus has already been scanned that many times in the last 24h, the sweep
+// is skipped for this cycle rather than spending more lookups.
+// ---------------------------------------------------------------------------
+
+export async function runKeywordSweep(opts: {
+  readonly limit: number;
+  readonly delayMs: number;
+}): Promise<{ scanned: number; failed: number; skipped: boolean }> {
+  const { topN, dailyKeywordBudget } = loadConfig().appstoreKeywordGap;
+
+  const since = Math.floor(Date.now() / 1000) - 86_400;
+  const scansLast24h = await countScansSince(since);
+  if (scansLast24h >= dailyKeywordBudget) {
+    log.debug("Keyword-gap sweep skipped — rolling 24h budget reached", {
+      scansLast24h,
+      dailyKeywordBudget,
+    });
+    return { scanned: 0, failed: 0, skipped: true };
+  }
+
+  const keywords = await getStaleKeywordsAcrossZones(opts.limit);
+  const result = await scanAndRecord(keywords, { topN, delayMs: opts.delayMs });
+  return { ...result, skipped: false };
 }

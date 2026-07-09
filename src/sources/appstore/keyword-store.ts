@@ -107,6 +107,23 @@ export async function getStaleKeywords(
   return rows.map((r: { keyword: string }) => r.keyword);
 }
 
+/**
+ * Stalest-first slice across the ENTIRE active corpus (no genre-zone
+ * filter). Backs the timer-driven keyword-gap sweep, which scans the
+ * globally stalest `keywordsPerSweep` keywords every cycle instead of
+ * rotating through one zone per day.
+ */
+export async function getStaleKeywordsAcrossZones(limit: number): Promise<readonly string[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT keyword FROM appstore_keywords
+    WHERE active = TRUE
+    ORDER BY last_scanned_at ASC NULLS FIRST
+    LIMIT ${limit}
+  `;
+  return rows.map((r: { keyword: string }) => r.keyword);
+}
+
 export async function markScanned(keywords: readonly string[], at: number): Promise<void> {
   if (keywords.length === 0) return;
   const db = getDb();
@@ -183,6 +200,20 @@ export async function getMostRecentScanAt(genreZone: string): Promise<number | n
   `;
   const last = (rows as ReadonlyArray<{ last: number | string | null }>)[0]?.last;
   return last === null || last === undefined ? null : Number(last);
+}
+
+/**
+ * Count of keyword scans recorded at or after `epochSeconds`. Backs the
+ * `dailyKeywordBudget` rolling-24h safety ceiling: the sweep checks this
+ * against `now - 86_400` before spending more lookups.
+ */
+export async function countScansSince(epochSeconds: number): Promise<number> {
+  const db = getDb();
+  const rows = await db`
+    SELECT count(*) AS count FROM appstore_keyword_scans WHERE scanned_at >= ${epochSeconds}
+  `;
+  const count = (rows as ReadonlyArray<{ count: number | string }>)[0]?.count;
+  return count === undefined ? 0 : Number(count);
 }
 
 /**

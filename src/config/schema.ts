@@ -536,16 +536,32 @@ export const redditCorpusConfigSchema = z
 // difficulty gaps against the app's current ranking, optionally seeding from
 // autocomplete expansion. Fully Zod-defaulted so `parse({})` is safe. The
 // feature is ON by default — set `enabled: false` to turn off the scan loop.
+//
+// Timer-driven, stalest-first, rolling-cap model: the scraper runs this on
+// its own independent timer (decoupled from the ~hourly ranking tick — see
+// scraper.ts), and each cycle scans the `keywordsPerSweep` globally stalest
+// active keywords across the WHOLE corpus (no per-zone rotation/gate — the
+// timer interval IS the cadence). `dailyKeywordBudget` is no longer a
+// per-cycle spend but a rolling 24h safety ceiling: if the corpus has
+// already been scanned that many times in the last 24h, a sweep cycle is
+// skipped rather than spending more lookups.
 export const appstoreKeywordGapConfigSchema = z
   .object({
     // Master switch. Default ON.
     enabled: z.boolean().default(true),
-    // Gap between scan cycles (run-then-reschedule). Default 6h (daily-ish
-    // cadence without hammering App Store lookups).
-    scanIntervalMs: z.number().int().min(60_000).default(21_600_000),
-    // How many keyword lookups may be spent per calendar day (cost/rate
-    // ceiling against the App Store scraping surface).
-    dailyKeywordBudget: z.number().int().min(1).max(2000).default(300),
+    // Gap between sweep cycles (run-then-reschedule), driven by its own
+    // timer independent of the ranking tick. Default 5 minutes — tunable
+    // down to 1 minute via the `min`.
+    scanIntervalMs: z.number().int().min(60_000).default(300_000),
+    // How many keyword scans may be spent per rolling 24h window — a safety
+    // ceiling, not a per-cycle spend. Enforced against a live count of
+    // `appstore_keyword_scans` rows from the last 24h; a sweep cycle is
+    // skipped once the ceiling is reached. Raised well above the old
+    // once-daily default so it doesn't idle the scanner at the new cadence.
+    dailyKeywordBudget: z.number().int().min(1).max(20_000).default(5000),
+    // How many of the globally stalest active keywords to scan per sweep
+    // cycle.
+    keywordsPerSweep: z.number().int().min(1).max(500).default(25),
     // How many top-ranked gap candidates to surface per scan.
     topN: z.number().int().min(5).max(50).default(20),
     // Weight applied to demand-side signal when scoring a keyword gap.
@@ -569,8 +585,9 @@ export const appstoreKeywordGapConfigSchema = z
   })
   .default({
     enabled: true,
-    scanIntervalMs: 21_600_000,
-    dailyKeywordBudget: 300,
+    scanIntervalMs: 300_000,
+    dailyKeywordBudget: 5000,
+    keywordsPerSweep: 25,
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.4,

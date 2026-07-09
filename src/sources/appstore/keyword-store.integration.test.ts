@@ -3,12 +3,14 @@ import { initDb, getDb } from "../../store/db";
 import {
   upsertKeywords,
   getStaleKeywords,
+  getStaleKeywordsAcrossZones,
   markScanned,
   insertScan,
   getLatestScan,
   getTopOpportunities,
   getScanHistory,
   getMostRecentScanAt,
+  countScansSince,
   getWinnerKeywords,
   keywordsExist,
 } from "./keyword-store";
@@ -36,6 +38,9 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-winner-high",
   "zzz-winner-low",
   "zzz-exist-check-present",
+  "zzz-cross-zone-stale-a",
+  "zzz-cross-zone-stale-b",
+  "zzz-count-scans-since",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -102,6 +107,30 @@ describe("keyword-store", () => {
     ]);
     const stale = await getStaleKeywords("zzz-stale-slice-zone", 10);
     expect(stale).toContain("zzz-fatty-liver-diet");
+  });
+
+  describe("getStaleKeywordsAcrossZones", () => {
+    it("orders the stalest-scanned keywords first regardless of genre zone", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-cross-zone-stale-a", genreZone: "finance", source: "seed" },
+        { keyword: "zzz-cross-zone-stale-b", genreZone: "productivity", source: "seed" },
+      ]);
+      // "a" was scanned longer ago than "b" — despite living in a different
+      // genre zone, "a" must sort ahead of "b" since the cross-zone query
+      // has no genre_zone filter.
+      await markScanned(["zzz-cross-zone-stale-a"], now - 500);
+      await markScanned(["zzz-cross-zone-stale-b"], now - 100);
+
+      // Large enough limit to include both test rows regardless of how much
+      // real seed-corpus data is already loaded into this DB.
+      const stale = await getStaleKeywordsAcrossZones(100_000);
+      const idxA = stale.indexOf("zzz-cross-zone-stale-a");
+      const idxB = stale.indexOf("zzz-cross-zone-stale-b");
+      expect(idxA).toBeGreaterThanOrEqual(0);
+      expect(idxB).toBeGreaterThanOrEqual(0);
+      expect(idxA).toBeLessThan(idxB);
+    });
   });
 
   it("persists a scan and reads it back as latest + top opportunity, round-tripping topApps", async () => {
@@ -234,6 +263,37 @@ describe("keyword-store", () => {
     it("returns null for a zone with no scans", async () => {
       const last = await getMostRecentScanAt("zzz-no-scans-zone");
       expect(last).toBeNull();
+    });
+  });
+
+  describe("countScansSince", () => {
+    it("counts scans recorded at or after the given epoch", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-count-scans-since", genreZone: "health", source: "seed" },
+      ]);
+
+      const before = await countScansSince(now - 10);
+      await insertScan(makeScan({ keyword: "zzz-count-scans-since", scannedAt: now }));
+      const after = await countScansSince(now - 10);
+
+      // Tolerant of other real activity landing scans in this shared DB
+      // concurrently — assert the delta from our own insert, not an exact
+      // absolute count.
+      expect(after).toBeGreaterThanOrEqual(before + 1);
+    });
+
+    it("excludes scans older than the given epoch", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-count-scans-since", genreZone: "health", source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-count-scans-since", scannedAt: now - 1000 }),
+      );
+
+      const count = await countScansSince(now + 1000);
+      expect(count).toBe(0);
     });
   });
 

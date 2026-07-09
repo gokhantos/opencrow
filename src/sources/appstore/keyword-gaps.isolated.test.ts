@@ -27,8 +27,10 @@ describe("scanKeyword", () => {
     mock.module("./keyword-store", () => ({
       getLatestScan: async () => null,
       getStaleKeywords: async () => [],
+      getStaleKeywordsAcrossZones: async () => [],
       insertScan: async () => {},
       markScanned: async () => {},
+      countScansSince: async () => 0,
     }));
   });
 
@@ -52,6 +54,7 @@ describe("runScanSlice", () => {
 
     mock.module("./keyword-store", () => ({
       getStaleKeywords: async () => ["a", "b"],
+      getStaleKeywordsAcrossZones: async () => [],
       insertScan: async (p: unknown) => {
         insertScanCalls.push(p);
       },
@@ -59,6 +62,7 @@ describe("runScanSlice", () => {
         markScannedCalls.push({ keywords, at });
       },
       getLatestScan: async () => null,
+      countScansSince: async () => 0,
     }));
 
     let fetchCallCount = 0;
@@ -94,6 +98,84 @@ describe("runScanSlice", () => {
     const result = await runScanSlice({ genreZone: "health", budget: 10, delayMs: 0 });
 
     expect(result).toEqual({ scanned: 0, failed: 2 });
+    expect(insertScanCalls.length).toBe(0);
+    expect(markScannedCalls.length).toBe(0);
+  });
+});
+
+describe("runKeywordSweep", () => {
+  let insertScanCalls: unknown[];
+  let markScannedCalls: Array<{ keywords: readonly string[]; at: number }>;
+  let staleKeywordsAcrossZonesCalls: number[];
+
+  beforeEach(() => {
+    insertScanCalls = [];
+    markScannedCalls = [];
+    staleKeywordsAcrossZonesCalls = [];
+
+    mock.module("./keyword-store", () => ({
+      getStaleKeywords: async () => [],
+      getStaleKeywordsAcrossZones: async (limit: number) => {
+        staleKeywordsAcrossZonesCalls.push(limit);
+        return ["a", "b"];
+      },
+      insertScan: async (p: unknown) => {
+        insertScanCalls.push(p);
+      },
+      markScanned: async (keywords: readonly string[], at: number) => {
+        markScannedCalls.push({ keywords, at });
+      },
+      getLatestScan: async () => null,
+      countScansSince: async () => 0,
+    }));
+
+    let fetchCallCount = 0;
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      ssrfSafeFetch: async () => {
+        fetchCallCount++;
+        if (fetchCallCount === 1) {
+          return { ok: true, json: async () => sample };
+        }
+        throw new Error("network failure");
+      },
+    }));
+  });
+
+  it("scans the globally stalest slice across zones, tolerates a failing keyword, and marks only successes", async () => {
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(result).toEqual({ scanned: 1, failed: 1, skipped: false });
+    expect(staleKeywordsAcrossZonesCalls).toEqual([25]);
+    expect(insertScanCalls.length).toBe(1);
+    expect(markScannedCalls.length).toBe(1);
+    expect(markScannedCalls[0]?.keywords).toEqual(["a"]);
+  });
+
+  it("skips the sweep without scanning anything when the rolling 24h budget is reached", async () => {
+    mock.module("./keyword-store", () => ({
+      getStaleKeywords: async () => [],
+      getStaleKeywordsAcrossZones: async (limit: number) => {
+        staleKeywordsAcrossZonesCalls.push(limit);
+        return ["a", "b"];
+      },
+      insertScan: async (p: unknown) => {
+        insertScanCalls.push(p);
+      },
+      markScanned: async (keywords: readonly string[], at: number) => {
+        markScannedCalls.push({ keywords, at });
+      },
+      getLatestScan: async () => null,
+      // Default config's dailyKeywordBudget is 5000 — return a count that
+      // already meets it so the sweep must skip.
+      countScansSince: async () => 5000,
+    }));
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(result).toEqual({ scanned: 0, failed: 0, skipped: true });
+    expect(staleKeywordsAcrossZonesCalls.length).toBe(0);
     expect(insertScanCalls.length).toBe(0);
     expect(markScannedCalls.length).toBe(0);
   });

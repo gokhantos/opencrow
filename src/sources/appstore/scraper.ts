@@ -2,9 +2,7 @@ import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
 import { expandFromWinners } from "./keyword-autocomplete";
-import { GENRE_ZONES } from "./keyword-corpus";
-import { runScanSlice } from "./keyword-gaps";
-import { getMostRecentScanAt } from "./keyword-store";
+import { runKeywordSweep } from "./keyword-gaps";
 import {
   upsertRankings,
   upsertReviews,
@@ -301,6 +299,11 @@ export function createAppStoreScraper(config?: {
 }): AppStoreScraper {
   let timer: ReturnType<typeof setInterval> | null = null;
   let running = false;
+  // Independent timer for the keyword-gap sweep — decoupled from the
+  // ~hourly ranking `timer`/`tick` above so it can run on its own, much
+  // faster cadence (`appstoreKeywordGap.scanIntervalMs`, default 5 min).
+  let keywordSweepTimer: ReturnType<typeof setInterval> | null = null;
+  let keywordSweepRunning = false;
 
   async function fetchTopApps(
     url: string,
@@ -588,51 +591,20 @@ export function createAppStoreScraper(config?: {
       await indexUnindexedReviews();
       await indexUnindexedRankings();
 
-      // Keyword-gap sweep: scan one genre zone's stale slice, gated by config
-      // and interval-gated to `scanIntervalMs` (default 6h) so it doesn't
-      // re-run on every ~hourly scraper tick and hammer the iTunes API.
-      // Never allowed to break the rest of the scrape cycle — a scan failure
-      // is logged and swallowed here.
-      try {
-        const cfg = loadConfig().appstoreKeywordGap;
-        if (cfg.enabled) {
-          const dayIndex = Math.floor(Date.now() / 1000 / 86_400);
-          const zone = GENRE_ZONES[dayIndex % GENRE_ZONES.length];
-          if (zone) {
-            const nowSeconds = Math.floor(Date.now() / 1000);
-            const last = await getMostRecentScanAt(zone);
-            const intervalSeconds = Math.floor(cfg.scanIntervalMs / 1000);
-            if (last === null || nowSeconds - last >= intervalSeconds) {
-              const sliceResult = await runScanSlice({
-                genreZone: zone,
-                budget: cfg.dailyKeywordBudget,
-                delayMs: REQUEST_DELAY_MS,
-              });
-              log.info("Keyword-gap sweep complete", {
-                genreZone: zone,
-                scanned: sliceResult.scanned,
-                failed: sliceResult.failed,
-              });
-            } else {
-              log.debug("Keyword-gap sweep skipped — zone swept recently", {
-                genreZone: zone,
-                lastScannedAt: last,
-                intervalSeconds,
-              });
-            }
-          } else {
-            log.warn("Keyword-gap sweep skipped — no genre zone resolved", { dayIndex });
-          }
-        }
-      } catch (err) {
-        log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
-      }
+      // Keyword-gap sweep now runs on its own independent timer
+      // (`keywordSweepTimer` below), decoupled from this ~hourly ranking
+      // tick — see `keywordSweepTick()`.
 
       // Autocomplete-driven corpus growth: pull Apple search-hint
       // suggestions for the current high-opportunity winners to widen the
-      // keyword corpus beyond the fixed seed table. Gated separately from
-      // the sweep above (default OFF) and never allowed to break the rest
-      // of the scrape cycle — a failure here is logged and swallowed.
+      // keyword corpus beyond the fixed seed table. Deliberately kept on
+      // this ~hourly ranking tick rather than the new (much faster, default
+      // 5-min) keyword-sweep timer: it fans out up to MAX_WINNERS
+      // unthrottled hint-endpoint calls per pass, which would hammer Apple's
+      // search-suggest API if it ran every sweep cycle. Gated separately
+      // from the sweep (its own `autocompleteExpansion.enabled` flag) and
+      // never allowed to break the rest of the scrape cycle — a failure
+      // here is logged and swallowed.
       try {
         const cfg = loadConfig().appstoreKeywordGap;
         if (cfg.autocompleteExpansion.enabled) {
@@ -651,6 +623,45 @@ export function createAppStoreScraper(config?: {
       const msg = getErrorMessage(err);
       log.error("App Store scrape failed", { error: msg });
       return { ok: false, error: msg };
+    }
+  }
+
+  // Runs the keyword-gap sweep on its own timer. Scans the globally stalest
+  // `keywordsPerSweep` keywords across the whole corpus each cycle; gated by
+  // `enabled` and internally rate-limited by the `dailyKeywordBudget`
+  // rolling-24h ceiling in `runKeywordSweep`. Never allowed to break the
+  // scraper — a failure is logged and swallowed here, mirroring `tick()`.
+  async function keywordSweepTick(): Promise<void> {
+    if (keywordSweepRunning) {
+      log.debug("Keyword-gap sweep already running, skipping");
+      return;
+    }
+
+    keywordSweepRunning = true;
+    try {
+      const cfg = loadConfig().appstoreKeywordGap;
+      if (!cfg.enabled) {
+        log.debug("Keyword-gap sweep skipped — feature disabled");
+        return;
+      }
+
+      const result = await runKeywordSweep({
+        limit: cfg.keywordsPerSweep,
+        delayMs: REQUEST_DELAY_MS,
+      });
+
+      if (result.skipped) {
+        log.debug("Keyword-gap sweep skipped this cycle — rolling 24h budget reached");
+      } else {
+        log.info("Keyword-gap sweep complete", {
+          scanned: result.scanned,
+          failed: result.failed,
+        });
+      }
+    } catch (err) {
+      log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
+    } finally {
+      keywordSweepRunning = false;
     }
   }
 
@@ -680,6 +691,15 @@ export function createAppStoreScraper(config?: {
       tick().catch((err) =>
         log.error("App Store scraper first tick error", { error: err }),
       );
+
+      if (!keywordSweepTimer) {
+        const sweepIntervalMs = loadConfig().appstoreKeywordGap.scanIntervalMs;
+        keywordSweepTimer = setInterval(keywordSweepTick, sweepIntervalMs);
+        log.info("Keyword-gap sweep timer started", { sweepIntervalMs });
+        keywordSweepTick().catch((err) =>
+          log.error("Keyword-gap sweep first tick error", { error: err }),
+        );
+      }
     },
 
     stop() {
@@ -687,6 +707,11 @@ export function createAppStoreScraper(config?: {
         clearInterval(timer);
         timer = null;
         log.info("App Store scraper stopped");
+      }
+      if (keywordSweepTimer) {
+        clearInterval(keywordSweepTimer);
+        keywordSweepTimer = null;
+        log.info("Keyword-gap sweep timer stopped");
       }
     },
 
