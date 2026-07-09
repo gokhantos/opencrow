@@ -10,6 +10,7 @@ import {
 } from "../components";
 import type { IntervalConfigField } from "../components";
 import { cn } from "../lib/cn";
+import OpportunitiesTab from "./appstore/OpportunitiesTab";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ interface StatsData {
   readonly last_updated_at: number | null;
 }
 
-type MainTab = "rankings" | "discovered" | "reviews";
+type MainTab = "rankings" | "discovered" | "reviews" | "opportunities";
 type OverallFilter = "all" | "top-free" | "top-paid";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -265,6 +266,7 @@ const MAIN_TABS = [
   { id: "rankings", label: "Top Apps" },
   { id: "discovered", label: "Discovered" },
   { id: "reviews", label: "Reviews" },
+  { id: "opportunities", label: "Opportunities" },
 ] as const;
 
 const APPSTORE_INTERVAL_FIELDS: readonly IntervalConfigField[] = [
@@ -350,7 +352,14 @@ export default function AppStore() {
 
   const tabsWithCounts = MAIN_TABS.map((t) => ({
     ...t,
-    count: t.id === "rankings" ? rankings.length : t.id === "discovered" ? discoveredApps.length : reviews.length,
+    count:
+      t.id === "rankings"
+        ? rankings.length
+        : t.id === "discovered"
+          ? discoveredApps.length
+          : t.id === "reviews"
+            ? reviews.length
+            : undefined,
   }));
 
   if (loading) return <LoadingState message="Loading App Store data…" />;
@@ -477,6 +486,8 @@ export default function AppStore() {
           )}
         </>
       )}
+
+      {mainTab === "opportunities" && <OpportunitiesTab />}
     </div>
   );
 }

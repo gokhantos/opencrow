@@ -52,6 +52,12 @@ export const DEMAND_EVIDENCE_KINDS = [
   // An X/Twitter post pairing the keyword WITH a buyer-intent marker — organic
   // intent from a third social surface, same semantics as reddit_intent.
   "x_intent",
+  // A MEASURED supply/demand gap from `appstore_keyword_scans` — low
+  // competitiveness + real demand + weak incumbents IS the expressed
+  // whitespace itself (no separate buyer-intent marker required, same as
+  // review_complaint). The scan's `opportunity`/demand-velocity is a real
+  // measured number, not an LLM assertion.
+  "appstore_gap",
 ] as const;
 
 export type DemandEvidenceKind = (typeof DEMAND_EVIDENCE_KINDS)[number];
@@ -154,6 +160,11 @@ export const DEMAND_KIND_WEIGHTS: Readonly<Record<DemandEvidenceKind, number>> =
   // X/Twitter post pairs a keyword with a buyer-intent marker — same buyer-intent
   // semantics and strength as the reddit-intent signal it mirrors.
   x_intent: 1.0,
+  // A measured App Store supply/demand gap (same weight as search_trend — both
+  // are real measured numbers, not LLM assertions). It feeds whitespace but is
+  // still bounded by log-scaled SCORE_SATURATION, so it can't single-handedly
+  // max out demand.
+  appstore_gap: 1.0,
 };
 
 /** Confidence saturates as evidence volume + source diversity grow. */

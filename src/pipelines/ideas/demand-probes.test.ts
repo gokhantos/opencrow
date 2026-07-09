@@ -208,9 +208,10 @@ describe("externalTrendsProbe", () => {
 // ── default probe set ────────────────────────────────────────────────────────
 
 describe("DEFAULT_DEMAND_PROBES", () => {
-  test("includes reddit, funding, review, hn, x, external-trends, and semantic probes", () => {
+  test("includes reddit, funding, review, hn, x, external-trends, semantic, and appstore-gap probes", () => {
     const names = DEFAULT_DEMAND_PROBES.map((p) => p.name).sort();
     expect(names).toEqual([
+      "appstoreGap",
       "externalTrends",
       "fundingNews",
       "hnIntent",

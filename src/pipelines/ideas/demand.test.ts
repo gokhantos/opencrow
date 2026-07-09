@@ -479,6 +479,7 @@ describe("schemas", () => {
     const kinds: string[] = [...DEMAND_EVIDENCE_KINDS];
     expect(kinds.sort()).toEqual(
       [
+        "appstore_gap",
         "funding_news",
         "hiring",
         "hn_intent",
@@ -509,5 +510,17 @@ describe("schemas", () => {
     expect(() =>
       demandEvidenceSchema.parse({ kind: "twitter", query: "x", count: 1 }),
     ).toThrow();
+  });
+});
+
+// ── appstore_gap demand-evidence kind ────────────────────────────────────────
+
+describe("appstore_gap demand-evidence kind", () => {
+  test("is registered in DEMAND_EVIDENCE_KINDS", () => {
+    expect(DEMAND_EVIDENCE_KINDS.includes("appstore_gap")).toBe(true);
+  });
+
+  test("has a positive weight in DEMAND_KIND_WEIGHTS", () => {
+    expect(DEMAND_KIND_WEIGHTS.appstore_gap).toBeGreaterThan(0);
   });
 });

@@ -96,6 +96,13 @@ export async function discoverIntersections(
   graphDirective = "",
   // REQUIRED routed provider (no Claude default) — see buildChatOptions.
   provider: ModelProvider,
+  // App Store keyword-gap SIGNAL block (already rendered + sanitized upstream in
+  // synthesizeFromTrends, flag-gated on appstoreKeywordGap.enabled). Injected as
+  // additional whitespace-opportunity context so the seed can surface
+  // intersections that address an under-served keyword. Empty string → the
+  // prompt is byte-identical to today. Optional + defaulted so every existing
+  // caller compiles and behaves identically.
+  keywordGapSection = "",
 ): Promise<readonly IntersectionHypothesis[]> {
   const insightsSection = buildInsightsSection(trends, pains, capabilities, chainOfEvidence);
   // SEED diversity steering (learned from past verdicts, flag-gated upstream).
@@ -112,10 +119,14 @@ export async function discoverIntersections(
   // directive is already sanitized + untrusted-fenced. Empty string → prompt is
   // byte-identical to today.
   const graphSection = graphDirective ? `${graphDirective}\n\n` : "";
+  // App Store keyword-gap whitespace signals (flag-gated + rendered upstream).
+  // Placed after the source insights so they augment — never displace — the
+  // three-source intelligence. Empty string → prompt byte-identical to today.
+  const gapSection = keywordGapSection ? `\n\n${keywordGapSection}` : "";
 
   const prompt = `You have structured market intelligence from three sources. Find the non-obvious intersections.
 
-${diversitySection}${graphSection}${insightsSection}
+${diversitySection}${graphSection}${insightsSection}${gapSection}
 
 Generate 15-20 intersection hypotheses. Each hypothesis should represent a SPECIFIC opportunity where:
 - A real pain or gap in the market (from the landscape/review data) meets

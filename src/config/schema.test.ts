@@ -406,3 +406,32 @@ describe("sigeAutoConfigSchema", () => {
     expect(result.perRunCostCeilingUsd).toBe(2.5);
   });
 });
+
+// ── appstoreKeywordGap config ─────────────────────────────────────────────────
+
+describe("appstoreKeywordGap config", () => {
+  test("empty config parses with safe-by-default (off) values", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    const g = cfg.appstoreKeywordGap;
+    expect(g.enabled).toBe(false);
+    expect(g.topN).toBe(20);
+    expect(g.scanIntervalMs).toBe(21_600_000);
+    expect(g.dailyKeywordBudget).toBe(300);
+    expect(g.demandWeight).toBe(1);
+    expect(g.opportunityThresholdForSeed).toBe(0.4);
+    expect(g.autocompleteExpansion.enabled).toBe(false);
+  });
+
+  test("is tunable via config", () => {
+    const cfg = opencrowConfigSchema.parse({
+      appstoreKeywordGap: {
+        enabled: true,
+        topN: 10,
+        autocompleteExpansion: { enabled: true },
+      },
+    });
+    expect(cfg.appstoreKeywordGap.enabled).toBe(true);
+    expect(cfg.appstoreKeywordGap.topN).toBe(10);
+    expect(cfg.appstoreKeywordGap.autocompleteExpansion.enabled).toBe(true);
+  });
+});

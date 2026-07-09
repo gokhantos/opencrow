@@ -28,6 +28,7 @@ import { beginRun, endRun } from "../active-runs";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
 import type { CollectorContext } from "./collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
+import { KEYWORD_SCANS_TABLE, type GapSeed, collectKeywordGaps } from "./collector-keyword-gaps";
 import { getConsumedIds, markConsumed } from "./consumption";
 import type { DemandArtifact } from "./demand";
 import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
@@ -367,9 +368,19 @@ export async function runIdeasPipeline(
       "x_scraped_tweets",
     ] as const;
 
-    const consumedEntries = await Promise.all(
+    // Loaded here (not at Step 3b) so the keyword-gap consumed set can be folded
+    // into collectorCtx.consumed below. Gated on `.enabled`: when disabled we
+    // skip the extra getConsumedIds query entirely, preserving today's behavior
+    // byte-for-byte (no additional DB round trip, no extra map entry).
+    const keywordGapCfg = loadConfig().appstoreKeywordGap;
+
+    const capabilityConsumedEntries = await Promise.all(
       capabilityTables.map(async (table) => [table, await getConsumedIds(table)] as const),
     );
+    const keywordGapConsumedEntry = keywordGapCfg.enabled
+      ? [[KEYWORD_SCANS_TABLE, await getConsumedIds(KEYWORD_SCANS_TABLE)] as const]
+      : [];
+    const consumedEntries = [...capabilityConsumedEntries, ...keywordGapConsumedEntry];
     const collectorCtx: CollectorContext = {
       consumed: new Map(consumedEntries),
       selected: new Map(),
@@ -444,6 +455,28 @@ export async function runIdeasPipeline(
         `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
     );
 
+    // ── Step 3b: App Store keyword-gap seeds (ADDITIVE, flag-gated) ────────
+    // Collect high-opportunity keyword gaps as SIGNAL seeds for synthesis. Fully
+    // gated on appstoreKeywordGap.enabled (default OFF, loaded above so the
+    // consumed-signal read-path can share the same gate): when disabled we
+    // never touch the DB, `keywordGaps` stays [], and synthesis receives
+    // exactly what it does today. `limit` caps the injected seeds so they
+    // cannot dominate the signal set; `minOpportunity` is the config seed
+    // threshold. Graceful — the collector swallows its own DB errors and
+    // returns [].
+    const keywordGaps: readonly GapSeed[] = keywordGapCfg.enabled
+      ? await collectKeywordGaps(collectorCtx, {
+          limit: 10,
+          minOpportunity: keywordGapCfg.opportunityThresholdForSeed,
+        })
+      : [];
+    if (keywordGaps.length > 0) {
+      log.info("Collected App Store keyword-gap seeds for synthesis", {
+        runId,
+        count: keywordGaps.length,
+      });
+    }
+
     // B7 — merge selected IDs from each collector's result into a single map.
     // On resume, selectedIds arrives as a plain Record (JSON round-trip erases
     // Map). mergeSelectedIds normalises both shapes — see its JSDoc.
@@ -451,6 +484,11 @@ export async function runIdeasPipeline(
     mergeSelectedIds(mergedSelected, trends.selectedIds);
     mergeSelectedIds(mergedSelected, pains.selectedIds);
     mergeSelectedIds(mergedSelected, capabilities.selectedIds);
+    // collectKeywordGaps records its chosen KEYWORDS into collectorCtx.selected;
+    // fold them in so the keywords get marked consumed (dedup across runs, by
+    // keyword — see collector-keyword-gaps.ts). Empty when the feature is off
+    // → no-op.
+    mergeSelectedIds(mergedSelected, collectorCtx.selected);
 
     // ── Guard: short-circuit if no fresh source data ──────────────────────
     if (
@@ -689,6 +727,7 @@ export async function runIdeasPipeline(
           outcomeMemory,
           segmentDirective,
           graphDirective,
+          keywordGaps,
           // Audit the Pass-3 competability gate against this run, stamped with the
           // shared epoch-seconds `now()` helper (keeps synthesizer clock-free).
           pipelineRunId: runId,

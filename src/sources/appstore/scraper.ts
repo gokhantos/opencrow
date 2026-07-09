@@ -1,5 +1,10 @@
+import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
+import { expandFromWinners } from "./keyword-autocomplete";
+import { GENRE_ZONES } from "./keyword-corpus";
+import { runScanSlice } from "./keyword-gaps";
+import { getMostRecentScanAt } from "./keyword-store";
 import {
   upsertRankings,
   upsertReviews,
@@ -25,6 +30,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const REQUEST_DELAY_MS = 2_000; // 2 seconds between API calls
 const TOP_APPS_PER_LIST = 5; // fetch reviews for top N from each list/category
 const DISCOVERY_LOOKUPS_PER_CYCLE = 3; // discover related apps for N random seeds per cycle
+const AUTOCOMPLETE_SUGGESTIONS_PER_SEED = 5; // hint terms pulled per winner keyword
 
 const APPSTORE_AGENT_ID = "appstore";
 
@@ -581,6 +587,64 @@ export function createAppStoreScraper(config?: {
       // Index unindexed content into memory
       await indexUnindexedReviews();
       await indexUnindexedRankings();
+
+      // Keyword-gap sweep: scan one genre zone's stale slice, gated by config
+      // and interval-gated to `scanIntervalMs` (default 6h) so it doesn't
+      // re-run on every ~hourly scraper tick and hammer the iTunes API.
+      // Never allowed to break the rest of the scrape cycle — a scan failure
+      // is logged and swallowed here.
+      try {
+        const cfg = loadConfig().appstoreKeywordGap;
+        if (cfg.enabled) {
+          const dayIndex = Math.floor(Date.now() / 1000 / 86_400);
+          const zone = GENRE_ZONES[dayIndex % GENRE_ZONES.length];
+          if (zone) {
+            const nowSeconds = Math.floor(Date.now() / 1000);
+            const last = await getMostRecentScanAt(zone);
+            const intervalSeconds = Math.floor(cfg.scanIntervalMs / 1000);
+            if (last === null || nowSeconds - last >= intervalSeconds) {
+              const sliceResult = await runScanSlice({
+                genreZone: zone,
+                budget: cfg.dailyKeywordBudget,
+                delayMs: REQUEST_DELAY_MS,
+              });
+              log.info("Keyword-gap sweep complete", {
+                genreZone: zone,
+                scanned: sliceResult.scanned,
+                failed: sliceResult.failed,
+              });
+            } else {
+              log.debug("Keyword-gap sweep skipped — zone swept recently", {
+                genreZone: zone,
+                lastScannedAt: last,
+                intervalSeconds,
+              });
+            }
+          } else {
+            log.warn("Keyword-gap sweep skipped — no genre zone resolved", { dayIndex });
+          }
+        }
+      } catch (err) {
+        log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
+      }
+
+      // Autocomplete-driven corpus growth: pull Apple search-hint
+      // suggestions for the current high-opportunity winners to widen the
+      // keyword corpus beyond the fixed seed table. Gated separately from
+      // the sweep above (default OFF) and never allowed to break the rest
+      // of the scrape cycle — a failure here is logged and swallowed.
+      try {
+        const cfg = loadConfig().appstoreKeywordGap;
+        if (cfg.autocompleteExpansion.enabled) {
+          const added = await expandFromWinners({
+            minOpportunity: cfg.opportunityThresholdForSeed,
+            perSeed: AUTOCOMPLETE_SUGGESTIONS_PER_SEED,
+          });
+          log.info("Keyword-corpus autocomplete expansion", { added });
+        }
+      } catch (err) {
+        log.warn("Keyword-corpus autocomplete expansion failed", { error: getErrorMessage(err) });
+      }
 
       return { ok: true, rankings: rankingsCount, reviews: totalReviews };
     } catch (err) {
