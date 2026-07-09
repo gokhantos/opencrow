@@ -7,7 +7,7 @@ import type { GapTrend, TopApp } from "./keyword-types";
 
 export const REVIEWS_REF = 500_000;
 export const VELOCITY_REF = 400;
-export const DEMAND_REF = 0.5;
+export const DEMAND_REF = 50;
 
 const clamp01 = (x: number): number => Math.max(0, Math.min(1, x));
 const norm = (x: number, ref: number): number => clamp01(Math.log1p(x) / Math.log1p(ref));
