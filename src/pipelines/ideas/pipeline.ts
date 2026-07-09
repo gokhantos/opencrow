@@ -28,6 +28,7 @@ import { beginRun, endRun } from "../active-runs";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
 import type { CollectorContext } from "./collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
+import { type GapSeed, collectKeywordGaps } from "./collector-keyword-gaps";
 import { getConsumedIds, markConsumed } from "./consumption";
 import type { DemandArtifact } from "./demand";
 import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
@@ -444,6 +445,27 @@ export async function runIdeasPipeline(
         `${c.capabilities.length} capabilities from PH, HN, GitHub, Reddit, News, X${c.insights ? " (with LLM insights)" : ""}`,
     );
 
+    // ── Step 3b: App Store keyword-gap seeds (ADDITIVE, flag-gated) ────────
+    // Collect high-opportunity keyword gaps as SIGNAL seeds for synthesis. Fully
+    // gated on appstoreKeywordGap.enabled (default OFF): when disabled we never
+    // touch the DB, `keywordGaps` stays [], and synthesis receives exactly what
+    // it does today. `limit` caps the injected seeds so they cannot dominate the
+    // signal set; `minOpportunity` is the config seed threshold. Graceful — the
+    // collector swallows its own DB errors and returns [].
+    const keywordGapCfg = loadConfig().appstoreKeywordGap;
+    const keywordGaps: readonly GapSeed[] = keywordGapCfg.enabled
+      ? await collectKeywordGaps(collectorCtx, {
+          limit: 10,
+          minOpportunity: keywordGapCfg.opportunityThresholdForSeed,
+        })
+      : [];
+    if (keywordGaps.length > 0) {
+      log.info("Collected App Store keyword-gap seeds for synthesis", {
+        runId,
+        count: keywordGaps.length,
+      });
+    }
+
     // B7 — merge selected IDs from each collector's result into a single map.
     // On resume, selectedIds arrives as a plain Record (JSON round-trip erases
     // Map). mergeSelectedIds normalises both shapes — see its JSDoc.
@@ -451,6 +473,10 @@ export async function runIdeasPipeline(
     mergeSelectedIds(mergedSelected, trends.selectedIds);
     mergeSelectedIds(mergedSelected, pains.selectedIds);
     mergeSelectedIds(mergedSelected, capabilities.selectedIds);
+    // collectKeywordGaps records its chosen scan ids into collectorCtx.selected;
+    // fold them in so the scans get marked consumed (dedup across runs). Empty
+    // when the feature is off → no-op.
+    mergeSelectedIds(mergedSelected, collectorCtx.selected);
 
     // ── Guard: short-circuit if no fresh source data ──────────────────────
     if (
@@ -689,6 +715,7 @@ export async function runIdeasPipeline(
           outcomeMemory,
           segmentDirective,
           graphDirective,
+          keywordGaps,
           // Audit the Pass-3 competability gate against this run, stamped with the
           // shared epoch-seconds `now()` helper (keeps synthesizer clock-free).
           pipelineRunId: runId,
