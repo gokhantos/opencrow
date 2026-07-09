@@ -63,7 +63,7 @@ describe("collectKeywordGaps (integration)", () => {
     await cleanup();
   });
 
-  it("returns above-threshold seeds newest-scored first and records their scan ids in ctx.selected", async () => {
+  it("returns above-threshold seeds newest-scored first and records their KEYWORDS in ctx.selected", async () => {
     await upsertKeywords([
       { keyword: "zzz-gapcol-high", genreZone: "zzz-gapcol", source: "seed" },
       { keyword: "zzz-gapcol-mid", genreZone: "zzz-gapcol", source: "seed" },
@@ -83,32 +83,50 @@ describe("collectKeywordGaps (integration)", () => {
     expect(mine.every((s) => s.signalType === "keyword_gap")).toBe(true);
     expect(mine.some((s) => s.keyword === "zzz-gapcol-low")).toBe(false);
 
-    // ctx.selected is populated under the scans table with the returned scan ids.
-    const selectedIds = ctx.selected.get("appstore_keyword_scans") ?? [];
+    // ctx.selected is populated under the scans table with the selected KEYWORDS
+    // (not scan row ids) — this is the dedup unit that makes cross-run
+    // consumption actually work, since getTopOpportunities returns the newest
+    // scan row per keyword and a fresh row id is minted on every scan cycle.
+    const selectedKeywords = ctx.selected.get("appstore_keyword_scans") ?? [];
+    expect(selectedKeywords).toContain("zzz-gapcol-high");
+    expect(selectedKeywords).toContain("zzz-gapcol-mid");
+    // The below-threshold keyword is NOT recorded.
+    expect(selectedKeywords).not.toContain("zzz-gapcol-low");
+
+    // sourceId still carries the scan row id (audit/whitespace trail) even
+    // though it is no longer the dedup key.
     const highId = String((await getLatestScan("zzz-gapcol-high"))?.id);
     const midId = String((await getLatestScan("zzz-gapcol-mid"))?.id);
-    expect(selectedIds).toContain(highId);
-    expect(selectedIds).toContain(midId);
-    // The below-threshold scan's id is NOT recorded.
-    const lowId = String((await getLatestScan("zzz-gapcol-low"))?.id);
-    expect(selectedIds).not.toContain(lowId);
+    const mineBySourceId = mine.map((s) => s.sourceId);
+    expect(mineBySourceId).toContain(highId);
+    expect(mineBySourceId).toContain(midId);
   });
 
-  it("excludes scans whose id is already consumed", async () => {
+  it("excludes gaps whose KEYWORD is already consumed, even under a fresh scan row id", async () => {
     await upsertKeywords([
       { keyword: "zzz-gapcol-high", genreZone: "zzz-gapcol", source: "seed" },
       { keyword: "zzz-gapcol-mid", genreZone: "zzz-gapcol", source: "seed" },
     ]);
+    // Insert an OLD scan for "high" first, then a NEWER one — getTopOpportunities
+    // returns the newest row per keyword, so its id differs from whatever a
+    // prior run might have recorded. Dedup must still catch it because it keys
+    // on the keyword, not the (now-stale) row id.
+    await insertScan(makeScan({ keyword: "zzz-gapcol-high", opportunity: 0.9 }));
     await insertScan(makeScan({ keyword: "zzz-gapcol-high", opportunity: 1.0 }));
     await insertScan(makeScan({ keyword: "zzz-gapcol-mid", opportunity: 0.99 }));
 
-    const highId = String((await getLatestScan("zzz-gapcol-high"))?.id);
-    const ctx = makeCtx(new Map([["appstore_keyword_scans", new Set([highId])]]));
+    const ctx = makeCtx(
+      new Map([["appstore_keyword_scans", new Set(["zzz-gapcol-high"])]]),
+    );
 
     const seeds = await collectKeywordGaps(ctx, { limit: 500, minOpportunity: 0.5 });
     const mine = seeds.filter((s) => TEST_KEYWORDS.includes(s.keyword));
 
     expect(mine.map((s) => s.keyword)).toEqual(["zzz-gapcol-mid"]);
-    expect(mine.some((s) => s.sourceId === highId)).toBe(false);
+    expect(mine.some((s) => s.keyword === "zzz-gapcol-high")).toBe(false);
+
+    const selectedKeywords = ctx.selected.get("appstore_keyword_scans") ?? [];
+    expect(selectedKeywords).toContain("zzz-gapcol-mid");
+    expect(selectedKeywords).not.toContain("zzz-gapcol-high");
   });
 });

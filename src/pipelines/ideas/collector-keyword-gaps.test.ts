@@ -53,17 +53,28 @@ describe("selectGapSeeds", () => {
     expect(seeds.some((s) => s.keyword === "drop")).toBe(false);
   });
 
-  it("dedups scans whose sourceId is already consumed", () => {
+  it("dedups scans whose KEYWORD is already consumed", () => {
     const scans = [
       makeScan({ id: 10, keyword: "fresh", opportunity: 0.9 }),
       makeScan({ id: 11, keyword: "seen", opportunity: 0.95 }),
     ];
 
-    // consumed ids are compared as STRINGS (scan id 11 -> "11").
-    const seeds = selectGapSeeds(scans, new Set(["11"]), { limit: 10, minOpportunity: 0.4 });
+    // Dedup unit is the keyword, not the scan row id — getTopOpportunities
+    // returns the newest scan per keyword, so a new scan cycle mints a new row
+    // id for the same keyword on every run; id-based dedup would never filter.
+    const seeds = selectGapSeeds(scans, new Set(["seen"]), { limit: 10, minOpportunity: 0.4 });
 
     expect(seeds.map((s) => s.keyword)).toEqual(["fresh"]);
     expect(seeds.map((s) => s.sourceId)).toEqual(["10"]);
+  });
+
+  it("does NOT dedup on sourceId — a stale row id for a fresh keyword still seeds", () => {
+    const scans = [makeScan({ id: 11, keyword: "fresh", opportunity: 0.9 })];
+
+    // "11" is a scan row id, not a keyword — must not be treated as consumed.
+    const seeds = selectGapSeeds(scans, new Set(["11"]), { limit: 10, minOpportunity: 0.4 });
+
+    expect(seeds.map((s) => s.keyword)).toEqual(["fresh"]);
   });
 
   it("caps the result at limit, keeping the highest-opportunity seeds", () => {

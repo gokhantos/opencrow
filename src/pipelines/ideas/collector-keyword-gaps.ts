@@ -11,10 +11,16 @@
  *
  * `selectGapSeeds` is pure and DB-free (unit-tested). `collectKeywordGaps` is a
  * thin DB-backed wrapper that loads the top opportunities, applies the pure
- * selector against the run's consumed-signal set, records the chosen scan ids
+ * selector against the run's consumed-signal set, records the chosen KEYWORDS
  * into `ctx.selected` (so pipeline.ts can mark them consumed), and returns the
  * seeds. All DB work is wrapped so a failure degrades to `[]` and can never
  * break the pipeline.
+ *
+ * Dedup unit is the KEYWORD, not the scan row id — `getTopOpportunities`
+ * returns the newest scan per keyword, so every scan cycle mints a new row id
+ * for the same keyword; id-based dedup would let the same keyword re-seed on
+ * every run. `GapSeed.sourceId` still carries the scan row id (the
+ * audit/whitespace trail); only the consumption/dedup key is the keyword.
  */
 import { createLogger } from "../../logger";
 import { getTopOpportunities, type KeywordScanRow } from "../../sources/appstore/keyword-store";
@@ -54,13 +60,19 @@ export interface SelectGapSeedsOptions {
 }
 
 /**
- * Pure seed selection: drop scans below `minOpportunity`, drop scans whose id
- * (stringified) is already consumed, sort by opportunity DESC, cap at `limit`,
- * and map to {@link GapSeed}. Never mutates `scans`.
+ * Pure seed selection: drop scans below `minOpportunity`, drop scans whose
+ * `keyword` is already consumed, sort by opportunity DESC, cap at `limit`, and
+ * map to {@link GapSeed}. Never mutates `scans`.
+ *
+ * Dedup unit is the KEYWORD, not the scan row id: `getTopOpportunities` returns
+ * the newest scan per keyword, so a new scan cycle mints a fresh row id for the
+ * same keyword every time — id-based dedup would let the same keyword re-seed
+ * on every run. Consumption still decays over time via the ledger's half-life,
+ * so a keyword becomes eligible again once it's no longer freshly consumed.
  */
 export function selectGapSeeds(
   scans: readonly KeywordScanRow[],
-  consumedIds: ReadonlySet<string>,
+  consumedKeywords: ReadonlySet<string>,
   opts: SelectGapSeedsOptions,
 ): readonly GapSeed[] {
   const limit = Number.isFinite(opts.limit) ? Math.max(0, Math.floor(opts.limit)) : 0;
@@ -68,7 +80,7 @@ export function selectGapSeeds(
 
   return scans
     .filter((s) => s.opportunity >= opts.minOpportunity)
-    .filter((s) => !consumedIds.has(String(s.id)))
+    .filter((s) => !consumedKeywords.has(s.keyword))
     .slice()
     .sort((a, b) => b.opportunity - a.opportunity)
     .slice(0, limit)
@@ -85,10 +97,17 @@ export function selectGapSeeds(
 
 /**
  * Load the top keyword opportunities, select fresh above-threshold seeds, record
- * the chosen scan ids into `ctx.selected` under {@link KEYWORD_SCANS_TABLE}
+ * the chosen KEYWORDS into `ctx.selected` under {@link KEYWORD_SCANS_TABLE}
  * (mirroring how `analyzeAppLandscape` registers its selections so pipeline.ts
  * can mark them consumed), and return the seeds. Graceful: any DB failure logs a
  * warning and yields `[]`.
+ *
+ * `ctx.consumed.get(KEYWORD_SCANS_TABLE)` is likewise a set of KEYWORDS (wired
+ * by pipeline.ts via `getConsumedIds(KEYWORD_SCANS_TABLE)`, which is id-space
+ * agnostic — it just returns whatever strings were previously marked consumed
+ * under this table). Keeping the read and write sides in the same id-space
+ * (keyword) is what makes cross-run dedup actually work — see
+ * {@link selectGapSeeds}.
  */
 export async function collectKeywordGaps(
   ctx: CollectorContext,
@@ -97,15 +116,16 @@ export async function collectKeywordGaps(
   try {
     const fetchLimit = Math.max(Math.floor(opts.limit) * FETCH_MULTIPLIER, MIN_FETCH);
     const scans = await getTopOpportunities({ limit: fetchLimit });
-    const consumed = ctx.consumed.get(KEYWORD_SCANS_TABLE) ?? new Set<string>();
-    const seeds = selectGapSeeds(scans, consumed, opts);
+    const consumedKeywords = ctx.consumed.get(KEYWORD_SCANS_TABLE) ?? new Set<string>();
+    const seeds = selectGapSeeds(scans, consumedKeywords, opts);
 
     if (seeds.length > 0) {
-      // Record selected scan ids so the pipeline can mark them consumed (dedup
-      // across runs). ctx.selected is an accumulator Map — extend the entry with
-      // a fresh array rather than mutating the existing one.
+      // Record selected KEYWORDS (not scan ids) so the pipeline can mark them
+      // consumed (dedup across runs, by keyword — see selectGapSeeds). ctx.selected
+      // is an accumulator Map — extend the entry with a fresh array rather than
+      // mutating the existing one.
       const existing = ctx.selected.get(KEYWORD_SCANS_TABLE) ?? [];
-      ctx.selected.set(KEYWORD_SCANS_TABLE, [...existing, ...seeds.map((s) => s.sourceId)]);
+      ctx.selected.set(KEYWORD_SCANS_TABLE, [...existing, ...seeds.map((s) => s.keyword)]);
     }
 
     log.info("Collected keyword-gap seeds", {

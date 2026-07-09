@@ -28,7 +28,7 @@ import { beginRun, endRun } from "../active-runs";
 import type { PipelineConfig, PipelineResultSummary } from "../types";
 import type { CollectorContext } from "./collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
-import { type GapSeed, collectKeywordGaps } from "./collector-keyword-gaps";
+import { KEYWORD_SCANS_TABLE, type GapSeed, collectKeywordGaps } from "./collector-keyword-gaps";
 import { getConsumedIds, markConsumed } from "./consumption";
 import type { DemandArtifact } from "./demand";
 import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
@@ -368,9 +368,19 @@ export async function runIdeasPipeline(
       "x_scraped_tweets",
     ] as const;
 
-    const consumedEntries = await Promise.all(
+    // Loaded here (not at Step 3b) so the keyword-gap consumed set can be folded
+    // into collectorCtx.consumed below. Gated on `.enabled`: when disabled we
+    // skip the extra getConsumedIds query entirely, preserving today's behavior
+    // byte-for-byte (no additional DB round trip, no extra map entry).
+    const keywordGapCfg = loadConfig().appstoreKeywordGap;
+
+    const capabilityConsumedEntries = await Promise.all(
       capabilityTables.map(async (table) => [table, await getConsumedIds(table)] as const),
     );
+    const keywordGapConsumedEntry = keywordGapCfg.enabled
+      ? [[KEYWORD_SCANS_TABLE, await getConsumedIds(KEYWORD_SCANS_TABLE)] as const]
+      : [];
+    const consumedEntries = [...capabilityConsumedEntries, ...keywordGapConsumedEntry];
     const collectorCtx: CollectorContext = {
       consumed: new Map(consumedEntries),
       selected: new Map(),
@@ -447,12 +457,13 @@ export async function runIdeasPipeline(
 
     // ── Step 3b: App Store keyword-gap seeds (ADDITIVE, flag-gated) ────────
     // Collect high-opportunity keyword gaps as SIGNAL seeds for synthesis. Fully
-    // gated on appstoreKeywordGap.enabled (default OFF): when disabled we never
-    // touch the DB, `keywordGaps` stays [], and synthesis receives exactly what
-    // it does today. `limit` caps the injected seeds so they cannot dominate the
-    // signal set; `minOpportunity` is the config seed threshold. Graceful — the
-    // collector swallows its own DB errors and returns [].
-    const keywordGapCfg = loadConfig().appstoreKeywordGap;
+    // gated on appstoreKeywordGap.enabled (default OFF, loaded above so the
+    // consumed-signal read-path can share the same gate): when disabled we
+    // never touch the DB, `keywordGaps` stays [], and synthesis receives
+    // exactly what it does today. `limit` caps the injected seeds so they
+    // cannot dominate the signal set; `minOpportunity` is the config seed
+    // threshold. Graceful — the collector swallows its own DB errors and
+    // returns [].
     const keywordGaps: readonly GapSeed[] = keywordGapCfg.enabled
       ? await collectKeywordGaps(collectorCtx, {
           limit: 10,
@@ -473,9 +484,10 @@ export async function runIdeasPipeline(
     mergeSelectedIds(mergedSelected, trends.selectedIds);
     mergeSelectedIds(mergedSelected, pains.selectedIds);
     mergeSelectedIds(mergedSelected, capabilities.selectedIds);
-    // collectKeywordGaps records its chosen scan ids into collectorCtx.selected;
-    // fold them in so the scans get marked consumed (dedup across runs). Empty
-    // when the feature is off → no-op.
+    // collectKeywordGaps records its chosen KEYWORDS into collectorCtx.selected;
+    // fold them in so the keywords get marked consumed (dedup across runs, by
+    // keyword — see collector-keyword-gaps.ts). Empty when the feature is off
+    // → no-op.
     mergeSelectedIds(mergedSelected, collectorCtx.selected);
 
     // ── Guard: short-circuit if no fresh source data ──────────────────────
