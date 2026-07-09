@@ -185,6 +185,51 @@ export async function getMostRecentScanAt(genreZone: string): Promise<number | n
   return last === null || last === undefined ? null : Number(last);
 }
 
+/**
+ * Latest scan per keyword, joined to its corpus row for `genre_zone`,
+ * filtered to `opportunity >= minOpportunity` and ordered richest-first.
+ * Used to seed autocomplete expansion from proven high-opportunity
+ * "winners" — an inner join means a scan with no corresponding corpus row
+ * (shouldn't happen in practice) is silently excluded rather than surfaced
+ * with an unusable null zone.
+ */
+export async function getWinnerKeywords(
+  minOpportunity: number,
+  limit: number,
+): Promise<readonly { keyword: string; genreZone: string }[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT s.keyword, k.genre_zone
+    FROM (
+      SELECT DISTINCT ON (keyword, store) *
+      FROM appstore_keyword_scans
+      ORDER BY keyword, store, scanned_at DESC
+    ) s
+    JOIN appstore_keywords k ON k.keyword = s.keyword
+    WHERE s.opportunity >= ${minOpportunity}
+    ORDER BY s.opportunity DESC
+    LIMIT ${limit}
+  `;
+  return (rows as ReadonlyArray<{ keyword: string; genre_zone: string }>).map((r) => ({
+    keyword: r.keyword,
+    genreZone: r.genre_zone,
+  }));
+}
+
+/**
+ * Returns the subset of `keywords` that already exist in the corpus.
+ * Used by autocomplete expansion to avoid double-counting an
+ * `upsertKeywords` call against an already-present keyword as "new".
+ */
+export async function keywordsExist(keywords: readonly string[]): Promise<ReadonlySet<string>> {
+  if (keywords.length === 0) return new Set();
+  const db = getDb();
+  const rows = await db`
+    SELECT keyword FROM appstore_keywords WHERE keyword IN ${db(keywords)}
+  `;
+  return new Set((rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword));
+}
+
 export async function getScanHistory(
   keyword: string,
   limit: number,

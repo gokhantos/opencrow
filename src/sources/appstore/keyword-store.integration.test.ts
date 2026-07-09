@@ -9,6 +9,8 @@ import {
   getTopOpportunities,
   getScanHistory,
   getMostRecentScanAt,
+  getWinnerKeywords,
+  keywordsExist,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 
@@ -31,6 +33,9 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-gap-history",
   "zzz-most-recent-scan-a",
   "zzz-most-recent-scan-b",
+  "zzz-winner-high",
+  "zzz-winner-low",
+  "zzz-exist-check-present",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -223,6 +228,41 @@ describe("keyword-store", () => {
     it("returns null for a zone with no scans", async () => {
       const last = await getMostRecentScanAt("zzz-no-scans-zone");
       expect(last).toBeNull();
+    });
+  });
+
+  describe("getWinnerKeywords", () => {
+    it("returns only keywords clearing minOpportunity, with their genreZone", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-winner-high", genreZone: "finance", source: "seed" },
+        { keyword: "zzz-winner-low", genreZone: "finance", source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-winner-high", opportunity: 0.9, scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-winner-low", opportunity: 0.1, scannedAt: now }));
+
+      const winners = await getWinnerKeywords(0.4, 50);
+      const highs = winners.filter((w) => w.keyword === "zzz-winner-high");
+      expect(highs).toHaveLength(1);
+      expect(highs[0]?.genreZone).toBe("finance");
+      expect(winners.some((w) => w.keyword === "zzz-winner-low")).toBe(false);
+    });
+  });
+
+  describe("keywordsExist", () => {
+    it("returns only the subset of candidate keywords already present in the corpus", async () => {
+      await upsertKeywords([
+        { keyword: "zzz-exist-check-present", genreZone: "finance", source: "seed" },
+      ]);
+
+      const existing = await keywordsExist(["zzz-exist-check-present", "zzz-exist-check-absent"]);
+      expect(existing.has("zzz-exist-check-present")).toBe(true);
+      expect(existing.has("zzz-exist-check-absent")).toBe(false);
+    });
+
+    it("returns an empty set for an empty input", async () => {
+      const existing = await keywordsExist([]);
+      expect(existing.size).toBe(0);
     });
   });
 });
