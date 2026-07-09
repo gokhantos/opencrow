@@ -534,13 +534,12 @@ export const redditCorpusConfigSchema = z
 // Standalone scanner feature (independent of the SIGE ideas pipeline, like
 // `ingestion`/`redditCorpus` above): scans App Store keywords for volume/
 // difficulty gaps against the app's current ranking, optionally seeding from
-// autocomplete expansion. Fully Zod-defaulted so `parse({})` is safe and the
-// feature is OFF by default for first ship — flip `enabled: true` to turn on
-// the scan loop without a code change.
+// autocomplete expansion. Fully Zod-defaulted so `parse({})` is safe. The
+// feature is ON by default — set `enabled: false` to turn off the scan loop.
 export const appstoreKeywordGapConfigSchema = z
   .object({
-    // Master switch. Default OFF for a first ship.
-    enabled: z.boolean().default(false),
+    // Master switch. Default ON.
+    enabled: z.boolean().default(true),
     // Gap between scan cycles (run-then-reschedule). Default 6h (daily-ish
     // cadence without hammering App Store lookups).
     scanIntervalMs: z.number().int().min(60_000).default(21_600_000),
@@ -561,21 +560,21 @@ export const appstoreKeywordGapConfigSchema = z
     // back as a seed into further expansion/generation.
     opportunityThresholdForSeed: z.number().min(0).max(1).default(0.4),
     // Optional autocomplete-based keyword expansion (widens the candidate
-    // pool via App Store search-suggest). Default OFF.
+    // pool via App Store search-suggest). Default ON.
     autocompleteExpansion: z
       .object({
-        enabled: z.boolean().default(false),
+        enabled: z.boolean().default(true),
       })
-      .default({ enabled: false }),
+      .default({ enabled: true }),
   })
   .default({
-    enabled: false,
+    enabled: true,
     scanIntervalMs: 21_600_000,
     dailyKeywordBudget: 300,
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.4,
-    autocompleteExpansion: { enabled: false },
+    autocompleteExpansion: { enabled: true },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 

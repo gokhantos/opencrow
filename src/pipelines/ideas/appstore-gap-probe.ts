@@ -63,11 +63,14 @@ const MAX_INCUMBENT_NAME_LEN = 200;
 /**
  * Human-readable, auditable quote naming the measured opportunity and (when
  * available) the weakest incumbent app the scan observed. Never invented —
- * every value is read straight off the scan row. The incumbent name is
- * attacker-controlled scraped text, so it is sanitized before interpolation.
+ * every value is read straight off the scan row. Both the keyword (which may be
+ * seeded from Apple's search-suggest hints once autocomplete expansion is on)
+ * and the incumbent name are semi/attacker-influenceable scraped text, so both
+ * are sanitized before interpolation.
  */
 function buildQuote(keyword: string, opportunity: number, topApps: readonly TopApp[]): string {
-  const base = `${keyword}: opportunity ${opportunity.toFixed(2)}`;
+  const safeKeyword = sanitizeScrapedField(keyword, MAX_INCUMBENT_NAME_LEN);
+  const base = `${safeKeyword}: opportunity ${opportunity.toFixed(2)}`;
   const incumbent = weakestIncumbent(topApps);
   if (!incumbent) return base;
   const safeName = sanitizeScrapedField(incumbent.name, MAX_INCUMBENT_NAME_LEN);
