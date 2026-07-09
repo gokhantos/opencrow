@@ -49,25 +49,6 @@ function makeTopApp(overrides: Partial<TopApp> = {}): TopApp {
   };
 }
 
-/**
- * `rowToScan` in keyword-store.ts casts `row.top_apps` straight through as
- * `readonly TopApp[]` with no parsing. Bun's SQL driver, however, returns
- * jsonb columns as raw JSON strings (verified directly against the live DB:
- * `pg_typeof` reports `jsonb`, `typeof` on the JS value reports `string`) —
- * the same class of bug `src/pipelines/store.ts` already hit and fixed via
- * its `parseJson` helper. `keyword-store.ts` never got that treatment, so
- * `KeywordScanRow.topApps` is currently a lie at runtime (a raw string, not
- * an array) even though nothing downstream has tripped over it yet (no
- * caller outside the store/tests currently touches these read paths). This
- * helper works around it here so the round-trip *content* can still be
- * verified without touching production code (out of scope for this fix
- * pass) — see the fix report for a flagged follow-up recommendation.
- */
-function parseTopApps(value: unknown): readonly TopApp[] {
-  if (typeof value === "string") return JSON.parse(value) as readonly TopApp[];
-  return value as readonly TopApp[];
-}
-
 function makeScan(overrides: Partial<KeywordGapProfile> & { keyword: string }): KeywordGapProfile {
   const now = Math.floor(Date.now() / 1000);
   return {
@@ -124,12 +105,12 @@ describe("keyword-store", () => {
 
     const latest = await getLatestScan("zzz-gap-test");
     expect(latest?.opportunity).toBeCloseTo(0.53, 2);
-    // See parseTopApps: rowToScan does not deserialize jsonb, so this parses
-    // defensively to verify the underlying content survived the round-trip.
-    const topApps = parseTopApps(latest?.topApps);
+    // rowToScan parses the jsonb `top_apps` column defensively — assert
+    // directly against the production output, no test-local parsing.
+    const topApps = latest?.topApps;
     expect(topApps).toHaveLength(1);
-    expect(topApps[0]?.id).toBe("42");
-    expect(topApps[0]?.name).toBe("Rival App");
+    expect(topApps?.[0]?.id).toBe("42");
+    expect(topApps?.[0]?.name).toBe("Rival App");
 
     const top = await getTopOpportunities({ limit: 50 });
     expect(top.some((r) => r.keyword === "zzz-gap-test")).toBe(true);

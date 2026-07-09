@@ -1,6 +1,24 @@
 import { getDb } from "../../store/db";
 import type { GapTrend, KeywordGapProfile, TopApp } from "./keyword-types";
 
+/**
+ * Bun's SQL driver returns `jsonb` columns as raw JSON strings, not parsed
+ * values. Mirrors `parseJson` in `src/pipelines/store.ts`: if already parsed
+ * (array/object), use as-is; if a string, parse it; on failure, fall back
+ * defensively rather than throwing.
+ */
+function parseJson<T>(val: unknown, fallback: T): T {
+  if (val === null || val === undefined) return fallback;
+  if (typeof val === "string") {
+    try {
+      return JSON.parse(val) as T;
+    } catch {
+      return fallback;
+    }
+  }
+  return val as T;
+}
+
 export interface KeywordSeedRow {
   readonly keyword: string;
   readonly genreZone: string;
@@ -37,7 +55,8 @@ interface KeywordScanDbRow {
   readonly top_app_reviews: number | string;
   readonly avg_rating: number | string;
   readonly avg_age_days: number | string;
-  readonly top_apps: readonly TopApp[];
+  /** Raw jsonb value — Bun's SQL driver returns this as a JSON string, not a parsed array. */
+  readonly top_apps: unknown;
 }
 
 export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
@@ -54,7 +73,7 @@ export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
     topAppReviews: Number(row.top_app_reviews),
     avgRating: Number(row.avg_rating),
     avgAgeDays: Number(row.avg_age_days),
-    topApps: row.top_apps,
+    topApps: parseJson<readonly TopApp[]>(row.top_apps, []),
   };
 }
 
