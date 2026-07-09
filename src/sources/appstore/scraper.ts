@@ -3,6 +3,7 @@ import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
 import { GENRE_ZONES } from "./keyword-corpus";
 import { runScanSlice } from "./keyword-gaps";
+import { getMostRecentScanAt } from "./keyword-store";
 import {
   upsertRankings,
   upsertReviews,
@@ -585,31 +586,44 @@ export function createAppStoreScraper(config?: {
       await indexUnindexedReviews();
       await indexUnindexedRankings();
 
-      // Keyword-gap daily sweep: scan one genre zone's stale slice, gated by
-      // config. Never allowed to break the rest of the scrape cycle — a scan
-      // failure is logged and swallowed here.
+      // Keyword-gap sweep: scan one genre zone's stale slice, gated by config
+      // and interval-gated to `scanIntervalMs` (default 6h) so it doesn't
+      // re-run on every ~hourly scraper tick and hammer the iTunes API.
+      // Never allowed to break the rest of the scrape cycle — a scan failure
+      // is logged and swallowed here.
       try {
         const cfg = loadConfig().appstoreKeywordGap;
         if (cfg.enabled) {
           const dayIndex = Math.floor(Date.now() / 1000 / 86_400);
           const zone = GENRE_ZONES[dayIndex % GENRE_ZONES.length];
           if (zone) {
-            const sliceResult = await runScanSlice({
-              genreZone: zone,
-              budget: cfg.dailyKeywordBudget,
-              delayMs: REQUEST_DELAY_MS,
-            });
-            log.info("Keyword-gap daily sweep complete", {
-              genreZone: zone,
-              scanned: sliceResult.scanned,
-              failed: sliceResult.failed,
-            });
+            const nowSeconds = Math.floor(Date.now() / 1000);
+            const last = await getMostRecentScanAt(zone);
+            const intervalSeconds = Math.floor(cfg.scanIntervalMs / 1000);
+            if (last === null || nowSeconds - last >= intervalSeconds) {
+              const sliceResult = await runScanSlice({
+                genreZone: zone,
+                budget: cfg.dailyKeywordBudget,
+                delayMs: REQUEST_DELAY_MS,
+              });
+              log.info("Keyword-gap sweep complete", {
+                genreZone: zone,
+                scanned: sliceResult.scanned,
+                failed: sliceResult.failed,
+              });
+            } else {
+              log.debug("Keyword-gap sweep skipped — zone swept recently", {
+                genreZone: zone,
+                lastScannedAt: last,
+                intervalSeconds,
+              });
+            }
           } else {
             log.warn("Keyword-gap sweep skipped — no genre zone resolved", { dayIndex });
           }
         }
       } catch (err) {
-        log.warn("Keyword-gap daily sweep failed", { error: getErrorMessage(err) });
+        log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
       }
 
       return { ok: true, rankings: rankingsCount, reviews: totalReviews };

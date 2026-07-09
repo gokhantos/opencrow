@@ -8,6 +8,7 @@ import {
   getLatestScan,
   getTopOpportunities,
   getScanHistory,
+  getMostRecentScanAt,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 
@@ -28,6 +29,8 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-gap-filter-combo-decoy-trend",
   "zzz-gap-filter-combo-decoy-genre",
   "zzz-gap-history",
+  "zzz-most-recent-scan-a",
+  "zzz-most-recent-scan-b",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -199,5 +202,27 @@ describe("keyword-store", () => {
     expect(history[1]?.scannedAt).toBe(base - 100);
     // Bounded by limit — the oldest scan is excluded.
     expect(history.some((r) => r.scannedAt === base - 200)).toBe(false);
+  });
+
+  describe("getMostRecentScanAt", () => {
+    it("returns the newest scanned_at among a zone's keywords", async () => {
+      const base = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-most-recent-scan-a", genreZone: "zzz-most-recent-zone", source: "seed" },
+        { keyword: "zzz-most-recent-scan-b", genreZone: "zzz-most-recent-zone", source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-most-recent-scan-a", scannedAt: base - 100 }),
+      );
+      await insertScan(makeScan({ keyword: "zzz-most-recent-scan-b", scannedAt: base }));
+
+      const last = await getMostRecentScanAt("zzz-most-recent-zone");
+      expect(last).toBe(base);
+    });
+
+    it("returns null for a zone with no scans", async () => {
+      const last = await getMostRecentScanAt("zzz-no-scans-zone");
+      expect(last).toBeNull();
+    });
   });
 });

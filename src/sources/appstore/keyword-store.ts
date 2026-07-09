@@ -167,6 +167,24 @@ export async function getTopOpportunities(opts: {
   return (rows as KeywordScanDbRow[]).map(rowToScan);
 }
 
+/**
+ * Returns the epoch-second timestamp of the most recent scan among keywords
+ * belonging to `genreZone`, or `null` if the zone has no scans yet. Used to
+ * gate the keyword-gap sweep to `scanIntervalMs` cadence instead of running
+ * on every scraper tick.
+ */
+export async function getMostRecentScanAt(genreZone: string): Promise<number | null> {
+  const db = getDb();
+  const rows = await db`
+    SELECT MAX(s.scanned_at) AS last
+    FROM appstore_keyword_scans s
+    JOIN appstore_keywords k ON k.keyword = s.keyword
+    WHERE k.genre_zone = ${genreZone}
+  `;
+  const last = (rows as ReadonlyArray<{ last: number | string | null }>)[0]?.last;
+  return last === null || last === undefined ? null : Number(last);
+}
+
 export async function getScanHistory(
   keyword: string,
   limit: number,
