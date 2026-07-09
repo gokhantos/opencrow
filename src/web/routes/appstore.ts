@@ -1,5 +1,8 @@
 import { Hono } from "hono";
+import { z } from "zod";
 import { createLogger } from "../../logger";
+import { getTopOpportunities, getScanHistory } from "../../sources/appstore/keyword-store";
+import type { GapTrend } from "../../sources/appstore/keyword-types";
 import {
   getRankings,
   getRankingsByCategory,
@@ -10,6 +13,18 @@ import { getDb } from "../../store/db";
 import type { CoreClient } from "../core-client";
 
 const log = createLogger("appstore-api");
+
+const GAP_TRENDS = ["heating", "stable", "cooling", "new"] as const satisfies readonly GapTrend[];
+
+const opportunitiesQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(50),
+  genreZone: z.string().optional(),
+  trend: z.enum(GAP_TRENDS).optional(),
+});
+
+const scanHistoryQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(30),
+});
 
 export function createAppStoreRoutes(
   opts: { coreClient?: CoreClient } = {},
@@ -41,6 +56,38 @@ export function createAppStoreRoutes(
     const limit = Math.max(1, Math.min(Number(limitParam ?? "50") || 50, 200));
     const reviews = await getLowRatedReviews(limit);
     return c.json({ success: true, data: reviews });
+  });
+
+  app.get("/appstore/opportunities", async (c) => {
+    const rawQuery: Record<string, string> = {};
+    for (const key of ["limit", "genreZone", "trend"] as const) {
+      const value = c.req.query(key);
+      if (value !== undefined) rawQuery[key] = value;
+    }
+
+    const parsed = opportunitiesQuerySchema.safeParse(rawQuery);
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+
+    const { limit, genreZone, trend } = parsed.data;
+    const opportunities = await getTopOpportunities({ limit, genreZone, trend });
+    return c.json({ success: true, data: opportunities });
+  });
+
+  app.get("/appstore/opportunities/:keyword", async (c) => {
+    const keyword = c.req.param("keyword");
+    const parsed = scanHistoryQuerySchema.safeParse({
+      limit: c.req.query("limit") ?? undefined,
+    });
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+
+    const history = await getScanHistory(keyword, parsed.data.limit);
+    return c.json({ success: true, data: history });
   });
 
   app.get("/appstore/stats", async (c) => {
