@@ -41,6 +41,14 @@ const TREND_MULT: Record<GapTrend, number> = {
   cooling: 0.85,
 };
 
+export function classifyTrend(current: number, previous: number | null): GapTrend {
+  if (previous === null || previous <= 0) return "new";
+  const ratio = current / previous;
+  if (ratio > 1.15) return "heating";
+  if (ratio < 0.85) return "cooling";
+  return "stable";
+}
+
 export function computeOpportunity(a: {
   readonly demand: number;
   readonly competitiveness: number;

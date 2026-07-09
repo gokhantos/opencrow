@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  classifyTrend,
   computeCompetitiveness,
   computeDemand,
   computeIncumbentWeakness,
@@ -71,4 +72,11 @@ describe("keyword-scoring", () => {
     });
     expect(highOpp).toBeGreaterThan(lowOpp);
   });
+});
+
+describe("classifyTrend", () => {
+  it("returns new with no history", () => expect(classifyTrend(10, null)).toBe("new"));
+  it("heating when up >15%", () => expect(classifyTrend(12, 10)).toBe("heating"));
+  it("cooling when down >15%", () => expect(classifyTrend(8, 10)).toBe("cooling"));
+  it("stable within band", () => expect(classifyTrend(10.5, 10)).toBe("stable"));
 });
