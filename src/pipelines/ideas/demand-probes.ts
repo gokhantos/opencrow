@@ -47,6 +47,7 @@ import {
 } from "./demand-probe-helpers";
 import { SEMANTIC_PROBE_NAME, semanticDemandProbe } from "./semantic-demand-probe";
 import { DEMAND_INTENT_MARKERS } from "./demand-intent-markers";
+import { appstoreGapProbe } from "./appstore-gap-probe";
 
 // Re-export the shared helpers so `./demand-probes` keeps its prior public
 // surface (any existing `import { ... } from "./demand-probes"` still resolves).
@@ -742,6 +743,10 @@ export const DEFAULT_DEMAND_PROBES: readonly DemandProbe[] = [
   // miss (the "dead demand probe -> absence floor" fix). Default ON; degrades to
   // [] when no embedder is configured.
   semanticDemandProbe,
+  // Measured App Store supply/demand gap from appstore_keyword_scans — real
+  // scanned opportunity/demand numbers, not an LLM assertion. Degrades to []
+  // when no scan exists for the candidate's keywords.
+  appstoreGapProbe,
 ];
 
 // ── Orchestration ─────────────────────────────────────────────────────────────
