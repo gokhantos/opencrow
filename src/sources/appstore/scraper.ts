@@ -28,7 +28,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const REQUEST_DELAY_MS = 2_000; // 2 seconds between API calls
 const TOP_APPS_PER_LIST = 5; // fetch reviews for top N from each list/category
 const DISCOVERY_LOOKUPS_PER_CYCLE = 3; // discover related apps for N random seeds per cycle
-const KEYWORD_MINING_SCAN_LIMIT = 500; // ranking rows scanned for keyword candidates per cycle
+const KEYWORD_MINING_SCAN_LIMIT = 3000; // ranking rows scanned for keyword candidates per cycle
 
 const APPSTORE_AGENT_ID = "appstore";
 

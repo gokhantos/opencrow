@@ -592,9 +592,9 @@ export const appstoreKeywordGapConfigSchema = z
         // Upper bound on newly-added corpus keywords per mining cycle, so
         // corpus growth stays bounded even if a scan surfaces many
         // candidates at once.
-        maxMinedPerCycle: z.number().int().min(1).max(500).default(50),
+        maxMinedPerCycle: z.number().int().min(1).max(2000).default(500),
       })
-      .default({ enabled: true, maxMinedPerCycle: 50 }),
+      .default({ enabled: true, maxMinedPerCycle: 500 }),
   })
   .default({
     enabled: true,
@@ -604,7 +604,7 @@ export const appstoreKeywordGapConfigSchema = z
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.15,
-    corpusDiscovery: { enabled: true, maxMinedPerCycle: 50 },
+    corpusDiscovery: { enabled: true, maxMinedPerCycle: 500 },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 
