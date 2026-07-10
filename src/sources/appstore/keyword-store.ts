@@ -51,6 +51,14 @@ export interface KeywordScanRow {
 export interface OpportunityRow extends KeywordScanRow {
   readonly firstFoundAt: number | null;
   readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | null;
+  /**
+   * MAX(opportunity) over this keyword's entire scan history (all stores).
+   * Backs the "peak" leaderboard sort — a keyword whose latest scan has
+   * collapsed to near-zero demand can still be found by how good it once
+   * scored. Falls back to the latest-scan `opportunity` in the (expected
+   * never to happen in practice) case the peak CTE has no matching row.
+   */
+  readonly peakOpportunity: number;
 }
 
 /** Raw column shape returned by `SELECT * FROM appstore_keyword_scans`. */
@@ -71,10 +79,11 @@ interface KeywordScanDbRow {
   readonly top_apps: unknown;
 }
 
-/** Raw column shape returned by `getTopOpportunities`'s scan+corpus join. */
+/** Raw column shape returned by `getTopOpportunities`/`queryOpportunities`'s scan+corpus join. */
 interface OpportunityDbRow extends KeywordScanDbRow {
   readonly keyword_created_at: number | string | null;
   readonly keyword_source: string | null;
+  readonly peak_opportunity: number | string | null;
 }
 
 export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
@@ -103,6 +112,10 @@ export function rowToOpportunity(row: OpportunityDbRow): OpportunityRow {
         ? null
         : Number(row.keyword_created_at),
     source: (row.keyword_source as OpportunityRow["source"]) ?? null,
+    peakOpportunity:
+      row.peak_opportunity === null || row.peak_opportunity === undefined
+        ? Number(row.opportunity)
+        : Number(row.peak_opportunity),
   };
 }
 
@@ -188,29 +201,165 @@ export async function getLatestScan(
   return row ? rowToScan(row) : null;
 }
 
+/** Case-insensitive substring search on `keyword` is bounded to this many characters. */
+const MAX_OPPORTUNITY_SEARCH_LENGTH = 100;
+
+/**
+ * Trims `search`, bounds its length, and turns it into an `ILIKE` pattern —
+ * or `null` if the (trimmed) search is empty, meaning "no filter". Centralized
+ * so `queryOpportunities` and `countOpportunities` apply the identical rule.
+ */
+function toSearchPattern(search: string | undefined): string | null {
+  const trimmed = search?.trim().slice(0, MAX_OPPORTUNITY_SEARCH_LENGTH);
+  return trimmed ? `%${trimmed}%` : null;
+}
+
+export interface OpportunityQueryOptions {
+  readonly limit: number;
+  readonly offset?: number;
+  readonly search?: string;
+  /** Rank by all-time peak opportunity ("peak") or the latest scan's ("latest"). Default "latest". */
+  readonly sort?: "peak" | "latest";
+  readonly genreZone?: string;
+  readonly trend?: GapTrend;
+}
+
+export interface OpportunityQueryResult {
+  readonly rows: readonly OpportunityRow[];
+  /** Count of keywords matching `search`/`genreZone`/`trend`, ignoring `limit`/`offset` — for pagination. */
+  readonly total: number;
+}
+
+interface OpportunityFilters {
+  readonly genreZone: string | null;
+  readonly trend: GapTrend | null;
+  readonly searchPattern: string | null;
+}
+
+/**
+ * Total count of (keyword, store) pairs matching the filters, independent of
+ * pagination — backs `meta.total` so the dashboard can page through the
+ * whole corpus rather than just the returned slice.
+ */
+async function countOpportunities(filters: OpportunityFilters): Promise<number> {
+  const db = getDb();
+  const rows = await db`
+    WITH latest AS (
+      SELECT DISTINCT ON (keyword, store) keyword, store, trend
+      FROM appstore_keyword_scans
+      ORDER BY keyword, store, scanned_at DESC
+    )
+    SELECT count(*) AS count
+    FROM latest
+    LEFT JOIN appstore_keywords k ON k.keyword = latest.keyword
+    WHERE (${filters.genreZone}::text IS NULL OR k.genre_zone = ${filters.genreZone})
+      AND (${filters.trend}::text IS NULL OR latest.trend = ${filters.trend})
+      AND (${filters.searchPattern}::text IS NULL OR latest.keyword ILIKE ${filters.searchPattern})
+  `;
+  const count = (rows as ReadonlyArray<{ count: number | string }>)[0]?.count;
+  return count === undefined ? 0 : Number(count);
+}
+
+/**
+ * Ranks the WHOLE keyword corpus (not just a single page) by either each
+ * keyword's best-ever ("peak") or latest-scan ("latest") opportunity, with
+ * server-side substring search + genreZone/trend filters + LIMIT/OFFSET
+ * pagination. `peakOpportunity` (MAX(opportunity) over each keyword's full
+ * scan history, all stores) is always included on every row regardless of
+ * `sort`, so the UI can show both numbers. `total` is the filtered,
+ * pre-pagination match count.
+ *
+ * Two full query bodies (rather than interpolating an ORDER BY column) so
+ * `sort` is never spliced into SQL text — it only ever selects a branch in
+ * JS, closing off any injection surface even though it's already narrowed to
+ * a TS union.
+ */
+export async function queryOpportunities(
+  opts: OpportunityQueryOptions,
+): Promise<OpportunityQueryResult> {
+  const db = getDb();
+  const genreZone = opts.genreZone ?? null;
+  const trend = opts.trend ?? null;
+  const offset = opts.offset ?? 0;
+  const sort = opts.sort ?? "latest";
+  const searchPattern = toSearchPattern(opts.search);
+
+  const dataQuery =
+    sort === "peak"
+      ? db`
+          WITH latest AS (
+            SELECT DISTINCT ON (keyword, store) *
+            FROM appstore_keyword_scans
+            ORDER BY keyword, store, scanned_at DESC
+          ),
+          peak AS (
+            SELECT keyword, MAX(opportunity) AS peak_opportunity
+            FROM appstore_keyword_scans
+            GROUP BY keyword
+          )
+          SELECT
+            latest.*,
+            peak.peak_opportunity AS peak_opportunity,
+            k.created_at AS keyword_created_at,
+            k.source AS keyword_source
+          FROM latest
+          LEFT JOIN peak ON peak.keyword = latest.keyword
+          LEFT JOIN appstore_keywords k ON k.keyword = latest.keyword
+          WHERE (${genreZone}::text IS NULL OR k.genre_zone = ${genreZone})
+            AND (${trend}::text IS NULL OR latest.trend = ${trend})
+            AND (${searchPattern}::text IS NULL OR latest.keyword ILIKE ${searchPattern})
+          ORDER BY peak.peak_opportunity DESC NULLS LAST, latest.keyword ASC
+          LIMIT ${opts.limit} OFFSET ${offset}
+        `
+      : db`
+          WITH latest AS (
+            SELECT DISTINCT ON (keyword, store) *
+            FROM appstore_keyword_scans
+            ORDER BY keyword, store, scanned_at DESC
+          ),
+          peak AS (
+            SELECT keyword, MAX(opportunity) AS peak_opportunity
+            FROM appstore_keyword_scans
+            GROUP BY keyword
+          )
+          SELECT
+            latest.*,
+            peak.peak_opportunity AS peak_opportunity,
+            k.created_at AS keyword_created_at,
+            k.source AS keyword_source
+          FROM latest
+          LEFT JOIN peak ON peak.keyword = latest.keyword
+          LEFT JOIN appstore_keywords k ON k.keyword = latest.keyword
+          WHERE (${genreZone}::text IS NULL OR k.genre_zone = ${genreZone})
+            AND (${trend}::text IS NULL OR latest.trend = ${trend})
+            AND (${searchPattern}::text IS NULL OR latest.keyword ILIKE ${searchPattern})
+          ORDER BY latest.opportunity DESC NULLS LAST, latest.keyword ASC
+          LIMIT ${opts.limit} OFFSET ${offset}
+        `;
+
+  const [rows, total] = await Promise.all([
+    dataQuery,
+    countOpportunities({ genreZone, trend, searchPattern }),
+  ]);
+
+  return {
+    rows: (rows as OpportunityDbRow[]).map(rowToOpportunity),
+    total,
+  };
+}
+
+/**
+ * Backward-compatible convenience wrapper over `queryOpportunities` for
+ * callers that only need the top slice ranked by latest-scan opportunity
+ * (e.g. the idea-pipeline keyword-gap collector) — no pagination/search/sort.
+ */
 export async function getTopOpportunities(opts: {
   limit: number;
   genreZone?: string;
   trend?: GapTrend;
 }): Promise<readonly OpportunityRow[]> {
-  const db = getDb();
-  const genreZone = opts.genreZone ?? null;
-  const trend = opts.trend ?? null;
-
-  const rows = await db`
-    SELECT s.*, k.created_at AS keyword_created_at, k.source AS keyword_source
-    FROM (
-      SELECT DISTINCT ON (keyword, store) *
-      FROM appstore_keyword_scans
-      ORDER BY keyword, store, scanned_at DESC
-    ) s
-    LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
-    WHERE (${genreZone}::text IS NULL OR k.genre_zone = ${genreZone})
-      AND (${trend}::text IS NULL OR s.trend = ${trend})
-    ORDER BY s.opportunity DESC
-    LIMIT ${opts.limit}
-  `;
-  return (rows as OpportunityDbRow[]).map(rowToOpportunity);
+  const { rows } = await queryOpportunities({ ...opts, sort: "latest" });
+  return rows;
 }
 
 /**

@@ -6,6 +6,12 @@
  * happy-dom doesn't provide), which would otherwise throw / hang in a
  * headless render. mock.module leaks across files in a shared process, so
  * this MUST run via `bun run test:isolated` (or directly, as its own file).
+ *
+ * The list endpoint (`GET /appstore/opportunities`) is now server-side
+ * paginated/searched/sorted, so the mock `apiFetch` implementation below
+ * actually applies `search`/`sort`/`limit`/`offset` from the query string —
+ * mirroring the real backend contract closely enough to exercise the
+ * component's query-building logic, not just its rendering.
  */
 import { test, expect, mock, beforeEach } from "bun:test";
 import React from "react";
@@ -22,6 +28,7 @@ interface MockOpportunityRow {
   readonly demand: number;
   readonly incumbentWeakness: number;
   readonly opportunity: number;
+  readonly peakOpportunity: number;
   readonly trend: string;
   readonly topAppReviews: number;
   readonly avgRating: number;
@@ -42,6 +49,7 @@ function makeRow(overrides: Partial<MockOpportunityRow> = {}): MockOpportunityRo
     demand: 12.5,
     incumbentWeakness: 0.6,
     opportunity: 0.72,
+    peakOpportunity: 0.85,
     trend: "heating",
     topAppReviews: 5000,
     avgRating: 4.2,
@@ -52,7 +60,7 @@ function makeRow(overrides: Partial<MockOpportunityRow> = {}): MockOpportunityRo
   };
 }
 
-const DEFAULT_ROWS: MockOpportunityRow[] = [
+const ALL_ROWS: MockOpportunityRow[] = [
   makeRow({ id: 1, keyword: "meal planner", source: "autocomplete" }),
   makeRow({
     id: 2,
@@ -60,6 +68,8 @@ const DEFAULT_ROWS: MockOpportunityRow[] = [
     source: "seed",
     trend: "cooling",
     firstFoundAt: null,
+    opportunity: 0.4,
+    peakOpportunity: 0.9,
   }),
 ];
 
@@ -117,11 +127,45 @@ function makeHistory(): readonly MockHistoryPoint[] {
 interface MockApiResponse {
   readonly success: boolean;
   readonly data?: unknown;
+  readonly meta?: unknown;
 }
 
-let rowsToReturn: readonly MockOpportunityRow[] = DEFAULT_ROWS;
+let rowsToReturn: readonly MockOpportunityRow[] = ALL_ROWS;
 let historyPointsToReturn: readonly MockHistoryPoint[] = makeHistory();
 let firstFoundAtToReturn: number | null = NOW - 21 * 86400;
+
+/**
+ * Applies `search`/`sort`/`limit`/`offset` from the query string against
+ * `rowsToReturn`, the way the real `GET /appstore/opportunities` route does —
+ * so tests can assert on the *rendered result* of a search/sort/page change
+ * rather than only on the raw `apiFetch` call arguments.
+ */
+function applyListQuery(path: string): MockApiResponse {
+  const qs = path.split("?")[1] ?? "";
+  const params = new URLSearchParams(qs);
+  const search = params.get("search")?.trim().toLowerCase() ?? "";
+  const sort = params.get("sort") === "latest" ? "latest" : "peak";
+  const limit = Number(params.get("limit") ?? "50");
+  const offset = Number(params.get("offset") ?? "0");
+
+  const filtered = search
+    ? rowsToReturn.filter((row) => row.keyword.toLowerCase().includes(search))
+    : [...rowsToReturn];
+
+  filtered.sort((a, b) => {
+    const av = sort === "peak" ? a.peakOpportunity : a.opportunity;
+    const bv = sort === "peak" ? b.peakOpportunity : b.opportunity;
+    return bv - av;
+  });
+
+  const page = filtered.slice(offset, offset + limit);
+
+  return {
+    success: true,
+    data: page,
+    meta: { total: filtered.length, limit, offset },
+  };
+}
 
 function defaultApiFetchImpl(path: string, _opts?: unknown): Promise<MockApiResponse> {
   if (path.startsWith("/api/appstore/opportunities/")) {
@@ -138,7 +182,7 @@ function defaultApiFetchImpl(path: string, _opts?: unknown): Promise<MockApiResp
     });
   }
   if (path.startsWith("/api/appstore/opportunities")) {
-    return Promise.resolve({ success: true, data: rowsToReturn });
+    return Promise.resolve(applyListQuery(path));
   }
   return Promise.reject(new Error(`Unexpected apiFetch call in test: ${path}`));
 }
@@ -166,7 +210,7 @@ beforeEach(() => {
   mockApiFetch.mockClear();
   mockApiFetch.mockImplementation(defaultApiFetchImpl);
   mockUseChart.mockClear();
-  rowsToReturn = DEFAULT_ROWS;
+  rowsToReturn = ALL_ROWS;
   historyPointsToReturn = makeHistory();
   firstFoundAtToReturn = NOW - 21 * 86400;
 });
@@ -176,6 +220,17 @@ async function flush(): Promise<void> {
     await Promise.resolve();
     await Promise.resolve();
   });
+}
+
+/** Waits out the search box's debounce window (see SEARCH_DEBOUNCE_MS = 300ms). */
+async function waitForDebounce(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  });
+}
+
+function callPaths(): string[] {
+  return mockApiFetch.mock.calls.map((call) => call[0] as string);
 }
 
 // ─── Rendering ─────────────────────────────────────────────────────────────────
@@ -208,9 +263,27 @@ test("renders a dash and an Unknown badge when firstFoundAt is null", async () =
   unmount();
 });
 
-// ─── Search filter ───────────────────────────────────────────────────────────
+test("shows the peak opportunity as the primary value and latest as subtext", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
 
-test("typing in the search box narrows the visible rows", async () => {
+  // meal planner: peakOpportunity 0.85, opportunity (latest) 0.72
+  expect(container.textContent).toContain("85%");
+  expect(container.textContent).toContain("now 72%");
+  unmount();
+});
+
+test("shows the total count from server meta", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  expect(container.textContent).toContain("1-2 of 2");
+  unmount();
+});
+
+// ─── Server-side search ──────────────────────────────────────────────────────
+
+test("typing in the search box refetches from the server with a search= param", async () => {
   const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
   await flush();
 
@@ -218,18 +291,22 @@ test("typing in the search box narrows the visible rows", async () => {
   expect(input).toBeTruthy();
 
   typeIntoInput(input, "meal");
+  await waitForDebounce();
 
+  const searchCalls = callPaths().filter((p) => p.includes("search=meal"));
+  expect(searchCalls.length).toBeGreaterThan(0);
   expect(container.textContent).toContain("meal planner");
   expect(container.textContent).not.toContain("habit tracker");
   unmount();
 });
 
-test("search is case-insensitive", async () => {
+test("search is case-insensitive and resolved server-side", async () => {
   const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
   await flush();
 
   const input = container.querySelector("input[type='text']") as HTMLInputElement;
   typeIntoInput(input, "HABIT");
+  await waitForDebounce();
 
   expect(container.textContent).toContain("habit tracker");
   expect(container.textContent).not.toContain("meal planner");
@@ -242,22 +319,141 @@ test("clearing the search box after typing restores every row", async () => {
 
   const input = container.querySelector("input[type='text']") as HTMLInputElement;
   typeIntoInput(input, "meal");
+  await waitForDebounce();
   expect(container.textContent).not.toContain("habit tracker");
 
   typeIntoInput(input, "");
+  await waitForDebounce();
   expect(container.textContent).toContain("meal planner");
   expect(container.textContent).toContain("habit tracker");
   unmount();
 });
 
-test("shows a no-match message when the search filter excludes every row", async () => {
+test("shows a no-match message when the server returns zero rows for the search", async () => {
   const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
   await flush();
 
   const input = container.querySelector("input[type='text']") as HTMLInputElement;
   typeIntoInput(input, "zzz-nonexistent");
+  await waitForDebounce();
 
   expect(container.textContent).toContain("No keywords match");
+  unmount();
+});
+
+// ─── Sort headers (peak / latest) ────────────────────────────────────────────
+
+test("defaults to sort=peak on the initial fetch", async () => {
+  const { unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  expect(callPaths().some((p) => p.includes("sort=peak"))).toBe(true);
+  unmount();
+});
+
+test("clicking the Latest toggle refetches with sort=latest and re-ranks rows", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  const latestButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Latest",
+  );
+  expect(latestButton).toBeTruthy();
+
+  await act(async () => {
+    (latestButton as HTMLButtonElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(callPaths().some((p) => p.includes("sort=latest"))).toBe(true);
+  // Sorted by latest opportunity descending: meal planner (0.72) before
+  // habit tracker (0.4) — both still render since the page holds both rows.
+  expect(container.textContent).toContain("meal planner");
+  expect(container.textContent).toContain("habit tracker");
+  unmount();
+});
+
+// ─── Pagination ───────────────────────────────────────────────────────────────
+
+test("Prev is disabled and Next is disabled when everything fits on one page", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  const prevButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Prev",
+  ) as HTMLButtonElement;
+  const nextButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Next",
+  ) as HTMLButtonElement;
+
+  expect(prevButton.disabled).toBe(true);
+  expect(nextButton.disabled).toBe(true);
+  unmount();
+});
+
+test("Next advances the offset and refetches the next page", async () => {
+  // Simulate a corpus larger than one page.
+  rowsToReturn = Array.from({ length: 120 }, (_, i) =>
+    makeRow({
+      id: i + 1,
+      keyword: `keyword-${i}`,
+      opportunity: 1 - i / 1000,
+      peakOpportunity: 1 - i / 1000,
+    }),
+  );
+
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  expect(container.textContent).toContain("1-50 of 120");
+
+  const nextButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Next",
+  ) as HTMLButtonElement;
+  expect(nextButton.disabled).toBe(false);
+
+  await act(async () => {
+    nextButton.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(callPaths().some((p) => p.includes("offset=50"))).toBe(true);
+  expect(container.textContent).toContain("51-100 of 120");
+  unmount();
+});
+
+test("a new search resets pagination back to the first page", async () => {
+  rowsToReturn = Array.from({ length: 120 }, (_, i) =>
+    makeRow({
+      id: i + 1,
+      keyword: `keyword-${i}`,
+      opportunity: 1 - i / 1000,
+      peakOpportunity: 1 - i / 1000,
+    }),
+  );
+
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  const nextButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Next",
+  ) as HTMLButtonElement;
+  await act(async () => {
+    nextButton.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(callPaths().some((p) => p.includes("offset=50"))).toBe(true);
+
+  mockApiFetch.mockClear();
+  const input = container.querySelector("input[type='text']") as HTMLInputElement;
+  typeIntoInput(input, "keyword-1");
+  await waitForDebounce();
+
+  const lastCall = callPaths().at(-1) ?? "";
+  expect(lastCall).toContain("offset=0");
   unmount();
 });
 

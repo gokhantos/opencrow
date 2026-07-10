@@ -62,33 +62,87 @@ describe("keyword-scoring", () => {
   });
 });
 
-describe("computeDemand (velocity)", () => {
-  it("uses recentVelocity when present, else the lifetime ratingsPerDay", () => {
-    expect(computeDemand([app({ ratingsPerDay: 5, recentVelocity: 100 })])).toBe(100);
+describe("computeDemand (lifetime baseline + velocity momentum)", () => {
+  it("is the lifetime baseline when no recent velocity is measured — never 0 for a real app", () => {
+    // A field of established apps that gained no reviews this window must NOT
+    // collapse to 0 (the regression this recalibration fixes); it keeps its
+    // lifetime-derived demand.
     expect(computeDemand([app({ ratingsPerDay: 5 })])).toBe(5);
+    expect(computeDemand([app({ ratingsPerDay: 20 }), app({ ratingsPerDay: 40 })])).toBeCloseTo(
+      30,
+      6,
+    );
   });
 
-  it("means velocity across the field", () => {
-    expect(
-      computeDemand([app({ recentVelocity: 10 }), app({ recentVelocity: 30 })]),
-    ).toBeCloseTo(20, 6);
+  it("adds a recent-velocity momentum bonus on top of the baseline (VELOCITY_WEIGHT=1)", () => {
+    // baseline 5/day + recent 100/day momentum = 105.
+    expect(computeDemand([app({ ratingsPerDay: 5, recentVelocity: 100 })])).toBeCloseTo(105, 6);
+  });
+
+  it("does not zero out when a measured velocity is 0 — the baseline still carries demand", () => {
+    // OLD pure-velocity demand read this as 0 (present-but-zero recentVelocity);
+    // now the lifetime baseline floors it.
+    expect(computeDemand([app({ ratingsPerDay: 8, recentVelocity: 0 })])).toBe(8);
+  });
+
+  it("discriminates two real-shaped keywords with different review mass + velocity", () => {
+    // Warm field: mass ~40/day lifetime, some real momentum.
+    const warm = [
+      app({ reviews: 45_000, ageDays: 1500, ratingsPerDay: 30, recentVelocity: 12 }),
+      app({ reviews: 20_000, ageDays: 1200, ratingsPerDay: 16, recentVelocity: 4 }),
+    ];
+    // Sleepy field: tiny lifetime mass, no momentum.
+    const sleepy = [
+      app({ reviews: 400, ageDays: 900, ratingsPerDay: 0.4, recentVelocity: 0 }),
+      app({ reviews: 120, ageDays: 600, ratingsPerDay: 0.2 }),
+    ];
+    const warmD = computeDemand(warm);
+    const sleepyD = computeDemand(sleepy);
+    expect(warmD).toBeGreaterThan(0);
+    expect(sleepyD).toBeGreaterThan(0); // real apps, so > 0 (not collapsed)
+    expect(warmD).toBeGreaterThan(sleepyD * 20); // and clearly separated
   });
 });
 
-describe("computeOpportunity — demand no longer saturates", () => {
-  // Both 60 and 300 ratings/day cleared log1p(50) under the old DEMAND_REF=50
-  // and clamped to an identical normalized demand of 1.0. With DEMAND_REF=1000
-  // they map to distinct points on the log curve, so opportunity separates.
-  const base = { competitiveness: 30, incumbentWeakness: 0.5, trend: "stable" as const };
-  it("separates two previously-saturating demand levels", () => {
-    const mid = computeOpportunity({ ...base, demand: 60 });
-    const high = computeOpportunity({ ...base, demand: 300 });
-    expect(high).toBeGreaterThan(mid);
+describe("computeOpportunity — realistic inputs neither collapse to 0 nor saturate to 1", () => {
+  it("spreads: strong-demand-weak-incumbent scores clearly above a dead field", () => {
+    // Strong demand (real matched incumbents, ~34/day mass) + weak/stale leader.
+    const strong = computeOpportunity({
+      demand: computeDemand([
+        app({ reviews: 30_000, ageDays: 1200, ratingsPerDay: 25, rating: 3.2, recentVelocity: 9 }),
+        app({ reviews: 60_000, ageDays: 1600, ratingsPerDay: 37, rating: 3.4, recentVelocity: 5 }),
+      ]),
+      competitiveness: 45,
+      incumbentWeakness: 0.6,
+      trend: "heating",
+    });
+    // Dead field: near-zero lifetime mass, no momentum, entrenched leader.
+    const dead = computeOpportunity({
+      demand: computeDemand([app({ reviews: 50, ageDays: 800, ratingsPerDay: 0.06 })]),
+      competitiveness: 70,
+      incumbentWeakness: 0.1,
+      trend: "stable",
+    });
+    expect(strong).toBeGreaterThan(dead);
+    // Neither pathological extreme for these realistic inputs.
+    expect(strong).toBeGreaterThan(0.05);
+    expect(strong).toBeLessThan(1);
+    expect(dead).toBeLessThan(0.05);
   });
-  it("is monotonic in demand", () => {
+});
+
+describe("computeOpportunity — demand is monotonic and non-saturating", () => {
+  // Under the old DEMAND_REF=50, any demand ≥ ~50/day clamped to a normalized
+  // 1.0 and stopped discriminating. With DEMAND_REF=80 the realistic range stays
+  // on the responsive part of the log curve, so opportunity separates and rises
+  // with demand instead of pinning to a single value.
+  const base = { competitiveness: 30, incumbentWeakness: 0.5, trend: "stable" as const };
+  it("is monotonic across a realistic demand range", () => {
     const low = computeOpportunity({ ...base, demand: 5 });
-    const mid = computeOpportunity({ ...base, demand: 60 });
+    const mid = computeOpportunity({ ...base, demand: 20 });
+    const high = computeOpportunity({ ...base, demand: 50 });
     expect(mid).toBeGreaterThan(low);
+    expect(high).toBeGreaterThan(mid);
   });
 });
 

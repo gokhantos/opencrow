@@ -2,9 +2,16 @@
  * Integration tests for the App Store keyword-gap opportunities routes.
  *
  * Contracts:
- * - GET /appstore/opportunities?limit&genreZone&trend — latest scan per
- *   keyword, ordered by opportunity DESC. Zod-validates query params; a bad
- *   `trend` value returns 400.
+ * - GET /appstore/opportunities?limit&offset&search&sort&genreZone&trend —
+ *   ranks the WHOLE keyword corpus by peak-ever opportunity (default,
+ *   `sort=peak`) or latest-scan opportunity (`sort=latest`); `search` is a
+ *   case-insensitive substring match on `keyword` applied server-side across
+ *   the whole corpus, not just the returned page. Responds
+ *   `{ success, data: OpportunityRow[], meta: { total, limit, offset } }`,
+ *   where `total` is the filtered match count (for pagination) and each row
+ *   carries both `opportunity` (latest scan) and `peakOpportunity`
+ *   (all-time best). Zod-validates query params; a bad `trend`/`sort` value
+ *   returns 400.
  * - GET /appstore/opportunities/:keyword — scan history for one keyword,
  *   newest first, bounded by `limit`.
  *
@@ -30,6 +37,10 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-web-gap-high opportunity keyword",
   "zzz-web-gap-bad trend keyword",
   "zzz-web-gap-history keyword",
+  "zzz-web-peak-old-glory",
+  "zzz-web-peak-steady",
+  "zzz-web-page-a",
+  "zzz-web-page-b",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -84,9 +95,20 @@ function makeScan(overrides: Partial<KeywordGapProfile> & { keyword: string }): 
 interface OpportunityRow {
   readonly keyword: string;
   readonly opportunity: number;
+  readonly peakOpportunity: number;
   readonly scannedAt: number;
   readonly firstFoundAt: number | null;
   readonly source: string | null;
+}
+
+interface OpportunitiesResponse {
+  readonly success: boolean;
+  readonly data: OpportunityRow[];
+  readonly meta: {
+    readonly total: number;
+    readonly limit: number;
+    readonly offset: number;
+  };
 }
 
 interface ScanHistoryData {
@@ -144,11 +166,17 @@ describe("appstore opportunities routes", () => {
       );
 
       const app = makeApp();
-      const res = await get(app, "/appstore/opportunities?limit=5");
+      // Scoped via `search` so this is deterministic regardless of how much
+      // real corpus data (with its own, possibly higher, peak/latest
+      // opportunities) is already loaded into this shared DB.
+      const res = await get(app, "/appstore/opportunities?limit=5&search=zzz-web-gap");
       expect(res.status).toBe(200);
 
-      const body = await json<{ success: boolean; data: OpportunityRow[] }>(res);
+      const body = await json<OpportunitiesResponse>(res);
       expect(body.success).toBe(true);
+      expect(body.meta.limit).toBe(5);
+      expect(body.meta.offset).toBe(0);
+      expect(typeof body.meta.total).toBe("number");
 
       const keywords = body.data.map((r) => r.keyword);
       expect(keywords).toContain("zzz-web-gap-low opportunity keyword");
@@ -164,6 +192,83 @@ describe("appstore opportunities routes", () => {
       );
       expect(highRow?.source).toBe("autocomplete");
       expect(typeof highRow?.firstFoundAt).toBe("number");
+      // Single scan each — peak-ever equals the latest scan's opportunity.
+      expect(highRow?.peakOpportunity).toBeCloseTo(0.9, 2);
+    });
+
+    it("200 defaults to sort=peak: a keyword's collapsed latest scan still surfaces via its all-time peak", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-web-peak-old-glory", genreZone: "health", source: "seed" },
+        { keyword: "zzz-web-peak-steady", genreZone: "health", source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-web-peak-old-glory", opportunity: 0.95, scannedAt: now - 1000 }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-web-peak-old-glory", opportunity: 0.05, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-web-peak-steady", opportunity: 0.5, scannedAt: now }),
+      );
+
+      const app = makeApp();
+      // No explicit `sort` — must default to peak.
+      const res = await get(app, "/appstore/opportunities?search=zzz-web-peak&limit=50");
+      expect(res.status).toBe(200);
+
+      const body = await json<OpportunitiesResponse>(res);
+      const keywords = body.data.map((r) => r.keyword);
+      expect(keywords.indexOf("zzz-web-peak-old-glory")).toBeLessThan(
+        keywords.indexOf("zzz-web-peak-steady"),
+      );
+
+      const oldGlory = body.data.find((r) => r.keyword === "zzz-web-peak-old-glory");
+      expect(oldGlory?.peakOpportunity).toBeCloseTo(0.95, 2);
+      expect(oldGlory?.opportunity).toBeCloseTo(0.05, 2);
+
+      // sort=latest flips the order back: steady's 0.5 latest beats old-glory's collapsed 0.05.
+      const latestRes = await get(
+        app,
+        "/appstore/opportunities?search=zzz-web-peak&limit=50&sort=latest",
+      );
+      const latestBody = await json<OpportunitiesResponse>(latestRes);
+      const latestKeywords = latestBody.data.map((r) => r.keyword);
+      expect(latestKeywords.indexOf("zzz-web-peak-steady")).toBeLessThan(
+        latestKeywords.indexOf("zzz-web-peak-old-glory"),
+      );
+    });
+
+    it("400 on an invalid sort value", async () => {
+      const app = makeApp();
+      const res = await get(app, "/appstore/opportunities?sort=bogus");
+      expect(res.status).toBe(400);
+      const body = await json<{ success: boolean }>(res);
+      expect(body.success).toBe(false);
+    });
+
+    it("200 paginates via offset, and search scopes total to the matching corpus", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-web-page-a", genreZone: "health", source: "seed" },
+        { keyword: "zzz-web-page-b", genreZone: "health", source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-web-page-a", opportunity: 0.8, scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-web-page-b", opportunity: 0.4, scannedAt: now }));
+
+      const app = makeApp();
+      const page0 = await json<OpportunitiesResponse>(
+        await get(app, "/appstore/opportunities?search=zzz-web-page&limit=1&offset=0"),
+      );
+      expect(page0.meta.total).toBe(2);
+      expect(page0.data).toHaveLength(1);
+      expect(page0.data[0]?.keyword).toBe("zzz-web-page-a");
+
+      const page1 = await json<OpportunitiesResponse>(
+        await get(app, "/appstore/opportunities?search=zzz-web-page&limit=1&offset=1"),
+      );
+      expect(page1.meta.total).toBe(2);
+      expect(page1.data[0]?.keyword).toBe("zzz-web-page-b");
     });
 
     it("400 on an invalid trend value", async () => {
@@ -192,10 +297,15 @@ describe("appstore opportunities routes", () => {
       );
 
       const app = makeApp();
-      const res = await get(app, "/appstore/opportunities?genreZone=");
+      // Scoped via `search` so the assertion holds regardless of how much
+      // real corpus data already exists in this shared DB.
+      const res = await get(
+        app,
+        "/appstore/opportunities?genreZone=&search=zzz-web-gap-low",
+      );
       expect(res.status).toBe(200);
 
-      const body = await json<{ success: boolean; data: OpportunityRow[] }>(res);
+      const body = await json<OpportunitiesResponse>(res);
       expect(body.success).toBe(true);
       expect(body.data.map((r) => r.keyword)).toContain(
         "zzz-web-gap-low opportunity keyword",

@@ -70,7 +70,11 @@ describe("scanKeyword velocity baseline", () => {
     // (5000 - 4000) reviews over ~1 day ≈ 1000/day — a REAL velocity, not the
     // tiny lifetime average (5000 / ~2400-day age ≈ 2/day).
     expect(matched?.recentVelocity).toBeCloseTo(1000, 0);
-    expect(p.demand).toBeCloseTo(1000, 0);
+    // demand = lifetime baseline (~2/day) + velocity momentum (~1000/day): the
+    // momentum dominates here, so demand tracks the velocity closely but is not
+    // exactly it.
+    expect(p.demand).toBeGreaterThan(990);
+    expect(p.demand).toBeLessThan(1010);
   });
 
   it("skips a too-fresh scan and diffs against the older baseline when both exist", async () => {
