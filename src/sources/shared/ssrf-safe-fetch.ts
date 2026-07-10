@@ -7,7 +7,12 @@
  *                     deterministic contexts (redirect loops, scraper callsites).
  *   ssrfSafeFetch   — fetch helper that follows redirects MANUALLY, re-validating
  *                     each hop URL before connecting so redirect-to-private attacks
- *                     are blocked even after the initial check.
+ *                     are blocked even after the initial check. Optionally retries
+ *                     rate-limit-shaped responses (429/503/403+Retry-After) with
+ *                     backoff via `retryOnRateLimit` — see SsrfSafeFetchOptions.
+ *   RateLimitError  — re-exported from ./rate-limit-error; thrown by ssrfSafeFetch
+ *                     when rate-limit retries are exhausted. Detect via
+ *                     `err instanceof RateLimitError` or `err.code === "RATE_LIMITED"`.
  *
  * Design rationale:
  *   Agent-supplied URL fetching goes through the SDK-native WebFetch tool, which
@@ -22,7 +27,11 @@
  */
 
 import { getErrorMessage } from "../../lib/error-serialization";
+import { retryAsync } from "../../infra/retry";
 import { fetchWithTimeout } from "./fetch-with-timeout";
+import { RateLimitError, isRateLimitStatus, parseRetryAfterMs } from "./rate-limit-error";
+
+export { RateLimitError } from "./rate-limit-error";
 
 // ---------------------------------------------------------------------------
 // IP classification
@@ -168,10 +177,111 @@ export function validateUrl(url: string): string | null {
 const MAX_REDIRECTS = 5;
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
+// Rate-limit backoff defaults — deliberately small: this guards a shared
+// upstream (iTunes/search-suggest) that scrapers hit on a tight cycle, so
+// retries must stay cheap rather than pile up latency.
+const DEFAULT_RATE_LIMIT_MAX_RETRIES = 3; // + the initial try = 4 attempts
+const DEFAULT_RATE_LIMIT_MIN_DELAY_MS = 500;
+const DEFAULT_RATE_LIMIT_MAX_DELAY_MS = 8_000;
+const DEFAULT_RATE_LIMIT_MAX_TOTAL_WAIT_MS = 20_000;
+
 export interface SsrfSafeFetchOptions {
   readonly headers?: Record<string, string>;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+  /**
+   * Opt in to rate-limit-aware retry: when a response is 429/503 (or 403
+   * with a `Retry-After` header — see `isRateLimitStatus`), retry with
+   * exponential backoff + jitter, honoring `Retry-After` (seconds or
+   * HTTP-date) when present. Default `false` — existing callers keep
+   * today's behavior of returning non-ok responses as-is with no retry.
+   * On exhausting retries (or if `Retry-After` pushes past
+   * `maxTotalWaitMs`), throws `RateLimitError` instead of returning the
+   * response, so callers can special-case it (`err instanceof RateLimitError`
+   * or `err.code === "RATE_LIMITED"`).
+   */
+  readonly retryOnRateLimit?: boolean;
+  /** Max retry attempts after the initial try. Default 3 (4 total tries). */
+  readonly maxRetries?: number;
+  /** Backoff delay bounds in ms for computed (non-`Retry-After`) waits. */
+  readonly minDelayMs?: number;
+  readonly maxDelayMs?: number;
+  /** Stop retrying once cumulative backoff wait would exceed this. Default 20_000. */
+  readonly maxTotalWaitMs?: number;
+}
+
+async function fetchOnce(
+  url: string,
+  opts: SsrfSafeFetchOptions,
+  timeoutMs: number,
+): Promise<Response> {
+  try {
+    return await fetchWithTimeout(
+      url,
+      {
+        method: "GET",
+        headers: opts.headers,
+        redirect: "manual",
+        signal: opts.signal,
+      },
+      timeoutMs,
+    );
+  } catch (err) {
+    throw new Error(`Fetch error for ${url}: ${getErrorMessage(err)}`);
+  }
+}
+
+/**
+ * Perform (and, when opted in, rate-limit-retry) a single hop's fetch.
+ * Re-validates the URL for SSRF safety on every attempt — including
+ * retries — so a retried request can never skip the guard.
+ */
+async function fetchHop(
+  url: string,
+  opts: SsrfSafeFetchOptions,
+  timeoutMs: number,
+): Promise<Response> {
+  if (!opts.retryOnRateLimit) {
+    return fetchOnce(url, opts, timeoutMs);
+  }
+
+  const maxRetries = opts.maxRetries ?? DEFAULT_RATE_LIMIT_MAX_RETRIES;
+  const minDelayMs = opts.minDelayMs ?? DEFAULT_RATE_LIMIT_MIN_DELAY_MS;
+  const maxDelayMs = opts.maxDelayMs ?? DEFAULT_RATE_LIMIT_MAX_DELAY_MS;
+  const maxTotalWaitMs = opts.maxTotalWaitMs ?? DEFAULT_RATE_LIMIT_MAX_TOTAL_WAIT_MS;
+  let elapsedWaitMs = 0;
+
+  return retryAsync(
+    async () => {
+      const rejection = validateUrl(url);
+      if (rejection) {
+        throw new Error(`SSRF blocked: ${rejection}`);
+      }
+
+      const response = await fetchOnce(url, opts, timeoutMs);
+      const retryAfterHeader = response.headers.get("retry-after");
+      if (isRateLimitStatus(response.status, retryAfterHeader)) {
+        throw new RateLimitError(
+          `Rate limited (HTTP ${response.status}) fetching ${url}`,
+          response.status,
+          parseRetryAfterMs(retryAfterHeader),
+        );
+      }
+      return response;
+    },
+    {
+      attempts: maxRetries + 1,
+      minDelayMs,
+      maxDelayMs,
+      signal: opts.signal,
+      label: "ssrfSafeFetch:rateLimit",
+      shouldRetry: (err) => err instanceof RateLimitError && elapsedWaitMs < maxTotalWaitMs,
+      retryAfterMs: (err) => (err instanceof RateLimitError ? err.retryAfterMs : undefined),
+      onRetry: (info) => {
+        elapsedWaitMs += info.delayMs;
+      },
+    },
+  );
 }
 
 /**
@@ -182,8 +292,11 @@ export interface SsrfSafeFetchOptions {
  * Only GET requests are issued (for scraper use). If a redirect points to a
  * private address the fetch is aborted and an error thrown.
  *
- * Throws on network error, too many redirects, or SSRF rejection.
- * Returns the final Response on success.
+ * Throws on network error, too many redirects, SSRF rejection, or (when
+ * `retryOnRateLimit` is set) an exhausted rate-limit backoff — see
+ * `SsrfSafeFetchOptions.retryOnRateLimit`. Returns the final Response on
+ * success (including non-ok statuses that aren't rate-limit-retried, to
+ * preserve existing caller behavior).
  */
 export async function ssrfSafeFetch(
   url: string,
@@ -198,21 +311,7 @@ export async function ssrfSafeFetch(
       throw new Error(`SSRF blocked: ${rejection}`);
     }
 
-    let response: Response;
-    try {
-      response = await fetchWithTimeout(
-        currentUrl,
-        {
-          method: "GET",
-          headers: opts.headers,
-          redirect: "manual",
-          signal: opts.signal,
-        },
-        timeoutMs,
-      );
-    } catch (err) {
-      throw new Error(`Fetch error for ${currentUrl}: ${getErrorMessage(err)}`);
-    }
+    const response = await fetchHop(currentUrl, opts, timeoutMs);
 
     const status = response.status;
     if (status < 300 || status >= 400) {

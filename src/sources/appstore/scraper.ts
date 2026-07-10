@@ -1,7 +1,7 @@
 import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
-import { expandFromWinners } from "./keyword-autocomplete";
+import { expandCorpus } from "./keyword-autocomplete";
 import { runKeywordSweep } from "./keyword-gaps";
 import {
   upsertRankings,
@@ -596,19 +596,22 @@ export function createAppStoreScraper(config?: {
       // tick — see `keywordSweepTick()`.
 
       // Autocomplete-driven corpus growth: pull Apple search-hint
-      // suggestions for the current high-opportunity winners to widen the
-      // keyword corpus beyond the fixed seed table. Deliberately kept on
+      // suggestions for a broadened seed mix (current high-opportunity
+      // winners PLUS a zone-spread diverse sample, see `getExpansionSeeds`)
+      // to widen the keyword corpus beyond the fixed seed table without
+      // purely amplifying whatever's already winning. Deliberately kept on
       // this ~hourly ranking tick rather than the new (much faster, default
-      // 5-min) keyword-sweep timer: it fans out up to MAX_WINNERS
-      // unthrottled hint-endpoint calls per pass, which would hammer Apple's
-      // search-suggest API if it ran every sweep cycle. Gated separately
-      // from the sweep (its own `autocompleteExpansion.enabled` flag) and
-      // never allowed to break the rest of the scrape cycle — a failure
-      // here is logged and swallowed.
+      // 5-min) keyword-sweep timer: it fans out up to WINNER_SEED_LIMIT +
+      // DIVERSE_SEED_LIMIT unthrottled hint-endpoint calls per pass, which
+      // would hammer Apple's search-suggest API if it ran every sweep
+      // cycle. Gated separately from the sweep (its own
+      // `autocompleteExpansion.enabled` flag) and never allowed to break
+      // the rest of the scrape cycle — a failure here is logged and
+      // swallowed.
       try {
         const cfg = loadConfig().appstoreKeywordGap;
         if (cfg.autocompleteExpansion.enabled) {
-          const added = await expandFromWinners({
+          const added = await expandCorpus({
             minOpportunity: cfg.opportunityThresholdForSeed,
             perSeed: AUTOCOMPLETE_SUGGESTIONS_PER_SEED,
           });

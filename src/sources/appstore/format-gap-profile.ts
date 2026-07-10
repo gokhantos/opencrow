@@ -25,8 +25,13 @@ function formatTopApp(app: TopApp, i: number): string {
 export function formatGapProfile(p: KeywordGapProfile): string {
   const incumbents = p.topApps.slice(0, MAX_TOP_APPS_SHOWN).map(formatTopApp).join("\n");
 
+  // The keyword can be seeded from Apple's autocomplete (semi attacker-
+  // influenceable), so sanitize it too — parity with the incumbent names and
+  // with buildQuote on the autonomous path — before it enters the prompt.
+  const safeKeyword = sanitizeScrapedField(p.keyword, MAX_APP_NAME_LEN);
+
   const lines = [
-    `Keyword Gap: "${p.keyword}" (${p.store === "app" ? "App Store" : "Google Play"})`,
+    `Keyword Gap: "${safeKeyword}" (${p.store === "app" ? "App Store" : "Google Play"})`,
     `  Competitiveness: ${Math.round(p.competitiveness)}/100`,
     `  Demand: ${p.demand.toFixed(1)} ratings/day`,
     `  Incumbent weakness: ${toPercent(p.incumbentWeakness)}`,
