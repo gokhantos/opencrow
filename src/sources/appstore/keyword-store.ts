@@ -22,7 +22,12 @@ function parseJson<T>(val: unknown, fallback: T): T {
 export interface KeywordSeedRow {
   readonly keyword: string;
   readonly genreZone: string;
-  readonly source: "seed" | "autocomplete" | "manual" | "pipeline";
+  // "autocomplete" is retired (Apple's MZSearchHints endpoint now just echoes
+  // the query — see the deleted keyword-autocomplete.ts) but kept in the
+  // union since historical rows still carry it. "mined" is the current
+  // corpus-discovery source: candidates extracted from scraped App Store
+  // ranking data (see keyword-miner.ts).
+  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined";
 }
 
 export interface KeywordScanRow {
@@ -50,7 +55,7 @@ export interface KeywordScanRow {
  */
 export interface OpportunityRow extends KeywordScanRow {
   readonly firstFoundAt: number | null;
-  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | null;
+  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined" | null;
   /**
    * MAX(opportunity) over this keyword's entire scan history (all stores).
    * Backs the "peak" leaderboard sort — a keyword whose latest scan has
@@ -526,7 +531,7 @@ export async function getScanHistory(
 /** First-found timestamp + source for one keyword, from `appstore_keywords`. */
 export interface KeywordMeta {
   readonly firstFoundAt: number;
-  readonly source: "seed" | "autocomplete" | "manual" | "pipeline";
+  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined";
 }
 
 /**

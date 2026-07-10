@@ -419,8 +419,9 @@ describe("appstoreKeywordGap config", () => {
     expect(g.dailyKeywordBudget).toBe(40_000);
     expect(g.keywordsPerSweep).toBe(25);
     expect(g.demandWeight).toBe(1);
-    expect(g.opportunityThresholdForSeed).toBe(0.4);
-    expect(g.autocompleteExpansion.enabled).toBe(true);
+    expect(g.opportunityThresholdForSeed).toBe(0.15);
+    expect(g.corpusDiscovery.enabled).toBe(true);
+    expect(g.corpusDiscovery.maxMinedPerCycle).toBe(50);
   });
 
   test("is tunable via config", () => {
@@ -428,22 +429,23 @@ describe("appstoreKeywordGap config", () => {
       appstoreKeywordGap: {
         enabled: true,
         topN: 10,
-        autocompleteExpansion: { enabled: true },
+        corpusDiscovery: { enabled: true, maxMinedPerCycle: 10 },
       },
     });
     expect(cfg.appstoreKeywordGap.enabled).toBe(true);
     expect(cfg.appstoreKeywordGap.topN).toBe(10);
-    expect(cfg.appstoreKeywordGap.autocompleteExpansion.enabled).toBe(true);
+    expect(cfg.appstoreKeywordGap.corpusDiscovery.enabled).toBe(true);
+    expect(cfg.appstoreKeywordGap.corpusDiscovery.maxMinedPerCycle).toBe(10);
   });
 
   test("can be disabled via config", () => {
     const cfg = opencrowConfigSchema.parse({
       appstoreKeywordGap: {
         enabled: false,
-        autocompleteExpansion: { enabled: false },
+        corpusDiscovery: { enabled: false },
       },
     });
     expect(cfg.appstoreKeywordGap.enabled).toBe(false);
-    expect(cfg.appstoreKeywordGap.autocompleteExpansion.enabled).toBe(false);
+    expect(cfg.appstoreKeywordGap.corpusDiscovery.enabled).toBe(false);
   });
 });
