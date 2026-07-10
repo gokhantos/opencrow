@@ -19,6 +19,89 @@ const sample = {
   ],
 };
 
+// A single title-matching incumbent so demand/velocity flow through the
+// matched-app path. `userRatingCount` is the "now" review count each velocity
+// test diffs against its mocked baseline.
+const velSample = {
+  results: [
+    {
+      trackId: 100,
+      trackName: "Budget Planner",
+      userRatingCount: 5000,
+      averageUserRating: 4.0,
+      releaseDate: "2020-01-01T00:00:00Z",
+      currentVersionReleaseDate: "2026-06-01T00:00:00Z",
+      price: 0,
+      formattedPrice: "Free",
+    },
+  ],
+};
+
+describe("scanKeyword velocity baseline", () => {
+  const KEYWORD = "budget planner";
+  const MATCHED_ID = "100";
+
+  beforeEach(() => {
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      ssrfSafeFetch: async () => ({ ok: true, json: async () => velSample }),
+    }));
+  });
+
+  function mockHistory(rows: readonly unknown[]): void {
+    mock.module("./keyword-store", () => ({
+      getLatestScan: async () => null,
+      getScanHistory: async () => rows,
+      getStaleKeywords: async () => [],
+      getStaleKeywordsAcrossZones: async () => [],
+      insertScan: async () => {},
+      markScanned: async () => {},
+      countScansSince: async () => 0,
+    }));
+  }
+
+  it("activates recentVelocity from a baseline at least the min window old", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockHistory([
+      { store: "app", scannedAt: now - 86_400, demand: 500, topApps: [{ id: MATCHED_ID, reviews: 4000 }] },
+    ]);
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword(KEYWORD);
+    const matched = p.topApps.find((a) => a.id === MATCHED_ID);
+    // (5000 - 4000) reviews over ~1 day ≈ 1000/day — a REAL velocity, not the
+    // tiny lifetime average (5000 / ~2400-day age ≈ 2/day).
+    expect(matched?.recentVelocity).toBeCloseTo(1000, 0);
+    expect(p.demand).toBeCloseTo(1000, 0);
+  });
+
+  it("skips a too-fresh scan and diffs against the older baseline when both exist", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockHistory([
+      // ~10 min old — too fresh to be a baseline (would give a noisy 100/day).
+      { store: "app", scannedAt: now - 600, demand: 900, topApps: [{ id: MATCHED_ID, reviews: 4900 }] },
+      // ~1 day old — the baseline actually used.
+      { store: "app", scannedAt: now - 86_400, demand: 500, topApps: [{ id: MATCHED_ID, reviews: 4000 }] },
+    ]);
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword(KEYWORD);
+    const matched = p.topApps.find((a) => a.id === MATCHED_ID);
+    // Diffed against 4000 (≈1000/day), not the 4900 fresh point (≈100/day).
+    expect(matched?.recentVelocity).toBeGreaterThan(500);
+  });
+
+  it("falls back to lifetime when the only prior scan is too fresh", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockHistory([
+      { store: "app", scannedAt: now - 600, demand: 900, topApps: [{ id: MATCHED_ID, reviews: 4900 }] },
+    ]);
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword(KEYWORD);
+    const matched = p.topApps.find((a) => a.id === MATCHED_ID);
+    expect(matched?.recentVelocity).toBeUndefined();
+    // Lifetime ratingsPerDay = 5000 / ~2400-day age ≈ 2/day.
+    expect(p.demand).toBeLessThan(50);
+  });
+});
+
 describe("scanKeyword", () => {
   beforeEach(() => {
     mock.module("../shared/ssrf-safe-fetch", () => ({
@@ -26,6 +109,7 @@ describe("scanKeyword", () => {
     }));
     mock.module("./keyword-store", () => ({
       getLatestScan: async () => null,
+      getScanHistory: async () => [],
       getStaleKeywords: async () => [],
       getStaleKeywordsAcrossZones: async () => [],
       insertScan: async () => {},
@@ -62,6 +146,7 @@ describe("runScanSlice", () => {
         markScannedCalls.push({ keywords, at });
       },
       getLatestScan: async () => null,
+      getScanHistory: async () => [],
       countScansSince: async () => 0,
     }));
 
@@ -126,6 +211,7 @@ describe("runKeywordSweep", () => {
         markScannedCalls.push({ keywords, at });
       },
       getLatestScan: async () => null,
+      getScanHistory: async () => [],
       countScansSince: async () => 0,
     }));
 
@@ -145,7 +231,7 @@ describe("runKeywordSweep", () => {
     const { runKeywordSweep } = await import("./keyword-gaps");
     const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
 
-    expect(result).toEqual({ scanned: 1, failed: 1, skipped: false });
+    expect(result).toEqual({ scanned: 1, failed: 1, skipped: false, bailed: false });
     expect(staleKeywordsAcrossZonesCalls).toEqual([25]);
     expect(insertScanCalls.length).toBe(1);
     expect(markScannedCalls.length).toBe(1);
@@ -166,6 +252,7 @@ describe("runKeywordSweep", () => {
         markScannedCalls.push({ keywords, at });
       },
       getLatestScan: async () => null,
+      getScanHistory: async () => [],
       // Default config's dailyKeywordBudget is 40_000 — return a count that
       // already meets it so the sweep must skip.
       countScansSince: async () => 40_000,
@@ -174,8 +261,46 @@ describe("runKeywordSweep", () => {
     const { runKeywordSweep } = await import("./keyword-gaps");
     const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
 
-    expect(result).toEqual({ scanned: 0, failed: 0, skipped: true });
+    expect(result).toEqual({ scanned: 0, failed: 0, skipped: true, bailed: false });
     expect(staleKeywordsAcrossZonesCalls.length).toBe(0);
+    expect(insertScanCalls.length).toBe(0);
+    expect(markScannedCalls.length).toBe(0);
+  });
+
+  it("bails early after too many consecutive scan failures instead of burning the whole slice", async () => {
+    // Seven keywords, every fetch throws: the sweep must stop after the 5th
+    // consecutive failure rather than attempting all seven.
+    mock.module("./keyword-store", () => ({
+      getStaleKeywords: async () => [],
+      getStaleKeywordsAcrossZones: async (limit: number) => {
+        staleKeywordsAcrossZonesCalls.push(limit);
+        return ["a", "b", "c", "d", "e", "f", "g"];
+      },
+      insertScan: async (p: unknown) => {
+        insertScanCalls.push(p);
+      },
+      markScanned: async (keywords: readonly string[], at: number) => {
+        markScannedCalls.push({ keywords, at });
+      },
+      getLatestScan: async () => null,
+      getScanHistory: async () => [],
+      countScansSince: async () => 0,
+    }));
+
+    let fetchCalls = 0;
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      ssrfSafeFetch: async () => {
+        fetchCalls++;
+        throw new Error("rate limited");
+      },
+    }));
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    // Stopped at the 5-consecutive-failure threshold: 5 attempted, 2 untouched.
+    expect(result).toEqual({ scanned: 0, failed: 5, skipped: false, bailed: true });
+    expect(fetchCalls).toBe(5);
     expect(insertScanCalls.length).toBe(0);
     expect(markScannedCalls.length).toBe(0);
   });

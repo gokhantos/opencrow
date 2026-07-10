@@ -13,6 +13,8 @@ import {
   countScansSince,
   getWinnerKeywords,
   keywordsExist,
+  getDiverseZoneSample,
+  getExpansionSeeds,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 
@@ -41,6 +43,12 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-cross-zone-stale-a",
   "zzz-cross-zone-stale-b",
   "zzz-count-scans-since",
+  "zzz-diverse-zone-a-stale",
+  "zzz-diverse-zone-a-fresh",
+  "zzz-diverse-zone-b-stale",
+  "zzz-diverse-zone-b-fresh",
+  "zzz-expansion-winner",
+  "zzz-expansion-diverse",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -58,6 +66,10 @@ function makeTopApp(overrides: Partial<TopApp> = {}): TopApp {
     ageDays: 500,
     ratingsPerDay: 0.02,
     titleMatch: true,
+    lastUpdatedDays: 400,
+    price: 0,
+    formattedPrice: "Free",
+    recentVelocity: 1.5,
     ...overrides,
   };
 }
@@ -154,6 +166,11 @@ describe("keyword-store", () => {
     expect(topApps).toHaveLength(1);
     expect(topApps?.[0]?.id).toBe("42");
     expect(topApps?.[0]?.name).toBe("Rival App");
+    // Enrichment fields round-trip through the JSONB column intact.
+    expect(topApps?.[0]?.lastUpdatedDays).toBe(400);
+    expect(topApps?.[0]?.price).toBe(0);
+    expect(topApps?.[0]?.formattedPrice).toBe("Free");
+    expect(topApps?.[0]?.recentVelocity).toBeCloseTo(1.5, 6);
 
     const top = await getTopOpportunities({ limit: 50 });
     expect(top.some((r) => r.keyword === "zzz-gap-test")).toBe(true);
@@ -329,6 +346,74 @@ describe("keyword-store", () => {
     it("returns an empty set for an empty input", async () => {
       const existing = await keywordsExist([]);
       expect(existing.size).toBe(0);
+    });
+  });
+
+  // Seed-selection helpers backing broadened autocomplete corpus expansion
+  // (anti rich-get-richer monoculture) — kept in its own describe block, own
+  // zzz-prefixed keywords/zones, appended without touching the tests above.
+  describe("getDiverseZoneSample / getExpansionSeeds", () => {
+    it("round-robins the stalest keyword per zone before any zone's second-stalest", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-diverse-zone-a-stale", genreZone: "zzz-diverse-zone-a", source: "seed" },
+        { keyword: "zzz-diverse-zone-a-fresh", genreZone: "zzz-diverse-zone-a", source: "seed" },
+        { keyword: "zzz-diverse-zone-b-stale", genreZone: "zzz-diverse-zone-b", source: "seed" },
+        { keyword: "zzz-diverse-zone-b-fresh", genreZone: "zzz-diverse-zone-b", source: "seed" },
+      ]);
+      await markScanned(["zzz-diverse-zone-a-stale"], now - 1000);
+      await markScanned(["zzz-diverse-zone-a-fresh"], now - 10);
+      await markScanned(["zzz-diverse-zone-b-stale"], now - 900);
+      await markScanned(["zzz-diverse-zone-b-fresh"], now - 20);
+
+      // Large enough to include our rows regardless of how much real corpus
+      // data already exists in this shared DB.
+      const sample = await getDiverseZoneSample(100_000);
+      const keywords = sample.map((s) => s.keyword);
+      const idxAStale = keywords.indexOf("zzz-diverse-zone-a-stale");
+      const idxAFresh = keywords.indexOf("zzz-diverse-zone-a-fresh");
+      const idxBStale = keywords.indexOf("zzz-diverse-zone-b-stale");
+      const idxBFresh = keywords.indexOf("zzz-diverse-zone-b-fresh");
+      expect(idxAStale).toBeGreaterThanOrEqual(0);
+      expect(idxAFresh).toBeGreaterThanOrEqual(0);
+      expect(idxBStale).toBeGreaterThanOrEqual(0);
+      expect(idxBFresh).toBeGreaterThanOrEqual(0);
+
+      // Each zone's stalest keyword ranks ahead of that same zone's fresher one.
+      expect(idxAStale).toBeLessThan(idxAFresh);
+      expect(idxBStale).toBeLessThan(idxBFresh);
+      // Round robin: both zones' stalest ("rn=1") picks precede either
+      // zone's second-stalest ("rn=2") pick.
+      expect(idxAStale).toBeLessThan(idxBFresh);
+      expect(idxBStale).toBeLessThan(idxAFresh);
+    });
+
+    it("returns an empty array for a non-positive limit", async () => {
+      const sample = await getDiverseZoneSample(0);
+      expect(sample).toEqual([]);
+    });
+
+    it("combines winners and a diverse sample, deduped, without double-counting overlap", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-expansion-winner", genreZone: "zzz-expansion-zone", source: "seed" },
+        { keyword: "zzz-expansion-diverse", genreZone: "zzz-expansion-zone-2", source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-expansion-winner", opportunity: 0.9, scannedAt: now }),
+      );
+
+      const seeds = await getExpansionSeeds({
+        minOpportunity: 0.4,
+        winnerLimit: 50,
+        diverseLimit: 50,
+      });
+      const keywords = seeds.map((s) => s.keyword);
+      expect(keywords).toContain("zzz-expansion-winner");
+      expect(keywords).toContain("zzz-expansion-diverse");
+      // No duplicates, even though a large diverse sample could otherwise
+      // re-select the winner keyword.
+      expect(new Set(keywords).size).toBe(keywords.length);
     });
   });
 });

@@ -11,8 +11,15 @@ export interface TopApp {
   readonly reviews: number; // userRatingCount
   readonly rating: number; // averageUserRating (0..5)
   readonly ageDays: number; // days since releaseDate
-  readonly ratingsPerDay: number; // reviews / max(ageDays,1)
+  readonly ratingsPerDay: number; // lifetime reviews / max(ageDays,1) — fallback velocity
   readonly titleMatch: boolean; // keyword tokens present in trackName
+  // ---- Enrichment (all optional so legacy persisted rows / external
+  // TopApp factories stay valid). Populated by `toTopApp` from the iTunes
+  // payload and by `scanKeyword` from cross-scan diffing. ----
+  readonly lastUpdatedDays?: number; // days since currentVersionReleaseDate (update staleness)
+  readonly price?: number; // numeric price (0 = free)
+  readonly formattedPrice?: string; // e.g. "$4.99", "Free"
+  readonly recentVelocity?: number; // ratings/day since prior scan; falls back to ratingsPerDay
 }
 
 export interface KeywordGapProfile {

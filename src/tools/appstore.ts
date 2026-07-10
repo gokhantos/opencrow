@@ -17,8 +17,19 @@ import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
 import { scanKeyword } from "../sources/appstore/keyword-gaps";
 import { formatGapProfile } from "../sources/appstore/format-gap-profile";
+import { RateLimitError } from "../sources/shared/rate-limit-error";
+import { createMinIntervalGate } from "../sources/shared/min-interval-gate";
 
 const log = createLogger("tool:appstore");
+
+// analyze_keyword_gap is agent-invokable on demand — outside the scanner's
+// own scrape-cycle budget. Without a floor, a tool-call loop could spray
+// the same upstream (iTunes/search-suggest) the scanner and rankings
+// scraper already hit on a 60s cycle. Keep this well under the scanner's
+// own pacing; it only bounds how often a call may *start*, it does not
+// replace the rate-limit backoff in ssrfSafeFetch.
+const ANALYZE_KEYWORD_GAP_MIN_INTERVAL_MS = 3_000;
+const analyzeKeywordGapGate = createMinIntervalGate(ANALYZE_KEYWORD_GAP_MIN_INTERVAL_MS);
 
 function formatRanking(r: AppRankingRow, i: number): string {
   const price =
@@ -341,9 +352,22 @@ export function createAppStoreTools(
       async execute(input) {
         const keyword = String(input.keyword ?? "");
         try {
+          await analyzeKeywordGapGate();
           const profile = await scanKeyword(keyword);
           return { output: formatGapProfile(profile), isError: false };
         } catch (err) {
+          if (err instanceof RateLimitError) {
+            log.warn("analyze_keyword_gap rate limited", {
+              keyword,
+              status: err.status,
+              retryAfterMs: err.retryAfterMs,
+            });
+            return {
+              output:
+                "App Store keyword lookup is being rate-limited upstream right now — try again shortly.",
+              isError: true,
+            };
+          }
           const msg = getErrorMessage(err);
           log.error("analyze_keyword_gap failed", { keyword, error: msg });
           return { output: `Error analyzing keyword gap: ${msg}`, isError: true };

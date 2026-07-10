@@ -1,24 +1,30 @@
 // Autocomplete-driven corpus growth for the App Store keyword-gap scanner.
-// Widens the keyword corpus by pulling Apple's search-suggest hints for the
-// current high-opportunity "winner" keywords, so the scanner keeps finding
-// new candidates instead of only ever scanning its fixed seed corpus.
-// Gated OFF by default (`appstoreKeywordGap.autocompleteExpansion.enabled`)
-// — see the call site in scraper.ts.
+// Widens the keyword corpus by pulling Apple's search-suggest hints for a
+// broadened seed set — current high-opportunity "winner" keywords PLUS a
+// diverse, zone-spread sample — so the scanner keeps finding new candidates
+// instead of only ever amplifying whatever's already winning (rich-get-
+// richer monoculture). Gated OFF by default
+// (`appstoreKeywordGap.autocompleteExpansion.enabled`) — see the call site
+// in scraper.ts.
 
 import { getErrorMessage } from "../../lib/error-serialization";
 import { createLogger } from "../../logger";
 import { ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
-import { getWinnerKeywords, keywordsExist, upsertKeywords } from "./keyword-store";
+import { getExpansionSeeds, keywordsExist, upsertKeywords } from "./keyword-store";
 import type { KeywordSeedRow } from "./keyword-store";
 
 const log = createLogger("appstore:keyword-autocomplete");
 
 const HINTS_BASE_URL = "https://search.itunes.apple.com/WebObjects/MZSearchHints.woa/wa/hints?q=";
 
-// How many winner keywords may seed a single expansion pass. Bounds fan-out
-// (one network call per winner) independent of how many keywords happen to
-// clear `minOpportunity` on a given run.
-const MAX_WINNERS = 20;
+// How many high-opportunity "winner" keywords seed a single expansion pass.
+const WINNER_SEED_LIMIT = 12;
+// How many round-robin, zone-spread keywords (see `getDiverseZoneSample`)
+// seed the same pass, independent of whether they've ever won a scan.
+// WINNER_SEED_LIMIT + DIVERSE_SEED_LIMIT (20) matches the pre-broadening
+// MAX_WINNERS cap, so widening the seed mix doesn't increase fan-out
+// (one network call per seed) against Apple's search-suggest endpoint.
+const DIVERSE_SEED_LIMIT = 8;
 
 /**
  * Extracts hint "term" phrases from an Apple MZSearchHints plist XML
@@ -55,17 +61,17 @@ function normalizeSuggestion(s: string): string {
 }
 
 /**
- * Fetches Apple search-hint suggestions for a single winner keyword,
- * bounded to `perSeed` terms. Never throws — any fetch/parse failure is
- * logged and treated as zero hints so one bad winner cannot abort the
- * whole expansion pass.
+ * Fetches Apple search-hint suggestions for a single seed keyword, bounded
+ * to `perSeed` terms. Never throws — any fetch/parse failure is logged and
+ * treated as zero hints so one bad seed cannot abort the whole expansion
+ * pass.
  */
-async function fetchHintsForWinner(keyword: string, perSeed: number): Promise<readonly string[]> {
+async function fetchHintsForSeed(keyword: string, perSeed: number): Promise<readonly string[]> {
   try {
     const url = `${HINTS_BASE_URL}${encodeURIComponent(keyword)}`;
     const res = await ssrfSafeFetch(url);
     if (!res.ok) {
-      log.warn("Autocomplete hints fetch returned non-OK status — skipping winner", {
+      log.warn("Autocomplete hints fetch returned non-OK status — skipping seed", {
         keyword,
         status: res.status,
       });
@@ -74,7 +80,7 @@ async function fetchHintsForWinner(keyword: string, perSeed: number): Promise<re
     const body = await res.text();
     return extractHintTerms(body).slice(0, perSeed);
   } catch (err) {
-    log.warn("Autocomplete hints fetch failed — skipping winner", {
+    log.warn("Autocomplete hints fetch failed — skipping seed", {
       keyword,
       error: getErrorMessage(err),
     });
@@ -83,34 +89,41 @@ async function fetchHintsForWinner(keyword: string, perSeed: number): Promise<re
 }
 
 /**
- * Expands the keyword corpus from Apple search-suggest hints seeded off
- * recent high-opportunity ("winner") scans. For each winner (up to
- * `MAX_WINNERS`), fetches up to `opts.perSeed` autocomplete suggestions,
- * normalizes them, and upserts the genuinely new ones with
- * `source: "autocomplete"` inheriting the winner's `genreZone`.
+ * Expands the keyword corpus from Apple search-suggest hints seeded off a
+ * broadened mix (see `getExpansionSeeds`): up to `WINNER_SEED_LIMIT` recent
+ * high-opportunity "winner" scans PLUS up to `DIVERSE_SEED_LIMIT` keywords
+ * spread round-robin across genre zones, so expansion doesn't purely
+ * amplify whatever's already winning. For each seed, fetches up to
+ * `opts.perSeed` autocomplete suggestions, normalizes them, and upserts the
+ * genuinely new ones with `source: "autocomplete"` inheriting the seed's
+ * `genreZone`.
  *
  * Returns the count of NEW corpus terms upserted (terms already present in
  * the corpus are not counted, even though `upsertKeywords` would no-op
  * update them idempotently).
  */
-export async function expandFromWinners(opts: {
+export async function expandCorpus(opts: {
   readonly minOpportunity: number;
   readonly perSeed: number;
 }): Promise<number> {
-  const winners = await getWinnerKeywords(opts.minOpportunity, MAX_WINNERS);
-  if (winners.length === 0) return 0;
+  const seeds = await getExpansionSeeds({
+    minOpportunity: opts.minOpportunity,
+    winnerLimit: WINNER_SEED_LIMIT,
+    diverseLimit: DIVERSE_SEED_LIMIT,
+  });
+  if (seeds.length === 0) return 0;
 
   const candidates: KeywordSeedRow[] = [];
   const seen = new Set<string>();
 
-  for (const winner of winners) {
-    const terms = await fetchHintsForWinner(winner.keyword, opts.perSeed);
+  for (const seed of seeds) {
+    const terms = await fetchHintsForSeed(seed.keyword, opts.perSeed);
     for (const term of terms) {
       const keyword = normalizeSuggestion(term);
       if (keyword.length === 0) continue;
       if (seen.has(keyword)) continue;
       seen.add(keyword);
-      candidates.push({ keyword, genreZone: winner.genreZone, source: "autocomplete" });
+      candidates.push({ keyword, genreZone: seed.genreZone, source: "autocomplete" });
     }
   }
 

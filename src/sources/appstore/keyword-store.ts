@@ -248,6 +248,76 @@ export async function getWinnerKeywords(
 }
 
 /**
+ * A diverse, zone-spread sample of the active corpus: the stalest
+ * (least-recently-scanned — NULLS FIRST so never-scanned keywords sort
+ * first) keyword per genre zone, then each zone's second-stalest, and so
+ * on — interleaved round-robin across zones rather than exhausting one
+ * zone before moving to the next. Paired with `getWinnerKeywords` in
+ * `getExpansionSeeds` so autocomplete corpus expansion isn't purely
+ * winner-driven: a keyword that has never posted a high-opportunity scan
+ * (or hasn't been scanned at all) still gets a turn to seed expansion,
+ * which keeps under-covered zones from starving (anti rich-get-richer
+ * monoculture).
+ */
+export async function getDiverseZoneSample(
+  limit: number,
+): Promise<readonly { keyword: string; genreZone: string }[]> {
+  if (limit <= 0) return [];
+  const db = getDb();
+  const rows = await db`
+    WITH ranked AS (
+      SELECT
+        keyword,
+        genre_zone,
+        ROW_NUMBER() OVER (
+          PARTITION BY genre_zone
+          ORDER BY last_scanned_at ASC NULLS FIRST, keyword ASC
+        ) AS rn
+      FROM appstore_keywords
+      WHERE active = TRUE
+    )
+    SELECT keyword, genre_zone
+    FROM ranked
+    ORDER BY rn ASC, genre_zone ASC
+    LIMIT ${limit}
+  `;
+  return (rows as ReadonlyArray<{ keyword: string; genre_zone: string }>).map((r) => ({
+    keyword: r.keyword,
+    genreZone: r.genre_zone,
+  }));
+}
+
+/**
+ * Broadened seed set for autocomplete corpus expansion: up to
+ * `winnerLimit` current high-opportunity "winners" (`getWinnerKeywords`)
+ * PLUS up to `diverseLimit` round-robin picks spread across genre zones
+ * (`getDiverseZoneSample`). Winners take priority on overlap — a diverse
+ * pick that duplicates an already-selected winner keyword is dropped
+ * rather than double-counted — so the combined, deduped list never exceeds
+ * `winnerLimit + diverseLimit` entries. Both limits are caller-supplied so
+ * behavior stays deterministic and testable against a fixed DB state.
+ */
+export async function getExpansionSeeds(opts: {
+  readonly minOpportunity: number;
+  readonly winnerLimit: number;
+  readonly diverseLimit: number;
+}): Promise<readonly { keyword: string; genreZone: string }[]> {
+  const [winners, diverse] = await Promise.all([
+    getWinnerKeywords(opts.minOpportunity, opts.winnerLimit),
+    getDiverseZoneSample(opts.diverseLimit),
+  ]);
+
+  const seen = new Set(winners.map((w) => w.keyword));
+  const combined = [...winners];
+  for (const pick of diverse) {
+    if (seen.has(pick.keyword)) continue;
+    seen.add(pick.keyword);
+    combined.push(pick);
+  }
+  return combined;
+}
+
+/**
  * Returns the subset of `keywords` that already exist in the corpus.
  * Used by autocomplete expansion to avoid double-counting an
  * `upsertKeywords` call against an already-present keyword as "new".
