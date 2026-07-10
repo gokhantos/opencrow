@@ -166,9 +166,9 @@ describe("runKeywordSweep", () => {
         markScannedCalls.push({ keywords, at });
       },
       getLatestScan: async () => null,
-      // Default config's dailyKeywordBudget is 5000 — return a count that
+      // Default config's dailyKeywordBudget is 40_000 — return a count that
       // already meets it so the sweep must skip.
-      countScansSince: async () => 5000,
+      countScansSince: async () => 40_000,
     }));
 
     const { runKeywordSweep } = await import("./keyword-gaps");
