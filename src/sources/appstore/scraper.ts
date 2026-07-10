@@ -1,8 +1,8 @@
 import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
-import { expandCorpus } from "./keyword-autocomplete";
 import { runKeywordSweep } from "./keyword-gaps";
+import { mineKeywords } from "./keyword-miner";
 import {
   upsertRankings,
   upsertReviews,
@@ -28,7 +28,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const REQUEST_DELAY_MS = 2_000; // 2 seconds between API calls
 const TOP_APPS_PER_LIST = 5; // fetch reviews for top N from each list/category
 const DISCOVERY_LOOKUPS_PER_CYCLE = 3; // discover related apps for N random seeds per cycle
-const AUTOCOMPLETE_SUGGESTIONS_PER_SEED = 5; // hint terms pulled per winner keyword
+const KEYWORD_MINING_SCAN_LIMIT = 500; // ranking rows scanned for keyword candidates per cycle
 
 const APPSTORE_AGENT_ID = "appstore";
 
@@ -595,30 +595,28 @@ export function createAppStoreScraper(config?: {
       // (`keywordSweepTimer` below), decoupled from this ~hourly ranking
       // tick — see `keywordSweepTick()`.
 
-      // Autocomplete-driven corpus growth: pull Apple search-hint
-      // suggestions for a broadened seed mix (current high-opportunity
-      // winners PLUS a zone-spread diverse sample, see `getExpansionSeeds`)
-      // to widen the keyword corpus beyond the fixed seed table without
-      // purely amplifying whatever's already winning. Deliberately kept on
-      // this ~hourly ranking tick rather than the new (much faster, default
-      // 5-min) keyword-sweep timer: it fans out up to WINNER_SEED_LIMIT +
-      // DIVERSE_SEED_LIMIT unthrottled hint-endpoint calls per pass, which
-      // would hammer Apple's search-suggest API if it ran every sweep
-      // cycle. Gated separately from the sweep (its own
-      // `autocompleteExpansion.enabled` flag) and never allowed to break
-      // the rest of the scrape cycle — a failure here is logged and
-      // swallowed.
+      // Keyword-corpus discovery: mine new candidate keywords from the App
+      // Store ranking data this scrape cycle already fetched (top-chart app
+      // names + categories — see keyword-miner.ts), instead of the retired
+      // Apple search-suggest ("autocomplete") expansion, whose MZSearchHints
+      // endpoint now just echoes the query back and can never find new
+      // terms. No extra network calls — purely reads what's already in the
+      // DB — so it's kept on this ~hourly ranking tick (not the faster
+      // keyword-sweep timer) simply to run once per scrape rather than
+      // every sweep cycle. Gated by its own `corpusDiscovery.enabled` flag
+      // and never allowed to break the rest of the scrape cycle — a failure
+      // here is logged and swallowed.
       try {
         const cfg = loadConfig().appstoreKeywordGap;
-        if (cfg.autocompleteExpansion.enabled) {
-          const added = await expandCorpus({
-            minOpportunity: cfg.opportunityThresholdForSeed,
-            perSeed: AUTOCOMPLETE_SUGGESTIONS_PER_SEED,
+        if (cfg.corpusDiscovery.enabled) {
+          const result = await mineKeywords({
+            rankingsLimit: KEYWORD_MINING_SCAN_LIMIT,
+            maxNew: cfg.corpusDiscovery.maxMinedPerCycle,
           });
-          log.info("Keyword-corpus autocomplete expansion", { added });
+          log.info("[appstore] Keyword mining", { added: result.added, scanned: result.scanned });
         }
       } catch (err) {
-        log.warn("Keyword-corpus autocomplete expansion failed", { error: getErrorMessage(err) });
+        log.warn("Keyword-corpus mining failed", { error: getErrorMessage(err) });
       }
 
       return { ok: true, rankings: rankingsCount, reviews: totalReviews };

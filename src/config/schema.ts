@@ -577,15 +577,24 @@ export const appstoreKeywordGapConfigSchema = z
     // has any effect until DEMAND_KIND_WEIGHTS reads it.
     demandWeight: z.number().min(0).max(5).default(1),
     // Minimum opportunity score (0..1) a keyword must clear before it is fed
-    // back as a seed into further expansion/generation.
-    opportunityThresholdForSeed: z.number().min(0).max(1).default(0.4),
-    // Optional autocomplete-based keyword expansion (widens the candidate
-    // pool via App Store search-suggest). Default ON.
-    autocompleteExpansion: z
+    // back as a seed into further expansion/generation. Live opportunity
+    // scores currently top out around ~0.324, so 0.4 never fires — lowered
+    // to 0.15 so genuinely strong winners actually seed further discovery.
+    opportunityThresholdForSeed: z.number().min(0).max(1).default(0.15),
+    // Corpus-discovery: mines new keyword candidates from App Store data the
+    // scraper already fetches (top-chart app names + categories — see
+    // keyword-miner.ts), instead of the retired Apple search-suggest
+    // (MZSearchHints) expansion, which now just echoes the query back and
+    // can never find new terms. Default ON.
+    corpusDiscovery: z
       .object({
         enabled: z.boolean().default(true),
+        // Upper bound on newly-added corpus keywords per mining cycle, so
+        // corpus growth stays bounded even if a scan surfaces many
+        // candidates at once.
+        maxMinedPerCycle: z.number().int().min(1).max(500).default(50),
       })
-      .default({ enabled: true }),
+      .default({ enabled: true, maxMinedPerCycle: 50 }),
   })
   .default({
     enabled: true,
@@ -594,8 +603,8 @@ export const appstoreKeywordGapConfigSchema = z
     keywordsPerSweep: 25,
     topN: 20,
     demandWeight: 1,
-    opportunityThresholdForSeed: 0.4,
-    autocompleteExpansion: { enabled: true },
+    opportunityThresholdForSeed: 0.15,
+    corpusDiscovery: { enabled: true, maxMinedPerCycle: 50 },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 
