@@ -85,6 +85,17 @@ interface OpportunityRow {
   readonly keyword: string;
   readonly opportunity: number;
   readonly scannedAt: number;
+  readonly firstFoundAt: number | null;
+  readonly source: string | null;
+}
+
+interface ScanHistoryData {
+  readonly history: readonly OpportunityRow[];
+  readonly meta: {
+    readonly keyword: string;
+    readonly firstFoundAt: number | null;
+    readonly source: string | null;
+  };
 }
 
 describe("appstore opportunities routes", () => {
@@ -106,8 +117,16 @@ describe("appstore opportunities routes", () => {
     it("200 returns the seeded keyword, ordered by opportunity desc", async () => {
       const now = Math.floor(Date.now() / 1000);
       await upsertKeywords([
-        { keyword: "zzz-web-gap-low opportunity keyword", genreZone: "health", source: "seed" },
-        { keyword: "zzz-web-gap-high opportunity keyword", genreZone: "health", source: "seed" },
+        {
+          keyword: "zzz-web-gap-low opportunity keyword",
+          genreZone: "health",
+          source: "seed",
+        },
+        {
+          keyword: "zzz-web-gap-high opportunity keyword",
+          genreZone: "health",
+          source: "autocomplete",
+        },
       ]);
       await insertScan(
         makeScan({
@@ -138,6 +157,13 @@ describe("appstore opportunities routes", () => {
       const highIdx = keywords.indexOf("zzz-web-gap-high opportunity keyword");
       const lowIdx = keywords.indexOf("zzz-web-gap-low opportunity keyword");
       expect(highIdx).toBeLessThan(lowIdx);
+
+      // firstFoundAt/source come from the joined appstore_keywords row.
+      const highRow = body.data.find(
+        (r) => r.keyword === "zzz-web-gap-high opportunity keyword",
+      );
+      expect(highRow?.source).toBe("autocomplete");
+      expect(typeof highRow?.firstFoundAt).toBe("number");
     });
 
     it("400 on an invalid trend value", async () => {
@@ -178,10 +204,10 @@ describe("appstore opportunities routes", () => {
   });
 
   describe("GET /appstore/opportunities/:keyword", () => {
-    it("200 returns that keyword's scan history, newest first", async () => {
+    it("200 returns { history, meta }: scan history newest-first + keyword meta", async () => {
       const base = Math.floor(Date.now() / 1000);
       await upsertKeywords([
-        { keyword: "zzz-web-gap-history keyword", genreZone: "health", source: "seed" },
+        { keyword: "zzz-web-gap-history keyword", genreZone: "health", source: "pipeline" },
       ]);
       await insertScan(
         makeScan({ keyword: "zzz-web-gap-history keyword", opportunity: 0.2, scannedAt: base - 100 }),
@@ -197,12 +223,39 @@ describe("appstore opportunities routes", () => {
       );
       expect(res.status).toBe(200);
 
-      const body = await json<{ success: boolean; data: OpportunityRow[] }>(res);
+      const body = await json<{ success: boolean; data: ScanHistoryData }>(res);
       expect(body.success).toBe(true);
-      expect(body.data).toHaveLength(2);
-      expect(body.data[0]?.scannedAt).toBe(base);
-      expect(body.data[1]?.scannedAt).toBe(base - 100);
-      expect(body.data.every((r) => r.keyword === "zzz-web-gap-history keyword")).toBe(true);
+      expect(body.data.history).toHaveLength(2);
+      expect(body.data.history[0]?.scannedAt).toBe(base);
+      expect(body.data.history[1]?.scannedAt).toBe(base - 100);
+      expect(
+        body.data.history.every((r) => r.keyword === "zzz-web-gap-history keyword"),
+      ).toBe(true);
+
+      expect(body.data.meta.keyword).toBe("zzz-web-gap-history keyword");
+      expect(body.data.meta.source).toBe("pipeline");
+      expect(typeof body.data.meta.firstFoundAt).toBe("number");
+    });
+
+    it("200 returns meta with null firstFoundAt/source when the keyword has no corpus row", async () => {
+      const base = Math.floor(Date.now() / 1000);
+      // Insert a scan with no corresponding appstore_keywords row — the
+      // history endpoint has no NOT NULL / FK dependency on the corpus.
+      await insertScan(
+        makeScan({ keyword: "zzz-web-gap-history keyword", opportunity: 0.2, scannedAt: base }),
+      );
+
+      const app = makeApp();
+      const res = await get(
+        app,
+        `/appstore/opportunities/${encodeURIComponent("zzz-web-gap-history keyword")}`,
+      );
+      expect(res.status).toBe(200);
+
+      const body = await json<{ success: boolean; data: ScanHistoryData }>(res);
+      expect(body.data.history).toHaveLength(1);
+      expect(body.data.meta.firstFoundAt).toBeNull();
+      expect(body.data.meta.source).toBeNull();
     });
   });
 });

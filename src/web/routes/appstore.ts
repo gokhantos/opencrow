@@ -1,7 +1,11 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { createLogger } from "../../logger";
-import { getTopOpportunities, getScanHistory } from "../../sources/appstore/keyword-store";
+import {
+  getTopOpportunities,
+  getScanHistory,
+  getKeywordMeta,
+} from "../../sources/appstore/keyword-store";
 import type { GapTrend } from "../../sources/appstore/keyword-types";
 import {
   getRankings,
@@ -86,8 +90,21 @@ export function createAppStoreRoutes(
       return c.json({ success: false, error: message }, 400);
     }
 
-    const history = await getScanHistory(keyword, parsed.data.limit);
-    return c.json({ success: true, data: history });
+    const [history, meta] = await Promise.all([
+      getScanHistory(keyword, parsed.data.limit),
+      getKeywordMeta(keyword),
+    ]);
+    return c.json({
+      success: true,
+      data: {
+        history,
+        meta: {
+          keyword,
+          firstFoundAt: meta?.firstFoundAt ?? null,
+          source: meta?.source ?? null,
+        },
+      },
+    });
   });
 
   app.get("/appstore/stats", async (c) => {
