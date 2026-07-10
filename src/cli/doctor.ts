@@ -3,6 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { getAppDir, getVersion } from "./prompts.ts";
+import {
+  classifyLogFreshness,
+  coreLogPath,
+  extractNewestLogTimestampMs,
+  readLogTail,
+} from "./log-freshness.ts";
 
 const APP_DIR = getAppDir();
 const ENV_PATH = path.join(APP_DIR, ".env");
@@ -330,6 +336,38 @@ async function checkMonitorProbes(): Promise<CheckResult> {
   return { name: "Monitor probes", status: "pass", message: "df + memory probes available" };
 }
 
+/**
+ * Confirm the core service is actively writing logs — and defuse the common
+ * false alarm where UTC timestamps look "frozen" against a local clock that is
+ * hours ahead. Reads only the tail of the (multi-MB) err.log and compares the
+ * newest ISO-8601 UTC timestamp to now in the same epoch, then reports the age
+ * plus both the UTC stamp and its local equivalent.
+ */
+async function checkLogFreshness(): Promise<CheckResult> {
+  const logPath = coreLogPath();
+  if (!fs.existsSync(logPath)) {
+    return {
+      name: "Log freshness",
+      status: "warn",
+      message: `Core log not found at ${logPath} — service may not have started yet`,
+      repair: "opencrow service core start",
+    };
+  }
+
+  const tail = readLogTail(logPath);
+  if (tail === null) {
+    return {
+      name: "Log freshness",
+      status: "warn",
+      message: `Core log is empty at ${logPath}`,
+    };
+  }
+
+  const newestMs = extractNewestLogTimestampMs(tail);
+  const verdict = classifyLogFreshness(newestMs, Date.now());
+  return { name: "Log freshness", ...verdict };
+}
+
 function printResult(result: CheckResult): void {
   const icon =
     result.status === "pass"
@@ -445,6 +483,7 @@ export async function runDoctor(): Promise<void> {
     checkNeo4j(),
     checkMem0(),
     checkService(),
+    checkLogFreshness(),
     checkDiskSpace(),
     checkMonitorProbes(),
   ]);

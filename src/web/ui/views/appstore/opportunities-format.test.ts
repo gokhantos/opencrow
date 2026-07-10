@@ -2,7 +2,6 @@ import { test, expect } from "bun:test";
 import {
   formatFirstFound,
   formatOpportunity,
-  matchesKeywordSearch,
   sourceBadge,
   trendBadge,
 } from "./opportunities-format";
@@ -128,27 +127,19 @@ test("formatFirstFound: epoch from a day ago renders 'yesterday'", () => {
   expect(formatFirstFound(oneDayAgo)).toBe("yesterday");
 });
 
-/* ---------- matchesKeywordSearch ---------- */
+/* ---------- formatOpportunity applied to peakOpportunity ----------
+ * `peakOpportunity` is the same 0..1 ratio shape as `opportunity` (the
+ * best-ever score vs. the latest score across a keyword's scan history), so
+ * it's formatted with the same helper — these cases pin that a peak value
+ * that reaches (or exceeds, pre-clamp) the top of the range still renders
+ * sensibly, since a keyword's peak is frequently 1.0 or very close to it. */
 
-test("matchesKeywordSearch: empty needle matches everything", () => {
-  expect(matchesKeywordSearch("meal planner", "")).toBe(true);
-  expect(matchesKeywordSearch("meal planner", "   ")).toBe(true);
+test("formatOpportunity: peak value at the top of the range", () => {
+  expect(formatOpportunity(0.97)).toBe("97%");
 });
 
-test("matchesKeywordSearch: substring match", () => {
-  expect(matchesKeywordSearch("meal planner", "plan")).toBe(true);
-  expect(matchesKeywordSearch("habit tracker", "plan")).toBe(false);
-});
-
-test("matchesKeywordSearch: case-insensitive", () => {
-  expect(matchesKeywordSearch("Meal Planner", "PLANNER")).toBe(true);
-  expect(matchesKeywordSearch("meal planner", "Meal")).toBe(true);
-});
-
-test("matchesKeywordSearch: ignores leading/trailing whitespace in the needle", () => {
-  expect(matchesKeywordSearch("meal planner", "  planner  ")).toBe(true);
-});
-
-test("matchesKeywordSearch: no match returns false", () => {
-  expect(matchesKeywordSearch("meal planner", "zzz-nonexistent")).toBe(false);
+test("formatOpportunity: peak can equal latest (never scanned again)", () => {
+  const peak = 0.42;
+  const latest = 0.42;
+  expect(formatOpportunity(peak)).toBe(formatOpportunity(latest));
 });

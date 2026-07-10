@@ -79,16 +79,3 @@ export function formatFirstFound(epochSeconds: number | null): string {
   if (epochSeconds === null || !Number.isFinite(epochSeconds)) return "—";
   return timeAgo(epochSeconds);
 }
-
-// ─── Search filter ──────────────────────────────────────────────────────────
-
-/**
- * Case-insensitive substring match for the Opportunities search box. Kept
- * pure/exported (rather than inlined in the component) so the filter
- * predicate is unit-testable independent of any DOM/React rendering.
- */
-export function matchesKeywordSearch(keyword: string, needle: string): boolean {
-  const trimmed = needle.trim().toLowerCase();
-  if (!trimmed) return true;
-  return keyword.toLowerCase().includes(trimmed);
-}

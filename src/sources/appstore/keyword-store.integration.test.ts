@@ -8,6 +8,7 @@ import {
   insertScan,
   getLatestScan,
   getTopOpportunities,
+  queryOpportunities,
   getScanHistory,
   getMostRecentScanAt,
   countScansSince,
@@ -52,6 +53,13 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-expansion-diverse",
   "zzz-gap-meta-fields",
   "zzz-keyword-meta",
+  "zzz-peak-rank-old-glory",
+  "zzz-peak-rank-steady",
+  "zzz-search-match-nonce",
+  "zzz-search-nomatch-decoy",
+  "zzz-page-test-a",
+  "zzz-page-test-b",
+  "zzz-page-test-c",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -258,6 +266,130 @@ describe("keyword-store", () => {
       expect(row).toBeDefined();
       expect(row?.source).toBe("autocomplete");
       expect(typeof row?.firstFoundAt).toBe("number");
+    });
+  });
+
+  describe("queryOpportunities", () => {
+    it("ranks by peak historical opportunity when sort=peak, by latest scan when sort=latest", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-peak-rank-old-glory", genreZone: "health", source: "seed" },
+        { keyword: "zzz-peak-rank-steady", genreZone: "health", source: "seed" },
+      ]);
+      // old-glory: peaked long ago, has since collapsed to near-zero demand.
+      await insertScan(
+        makeScan({ keyword: "zzz-peak-rank-old-glory", opportunity: 0.95, scannedAt: now - 1000 }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-peak-rank-old-glory", opportunity: 0.05, scannedAt: now }),
+      );
+      // steady: only ever scanned once, mid-range opportunity.
+      await insertScan(
+        makeScan({ keyword: "zzz-peak-rank-steady", opportunity: 0.5, scannedAt: now }),
+      );
+
+      // Scoped via `search` to just these two nonce keywords so ordering
+      // assertions are unaffected by the shared DB's real corpus.
+      const latestRanked = await queryOpportunities({
+        limit: 50,
+        search: "zzz-peak-rank",
+        sort: "latest",
+      });
+      const latestKeywords = latestRanked.rows.map((r) => r.keyword);
+      // By latest-scan opportunity, steady (0.5) outranks old-glory's
+      // collapsed latest scan (0.05).
+      expect(latestKeywords.indexOf("zzz-peak-rank-steady")).toBeLessThan(
+        latestKeywords.indexOf("zzz-peak-rank-old-glory"),
+      );
+
+      const peakRanked = await queryOpportunities({
+        limit: 50,
+        search: "zzz-peak-rank",
+        sort: "peak",
+      });
+      const peakKeywords = peakRanked.rows.map((r) => r.keyword);
+      // By peak historical opportunity, old-glory's 0.95 all-time-best
+      // outranks steady's flat 0.5.
+      expect(peakKeywords.indexOf("zzz-peak-rank-old-glory")).toBeLessThan(
+        peakKeywords.indexOf("zzz-peak-rank-steady"),
+      );
+
+      const oldGlory = peakRanked.rows.find((r) => r.keyword === "zzz-peak-rank-old-glory");
+      expect(oldGlory?.peakOpportunity).toBeCloseTo(0.95, 2);
+      expect(oldGlory?.opportunity).toBeCloseTo(0.05, 2);
+      const steady = peakRanked.rows.find((r) => r.keyword === "zzz-peak-rank-steady");
+      expect(steady?.peakOpportunity).toBeCloseTo(0.5, 2);
+      expect(steady?.opportunity).toBeCloseTo(0.5, 2);
+    });
+
+    it("filters by case-insensitive keyword substring search, server-side across the whole corpus", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-search-match-nonce", genreZone: "health", source: "seed" },
+        { keyword: "zzz-search-nomatch-decoy", genreZone: "health", source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-search-match-nonce", opportunity: 0.4, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-search-nomatch-decoy", opportunity: 0.4, scannedAt: now }),
+      );
+
+      const result = await queryOpportunities({ limit: 50, search: "ZZZ-Search-Match" });
+      const keywords = result.rows.map((r) => r.keyword);
+      expect(keywords).toContain("zzz-search-match-nonce");
+      expect(keywords).not.toContain("zzz-search-nomatch-decoy");
+      // total reflects the filtered corpus-wide match count, not just this page.
+      expect(result.total).toBe(1);
+    });
+
+    it("paginates via limit/offset and reports the whole-corpus total", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-page-test-a", genreZone: "health", source: "seed" },
+        { keyword: "zzz-page-test-b", genreZone: "health", source: "seed" },
+        { keyword: "zzz-page-test-c", genreZone: "health", source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-page-test-a", opportunity: 0.9, scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-page-test-b", opportunity: 0.6, scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-page-test-c", opportunity: 0.3, scannedAt: now }));
+
+      const page0 = await queryOpportunities({
+        limit: 1,
+        offset: 0,
+        search: "zzz-page-test",
+        sort: "latest",
+      });
+      expect(page0.total).toBe(3);
+      expect(page0.rows).toHaveLength(1);
+      expect(page0.rows[0]?.keyword).toBe("zzz-page-test-a");
+
+      const page1 = await queryOpportunities({
+        limit: 1,
+        offset: 1,
+        search: "zzz-page-test",
+        sort: "latest",
+      });
+      expect(page1.total).toBe(3);
+      expect(page1.rows[0]?.keyword).toBe("zzz-page-test-b");
+
+      const page2 = await queryOpportunities({
+        limit: 1,
+        offset: 2,
+        search: "zzz-page-test",
+        sort: "latest",
+      });
+      expect(page2.rows[0]?.keyword).toBe("zzz-page-test-c");
+
+      // Past the end of the matching set: empty page, same total.
+      const page3 = await queryOpportunities({
+        limit: 1,
+        offset: 3,
+        search: "zzz-page-test",
+        sort: "latest",
+      });
+      expect(page3.total).toBe(3);
+      expect(page3.rows).toHaveLength(0);
     });
   });
 

@@ -13,22 +13,32 @@ import type { GapTrend, TopApp } from "./keyword-types";
 export const REVIEWS_REF = 500_000;
 export const VELOCITY_REF = 400;
 
+// Weight on the recent-velocity momentum term relative to the lifetime
+// baseline (both measured in ratings/day). At 1.0 a review gained in the recent
+// window counts the same as one implied by the lifetime average rate — an
+// unbiased blend. In the live corpus measured velocity is ≈0 for the vast
+// majority of keywords (most apps gain no reviews in a ~12h window), so this
+// term is a momentum BONUS layered on top of the baseline for the occasional
+// heating field, never the primary discriminator.
+export const VELOCITY_WEIGHT = 1.0;
+
 // Reference demand for opportunity normalization, in ratings/day.
 //
-// `demand` is now a review-VELOCITY mean (recent ratings/day across the
-// title-matched incumbents), not a lifetime average. The old DEMAND_REF=50
-// saturated: with `norm(x) = log1p(x)/log1p(ref)`, log1p(50)=3.93, so a field
-// with mean velocity ≥ ~50/day mapped to ≈1.0 and demand stopped
-// discriminating — opportunity was driven by competitiveness alone.
+// `demand` blends a lifetime-review-mass baseline (mean lifetime ratings/day
+// across the title-matched incumbents — a floor reflecting the market pull an
+// established field already has, never 0 for a real app with reviews) with a
+// recent-velocity momentum bonus. It is deliberately NOT pure velocity: an
+// earlier overhaul set demand = mean recent ratings/day, which collapsed to 0
+// for ~1,176 of 1,213 live keywords — most apps gain 0 reviews in a 12h window,
+// so velocity, and thus demand and opportunity, flatlined at 0 and stopped
+// discriminating (the opposite failure of the older everything-saturates model).
 //
-// Real matched-incumbent velocities span a wide range: an open/toy field sits
-// at fractions of a rating/day, a moderately-warm keyword at 5–50/day, and a
-// genuinely hot keyword's leaders collectively add hundreds/day. Anchoring the
-// reference at 1000 ratings/day (a near-maximal-demand keyword) keeps the whole
-// realistic 0…few-hundred range on the responsive part of the log curve
-// (norm(2)≈0.16, norm(13)≈0.38, norm(40)≈0.54, norm(180)≈0.75) instead of
-// pinning everything to 1.0 — demand discriminates again.
-export const DEMAND_REF = 1_000;
+// The blended baseline spreads well over the real corpus (mean lifetime
+// ratings/day per keyword: p25≈0.6, p50≈6, p75≈19, p90≈48). Anchoring the log
+// reference at 80 ratings/day keeps that whole range on the responsive part of
+// the curve (norm(6)≈0.45, norm(19)≈0.68, norm(48)≈0.89, norm(80)=1.0), so
+// demand normalizes to a ~[0.1..0.9] spread instead of pinning to 0 or 1.
+export const DEMAND_REF = 80;
 
 // Update-staleness window (days since the leader's currentVersionReleaseDate):
 // a leader shipped in the last month reads as actively maintained (0 staleness);
@@ -46,19 +56,27 @@ const norm = (x: number, ref: number): number => clamp01(Math.log1p(x) / Math.lo
 const appStrength = (a: TopApp): number =>
   0.6 * norm(a.reviews, REVIEWS_REF) + 0.4 * norm(a.ratingsPerDay, VELOCITY_REF);
 
-// Live demand signal for one app: the recent cross-scan velocity when it was
-// computable, else the lifetime ratings/day fallback.
-const appVelocity = (a: TopApp): number => a.recentVelocity ?? a.ratingsPerDay;
-
 /**
- * Mean recent review velocity (ratings/day) across `apps`. Callers pass the
- * title-matched incumbents (the apps actually serving this search phrase), so
- * this measures demand expressed at the apps a new entrant would compete with —
- * not the whole unfiltered top-N.
+ * Blended demand (ratings/day) across `apps` — the title-matched incumbents the
+ * caller passes (the apps actually serving this search phrase), so demand is
+ * measured at the apps a new entrant would compete with, not the whole top-N.
+ *
+ * Two additive components, both in ratings/day:
+ *  - baseline: mean LIFETIME ratings/day (reviews / age) — a floor reflecting
+ *    the market pull an established field already has. Never 0 for a real app
+ *    with reviews; this is what discriminates demand across the corpus.
+ *  - velocity: mean RECENT ratings/day since the prior scan (`recentVelocity`) —
+ *    a momentum bonus. Apps with no measured velocity contribute 0 here (they do
+ *    NOT drag demand toward 0), so a field that merely gained no reviews this
+ *    window keeps its lifetime-derived demand instead of collapsing.
+ *
+ * demand = baseline + VELOCITY_WEIGHT * velocity.
  */
 export function computeDemand(apps: readonly TopApp[]): number {
   if (apps.length === 0) return 0;
-  return apps.reduce((s, a) => s + appVelocity(a), 0) / apps.length;
+  const baseline = apps.reduce((s, a) => s + a.ratingsPerDay, 0) / apps.length;
+  const velocity = apps.reduce((s, a) => s + (a.recentVelocity ?? 0), 0) / apps.length;
+  return baseline + VELOCITY_WEIGHT * velocity;
 }
 
 export function computeCompetitiveness(apps: readonly TopApp[]): number {

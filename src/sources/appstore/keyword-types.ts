@@ -26,7 +26,7 @@ export interface KeywordGapProfile {
   readonly keyword: string;
   readonly store: "app" | "play";
   readonly competitiveness: number; // 0..100
-  readonly demand: number; // mean ratingsPerDay across topApps
+  readonly demand: number; // lifetime ratings/day baseline + recent-velocity momentum, over matched incumbents
   readonly incumbentWeakness: number; // 0..1
   readonly opportunity: number; // 0..1  (== whitespace)
   readonly trend: GapTrend;
