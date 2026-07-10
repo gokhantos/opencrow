@@ -550,15 +550,19 @@ export const appstoreKeywordGapConfigSchema = z
     // Master switch. Default ON.
     enabled: z.boolean().default(true),
     // Gap between sweep cycles (run-then-reschedule), driven by its own
-    // timer independent of the ranking tick. Default 5 minutes — tunable
-    // down to 1 minute via the `min`.
-    scanIntervalMs: z.number().int().min(60_000).default(300_000),
+    // timer independent of the ranking tick. Default 1 minute — the floor —
+    // so the scanner sweeps as many times per day as the throttle allows.
+    // (Each sweep still spaces its per-keyword iTunes calls by
+    // REQUEST_DELAY_MS, so ~25 keywords/sweep fits inside a 1-minute window;
+    // a single-flight guard skips the next tick if a sweep runs long.)
+    scanIntervalMs: z.number().int().min(60_000).default(60_000),
     // How many keyword scans may be spent per rolling 24h window — a safety
     // ceiling, not a per-cycle spend. Enforced against a live count of
     // `appstore_keyword_scans` rows from the last 24h; a sweep cycle is
-    // skipped once the ceiling is reached. Raised well above the old
-    // once-daily default so it doesn't idle the scanner at the new cadence.
-    dailyKeywordBudget: z.number().int().min(1).max(20_000).default(5000),
+    // skipped once the ceiling is reached. Set above the near-continuous
+    // 1-minute cadence's daily throughput (~25/min ≈ 36k/day) so the ceiling
+    // is a runaway backstop, not a routine throttle.
+    dailyKeywordBudget: z.number().int().min(1).max(50_000).default(40_000),
     // How many of the globally stalest active keywords to scan per sweep
     // cycle.
     keywordsPerSweep: z.number().int().min(1).max(500).default(25),
@@ -585,8 +589,8 @@ export const appstoreKeywordGapConfigSchema = z
   })
   .default({
     enabled: true,
-    scanIntervalMs: 300_000,
-    dailyKeywordBudget: 5000,
+    scanIntervalMs: 60_000,
+    dailyKeywordBudget: 40_000,
     keywordsPerSweep: 25,
     topN: 20,
     demandWeight: 1,
