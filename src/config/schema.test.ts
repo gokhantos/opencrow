@@ -421,7 +421,7 @@ describe("appstoreKeywordGap config", () => {
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);
     expect(g.corpusDiscovery.enabled).toBe(true);
-    expect(g.corpusDiscovery.maxMinedPerCycle).toBe(50);
+    expect(g.corpusDiscovery.maxMinedPerCycle).toBe(500);
   });
 
   test("is tunable via config", () => {

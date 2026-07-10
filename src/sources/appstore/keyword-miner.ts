@@ -30,7 +30,7 @@ const log = createLogger("appstore:keyword-miner");
 const MIN_TOKEN_LENGTH = 3;
 
 /** How many ranking rows to scan for candidates by default (see `mineKeywords`). */
-const DEFAULT_RANKINGS_SCAN_LIMIT = 500;
+const DEFAULT_RANKINGS_SCAN_LIMIT = 3000;
 
 /**
  * Purely grammatical connector words dropped from the token stream before
