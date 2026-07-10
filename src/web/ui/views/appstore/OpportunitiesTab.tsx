@@ -1,8 +1,16 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "../../api";
-import { EmptyState, LoadingState } from "../../components";
+import { EmptyState, LoadingState, SearchBar } from "../../components";
 import { cn } from "../../lib/cn";
-import { formatOpportunity, trendBadge } from "./opportunities-format";
+import {
+  formatFirstFound,
+  formatOpportunity,
+  matchesKeywordSearch,
+  sourceBadge,
+  trendBadge,
+} from "./opportunities-format";
+import type { OpportunityMeta, ScanHistoryPoint } from "./OpportunityTrendChart";
+import { OpportunityTrendChart } from "./OpportunityTrendChart";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,6 +28,19 @@ interface OpportunityRow {
   readonly topAppReviews: number;
   readonly avgRating: number;
   readonly avgAgeDays: number;
+  /** Epoch seconds the keyword first entered the corpus, or `null` if unknown. */
+  readonly firstFoundAt: number | null;
+  /** Keyword provenance, or `null` if unknown / not yet backfilled. */
+  readonly source: string | null;
+}
+
+/** Response shape of `GET /appstore/opportunities/:keyword`. */
+interface HistoryResponse {
+  readonly success: boolean;
+  readonly data: {
+    readonly history: readonly ScanHistoryPoint[];
+    readonly meta: OpportunityMeta;
+  };
 }
 
 type SortKey =
@@ -28,7 +49,8 @@ type SortKey =
   | "competitiveness"
   | "demand"
   | "incumbentWeakness"
-  | "trend";
+  | "trend"
+  | "firstFoundAt";
 type SortDir = "asc" | "desc";
 
 // ─── Watchlist (localStorage) ──────────────────────────────────────────────────
@@ -73,6 +95,12 @@ function compareRows(a: OpportunityRow, b: OpportunityRow, key: SortKey): number
   if (key === "keyword" || key === "trend") {
     return a[key].localeCompare(b[key]);
   }
+  if (key === "firstFoundAt") {
+    // Unknown first-found sorts as "oldest" so real dates always outrank it.
+    const av = a.firstFoundAt ?? -Infinity;
+    const bv = b.firstFoundAt ?? -Infinity;
+    return av - bv;
+  }
   return a[key] - b[key];
 }
 
@@ -85,54 +113,8 @@ const COLUMNS: ReadonlyArray<{ readonly key: SortKey; readonly label: string }> 
   { key: "demand", label: "Demand" },
   { key: "incumbentWeakness", label: "Incumbent Weakness" },
   { key: "trend", label: "Trend" },
+  { key: "firstFoundAt", label: "First Found" },
 ];
-
-// ─── Sparkline (lazy, per-row expand) ──────────────────────────────────────────
-
-interface SparklineProps {
-  readonly history: readonly OpportunityRow[];
-}
-
-function Sparkline({ history }: SparklineProps) {
-  if (history.length < 2) {
-    return (
-      <span className="text-xs text-faint">Not enough scan history for a trend chart yet.</span>
-    );
-  }
-
-  // History arrives newest-first (ORDER BY scanned_at DESC); plot oldest→newest.
-  const ordered = [...history].reverse();
-  const values = ordered.map((p) => p.opportunity);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const width = 220;
-  const height = 36;
-  const step = ordered.length > 1 ? width / (ordered.length - 1) : 0;
-  const points = values
-    .map((v, i) => {
-      const x = i * step;
-      const y = height - ((v - min) / range) * height;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-
-  return (
-    <div className="flex items-center gap-3">
-      <svg
-        width={width}
-        height={height}
-        viewBox={`0 0 ${width} ${height}`}
-        role="img"
-        aria-label="Opportunity trend sparkline"
-        className="text-accent shrink-0"
-      >
-        <polyline points={points} fill="none" stroke="currentColor" strokeWidth={1.5} />
-      </svg>
-      <span className="text-xs text-faint font-mono">{ordered.length} scans</span>
-    </div>
-  );
-}
 
 // ─── OpportunitiesTab (main) ───────────────────────────────────────────────────
 
@@ -143,8 +125,16 @@ export default function OpportunitiesTab() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [watchlist, setWatchlist] = useState<Set<string>>(() => loadWatchlist());
   const [expandedKeyword, setExpandedKeyword] = useState<string | null>(null);
-  const [history, setHistory] = useState<Record<string, readonly OpportunityRow[]>>({});
+  const [history, setHistory] = useState<
+    Record<
+      string,
+      { readonly history: readonly ScanHistoryPoint[]; readonly meta: OpportunityMeta }
+    >
+  >({});
   const [historyLoading, setHistoryLoading] = useState<string | null>(null);
+
+  const [search, setSearch] = useState("");
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -163,6 +153,14 @@ export default function OpportunitiesTab() {
     setLoading(true);
     void fetchAll();
   }, [fetchAll]);
+
+  // Abort any in-flight per-row history fetch on unmount so a slow response
+  // can't resolve into state updates after the component is gone.
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
 
   function handleSort(key: SortKey): void {
     if (key === sortKey) {
@@ -188,24 +186,34 @@ export default function OpportunitiesTab() {
 
   async function toggleExpand(keyword: string): Promise<void> {
     if (expandedKeyword === keyword) {
+      abortControllerRef.current?.abort();
       setExpandedKeyword(null);
       return;
     }
+
+    // Only one row is ever expanded at a time — abort the previous row's
+    // in-flight fetch (if any) before starting this one.
+    abortControllerRef.current?.abort();
     setExpandedKeyword(keyword);
     if (history[keyword]) return;
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setHistoryLoading(keyword);
     try {
-      const res = await apiFetch<{ success: boolean; data: OpportunityRow[] }>(
+      const res = await apiFetch<HistoryResponse>(
         `/api/appstore/opportunities/${encodeURIComponent(keyword)}?limit=30`,
+        { signal: controller.signal },
       );
+      if (controller.signal.aborted) return;
       if (res.success) {
         setHistory((prev) => ({ ...prev, [keyword]: res.data }));
       }
     } catch {
-      // ignore — the sparkline is a nice-to-have, not core table data
+      if (controller.signal.aborted) return;
+      // ignore — the trend chart is a nice-to-have, not core table data
     } finally {
-      setHistoryLoading(null);
+      if (!controller.signal.aborted) setHistoryLoading(null);
     }
   }
 
@@ -217,6 +225,11 @@ export default function OpportunitiesTab() {
     });
     return copy;
   }, [rows, sortKey, sortDir]);
+
+  const filtered = useMemo(
+    () => sorted.filter((row) => matchesKeywordSearch(row.keyword, search)),
+    [sorted, search],
+  );
 
   if (loading) return <LoadingState message="Loading keyword opportunities…" />;
 
@@ -230,99 +243,141 @@ export default function OpportunitiesTab() {
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-border-2">
-      <table className="w-full text-sm border-collapse">
-        <thead>
-          <tr className="border-b border-border-2 bg-bg-1">
-            <th className="w-8" aria-hidden="true" />
-            {COLUMNS.map((col) => (
-              <th
-                key={col.key}
-                scope="col"
-                aria-sort={
-                  sortKey === col.key ? (sortDir === "asc" ? "ascending" : "descending") : "none"
-                }
-                className="text-left text-xs font-semibold text-faint uppercase tracking-wider px-3 py-2.5 cursor-pointer select-none whitespace-nowrap hover:text-muted"
-                onClick={() => handleSort(col.key)}
-              >
-                {col.label}
-                {sortKey === col.key && (
-                  <span className="ml-1 text-accent" aria-hidden="true">
-                    {sortDir === "asc" ? "▲" : "▼"}
-                  </span>
-                )}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((row) => {
-            const starred = watchlist.has(row.keyword);
-            const badge = trendBadge(row.trend);
-            const isExpanded = expandedKeyword === row.keyword;
+    <div className="flex flex-col gap-3">
+      <div className="max-w-sm">
+        <SearchBar value={search} onChange={setSearch} placeholder="Search keywords…" />
+      </div>
 
-            return (
-              <Fragment key={row.keyword}>
-                <tr
-                  className="border-b border-border-2/50 hover:bg-bg-1 transition-colors duration-150 cursor-pointer"
-                  onClick={() => void toggleExpand(row.keyword)}
-                  aria-expanded={isExpanded}
+      <div className="overflow-x-auto rounded-lg border border-border-2">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="border-b border-border-2 bg-bg-1">
+              <th className="w-8" aria-hidden="true" />
+              {COLUMNS.map((col) => (
+                <th
+                  key={col.key}
+                  scope="col"
+                  aria-sort={
+                    sortKey === col.key ? (sortDir === "asc" ? "ascending" : "descending") : "none"
+                  }
+                  className="text-left text-xs font-semibold text-faint uppercase tracking-wider px-3 py-2.5 cursor-pointer select-none whitespace-nowrap hover:text-muted"
+                  onClick={() => handleSort(col.key)}
                 >
-                  <td className="px-2 py-2 text-center">
-                    <button
-                      type="button"
-                      aria-label={
-                        starred
-                          ? `Remove ${row.keyword} from watchlist`
-                          : `Add ${row.keyword} to watchlist`
-                      }
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleStar(row.keyword);
-                      }}
-                      className={cn(
-                        "cursor-pointer bg-transparent border-none p-0.5 text-base leading-none",
-                        starred ? "text-yellow-400" : "text-faint hover:text-muted",
-                      )}
-                    >
-                      {starred ? "★" : "☆"}
-                    </button>
-                  </td>
-                  <td className="px-3 py-2 font-medium text-foreground">{row.keyword}</td>
-                  <td className="px-3 py-2 font-mono text-foreground">
-                    {formatOpportunity(row.opportunity)}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-muted">
-                    {formatCompetitiveness(row.competitiveness)}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-muted">{formatDemand(row.demand)}</td>
-                  <td className="px-3 py-2 font-mono text-muted">
-                    {formatOpportunity(row.incumbentWeakness)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span
-                      className={cn("px-1.5 py-0.5 rounded text-xs font-medium", badge.className)}
-                    >
-                      {badge.label}
+                  {col.label}
+                  {sortKey === col.key && (
+                    <span className="ml-1 text-accent" aria-hidden="true">
+                      {sortDir === "asc" ? "▲" : "▼"}
                     </span>
-                  </td>
-                </tr>
-                {isExpanded && (
-                  <tr className="bg-bg-1/50 border-b border-border-2/50">
-                    <td colSpan={COLUMNS.length + 1} className="px-4 py-3">
-                      {historyLoading === row.keyword ? (
-                        <span className="text-xs text-faint">Loading trend history…</span>
-                      ) : (
-                        <Sparkline history={history[row.keyword] ?? []} />
-                      )}
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            );
-          })}
-        </tbody>
-      </table>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={COLUMNS.length + 1}
+                  className="px-3 py-6 text-center text-sm text-faint"
+                >
+                  No keywords match &ldquo;{search}&rdquo;.
+                </td>
+              </tr>
+            ) : (
+              filtered.map((row) => {
+                const starred = watchlist.has(row.keyword);
+                const badge = trendBadge(row.trend);
+                const source = sourceBadge(row.source);
+                const isExpanded = expandedKeyword === row.keyword;
+                const rowHistory = history[row.keyword];
+
+                return (
+                  <Fragment key={row.keyword}>
+                    <tr
+                      className="border-b border-border-2/50 hover:bg-bg-1 transition-colors duration-150 cursor-pointer"
+                      onClick={() => void toggleExpand(row.keyword)}
+                      aria-expanded={isExpanded}
+                    >
+                      <td className="px-2 py-2 text-center">
+                        <button
+                          type="button"
+                          aria-label={
+                            starred
+                              ? `Remove ${row.keyword} from watchlist`
+                              : `Add ${row.keyword} to watchlist`
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleStar(row.keyword);
+                          }}
+                          className={cn(
+                            "cursor-pointer bg-transparent border-none p-0.5 text-base leading-none",
+                            starred ? "text-yellow-400" : "text-faint hover:text-muted",
+                          )}
+                        >
+                          {starred ? "★" : "☆"}
+                        </button>
+                      </td>
+                      <td className="px-3 py-2 font-medium text-foreground">{row.keyword}</td>
+                      <td className="px-3 py-2 font-mono text-foreground">
+                        {formatOpportunity(row.opportunity)}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-muted">
+                        {formatCompetitiveness(row.competitiveness)}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-muted">{formatDemand(row.demand)}</td>
+                      <td className="px-3 py-2 font-mono text-muted">
+                        {formatOpportunity(row.incumbentWeakness)}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={cn(
+                            "px-1.5 py-0.5 rounded text-xs font-medium",
+                            badge.className,
+                          )}
+                        >
+                          {badge.label}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-1.5 whitespace-nowrap">
+                          <span className="font-mono text-muted">
+                            {formatFirstFound(row.firstFoundAt)}
+                          </span>
+                          <span
+                            className={cn(
+                              "px-1.5 py-0.5 rounded text-xs font-medium",
+                              source.className,
+                            )}
+                          >
+                            {source.label}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="bg-bg-1/50 border-b border-border-2/50">
+                        <td colSpan={COLUMNS.length + 1} className="px-4 py-3">
+                          {historyLoading === row.keyword ? (
+                            <span className="text-xs text-faint">Loading trend history…</span>
+                          ) : rowHistory ? (
+                            <OpportunityTrendChart
+                              history={rowHistory.history}
+                              meta={rowHistory.meta}
+                            />
+                          ) : (
+                            <span className="text-xs text-faint">Not enough scan history yet.</span>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

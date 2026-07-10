@@ -41,6 +41,18 @@ export interface KeywordScanRow {
   readonly topApps: readonly TopApp[];
 }
 
+/**
+ * `KeywordScanRow` augmented with the keyword corpus's `created_at`/`source`
+ * (from `appstore_keywords`, joined by `getTopOpportunities`). Both are
+ * `null` when the scan has no corresponding corpus row (shouldn't happen in
+ * practice, since scans are only ever inserted for corpus keywords, but the
+ * LEFT JOIN makes it possible) rather than surfaced as an unusable zero/"".
+ */
+export interface OpportunityRow extends KeywordScanRow {
+  readonly firstFoundAt: number | null;
+  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | null;
+}
+
 /** Raw column shape returned by `SELECT * FROM appstore_keyword_scans`. */
 interface KeywordScanDbRow {
   readonly id: number | string;
@@ -59,6 +71,12 @@ interface KeywordScanDbRow {
   readonly top_apps: unknown;
 }
 
+/** Raw column shape returned by `getTopOpportunities`'s scan+corpus join. */
+interface OpportunityDbRow extends KeywordScanDbRow {
+  readonly keyword_created_at: number | string | null;
+  readonly keyword_source: string | null;
+}
+
 export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
   return {
     id: Number(row.id),
@@ -74,6 +92,17 @@ export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
     avgRating: Number(row.avg_rating),
     avgAgeDays: Number(row.avg_age_days),
     topApps: parseJson<readonly TopApp[]>(row.top_apps, []),
+  };
+}
+
+export function rowToOpportunity(row: OpportunityDbRow): OpportunityRow {
+  return {
+    ...rowToScan(row),
+    firstFoundAt:
+      row.keyword_created_at === null || row.keyword_created_at === undefined
+        ? null
+        : Number(row.keyword_created_at),
+    source: (row.keyword_source as OpportunityRow["source"]) ?? null,
   };
 }
 
@@ -163,13 +192,13 @@ export async function getTopOpportunities(opts: {
   limit: number;
   genreZone?: string;
   trend?: GapTrend;
-}): Promise<readonly KeywordScanRow[]> {
+}): Promise<readonly OpportunityRow[]> {
   const db = getDb();
   const genreZone = opts.genreZone ?? null;
   const trend = opts.trend ?? null;
 
   const rows = await db`
-    SELECT s.*
+    SELECT s.*, k.created_at AS keyword_created_at, k.source AS keyword_source
     FROM (
       SELECT DISTINCT ON (keyword, store) *
       FROM appstore_keyword_scans
@@ -181,7 +210,7 @@ export async function getTopOpportunities(opts: {
     ORDER BY s.opportunity DESC
     LIMIT ${opts.limit}
   `;
-  return (rows as KeywordScanDbRow[]).map(rowToScan);
+  return (rows as OpportunityDbRow[]).map(rowToOpportunity);
 }
 
 /**
@@ -343,4 +372,30 @@ export async function getScanHistory(
     LIMIT ${limit}
   `;
   return (rows as KeywordScanDbRow[]).map(rowToScan);
+}
+
+/** First-found timestamp + source for one keyword, from `appstore_keywords`. */
+export interface KeywordMeta {
+  readonly firstFoundAt: number;
+  readonly source: "seed" | "autocomplete" | "manual" | "pipeline";
+}
+
+/**
+ * Corpus metadata (`created_at`, `source`) for a single keyword — backs the
+ * `GET /appstore/opportunities/:keyword` history endpoint's `meta`, so the
+ * dashboard can mark a keyword's "first found" date and origin alongside its
+ * scan-history chart. Returns `null` if the keyword has no corpus row (e.g.
+ * it was never seeded/discovered, only ever scanned directly).
+ */
+export async function getKeywordMeta(keyword: string): Promise<KeywordMeta | null> {
+  const db = getDb();
+  const rows = await db`
+    SELECT created_at, source FROM appstore_keywords WHERE keyword = ${keyword}
+  `;
+  const row = (rows as ReadonlyArray<{ created_at: number | string; source: string }>)[0];
+  if (!row) return null;
+  return {
+    firstFoundAt: Number(row.created_at),
+    source: row.source as KeywordMeta["source"],
+  };
 }

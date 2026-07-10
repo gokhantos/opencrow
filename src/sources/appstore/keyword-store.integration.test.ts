@@ -15,6 +15,7 @@ import {
   keywordsExist,
   getDiverseZoneSample,
   getExpansionSeeds,
+  getKeywordMeta,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 
@@ -49,6 +50,8 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-diverse-zone-b-fresh",
   "zzz-expansion-winner",
   "zzz-expansion-diverse",
+  "zzz-gap-meta-fields",
+  "zzz-keyword-meta",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -239,6 +242,40 @@ describe("keyword-store", () => {
       expect(keywords).toContain("zzz-gap-filter-combo-match");
       expect(keywords).not.toContain("zzz-gap-filter-combo-decoy-trend");
       expect(keywords).not.toContain("zzz-gap-filter-combo-decoy-genre");
+    });
+  });
+
+  describe("getTopOpportunities keyword meta", () => {
+    it("surfaces firstFoundAt + source from the joined corpus row", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-gap-meta-fields", genreZone: "health", source: "autocomplete" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-gap-meta-fields", scannedAt: now }));
+
+      const top = await getTopOpportunities({ limit: 50 });
+      const row = top.find((r) => r.keyword === "zzz-gap-meta-fields");
+      expect(row).toBeDefined();
+      expect(row?.source).toBe("autocomplete");
+      expect(typeof row?.firstFoundAt).toBe("number");
+    });
+  });
+
+  describe("getKeywordMeta", () => {
+    it("returns firstFoundAt + source for a keyword in the corpus", async () => {
+      await upsertKeywords([
+        { keyword: "zzz-keyword-meta", genreZone: "health", source: "manual" },
+      ]);
+
+      const meta = await getKeywordMeta("zzz-keyword-meta");
+      expect(meta).not.toBeNull();
+      expect(meta?.source).toBe("manual");
+      expect(typeof meta?.firstFoundAt).toBe("number");
+    });
+
+    it("returns null for a keyword not in the corpus", async () => {
+      const meta = await getKeywordMeta("zzz-keyword-meta-absent");
+      expect(meta).toBeNull();
     });
   });
 

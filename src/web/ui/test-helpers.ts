@@ -65,3 +65,40 @@ export function click(el: Element) {
     (el as HTMLElement).click();
   });
 }
+
+/**
+ * Types into a controlled `<input>`/`<textarea>` and fires its React
+ * `onChange`.
+ *
+ * Why not just `el.value = x; el.dispatchEvent(new Event("input"))`? That's
+ * the standard jsdom trick, but it doesn't work in this project's happy-dom
+ * setup: react-dom's `isInputEventSupported` feature detection (which native
+ * event types react-dom treats as "value changed" signals) runs at
+ * `react-dom/client` **module-import time** — before this file's own
+ * happy-dom `window`/`document` globals exist, since those static imports
+ * execute before this module's body runs. It gets permanently cached as
+ * `false` for the process, so react-dom falls back to a legacy IE-era
+ * polyfill path (focus/keyup + `attachEvent`) that never fires in a modern
+ * DOM. Reordering imports doesn't help — every module here that needs
+ * happy-dom's globals set up first would have to become an async dynamic
+ * `import()`, which would ripple out to every call site of `mount`.
+ *
+ * Instead, this reads React's internal `__reactProps$*` key that React
+ * stores directly on the DOM node (the same object `mount`'s rendered tree
+ * wires up as the node's current props) and calls `onChange` with a minimal
+ * event-shaped object, bypassing the native event pipeline entirely.
+ */
+export function typeIntoInput(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const propsKey = Object.keys(el).find((k) => k.startsWith("__reactProps$"));
+  if (!propsKey) {
+    throw new Error("typeIntoInput: no React props found on element (is it mounted?)");
+  }
+  const onChange = (el as unknown as Record<string, { onChange?: (e: unknown) => void }>)[propsKey]
+    ?.onChange;
+  if (!onChange) {
+    throw new Error("typeIntoInput: element has no onChange handler — is it a controlled input?");
+  }
+  act(() => {
+    onChange({ target: { value } });
+  });
+}
