@@ -17,6 +17,7 @@ import {
   getDiverseZoneSample,
   getExpansionSeeds,
   getKeywordMeta,
+  getScannedAppNames,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 
@@ -60,6 +61,7 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-page-test-a",
   "zzz-page-test-b",
   "zzz-page-test-c",
+  "zzz-scanned-app-names-fixture",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -583,6 +585,54 @@ describe("keyword-store", () => {
       // No duplicates, even though a large diverse sample could otherwise
       // re-select the winner keyword.
       expect(new Set(keywords).size).toBe(keywords.length);
+    });
+  });
+
+  describe("getScannedAppNames", () => {
+    // Nonce app names embedded in a seeded scan's `top_apps` JSON payload —
+    // distinct enough not to collide with the shared DB's real scan history.
+    const FIXTURE_APP_NAMES = ["Zzz Scanned App Alpha", "Zzz Scanned App Beta"] as const;
+
+    function fixtureTopApp(name: string, id: string): TopApp {
+      return makeTopApp({ id, name });
+    }
+
+    it("returns distinct app names embedded in a seeded scan's top_apps payload", async () => {
+      await upsertKeywords([
+        { keyword: "zzz-scanned-app-names-fixture", genreZone: "health", source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({
+          keyword: "zzz-scanned-app-names-fixture",
+          // Far in the future so this row sorts first under the
+          // `ORDER BY scanned_at DESC` recency window regardless of how
+          // much real, concurrently-scraped scan history already exists in
+          // this shared DB.
+          scannedAt: Math.floor(Date.now() / 1000) + 2_000_000,
+          topApps: [
+            fixtureTopApp(FIXTURE_APP_NAMES[0], "zzz-scanned-app-1"),
+            fixtureTopApp(FIXTURE_APP_NAMES[1], "zzz-scanned-app-2"),
+            // Duplicate name (different id) — the DISTINCT should collapse it.
+            fixtureTopApp(FIXTURE_APP_NAMES[0], "zzz-scanned-app-3"),
+          ],
+        }),
+      );
+
+      const names = await getScannedAppNames(100_000);
+      expect(names).toContain(FIXTURE_APP_NAMES[0]);
+      expect(names).toContain(FIXTURE_APP_NAMES[1]);
+      // Distinct — the duplicate-name entry didn't produce a second copy.
+      expect(names.filter((n) => n === FIXTURE_APP_NAMES[0]).length).toBe(1);
+    });
+
+    it("returns an empty array when limit is non-positive", async () => {
+      const names = await getScannedAppNames(0);
+      expect(names).toEqual([]);
+    });
+
+    it("bounds the distinct names returned to the given limit", async () => {
+      const names = await getScannedAppNames(1);
+      expect(names.length).toBeLessThanOrEqual(1);
     });
   });
 });

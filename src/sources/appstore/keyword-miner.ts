@@ -7,10 +7,19 @@
 // keywords (confirmed live: `budget` -> `budget`, `budg` -> `budg`).
 //
 // This miner instead extracts candidate keyword phrases from App Store data
-// the scraper already fetches on every hourly ranking tick: top-chart app
-// NAMES and CATEGORIES (see store.ts `getRankings`). That data is broad,
-// popular, and real — no extra network calls, no dependency on a live
-// third-party suggest API.
+// the scraper already fetches. It blends TWO sources:
+//
+//   1. Top-chart app NAMES and CATEGORIES (see store.ts `getRankings`) —
+//      finite (~a few thousand distinct apps) and plateaus once exhausted.
+//   2. Distinct app NAMES embedded in the `top_apps` snapshot every
+//      per-keyword scan already records (see keyword-store.ts
+//      `getScannedAppNames`) — a much larger, continuously-growing pool
+//      with no category, so it's mined name-only (empty artist/category —
+//      the brand-filter and genre-zone mapping both degrade gracefully to
+//      a no-op / default zone for that shape of input).
+//
+// Both are broad, popular, and real — no extra network calls, no
+// dependency on a live third-party suggest API.
 //
 // Extraction is a PURE function (`extractCandidatesFromApp`/
 // `extractCandidates`): lowercase, strip punctuation/emoji, drop the
@@ -19,7 +28,7 @@
 // n-grams, and filter stopwords, too-short tokens, and pure numbers.
 
 import { createLogger } from "../../logger";
-import { keywordsExist, upsertKeywords } from "./keyword-store";
+import { getScannedAppNames, keywordsExist, upsertKeywords } from "./keyword-store";
 import type { KeywordSeedRow } from "./keyword-store";
 import { getRankings } from "./store";
 import type { AppRankingRow } from "./store";
@@ -31,6 +40,15 @@ const MIN_TOKEN_LENGTH = 3;
 
 /** How many ranking rows to scan for candidates by default (see `mineKeywords`). */
 const DEFAULT_RANKINGS_SCAN_LIMIT = 3000;
+
+/**
+ * How many distinct app names to pull from the per-keyword `top_apps`
+ * pool by default (see `mineKeywords`, `getScannedAppNames`). This pool is
+ * much larger than the top-chart rankings pool and grows every scan cycle,
+ * giving the miner a sustained, self-replenishing source instead of
+ * plateauing once the finite rankings pool is exhausted.
+ */
+const DEFAULT_SCANNED_APPS_LIMIT = 2000;
 
 /**
  * Purely grammatical connector words dropped from the token stream before
@@ -244,6 +262,34 @@ export function extractCandidates(apps: readonly MinerAppInput[]): readonly Mine
   return Array.from(seen.values());
 }
 
+/**
+ * Maps a bare app name (from `getScannedAppNames`'s `top_apps` pool, which
+ * carries no artist/category) into `extractCandidatesFromApp`'s input
+ * shape. Empty `artist`/`category` are both safe no-ops in that pipeline:
+ * `filterArtistTokens` returns tokens unchanged when the artist has no
+ * tokens of its own, and `mapCategoryToZone` falls back to `DEFAULT_ZONE`
+ * for an unrecognized (here, empty) category — so this name-only path
+ * reuses the exact same extraction as the rankings path, just without a
+ * brand-artist filter or a real genre zone.
+ */
+function scannedNameToAppInput(name: string): MinerAppInput {
+  return { name, artist: "", category: "" };
+}
+
+/**
+ * Filters `candidates` down to ones not already present in `existing`,
+ * bounded to at most `maxNew` entries. Pure and order-preserving — split
+ * out from `mineKeywords` so the "dedupe against corpus + cap growth" rule
+ * is unit-testable without a DB.
+ */
+export function selectNewCandidates(
+  candidates: readonly MinedCandidate[],
+  existing: ReadonlySet<string>,
+  maxNew: number,
+): readonly MinedCandidate[] {
+  return candidates.filter((c) => !existing.has(c.keyword)).slice(0, maxNew);
+}
+
 export interface MineKeywordsOptions {
   /** How many ranking rows to scan for candidates. Default `DEFAULT_RANKINGS_SCAN_LIMIT`. */
   readonly rankingsLimit?: number;
@@ -255,6 +301,14 @@ export interface MineKeywordsOptions {
    * from a shared DB.
    */
   readonly listType?: string;
+  /**
+   * How many distinct app names to pull from the per-keyword scan `top_apps`
+   * pool (see `getScannedAppNames`). Default `DEFAULT_SCANNED_APPS_LIMIT`.
+   * This is the sustained, self-replenishing source — set to `0` to disable
+   * it and mine only from rankings (e.g. for a test that wants to isolate
+   * to a fixture with no unrelated rows from a shared DB).
+   */
+  readonly scannedAppsLimit?: number;
   /** Upper bound on newly-added corpus keywords for this cycle. */
   readonly maxNew: number;
 }
@@ -262,37 +316,68 @@ export interface MineKeywordsOptions {
 export interface MineKeywordsResult {
   /** Count of NEW corpus keywords upserted with `source: "mined"`. */
   readonly added: number;
-  /** Count of ranking rows scanned for candidates. */
+  /** Total rows/names scanned across both sources (`scannedFromRankings + scannedFromTopApps`). */
   readonly scanned: number;
+  /** Count of top-chart ranking rows scanned for candidates. */
+  readonly scannedFromRankings: number;
+  /** Count of distinct app names pulled from the `top_apps` scan pool. */
+  readonly scannedFromTopApps: number;
 }
 
 /**
- * Mines new keyword candidates from the App Store rankings the scraper
- * already collects, dedupes against the existing corpus, bounds growth to
- * `opts.maxNew` per cycle, and upserts the genuinely new ones with
- * `source: "mined"`. Never throws on empty input — callers (scraper.ts)
- * still wrap this in a try/catch since DB calls can fail transiently.
+ * Mines new keyword candidates by blending TWO App Store data sources the
+ * scraper already collects: top-chart rankings (`getRankings`, finite,
+ * plateaus) and the distinct app names embedded in every per-keyword scan's
+ * `top_apps` snapshot (`getScannedAppNames`, much larger, grows every scan
+ * cycle). Dedupes across both sources AND against the existing corpus,
+ * bounds growth to `opts.maxNew` per cycle, and upserts the genuinely new
+ * ones with `source: "mined"`. Never throws on empty input — callers
+ * (scraper.ts) still wrap this in a try/catch since DB calls can fail
+ * transiently.
  */
 export async function mineKeywords(opts: MineKeywordsOptions): Promise<MineKeywordsResult> {
   const rankingsLimit = opts.rankingsLimit ?? DEFAULT_RANKINGS_SCAN_LIMIT;
-  const rankings: readonly AppRankingRow[] = await getRankings(opts.listType, rankingsLimit);
-  if (rankings.length === 0) {
-    return { added: 0, scanned: 0 };
+  const scannedAppsLimit = opts.scannedAppsLimit ?? DEFAULT_SCANNED_APPS_LIMIT;
+
+  const [rankings, scannedNames]: [readonly AppRankingRow[], readonly string[]] =
+    await Promise.all([
+      getRankings(opts.listType, rankingsLimit),
+      scannedAppsLimit > 0 ? getScannedAppNames(scannedAppsLimit) : Promise.resolve([]),
+    ]);
+
+  const empty = (): MineKeywordsResult => ({
+    added: 0,
+    scanned: rankings.length + scannedNames.length,
+    scannedFromRankings: rankings.length,
+    scannedFromTopApps: scannedNames.length,
+  });
+
+  if (rankings.length === 0 && scannedNames.length === 0) {
+    return empty();
   }
 
-  const candidates = extractCandidates(
-    rankings.map((r) => ({ name: r.name, artist: r.artist, category: r.category })),
-  );
+  const rankingApps: readonly MinerAppInput[] = rankings.map((r) => ({
+    name: r.name,
+    artist: r.artist,
+    category: r.category,
+  }));
+  const scannedApps: readonly MinerAppInput[] = scannedNames.map(scannedNameToAppInput);
+
+  const candidates = extractCandidates([...rankingApps, ...scannedApps]);
   if (candidates.length === 0) {
-    return { added: 0, scanned: rankings.length };
+    return empty();
   }
 
   const existing = await keywordsExist(candidates.map((c) => c.keyword));
-  const newCandidates = candidates.filter((c) => !existing.has(c.keyword)).slice(0, opts.maxNew);
+  const newCandidates = selectNewCandidates(candidates, existing, opts.maxNew);
 
   if (newCandidates.length === 0) {
-    log.info("Keyword mining", { added: 0, scanned: rankings.length });
-    return { added: 0, scanned: rankings.length };
+    log.info("Keyword mining", {
+      added: 0,
+      scannedFromRankings: rankings.length,
+      scannedFromTopApps: scannedNames.length,
+    });
+    return empty();
   }
 
   const rows: readonly KeywordSeedRow[] = newCandidates.map((c) => ({
@@ -302,6 +387,15 @@ export async function mineKeywords(opts: MineKeywordsOptions): Promise<MineKeywo
   }));
   await upsertKeywords(rows);
 
-  log.info("Keyword mining", { added: rows.length, scanned: rankings.length });
-  return { added: rows.length, scanned: rankings.length };
+  log.info("Keyword mining", {
+    added: rows.length,
+    scannedFromRankings: rankings.length,
+    scannedFromTopApps: scannedNames.length,
+  });
+  return {
+    added: rows.length,
+    scanned: rankings.length + scannedNames.length,
+    scannedFromRankings: rankings.length,
+    scannedFromTopApps: scannedNames.length,
+  };
 }

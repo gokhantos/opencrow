@@ -608,6 +608,41 @@ export const appstoreKeywordGapConfigSchema = z
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 
+// App Store ranking-sync breadth: how aggressively the scraper's ~hourly
+// ranking tick (scraper.ts `scrape()`) pulls chart data. Feeds the keyword
+// miner (more distinct apps → more candidate keywords), so wider breadth
+// directly improves keyword-corpus discovery.
+export const appstoreSyncListTypeSchema = z.enum(["top-free", "top-paid", "top-grossing"]);
+export type AppstoreSyncListType = z.infer<typeof appstoreSyncListTypeSchema>;
+
+export const appstoreSyncConfigSchema = z
+  .object({
+    // Per-category (genre) iTunes RSS page size. The RSS feed itself caps at
+    // ~100 entries regardless of the requested limit (verified live), so 200
+    // is a harmless ceiling that always yields the max the feed will give.
+    perCategoryLimit: z.number().int().min(1).max(200).default(200),
+    // Which iTunes RSS chart list types to fetch per category. All three are
+    // verified to return distinct per-genre rankings (top free, top paid, top
+    // grossing) — fetching all three multiplies per-category ranking
+    // breadth ~3x versus top-free alone.
+    listTypes: z
+      .array(appstoreSyncListTypeSchema)
+      .min(1)
+      .default(["top-free", "top-paid", "top-grossing"]),
+    // Page size for the GLOBAL (cross-category) top-free / top-paid feeds,
+    // served by rss.applemarketingtools.com — a DIFFERENT API from the
+    // per-category iTunes RSS above, with its own hard cap: requests above
+    // limit=100 return HTTP 500 (verified live). 100 is the real ceiling,
+    // not just a default.
+    globalLimit: z.number().int().min(1).max(100).default(100),
+  })
+  .default({
+    perCategoryLimit: 200,
+    listTypes: ["top-free", "top-paid", "top-grossing"],
+    globalLimit: 100,
+  });
+export type AppstoreSyncConfig = z.infer<typeof appstoreSyncConfigSchema>;
+
 export const processesConfigSchema = z
   .object({
     static: z.array(processSpecSchema).default([]),
@@ -1995,6 +2030,9 @@ export const opencrowConfigSchema = z.object({
   // App Store keyword-gap scanner: standalone feature, independent of the
   // SIGE ideas pipeline. Default OFF (see appstoreKeywordGapConfigSchema).
   appstoreKeywordGap: appstoreKeywordGapConfigSchema,
+  // App Store ranking-sync breadth (per-category limit/list-types + global
+  // feed limit). See appstoreSyncConfigSchema.
+  appstoreSync: appstoreSyncConfigSchema,
   pipelines: pipelinesConfigSchema.default({
     ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
   }),

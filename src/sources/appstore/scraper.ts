@@ -1,4 +1,5 @@
 import { loadConfig } from "../../config/loader";
+import type { AppstoreSyncListType } from "../../config/schema";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
 import { runKeywordSweep } from "./keyword-gaps";
@@ -32,19 +33,30 @@ const KEYWORD_MINING_SCAN_LIMIT = 3000; // ranking rows scanned for keyword cand
 
 const APPSTORE_AGENT_ID = "appstore";
 
-const TOP_FREE_URL =
-  "https://rss.applemarketingtools.com/api/v2/us/apps/top-free/25/apps.json";
-const TOP_PAID_URL =
-  "https://rss.applemarketingtools.com/api/v2/us/apps/top-paid/25/apps.json";
-
+// NOTE: genre 6026 was previously mislabeled "Travel" in this list — verified
+// live against the iTunes RSS feed, 6026 actually returns Developer Tools
+// (e.g. TestFlight). Corrected below; the real Travel genre id is 6003
+// (verified separately, added as a new entry).
+//
+// Every id below was verified live (curl against
+// itunes.apple.com/us/rss/topfreeapplications/.../genre=<id>/json) to return
+// non-empty, correctly-labeled entries before being trusted here.
 const ITUNES_CATEGORIES: ReadonlyArray<{
   readonly id: number;
   readonly name: string;
 }> = [
   { id: 6000, name: "Business" },
+  { id: 6001, name: "Weather" },
   { id: 6002, name: "Utilities" },
+  { id: 6003, name: "Travel" },
+  { id: 6004, name: "Sports" },
   { id: 6005, name: "Social Networking" },
+  { id: 6006, name: "Reference" },
   { id: 6007, name: "Productivity" },
+  { id: 6008, name: "Photo & Video" },
+  { id: 6009, name: "News" },
+  { id: 6010, name: "Navigation" },
+  { id: 6011, name: "Music" },
   { id: 6012, name: "Lifestyle" },
   { id: 6013, name: "Health & Fitness" },
   { id: 6014, name: "Games" },
@@ -55,8 +67,66 @@ const ITUNES_CATEGORIES: ReadonlyArray<{
   { id: 6020, name: "Medical" },
   { id: 6023, name: "Food & Drink" },
   { id: 6024, name: "Shopping" },
-  { id: 6026, name: "Travel" },
+  { id: 6026, name: "Developer Tools" },
 ];
+
+// Maps a sync list type to its iTunes RSS URL segment. All three verified
+// live to return distinct, non-empty per-genre rankings.
+const ITUNES_LIST_TYPE_URL_SEGMENT: Record<AppstoreSyncListType, string> = {
+  "top-free": "topfreeapplications",
+  "top-paid": "toppaidapplications",
+  "top-grossing": "topgrossingapplications",
+};
+
+/** Pure URL builder for a per-category (genre) iTunes RSS chart request. */
+export function buildCategoryRankingUrl(
+  genreId: number,
+  listType: AppstoreSyncListType,
+  limit: number,
+): string {
+  const segment = ITUNES_LIST_TYPE_URL_SEGMENT[listType];
+  return `https://itunes.apple.com/us/rss/${segment}/limit=${limit}/genre=${genreId}/json`;
+}
+
+/** The `list_type` tag stored/queried for a given genre + sync list type. */
+export function categoryListTypeTag(genreId: number, listType: AppstoreSyncListType): string {
+  return `${listType}-${genreId}`;
+}
+
+/**
+ * Pure URL builder for the GLOBAL (cross-category) top-free/top-paid feed,
+ * served by rss.applemarketingtools.com — a different API from the
+ * per-category iTunes RSS above. That API hard-errors (HTTP 500) above
+ * limit=100 (verified live); callers must clamp `limit` accordingly.
+ */
+export function buildGlobalTopAppsUrl(
+  listType: "top-free" | "top-paid",
+  limit: number,
+): string {
+  return `https://rss.applemarketingtools.com/api/v2/us/apps/${listType}/${limit}/apps.json`;
+}
+
+/**
+ * Drops duplicate (app id, list_type) pairs, keeping the first occurrence.
+ * Cheap defensive dedup for a single scrape cycle's accumulated rankings —
+ * an app can legitimately appear in many different list_types (e.g. once per
+ * genre/list-type it charts in), but should only be upserted once per
+ * distinct list_type per cycle.
+ */
+export function dedupeRankingsByListKey(
+  rows: readonly AppRankingRow[],
+): readonly AppRankingRow[] {
+  const seen = new Set<string>();
+  const result: AppRankingRow[] = [];
+  for (const row of rows) {
+    if (!row.id) continue;
+    const key = `${row.id}|${row.list_type}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(row);
+  }
+  return result;
+}
 
 function reviewsUrl(appId: string): string {
   return `https://itunes.apple.com/us/rss/customerreviews/id=${appId}/sortBy=mostRecent/json`;
@@ -462,10 +532,15 @@ export function createAppStoreScraper(config?: {
 
   async function scrape(): Promise<ScrapeResult> {
     try {
-      // Fetch overall top-free and top-paid from Apple Marketing Tools API
+      const syncCfg = loadConfig().appstoreSync;
+
+      // Fetch overall top-free and top-paid from Apple Marketing Tools API.
+      // NOTE: this is a different API from the per-category iTunes RSS below
+      // and hard-errors (HTTP 500) above limit=100 (verified live) — clamped
+      // via appstoreSync.globalLimit's own z.number().max(100).
       const [freeApps, paidApps] = await Promise.all([
-        fetchTopApps(TOP_FREE_URL, "top-free"),
-        fetchTopApps(TOP_PAID_URL, "top-paid"),
+        fetchTopApps(buildGlobalTopAppsUrl("top-free", syncCfg.globalLimit), "top-free"),
+        fetchTopApps(buildGlobalTopAppsUrl("top-paid", syncCfg.globalLimit), "top-paid"),
       ]);
 
       const overallRankings = [...freeApps, ...paidApps];
@@ -476,31 +551,47 @@ export function createAppStoreScraper(config?: {
         paid: paidApps.length,
       });
 
-      // Fetch per-category rankings from iTunes RSS API (richer data)
-      const categoryRankings: AppRankingRow[] = [];
+      // Fetch per-category rankings from iTunes RSS API (richer data) across
+      // every configured list type (top-free/top-paid/top-grossing by
+      // default) — this is the main breadth lever for the app corpus that
+      // feeds the keyword miner. Logged as a single summary (not per fetch)
+      // since this loop now runs categories.length * listTypes.length
+      // requests per cycle.
+      const categoryRankingsRaw: AppRankingRow[] = [];
+      let categoryFetchFailures = 0;
 
       for (const cat of ITUNES_CATEGORIES) {
-        await delay(REQUEST_DELAY_MS);
+        for (const listType of syncCfg.listTypes) {
+          await delay(REQUEST_DELAY_MS);
 
-        const itunesUrl = `https://itunes.apple.com/us/rss/topfreeapplications/limit=25/genre=${cat.id}/json`;
-        const listType = `top-free-${cat.id}`;
+          const itunesUrl = buildCategoryRankingUrl(cat.id, listType, syncCfg.perCategoryLimit);
+          const listTypeTag = categoryListTypeTag(cat.id, listType);
 
-        try {
-          const data = await fetchJson(itunesUrl);
-          const apps = parseTopAppsItunes(data, listType);
-          categoryRankings.push(...apps);
-          log.info("Fetched iTunes category rankings", {
-            category: cat.name,
-            count: apps.length,
-          });
-        } catch (err) {
-          const msg = getErrorMessage(err);
-          log.warn("Failed to fetch iTunes category rankings", {
-            category: cat.name,
-            error: msg,
-          });
+          try {
+            const data = await fetchJson(itunesUrl);
+            const apps = parseTopAppsItunes(data, listTypeTag);
+            categoryRankingsRaw.push(...apps);
+          } catch (err) {
+            categoryFetchFailures++;
+            const msg = getErrorMessage(err);
+            log.warn("Failed to fetch iTunes category rankings", {
+              category: cat.name,
+              listType,
+              error: msg,
+            });
+          }
         }
       }
+
+      const categoryRankings = dedupeRankingsByListKey(categoryRankingsRaw);
+
+      log.info("Fetched iTunes category rankings", {
+        categories: ITUNES_CATEGORIES.length,
+        listTypes: syncCfg.listTypes.length,
+        requests: ITUNES_CATEGORIES.length * syncCfg.listTypes.length,
+        failures: categoryFetchFailures,
+        apps: categoryRankings.length,
+      });
 
       if (categoryRankings.length > 0) {
         const catCount = await upsertRankings(categoryRankings);
@@ -512,18 +603,21 @@ export function createAppStoreScraper(config?: {
       }
 
       // Build list of apps to fetch reviews for:
-      // top N from overall lists + top N from each category
+      // top N from overall lists + top N from each category's top-free list.
+      // Reviews are an expensive, separate path (one iTunes reviews-endpoint
+      // call per app) — deliberately NOT multiplied by the new top-paid/
+      // top-grossing list types added above; only ranking breadth grows.
       const appsToReview: AppRankingRow[] = [
         ...freeApps.slice(0, TOP_APPS_PER_LIST),
         ...paidApps.slice(0, TOP_APPS_PER_LIST),
       ];
 
-      // Add top N from each category (deduplicate by app id)
+      // Add top N from each category's top-free list (deduplicate by app id)
       const seenIds = new Set(appsToReview.map((a) => a.id));
       for (const cat of ITUNES_CATEGORIES) {
-        const listType = `top-free-${cat.id}`;
+        const listTypeTag = categoryListTypeTag(cat.id, "top-free");
         const catApps = categoryRankings
-          .filter((a) => a.list_type === listType)
+          .filter((a) => a.list_type === listTypeTag)
           .slice(0, TOP_APPS_PER_LIST);
         for (const app of catApps) {
           if (!seenIds.has(app.id)) {
