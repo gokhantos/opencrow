@@ -514,6 +514,84 @@ export async function keywordsExist(keywords: readonly string[]): Promise<Readon
   return new Set((rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword));
 }
 
+/**
+ * Default cap on how many of the most-recent `appstore_keyword_scans` rows
+ * are inspected for embedded app names (see `getScannedAppNames`). Bounds
+ * query cost against a table that grows every scan cycle — recent rows
+ * alone already cover the vast majority of distinct app names ever seen (in
+ * practice ~12k distinct names live within the ~2k most-recent rows), so
+ * this stays small relative to the table's overall size while staying
+ * fresh.
+ */
+const DEFAULT_SCANNED_ROWS_LIMIT = 3000;
+
+/**
+ * Distinct app names embedded in the `top_apps` JSONB column of the most
+ * recent `appstore_keyword_scans` rows — a broad, continuously-growing pool
+ * of real App Store app names that goes well beyond the finite top-chart
+ * apps in `appstore_apps`/`getRankings` (every keyword scan records its own
+ * top results, and the scanner runs continuously). Paired with `getRankings`
+ * in `keyword-miner.ts`'s `mineKeywords`, which mines candidate keywords
+ * from both pools.
+ *
+ * `top_apps` is stored DOUBLE-ENCODED: Bun's SQL driver returns the jsonb
+ * column as a JS string, and that string is itself a JSON-encoded array
+ * (written via `JSON.stringify(p.topApps)` in `insertScan`) — so the
+ * column's own `jsonb_typeof` is `'string'`, not `'array'`.
+ * `(top_apps #>> '{}')::jsonb` un-escapes the outer string to recover the
+ * real array before `jsonb_array_elements` can walk it.
+ *
+ * Defensive by construction rather than by catching a thrown cast error —
+ * Postgres has no per-row try/catch in plain SQL, so a single bad cast
+ * would abort the whole query and every caller with it. The WHERE clause
+ * restricts to rows that are non-null, not the JSON literal `'null'`, AND
+ * whose text representation starts with `"[` (the shape of a
+ * JSON-encoded-string wrapping an array, checked with `LIKE` rather than a
+ * `~` regex — `[` needs no escaping there, sidestepping any
+ * JS-string-literal-vs-POSIX-regex escaping mismatch) BEFORE the cast ever
+ * runs, so a malformed row is silently skipped instead of blowing up the
+ * query.
+ *
+ * Bounded twice: `scanRowsLimit` caps how many recent scan rows are even
+ * considered (freshness + cost bound on a table that grows without end),
+ * and `limit` caps the distinct names returned. The final `GROUP BY name
+ * ORDER BY max(scanned_at) DESC` (rather than a plain `SELECT DISTINCT ...
+ * LIMIT`) matters: a bare `DISTINCT` has no ordering guarantee of its own,
+ * so a `LIMIT` stacked directly on it could arbitrarily keep or drop any
+ * given distinct name — grouping and explicitly ordering by each name's own
+ * freshest occurrence makes "freshest names survive the limit first" an
+ * actual guarantee instead of an implementation-detail coincidence.
+ */
+export async function getScannedAppNames(
+  limit: number,
+  scanRowsLimit: number = DEFAULT_SCANNED_ROWS_LIMIT,
+): Promise<readonly string[]> {
+  if (limit <= 0) return [];
+  const db = getDb();
+  const rows = await db`
+    WITH recent AS (
+      SELECT scanned_at, top_apps
+      FROM appstore_keyword_scans
+      WHERE top_apps IS NOT NULL
+        AND top_apps::text <> 'null'
+        AND top_apps::text LIKE '"[%'
+      ORDER BY scanned_at DESC
+      LIMIT ${scanRowsLimit}
+    ),
+    names AS (
+      SELECT app ->> 'name' AS name, recent.scanned_at AS scanned_at
+      FROM recent, LATERAL jsonb_array_elements((recent.top_apps #>> '{}')::jsonb) AS app
+      WHERE app ->> 'name' IS NOT NULL AND app ->> 'name' <> ''
+    )
+    SELECT name
+    FROM names
+    GROUP BY name
+    ORDER BY max(scanned_at) DESC
+    LIMIT ${limit}
+  `;
+  return (rows as ReadonlyArray<{ name: string }>).map((r) => r.name);
+}
+
 export async function getScanHistory(
   keyword: string,
   limit: number,

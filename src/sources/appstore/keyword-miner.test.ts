@@ -1,6 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { extractCandidates, extractCandidatesFromApp, mapCategoryToZone } from "./keyword-miner";
-import type { MinerAppInput } from "./keyword-miner";
+import {
+  extractCandidates,
+  extractCandidatesFromApp,
+  mapCategoryToZone,
+  selectNewCandidates,
+} from "./keyword-miner";
+import type { MinedCandidate, MinerAppInput } from "./keyword-miner";
 
 function keywordsOf(app: MinerAppInput): readonly string[] {
   return extractCandidatesFromApp(app).map((c) => c.keyword);
@@ -143,5 +148,100 @@ describe("extractCandidates", () => {
     const keywords = candidates.map((c) => c.keyword);
     expect(keywords).toContain("budget tracker");
     expect(keywords).toContain("sleep analysis");
+  });
+});
+
+// Coverage for mining from the broader `top_apps` scan pool
+// (`keyword-store.ts` `getScannedAppNames`) alongside the existing rankings
+// pool. That source has no artist/category — callers map it to
+// `{ name, artist: "", category: "" }` before calling into the same pure
+// extraction pipeline exercised above, so these tests just confirm that
+// shape of input behaves as expected (name-only path, default zone) and
+// blends/dedupes correctly against rankings-sourced candidates.
+describe("extraction from top_apps-style (name-only) app input", () => {
+  it("produces candidates from a bare app name with no artist or category", () => {
+    const keywords = keywordsOf({
+      name: "Wobblesnizzle Gadget Helper",
+      artist: "",
+      category: "",
+    });
+    expect(keywords).toContain("wobblesnizzle");
+    expect(keywords).toContain("wobblesnizzle gadget");
+    expect(keywords).toContain("gadget helper");
+    expect(keywords).toContain("helper");
+  });
+
+  it("falls back to the default genre zone since there is no category to map", () => {
+    const candidates = extractCandidatesFromApp({
+      name: "Some New Gadget App",
+      artist: "",
+      category: "",
+    });
+    expect(candidates.length).toBeGreaterThan(0);
+    for (const c of candidates) expect(c.genreZone).toBe("lifestyle");
+  });
+
+  it("still strips a brand-separator prefix even with no artist to filter against", () => {
+    const keywords = keywordsOf({
+      name: "Zzzscannedbrand: Wobblesnizzle Tracker",
+      artist: "",
+      category: "",
+    });
+    expect(keywords).toContain("wobblesnizzle tracker");
+    expect(keywords).not.toContain("zzzscannedbrand");
+  });
+
+  it("dedupes a keyword found via both the rankings source and the top_apps source", () => {
+    // Same descriptive keyword surfaces from a "real" ranking app (with
+    // artist/category) and a bare top_apps-style name — extractCandidates
+    // treats them as one combined batch (mirroring how mineKeywords blends
+    // both sources) and the FIRST app in the batch wins the genreZone.
+    const candidates = extractCandidates([
+      { name: "Acme: Budget Tracker", artist: "Acme", category: "Finance" },
+      { name: "Budget Tracker", artist: "", category: "" },
+    ]);
+    const matches = candidates.filter((c) => c.keyword === "budget tracker");
+    expect(matches).toHaveLength(1);
+    // Rankings source came first in the batch, so its real "finance" zone
+    // wins over the top_apps-derived entry's default "lifestyle" fallback.
+    expect(matches[0]?.genreZone).toBe("finance");
+  });
+});
+
+describe("selectNewCandidates", () => {
+  function candidate(keyword: string, genreZone = "lifestyle"): MinedCandidate {
+    return { keyword, genreZone };
+  }
+
+  it("drops candidates already present in the existing set", () => {
+    const result = selectNewCandidates(
+      [candidate("alpha"), candidate("beta"), candidate("gamma")],
+      new Set(["beta"]),
+      10,
+    );
+    expect(result.map((c) => c.keyword)).toEqual(["alpha", "gamma"]);
+  });
+
+  it("caps the result at maxNew, preserving order", () => {
+    const result = selectNewCandidates(
+      [candidate("alpha"), candidate("beta"), candidate("gamma"), candidate("delta")],
+      new Set(),
+      2,
+    );
+    expect(result.map((c) => c.keyword)).toEqual(["alpha", "beta"]);
+  });
+
+  it("returns an empty list when maxNew is 0", () => {
+    const result = selectNewCandidates([candidate("alpha")], new Set(), 0);
+    expect(result).toEqual([]);
+  });
+
+  it("returns an empty list when every candidate already exists", () => {
+    const result = selectNewCandidates(
+      [candidate("alpha"), candidate("beta")],
+      new Set(["alpha", "beta"]),
+      10,
+    );
+    expect(result).toEqual([]);
   });
 });

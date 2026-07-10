@@ -449,3 +449,52 @@ describe("appstoreKeywordGap config", () => {
     expect(cfg.appstoreKeywordGap.corpusDiscovery.enabled).toBe(false);
   });
 });
+
+// ── appstoreSync config ───────────────────────────────────────────────────────
+
+describe("appstoreSync config", () => {
+  test("empty config parses with aggressive defaults", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    const s = cfg.appstoreSync;
+    expect(s.perCategoryLimit).toBe(200);
+    expect(s.listTypes).toEqual(["top-free", "top-paid", "top-grossing"]);
+    expect(s.globalLimit).toBe(100);
+  });
+
+  test("is tunable via config", () => {
+    const cfg = opencrowConfigSchema.parse({
+      appstoreSync: {
+        perCategoryLimit: 50,
+        listTypes: ["top-free"],
+        globalLimit: 50,
+      },
+    });
+    expect(cfg.appstoreSync.perCategoryLimit).toBe(50);
+    expect(cfg.appstoreSync.listTypes).toEqual(["top-free"]);
+    expect(cfg.appstoreSync.globalLimit).toBe(50);
+  });
+
+  test("rejects a globalLimit above 100 (Apple marketing-tools API 500s above that)", () => {
+    expect(() =>
+      opencrowConfigSchema.parse({
+        appstoreSync: { globalLimit: 200 },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects an unknown list type", () => {
+    expect(() =>
+      opencrowConfigSchema.parse({
+        appstoreSync: { listTypes: ["top-free", "bogus"] },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects an empty listTypes array", () => {
+    expect(() =>
+      opencrowConfigSchema.parse({
+        appstoreSync: { listTypes: [] },
+      }),
+    ).toThrow();
+  });
+});
