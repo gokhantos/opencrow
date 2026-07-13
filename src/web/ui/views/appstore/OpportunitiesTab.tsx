@@ -1,15 +1,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
 import { apiFetch } from "../../api";
 import { Button, EmptyState, LoadingState, SearchBar } from "../../components";
 import { usePolledFetch } from "../../hooks/usePolledFetch";
 import { cn } from "../../lib/cn";
 import { useDebounce } from "../../lib/use-debounce";
-import {
-  formatFirstFound,
-  formatOpportunity,
-  sourceBadge,
-  trendBadge,
-} from "./opportunities-format";
+import { formatOpportunity, trendBadge } from "./opportunities-format";
 import type { OpportunityMeta, ScanHistoryPoint } from "./OpportunityTrendChart";
 import { OpportunityTrendChart } from "./OpportunityTrendChart";
 
@@ -59,10 +55,27 @@ interface HistoryResponse {
   };
 }
 
-/** Server-side ranking mode — mirrors the backend `sort` query param. */
-type SortMode = "peak" | "latest";
+/** Server-side sort key — mirrors the backend `sort` query param. Every column is sortable. */
+type SortKey =
+  | "keyword"
+  | "store"
+  | "opportunity"
+  | "competitiveness"
+  | "demand"
+  | "incumbentWeakness"
+  | "trend"
+  | "topAppReviews"
+  | "avgRating"
+  | "avgAgeDays";
 
-const PAGE_SIZE = 50;
+type SortDir = "asc" | "desc";
+
+const DEFAULT_SORT_KEY: SortKey = "opportunity";
+const DEFAULT_SORT_DIR: SortDir = "desc";
+
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
+const DEFAULT_PAGE_SIZE: number = 50;
+
 const SEARCH_DEBOUNCE_MS = 300;
 
 // ─── Watchlist (localStorage) ──────────────────────────────────────────────────
@@ -91,7 +104,8 @@ function saveWatchlist(keywords: ReadonlySet<string>): void {
   }
 }
 
-// ─── Local formatters ───────────────────────────────────────────────────────────
+// ─── Local formatters (page-local — not shared with OpportunityTrendChart,
+// unlike the ones in ./opportunities-format) ────────────────────────────────
 
 function formatDemand(value: number): string {
   if (!Number.isFinite(value)) return "—";
@@ -103,26 +117,125 @@ function formatCompetitiveness(value: number): string {
   return Math.round(value).toString();
 }
 
-// ─── Columns (display-only — ranking is now server-driven, see the Opportunity
-// column's Peak/Latest toggle below) ────────────────────────────────────────
+function formatStore(store: OpportunityRow["store"]): string {
+  return store === "play" ? "Play" : "App Store";
+}
 
-const DATA_COLUMNS: ReadonlyArray<{ readonly label: string }> = [
-  { label: "Competitiveness" },
-  { label: "Demand" },
-  { label: "Incumbent Weakness" },
-  { label: "Trend" },
-  { label: "First Found" },
+function formatTopAppReviews(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return Math.round(value).toLocaleString();
+}
+
+function formatAvgRating(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return value.toFixed(1);
+}
+
+function formatAvgAgeDays(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return Math.round(value).toLocaleString();
+}
+
+// ─── Columns (single source of truth for both the header row and the cell
+// rendering below — every column is sortable server-side per the API contract) ─
+
+interface ColumnDef {
+  readonly key: SortKey;
+  readonly label: string;
+}
+
+const COLUMNS: readonly ColumnDef[] = [
+  { key: "keyword", label: "Keyword" },
+  { key: "store", label: "Store" },
+  { key: "opportunity", label: "Opportunity" },
+  { key: "competitiveness", label: "Competitiveness" },
+  { key: "demand", label: "Demand" },
+  { key: "incumbentWeakness", label: "Incumbent Weakness" },
+  { key: "trend", label: "Trend" },
+  { key: "topAppReviews", label: "Top App Reviews" },
+  { key: "avgRating", label: "Avg Rating" },
+  { key: "avgAgeDays", label: "Avg Age (days)" },
 ];
 
-const TOTAL_COLUMN_COUNT = DATA_COLUMNS.length + 3; // star + keyword + opportunity
+const TOTAL_COLUMN_COUNT = COLUMNS.length + 1; // + star column
+
+function renderCell(row: OpportunityRow, key: SortKey): React.ReactNode {
+  switch (key) {
+    case "keyword":
+      return <span className="font-medium text-foreground">{row.keyword}</span>;
+    case "store":
+      return <span className="text-muted whitespace-nowrap">{formatStore(row.store)}</span>;
+    case "opportunity":
+      return (
+        <div className="flex flex-col leading-tight font-mono text-foreground">
+          <span>{formatOpportunity(row.peakOpportunity)}</span>
+          <span className="text-[10px] font-sans font-normal text-faint">
+            now {formatOpportunity(row.opportunity)}
+          </span>
+        </div>
+      );
+    case "competitiveness":
+      return (
+        <span className="font-mono text-muted whitespace-nowrap">
+          {formatCompetitiveness(row.competitiveness)}
+        </span>
+      );
+    case "demand":
+      return (
+        <span className="font-mono text-muted whitespace-nowrap">{formatDemand(row.demand)}</span>
+      );
+    case "incumbentWeakness":
+      return (
+        <span className="font-mono text-muted whitespace-nowrap">
+          {formatOpportunity(row.incumbentWeakness)}
+        </span>
+      );
+    case "trend": {
+      const badge = trendBadge(row.trend);
+      return (
+        <span className={cn("px-1.5 py-0.5 rounded text-xs font-medium", badge.className)}>
+          {badge.label}
+        </span>
+      );
+    }
+    case "topAppReviews":
+      return (
+        <span className="font-mono text-muted whitespace-nowrap">
+          {formatTopAppReviews(row.topAppReviews)}
+        </span>
+      );
+    case "avgRating":
+      return (
+        <span className="font-mono text-muted whitespace-nowrap">
+          {formatAvgRating(row.avgRating)}
+        </span>
+      );
+    case "avgAgeDays":
+      return (
+        <span className="font-mono text-muted whitespace-nowrap">
+          {formatAvgAgeDays(row.avgAgeDays)}
+        </span>
+      );
+  }
+}
+
+function ariaSortFor(key: SortKey, sortKey: SortKey, sortDir: SortDir): "ascending" | "descending" | "none" {
+  if (key !== sortKey) return "none";
+  return sortDir === "asc" ? "ascending" : "descending";
+}
+
+const selectClass =
+  "px-2 py-1.5 bg-bg-1 border border-border-2 rounded-lg text-foreground text-xs font-mono outline-none transition-colors duration-150 focus:border-accent cursor-pointer";
 
 // ─── OpportunitiesTab (main) ───────────────────────────────────────────────────
 
 export default function OpportunitiesTab() {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, SEARCH_DEBOUNCE_MS);
-  const [sort, setSort] = useState<SortMode>("peak");
-  const [offset, setOffset] = useState(0);
+  const [sortKey, setSortKey] = useState<SortKey>(DEFAULT_SORT_KEY);
+  const [sortDir, setSortDir] = useState<SortDir>(DEFAULT_SORT_DIR);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
   const [watchlist, setWatchlist] = useState<Set<string>>(() => loadWatchlist());
   const [expandedKeyword, setExpandedKeyword] = useState<string | null>(null);
@@ -135,27 +248,33 @@ export default function OpportunitiesTab() {
   const [historyLoading, setHistoryLoading] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // A new search term or ranking mode always restarts from the first page —
-  // otherwise the user could land on an offset past the end of a narrower result set.
+  // A new search term, sort column/direction, or page size always restarts
+  // from the first page — otherwise the user could land on an offset past
+  // the end of a narrower/reordered result set.
   useEffect(() => {
-    setOffset(0);
-  }, [debouncedSearch, sort]);
+    setPage(0);
+  }, [debouncedSearch, sortKey, sortDir, pageSize]);
+
+  const offset = page * pageSize;
 
   const listPath = useMemo(() => {
     const params = new URLSearchParams({
-      limit: String(PAGE_SIZE),
+      limit: String(pageSize),
       offset: String(offset),
-      sort,
+      sort: sortKey,
+      dir: sortDir,
     });
     const trimmed = debouncedSearch.trim();
     if (trimmed) params.set("search", trimmed);
     return `/api/appstore/opportunities?${params.toString()}`;
-  }, [debouncedSearch, sort, offset]);
+  }, [debouncedSearch, sortKey, sortDir, offset, pageSize]);
 
   // usePolledFetch aborts the previous request and refetches whenever
-  // `listPath` changes (search/sort/page), and aborts on unmount — the same
-  // machinery every other polled view relies on instead of hand-rolled
-  // setInterval + AbortController bookkeeping.
+  // `listPath` changes (search/sort/page/pageSize), and aborts on unmount —
+  // the same machinery every other polled view relies on instead of
+  // hand-rolled setInterval + AbortController bookkeeping. Because the
+  // in-flight request is aborted before the next one starts, a slow stale
+  // response can never clobber state out of order.
   const { data, loading } = usePolledFetch<OpportunitiesResponse>(listPath, {
     intervalMs: 30_000,
   });
@@ -163,7 +282,15 @@ export default function OpportunitiesTab() {
   const rows = data?.success ? data.data : [];
   const meta = data?.meta;
   const total = meta?.total ?? 0;
-  const limit = meta?.limit ?? PAGE_SIZE;
+
+  // Clamp the current page if the corpus shrank out from under it (e.g. a
+  // background poll picks up fewer rows than before) so the user never lands
+  // on an offset past the end of the result set.
+  useEffect(() => {
+    if (total === 0) return;
+    const maxPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+    setPage((prev) => (prev > maxPage ? maxPage : prev));
+  }, [total, pageSize]);
 
   // Abort any in-flight per-row history fetch on unmount so a slow response
   // can't resolve into state updates after the component is gone.
@@ -184,6 +311,15 @@ export default function OpportunitiesTab() {
       saveWatchlist(next);
       return next;
     });
+  }
+
+  function handleSort(key: SortKey): void {
+    if (sortKey === key) {
+      setSortDir((prev) => (prev === "desc" ? "asc" : "desc"));
+    } else {
+      setSortKey(key);
+      setSortDir("desc");
+    }
   }
 
   async function toggleExpand(keyword: string): Promise<void> {
@@ -219,18 +355,23 @@ export default function OpportunitiesTab() {
     }
   }
 
-  const canGoPrev = offset > 0;
+  const canGoPrev = page > 0;
   const canGoNext = offset + rows.length < total;
+  const totalPages = total > 0 ? Math.max(1, Math.ceil(total / pageSize)) : 1;
 
   function goToPrevPage(): void {
-    setOffset((prev) => Math.max(0, prev - limit));
+    setPage((prev) => Math.max(0, prev - 1));
   }
 
   function goToNextPage(): void {
-    setOffset((prev) => (prev + limit < total ? prev + limit : prev));
+    setPage((prev) => (canGoNext ? prev + 1 : prev));
   }
 
-  if (loading) return <LoadingState message="Loading keyword opportunities…" />;
+  // Only the true first load (no data at all yet) unmounts the table into a
+  // full-page spinner; subsequent sort/page/search refetches keep the
+  // existing rows visible (dimmed) so the table doesn't flicker/reset scroll.
+  const isInitialLoad = loading && data === null;
+  if (isInitialLoad) return <LoadingState message="Loading keyword opportunities…" />;
 
   if (total === 0 && !debouncedSearch.trim()) {
     return (
@@ -251,69 +392,42 @@ export default function OpportunitiesTab() {
           <SearchBar value={search} onChange={setSearch} placeholder="Search all keywords…" />
         </div>
         <span className="text-xs text-faint whitespace-nowrap">
-          {rangeStart}-{rangeEnd} of {total}
+          Showing {rangeStart.toLocaleString()}–{rangeEnd.toLocaleString()} of{" "}
+          {total.toLocaleString()}
         </span>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-border-2">
+      <div
+        className={cn(
+          "overflow-x-auto rounded-lg border border-border-2 transition-opacity duration-150",
+          loading && "opacity-60",
+        )}
+      >
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="border-b border-border-2 bg-bg-1">
               <th className="w-8" aria-hidden="true" />
-              <th
-                scope="col"
-                className="text-left text-xs font-semibold text-faint uppercase tracking-wider px-3 py-2.5 whitespace-nowrap"
-              >
-                Keyword
-              </th>
-              <th
-                scope="col"
-                aria-sort="descending"
-                className="text-left text-xs font-semibold text-faint uppercase tracking-wider px-3 py-2.5 whitespace-nowrap"
-              >
-                <div className="flex flex-col gap-1">
-                  <span>Opportunity</span>
-                  <div
-                    className="flex gap-1 normal-case tracking-normal"
-                    role="group"
-                    aria-label="Rank by"
-                  >
-                    <button
-                      type="button"
-                      aria-pressed={sort === "peak"}
-                      onClick={() => setSort("peak")}
-                      className={cn(
-                        "px-1.5 py-0.5 rounded text-[10px] font-semibold cursor-pointer border-none transition-colors",
-                        sort === "peak"
-                          ? "bg-accent text-white"
-                          : "bg-bg-3 text-faint hover:text-muted",
-                      )}
-                    >
-                      Peak
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={sort === "latest"}
-                      onClick={() => setSort("latest")}
-                      className={cn(
-                        "px-1.5 py-0.5 rounded text-[10px] font-semibold cursor-pointer border-none transition-colors",
-                        sort === "latest"
-                          ? "bg-accent text-white"
-                          : "bg-bg-3 text-faint hover:text-muted",
-                      )}
-                    >
-                      Latest
-                    </button>
-                  </div>
-                </div>
-              </th>
-              {DATA_COLUMNS.map((col) => (
+              {COLUMNS.map((col) => (
                 <th
-                  key={col.label}
+                  key={col.key}
                   scope="col"
-                  className="text-left text-xs font-semibold text-faint uppercase tracking-wider px-3 py-2.5 whitespace-nowrap"
+                  aria-sort={ariaSortFor(col.key, sortKey, sortDir)}
+                  className="px-3 py-2.5 whitespace-nowrap"
                 >
-                  {col.label}
+                  <button
+                    type="button"
+                    onClick={() => handleSort(col.key)}
+                    aria-label={`Sort by ${col.label}`}
+                    className={cn(
+                      "inline-flex items-center gap-1 cursor-pointer border-none bg-transparent p-0 text-xs font-semibold uppercase tracking-wider transition-colors duration-150",
+                      sortKey === col.key ? "text-accent" : "text-faint hover:text-muted",
+                    )}
+                  >
+                    {col.label}
+                    {sortKey === col.key && (
+                      <span aria-hidden="true">{sortDir === "asc" ? "▲" : "▼"}</span>
+                    )}
+                  </button>
                 </th>
               ))}
             </tr>
@@ -331,8 +445,6 @@ export default function OpportunitiesTab() {
             ) : (
               rows.map((row) => {
                 const starred = watchlist.has(row.keyword);
-                const badge = trendBadge(row.trend);
-                const source = sourceBadge(row.source);
                 const isExpanded = expandedKeyword === row.keyword;
                 const rowHistory = history[row.keyword];
 
@@ -363,47 +475,11 @@ export default function OpportunitiesTab() {
                           {starred ? "★" : "☆"}
                         </button>
                       </td>
-                      <td className="px-3 py-2 font-medium text-foreground">{row.keyword}</td>
-                      <td className="px-3 py-2 font-mono text-foreground">
-                        <div className="flex flex-col leading-tight">
-                          <span>{formatOpportunity(row.peakOpportunity)}</span>
-                          <span className="text-[10px] font-sans font-normal text-faint">
-                            now {formatOpportunity(row.opportunity)}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2 font-mono text-muted">
-                        {formatCompetitiveness(row.competitiveness)}
-                      </td>
-                      <td className="px-3 py-2 font-mono text-muted">{formatDemand(row.demand)}</td>
-                      <td className="px-3 py-2 font-mono text-muted">
-                        {formatOpportunity(row.incumbentWeakness)}
-                      </td>
-                      <td className="px-3 py-2">
-                        <span
-                          className={cn(
-                            "px-1.5 py-0.5 rounded text-xs font-medium",
-                            badge.className,
-                          )}
-                        >
-                          {badge.label}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-1.5 whitespace-nowrap">
-                          <span className="font-mono text-muted">
-                            {formatFirstFound(row.firstFoundAt)}
-                          </span>
-                          <span
-                            className={cn(
-                              "px-1.5 py-0.5 rounded text-xs font-medium",
-                              source.className,
-                            )}
-                          >
-                            {source.label}
-                          </span>
-                        </div>
-                      </td>
+                      {COLUMNS.map((col) => (
+                        <td key={col.key} className="px-3 py-2">
+                          {renderCell(row, col.key)}
+                        </td>
+                      ))}
                     </tr>
                     {isExpanded && (
                       <tr className="bg-bg-1/50 border-b border-border-2/50">
@@ -429,13 +505,36 @@ export default function OpportunitiesTab() {
         </table>
       </div>
 
-      <div className="flex items-center justify-end gap-2">
-        <Button variant="secondary" size="sm" onClick={goToPrevPage} disabled={!canGoPrev}>
-          Prev
-        </Button>
-        <Button variant="secondary" size="sm" onClick={goToNextPage} disabled={!canGoNext}>
-          Next
-        </Button>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-faint">Rows per page</span>
+          <select
+            className={selectClass}
+            value={pageSize}
+            onChange={(e) => setPageSize(Number(e.target.value))}
+            aria-label="Rows per page"
+          >
+            {PAGE_SIZE_OPTIONS.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-faint whitespace-nowrap">
+            Page {(page + 1).toLocaleString()} of {totalPages.toLocaleString()}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={goToPrevPage} disabled={!canGoPrev}>
+              Prev
+            </Button>
+            <Button variant="secondary" size="sm" onClick={goToNextPage} disabled={!canGoNext}>
+              Next
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );

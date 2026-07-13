@@ -2,9 +2,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { createLogger } from "../../logger";
 import {
-  queryOpportunities,
+  getTopOpportunities,
   getScanHistory,
   getKeywordMeta,
+  SORT_KEYS,
 } from "../../sources/appstore/keyword-store";
 import type { GapTrend } from "../../sources/appstore/keyword-types";
 import {
@@ -20,13 +21,11 @@ const log = createLogger("appstore-api");
 
 const GAP_TRENDS = ["heating", "stable", "cooling", "new"] as const satisfies readonly GapTrend[];
 
-const OPPORTUNITY_SORTS = ["peak", "latest"] as const;
-
 const opportunitiesQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(500).default(50),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
-  search: z.string().trim().max(100).optional(),
-  sort: z.enum(OPPORTUNITY_SORTS).default("peak"),
+  sort: z.enum(SORT_KEYS).default("opportunity"),
+  dir: z.enum(["asc", "desc"]).default("desc"),
   genreZone: z.string().optional(),
   trend: z.enum(GAP_TRENDS).optional(),
 });
@@ -69,7 +68,7 @@ export function createAppStoreRoutes(
 
   app.get("/appstore/opportunities", async (c) => {
     const rawQuery: Record<string, string> = {};
-    for (const key of ["limit", "offset", "search", "sort", "genreZone", "trend"] as const) {
+    for (const key of ["limit", "offset", "sort", "dir", "genreZone", "trend"] as const) {
       const value = c.req.query(key);
       if (value) rawQuery[key] = value;
     }
@@ -80,12 +79,12 @@ export function createAppStoreRoutes(
       return c.json({ success: false, error: message }, 400);
     }
 
-    const { limit, offset, search, sort, genreZone, trend } = parsed.data;
-    const { rows, total } = await queryOpportunities({
+    const { limit, offset, sort, dir, genreZone, trend } = parsed.data;
+    const { rows, total } = await getTopOpportunities({
       limit,
       offset,
-      search,
       sort,
+      dir,
       genreZone,
       trend,
     });

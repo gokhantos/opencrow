@@ -115,7 +115,7 @@ export async function collectKeywordGaps(
 ): Promise<readonly GapSeed[]> {
   try {
     const fetchLimit = Math.max(Math.floor(opts.limit) * FETCH_MULTIPLIER, MIN_FETCH);
-    const scans = await getTopOpportunities({ limit: fetchLimit });
+    const { rows: scans } = await getTopOpportunities({ limit: fetchLimit });
     const consumedKeywords = ctx.consumed.get(KEYWORD_SCANS_TABLE) ?? new Set<string>();
     const seeds = selectGapSeeds(scans, consumedKeywords, opts);
 
