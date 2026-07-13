@@ -21,6 +21,16 @@ import { act } from "react";
 
 // ─── Mock apiFetch BEFORE importing the component ────────────────────────────
 
+interface MockTopApp {
+  readonly id: string;
+  readonly name: string;
+  readonly reviews: number;
+  readonly rating: number;
+  readonly ageDays: number;
+  readonly ratingsPerDay: number;
+  readonly titleMatch: boolean;
+}
+
 interface MockOpportunityRow {
   readonly id: number;
   readonly keyword: string;
@@ -37,6 +47,8 @@ interface MockOpportunityRow {
   readonly avgAgeDays: number;
   readonly firstFoundAt: number | null;
   readonly source: string | null;
+  /** Latest-scan incumbent snapshot — powers the new row-expand incumbents panel. */
+  readonly topApps: readonly MockTopApp[];
 }
 
 /** Mirrors the component's `SortKey` — every column is sortable server-side. */
@@ -56,6 +68,34 @@ type SortDir = "asc" | "desc";
 
 const NOW = Math.floor(Date.now() / 1000);
 
+/**
+ * Default topApps: demand 12.5 (>= 10, "strong") + incumbentWeakness 0.6
+ * (>= 0.4, "weak") on the default row below should read as a "beatable"
+ * verdict — see the `keywordVerdict` unit tests further down.
+ */
+function defaultTopApps(): readonly MockTopApp[] {
+  return [
+    {
+      id: "r1",
+      name: "RivalTracker",
+      reviews: 1800,
+      rating: 3.6,
+      ageDays: 400,
+      ratingsPerDay: 4.5,
+      titleMatch: true,
+    },
+    {
+      id: "r2",
+      name: "SecondApp",
+      reviews: 900,
+      rating: 4.0,
+      ageDays: 200,
+      ratingsPerDay: 4.5,
+      titleMatch: false,
+    },
+  ];
+}
+
 function makeRow(overrides: Partial<MockOpportunityRow> = {}): MockOpportunityRow {
   return {
     id: 1,
@@ -73,6 +113,7 @@ function makeRow(overrides: Partial<MockOpportunityRow> = {}): MockOpportunityRo
     avgAgeDays: 300,
     firstFoundAt: NOW - 3 * 86400,
     source: "autocomplete",
+    topApps: defaultTopApps(),
     ...overrides,
   };
 }
@@ -236,7 +277,7 @@ await mock.module("../../lib/useChart", () => ({
 }));
 
 // ─── Import component after mocks are set up ─────────────────────────────────
-import OpportunitiesTab from "./OpportunitiesTab";
+import OpportunitiesTab, { keywordVerdict } from "./OpportunitiesTab";
 import { mount, typeIntoInput } from "../../test-helpers";
 
 beforeEach(() => {
@@ -259,6 +300,13 @@ async function flush(): Promise<void> {
 async function waitForDebounce(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 350));
+  });
+}
+
+/** Waits out the filter panel's numeric-input debounce (see FILTER_DEBOUNCE_MS = 400ms). */
+async function waitForFilterDebounce(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 450));
   });
 }
 
@@ -653,11 +701,225 @@ test("renders 'Not enough scan history yet' when history has fewer than 2 points
   unmount();
 });
 
-test("shows an empty state when there are no opportunities at all", async () => {
+test("shows a friendly empty state when the corpus/filtered result set is empty", async () => {
   rowsToReturn = [];
   const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
   await flush();
 
-  expect(container.textContent).toContain("No opportunities yet");
+  expect(container.textContent).toContain("No keywords match these filters");
+  // The empty state offers a one-click way back to the unfiltered corpus.
+  const allButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "All",
+  );
+  expect(allButton).toBeTruthy();
   unmount();
+});
+
+// ─── Buildable-keyword filter presets ─────────────────────────────────────────
+// See docs/superpowers/specs/2026-07-13-buildable-keyword-filters-design.md.
+
+function findPresetButton(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === label,
+  );
+  if (!button) throw new Error(`Preset button not found: "${label}"`);
+  return button as HTMLButtonElement;
+}
+
+test("opens on the Indie sweet-spot preset by default (not the full corpus)", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  const firstCall = callPaths()[0] ?? "";
+  expect(firstCall).toContain("minDemand=5");
+  expect(firstCall).toContain("maxCompetitiveness=45");
+  expect(firstCall).toContain("minIncumbentWeakness=0.4");
+  expect(firstCall).toContain("hideJunk=true");
+  expect(firstCall).toContain("sort=opportunity");
+  expect(firstCall).toContain("dir=desc");
+
+  // The preset button itself is highlighted as active.
+  const indieButton = findPresetButton(container, "Indie sweet spot");
+  expect(indieButton.getAttribute("aria-pressed")).toBe("true");
+  expect(container.textContent).not.toContain("Custom");
+  unmount();
+});
+
+test("clicking All clears every filter, sends hideJunk=false, and resets to page 0", async () => {
+  rowsToReturn = Array.from({ length: 120 }, (_, i) =>
+    makeRow({ id: i + 1, keyword: `keyword-${i}`, opportunity: 1 - i / 1000, peakOpportunity: 1 - i / 1000 }),
+  );
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  // Move off page 0 first so the preset click's page-reset is a real assertion.
+  const nextButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Next",
+  ) as HTMLButtonElement;
+  await clickButton(nextButton);
+  expect(callPaths().some((p) => p.includes("offset=50"))).toBe(true);
+
+  mockApiFetch.mockClear();
+  await clickButton(findPresetButton(container, "All"));
+
+  const lastCall = callPaths().at(-1) ?? "";
+  expect(lastCall).toContain("hideJunk=false");
+  expect(lastCall).toContain("offset=0");
+  expect(lastCall).not.toContain("minDemand=");
+  expect(lastCall).not.toContain("maxCompetitiveness=");
+  expect(lastCall).not.toContain("minIncumbentWeakness=");
+  expect(lastCall).not.toContain("minOpportunity=");
+  expect(lastCall).not.toContain("trend=");
+
+  const allButton = findPresetButton(container, "All");
+  expect(allButton.getAttribute("aria-pressed")).toBe("true");
+  unmount();
+});
+
+test("clicking Heating filters by trend=heating, minDemand=3, hideJunk=true", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  mockApiFetch.mockClear();
+  await clickButton(findPresetButton(container, "Heating"));
+
+  const lastCall = callPaths().at(-1) ?? "";
+  expect(lastCall).toContain("trend=heating");
+  expect(lastCall).toContain("minDemand=3");
+  expect(lastCall).toContain("hideJunk=true");
+  expect(lastCall).not.toContain("maxCompetitiveness=");
+  expect(lastCall).not.toContain("minIncumbentWeakness=");
+  unmount();
+});
+
+test("adjusting a filter after selecting a preset switches the active state to Custom", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+  expect(container.textContent).not.toContain("Custom");
+
+  const minDemandInput = container.querySelector(
+    "input[aria-label='Min demand']",
+  ) as HTMLInputElement;
+  expect(minDemandInput).toBeTruthy();
+  typeIntoInput(minDemandInput, "7");
+  await waitForFilterDebounce();
+
+  expect(container.textContent).toContain("Custom");
+  const indieButton = findPresetButton(container, "Indie sweet spot");
+  expect(indieButton.getAttribute("aria-pressed")).toBe("false");
+
+  const lastCall = callPaths().at(-1) ?? "";
+  expect(lastCall).toContain("minDemand=7");
+  unmount();
+});
+
+test("the trend selector and hideJunk toggle refetch immediately (no debounce) and reset to page 0", async () => {
+  rowsToReturn = Array.from({ length: 120 }, (_, i) =>
+    makeRow({ id: i + 1, keyword: `keyword-${i}`, opportunity: 1 - i / 1000, peakOpportunity: 1 - i / 1000 }),
+  );
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  const nextButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Next",
+  ) as HTMLButtonElement;
+  await clickButton(nextButton);
+  expect(callPaths().some((p) => p.includes("offset=50"))).toBe(true);
+
+  mockApiFetch.mockClear();
+  const trendSelect = container.querySelector(
+    "select[aria-label='Trend filter']",
+  ) as HTMLSelectElement;
+  expect(trendSelect).toBeTruthy();
+  selectOption(trendSelect, "cooling");
+  await flush();
+
+  let lastCall = callPaths().at(-1) ?? "";
+  expect(lastCall).toContain("trend=cooling");
+  expect(lastCall).toContain("offset=0");
+
+  mockApiFetch.mockClear();
+  // Toggle's aria-label is its `label` prop ("Hide junk") whenever one is
+  // supplied — see components/Toggle.tsx.
+  const toggleButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.getAttribute("aria-label") === "Hide junk",
+  ) as HTMLButtonElement;
+  expect(toggleButton).toBeTruthy();
+  await clickButton(toggleButton);
+
+  lastCall = callPaths().at(-1) ?? "";
+  expect(lastCall).toContain("hideJunk=false");
+  expect(lastCall).toContain("offset=0");
+  unmount();
+});
+
+// ─── Incumbents panel (row-expand, driven by row.topApps) ────────────────────
+
+test("expanding a row shows top incumbents and a verdict derived from row.topApps", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  const row = Array.from(container.querySelectorAll("tr")).find((tr) =>
+    tr.textContent?.includes("meal planner"),
+  );
+  expect(row).toBeTruthy();
+
+  await act(async () => {
+    (row as HTMLTableRowElement).click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  // meal planner's default topApps fixture: RivalTracker (1800 reviews,
+  // 3.6★, titleMatch true) + SecondApp — plus demand 12.5 / incumbentWeakness
+  // 0.6 should read as "beatable".
+  expect(container.textContent).toContain("RivalTracker");
+  expect(container.textContent).toContain("3.6★");
+  expect(container.textContent).toContain("title match");
+  expect(container.textContent).toContain("SecondApp");
+  expect(container.textContent).toContain("Verdict");
+  expect(container.textContent).toContain("beatable");
+  unmount();
+});
+
+test("keywordVerdict: strong demand + weak incumbents reads as beatable, naming the top app", () => {
+  const verdict = keywordVerdict({
+    demand: 12.5,
+    incumbentWeakness: 0.6,
+    topApps: [
+      { reviews: 1800, rating: 3.6 },
+      { reviews: 900, rating: 4.0 },
+    ],
+  });
+  expect(verdict).toContain("Strong demand");
+  expect(verdict).toContain("weak incumbents");
+  expect(verdict).toContain("beatable");
+  expect(verdict).toContain("1.8K reviews");
+  expect(verdict).toContain("3.6★");
+});
+
+test("keywordVerdict: moderate demand + strong incumbents reads as tough to unseat", () => {
+  const verdict = keywordVerdict({
+    demand: 4,
+    incumbentWeakness: 0.05,
+    topApps: [{ reviews: 50_000, rating: 4.8 }],
+  });
+  expect(verdict).toContain("Moderate demand");
+  expect(verdict).toContain("tough to unseat");
+});
+
+test("keywordVerdict: moderate incumbent weakness reads as worth a closer look", () => {
+  const verdict = keywordVerdict({
+    demand: 6,
+    incumbentWeakness: 0.25,
+    topApps: [{ reviews: 3000, rating: 4.2 }],
+  });
+  expect(verdict).toContain("middling");
+  expect(verdict).toContain("worth a closer look");
+});
+
+test("keywordVerdict: low demand reads as not worth building, regardless of incumbents", () => {
+  const verdict = keywordVerdict({ demand: 0.5, incumbentWeakness: 0.6, topApps: [] });
+  expect(verdict).toContain("Low demand");
+  expect(verdict).toContain("not worth building");
 });

@@ -28,6 +28,17 @@ const opportunitiesQuerySchema = z.object({
   dir: z.enum(["asc", "desc"]).default("desc"),
   genreZone: z.string().optional(),
   trend: z.enum(GAP_TRENDS).optional(),
+  minDemand: z.coerce.number().min(0).optional(),
+  maxCompetitiveness: z.coerce.number().min(0).max(100).optional(),
+  minIncumbentWeakness: z.coerce.number().min(0).max(1).optional(),
+  minOpportunity: z.coerce.number().min(0).max(1).optional(),
+  // z.coerce.boolean() would coerce ANY non-empty string (including "false")
+  // to true — an explicit "true"/"false" string enum + transform is the only
+  // safe way to read a boolean out of a query string.
+  hideJunk: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
 });
 
 const scanHistoryQuerySchema = z.object({
@@ -68,7 +79,19 @@ export function createAppStoreRoutes(
 
   app.get("/appstore/opportunities", async (c) => {
     const rawQuery: Record<string, string> = {};
-    for (const key of ["limit", "offset", "sort", "dir", "genreZone", "trend"] as const) {
+    for (const key of [
+      "limit",
+      "offset",
+      "sort",
+      "dir",
+      "genreZone",
+      "trend",
+      "minDemand",
+      "maxCompetitiveness",
+      "minIncumbentWeakness",
+      "minOpportunity",
+      "hideJunk",
+    ] as const) {
       const value = c.req.query(key);
       if (value) rawQuery[key] = value;
     }
@@ -79,7 +102,19 @@ export function createAppStoreRoutes(
       return c.json({ success: false, error: message }, 400);
     }
 
-    const { limit, offset, sort, dir, genreZone, trend } = parsed.data;
+    const {
+      limit,
+      offset,
+      sort,
+      dir,
+      genreZone,
+      trend,
+      minDemand,
+      maxCompetitiveness,
+      minIncumbentWeakness,
+      minOpportunity,
+      hideJunk,
+    } = parsed.data;
     const { rows, total } = await getTopOpportunities({
       limit,
       offset,
@@ -87,6 +122,11 @@ export function createAppStoreRoutes(
       dir,
       genreZone,
       trend,
+      minDemand,
+      maxCompetitiveness,
+      minIncumbentWeakness,
+      minOpportunity,
+      hideJunk,
     });
     return c.json({
       success: true,

@@ -1,13 +1,42 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { apiFetch } from "../../api";
-import { Button, EmptyState, LoadingState, SearchBar } from "../../components";
+import { Button, EmptyState, LoadingState, SearchBar, Toggle } from "../../components";
 import { usePolledFetch } from "../../hooks/usePolledFetch";
 import { cn } from "../../lib/cn";
+import { formatNumber } from "../../lib/format";
 import { useDebounce } from "../../lib/use-debounce";
-import { formatOpportunity, trendBadge } from "./opportunities-format";
+import {
+  ALL_PRESET,
+  filtersEqual,
+  formatAvgAgeDays,
+  formatAvgRating,
+  formatCompetitiveness,
+  formatDemand,
+  formatOpportunity,
+  formatStore,
+  formatTopAppReviews,
+  INDIE_FILTERS,
+  keywordVerdict,
+  matchPreset,
+  parseDraftNumber,
+  PRESETS,
+  toDraft,
+  trendBadge,
+  TREND_OPTIONS,
+} from "./opportunities-format";
+import type {
+  FilterState,
+  NumericDraft,
+  PresetId,
+  TopApp,
+  TrendFilterValue,
+} from "./opportunities-format";
 import type { OpportunityMeta, ScanHistoryPoint } from "./OpportunityTrendChart";
 import { OpportunityTrendChart } from "./OpportunityTrendChart";
+
+export { keywordVerdict } from "./opportunities-format";
+export type { VerdictInput, VerdictTopApp } from "./opportunities-format";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +60,8 @@ interface OpportunityRow {
   readonly firstFoundAt: number | null;
   /** Keyword provenance, or `null` if unknown / not yet backfilled. */
   readonly source: string | null;
+  /** Latest-scan incumbent snapshot — powers the row-expand incumbents panel. */
+  readonly topApps: readonly TopApp[];
 }
 
 interface OpportunitiesMeta {
@@ -77,6 +108,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
 const DEFAULT_PAGE_SIZE: number = 50;
 
 const SEARCH_DEBOUNCE_MS = 300;
+const FILTER_DEBOUNCE_MS = 400;
 
 // ─── Watchlist (localStorage) ──────────────────────────────────────────────────
 
@@ -102,38 +134,6 @@ function saveWatchlist(keywords: ReadonlySet<string>): void {
     // localStorage may be unavailable (private mode, quota) — watchlist is a
     // nice-to-have, so fail silently rather than breaking the table.
   }
-}
-
-// ─── Local formatters (page-local — not shared with OpportunityTrendChart,
-// unlike the ones in ./opportunities-format) ────────────────────────────────
-
-function formatDemand(value: number): string {
-  if (!Number.isFinite(value)) return "—";
-  return value.toFixed(1);
-}
-
-function formatCompetitiveness(value: number): string {
-  if (!Number.isFinite(value)) return "—";
-  return Math.round(value).toString();
-}
-
-function formatStore(store: OpportunityRow["store"]): string {
-  return store === "play" ? "Play" : "App Store";
-}
-
-function formatTopAppReviews(value: number): string {
-  if (!Number.isFinite(value)) return "—";
-  return Math.round(value).toLocaleString();
-}
-
-function formatAvgRating(value: number): string {
-  if (!Number.isFinite(value)) return "—";
-  return value.toFixed(1);
-}
-
-function formatAvgAgeDays(value: number): string {
-  if (!Number.isFinite(value)) return "—";
-  return Math.round(value).toLocaleString();
 }
 
 // ─── Columns (single source of truth for both the header row and the cell
@@ -227,6 +227,184 @@ function ariaSortFor(key: SortKey, sortKey: SortKey, sortDir: SortDir): "ascendi
 const selectClass =
   "px-2 py-1.5 bg-bg-1 border border-border-2 rounded-lg text-foreground text-xs font-mono outline-none transition-colors duration-150 focus:border-accent cursor-pointer";
 
+const numericInputClass =
+  "px-2 py-1.5 bg-bg-1 border border-border-2 rounded-lg text-foreground text-xs font-mono outline-none transition-colors duration-150 focus:border-accent w-[110px]";
+
+// ─── Preset bar ──────────────────────────────────────────────────────────────
+
+interface PresetBarProps {
+  readonly activePreset: PresetId | null;
+  readonly onSelect: (id: PresetId) => void;
+}
+
+function PresetBar({ activePreset, onSelect }: PresetBarProps) {
+  return (
+    <div className="flex items-center gap-2 flex-wrap" role="group" aria-label="Filter presets">
+      {PRESETS.map((preset) => {
+        const isActive = activePreset === preset.id;
+        return (
+          <button
+            key={preset.id}
+            type="button"
+            aria-pressed={isActive}
+            onClick={() => onSelect(preset.id)}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors duration-150 border",
+              isActive
+                ? "bg-accent text-white border-accent"
+                : "bg-transparent border-border-2 text-muted hover:bg-bg-2 hover:border-border-hover hover:text-foreground",
+            )}
+          >
+            {preset.label}
+          </button>
+        );
+      })}
+      {activePreset === null && (
+        <span className="px-2 py-1 text-xs font-medium text-faint">Custom</span>
+      )}
+    </div>
+  );
+}
+
+// ─── Filter panel (compact, power-user controls next to the presets) ────────
+
+interface NumericFilterInputProps {
+  readonly label: string;
+  readonly value: string;
+  readonly onChange: (value: string) => void;
+}
+
+function NumericFilterInput({ label, value, onChange }: NumericFilterInputProps) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-faint">{label}</span>
+      <input
+        type="number"
+        step="any"
+        inputMode="decimal"
+        value={value}
+        placeholder="Any"
+        aria-label={label}
+        onChange={(e) => onChange(e.target.value)}
+        className={numericInputClass}
+      />
+    </div>
+  );
+}
+
+interface FilterPanelProps {
+  readonly draft: NumericDraft;
+  readonly onDraftChange: (next: NumericDraft) => void;
+  readonly trend: TrendFilterValue | null;
+  readonly onTrendChange: (value: TrendFilterValue | "") => void;
+  readonly hideJunk: boolean;
+  readonly onHideJunkChange: (checked: boolean) => void;
+}
+
+function FilterPanel({
+  draft,
+  onDraftChange,
+  trend,
+  onTrendChange,
+  hideJunk,
+  onHideJunkChange,
+}: FilterPanelProps) {
+  return (
+    <div className="flex items-end gap-3 flex-wrap p-2.5 rounded-lg border border-border-2 bg-bg-1">
+      <NumericFilterInput
+        label="Min demand"
+        value={draft.minDemand}
+        onChange={(v) => onDraftChange({ ...draft, minDemand: v })}
+      />
+      <NumericFilterInput
+        label="Max competitiveness"
+        value={draft.maxCompetitiveness}
+        onChange={(v) => onDraftChange({ ...draft, maxCompetitiveness: v })}
+      />
+      <NumericFilterInput
+        label="Min incumbent weakness"
+        value={draft.minIncumbentWeakness}
+        onChange={(v) => onDraftChange({ ...draft, minIncumbentWeakness: v })}
+      />
+      <NumericFilterInput
+        label="Min opportunity"
+        value={draft.minOpportunity}
+        onChange={(v) => onDraftChange({ ...draft, minOpportunity: v })}
+      />
+
+      <div className="flex flex-col gap-1">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-faint">Trend</span>
+        <select
+          className={selectClass}
+          value={trend ?? ""}
+          aria-label="Trend filter"
+          onChange={(e) => onTrendChange(e.target.value as TrendFilterValue | "")}
+        >
+          {TREND_OPTIONS.map((opt) => (
+            <option key={opt.value || "any"} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <Toggle checked={hideJunk} onChange={onHideJunkChange} label="Hide junk" />
+    </div>
+  );
+}
+
+// ─── Incumbents panel (row-expand — frontend-only, driven by row.topApps) ───
+
+interface IncumbentsPanelProps {
+  readonly row: OpportunityRow;
+}
+
+function IncumbentsPanel({ row }: IncumbentsPanelProps) {
+  const topApps = useMemo(
+    () => [...row.topApps].sort((a, b) => b.reviews - a.reviews).slice(0, 5),
+    [row.topApps],
+  );
+  const verdict = useMemo(
+    () =>
+      keywordVerdict({
+        demand: row.demand,
+        incumbentWeakness: row.incumbentWeakness,
+        topApps: row.topApps,
+      }),
+    [row.demand, row.incumbentWeakness, row.topApps],
+  );
+
+  return (
+    <div className="flex flex-col gap-2 text-xs">
+      <div>
+        <div className="text-faint mb-1">Verdict</div>
+        <p className="text-foreground">{verdict}</p>
+      </div>
+      {topApps.length > 0 && (
+        <div>
+          <div className="text-faint mb-1">Top incumbents</div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+            {topApps.map((app) => (
+              <span key={app.id} className="whitespace-nowrap text-muted">
+                <span className="text-foreground font-medium">{app.name}</span>{" "}
+                <span className="font-mono">
+                  {formatNumber(app.reviews)} · {app.rating.toFixed(1)}★ ·{" "}
+                  {Math.round(app.ageDays).toLocaleString()}d
+                </span>
+                {app.titleMatch && (
+                  <span className="ml-1.5 px-1 py-0.5 rounded bg-bg-3 text-faint text-[10px] font-medium">
+                    title match
+                  </span>
+                )}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── OpportunitiesTab (main) ───────────────────────────────────────────────────
 
 export default function OpportunitiesTab() {
@@ -236,6 +414,13 @@ export default function OpportunitiesTab() {
   const [sortDir, setSortDir] = useState<SortDir>(DEFAULT_SORT_DIR);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+
+  // Opens already filtered to the "Indie sweet spot" — the raw corpus is 54%
+  // dead-demand/noise keywords (see design doc); showing that unfiltered
+  // would bury the buildable set.
+  const [filters, setFilters] = useState<FilterState>(INDIE_FILTERS);
+  const [draft, setDraft] = useState<NumericDraft>(() => toDraft(INDIE_FILTERS));
+  const debouncedDraft = useDebounce(draft, FILTER_DEBOUNCE_MS);
 
   const [watchlist, setWatchlist] = useState<Set<string>>(() => loadWatchlist());
   const [expandedKeyword, setExpandedKeyword] = useState<string | null>(null);
@@ -248,14 +433,51 @@ export default function OpportunitiesTab() {
   const [historyLoading, setHistoryLoading] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // A new search term, sort column/direction, or page size always restarts
-  // from the first page — otherwise the user could land on an offset past
-  // the end of a narrower/reordered result set.
+  // Commit the debounced numeric drafts into `filters`. Bails out (returns
+  // the same object reference) when nothing actually changed, so this never
+  // triggers a spurious page-reset/refetch on mount or on a no-op edit.
+  useEffect(() => {
+    setFilters((prev) => {
+      const next: FilterState = {
+        ...prev,
+        minDemand: parseDraftNumber(debouncedDraft.minDemand),
+        maxCompetitiveness: parseDraftNumber(debouncedDraft.maxCompetitiveness),
+        minIncumbentWeakness: parseDraftNumber(debouncedDraft.minIncumbentWeakness),
+        minOpportunity: parseDraftNumber(debouncedDraft.minOpportunity),
+      };
+      return filtersEqual(prev, next) ? prev : next;
+    });
+  }, [debouncedDraft]);
+
+  // A new search term, sort column/direction, page size, or filter state
+  // always restarts from the first page — otherwise the user could land on
+  // an offset past the end of a narrower/reordered result set.
   useEffect(() => {
     setPage(0);
-  }, [debouncedSearch, sortKey, sortDir, pageSize]);
+  }, [debouncedSearch, sortKey, sortDir, pageSize, filters]);
 
   const offset = page * pageSize;
+  const activePreset = matchPreset(filters);
+
+  function applyPreset(id: PresetId): void {
+    const preset = PRESETS.find((p) => p.id === id) ?? ALL_PRESET;
+    setFilters(preset.filters);
+    setDraft(toDraft(preset.filters));
+    // `Preset.sort` is a loosely-typed `string` in opportunities-format.ts (to
+    // avoid a type-only import cycle with this component's `SortKey`) — every
+    // preset constant only ever sets it to a real column key, so the cast is safe.
+    if (preset.sort) setSortKey(preset.sort as SortKey);
+    if (preset.dir) setSortDir(preset.dir);
+    setPage(0);
+  }
+
+  function setTrend(value: TrendFilterValue | ""): void {
+    setFilters((prev) => ({ ...prev, trend: value === "" ? null : value }));
+  }
+
+  function setHideJunk(checked: boolean): void {
+    setFilters((prev) => ({ ...prev, hideJunk: checked }));
+  }
 
   const listPath = useMemo(() => {
     const params = new URLSearchParams({
@@ -266,13 +488,29 @@ export default function OpportunitiesTab() {
     });
     const trimmed = debouncedSearch.trim();
     if (trimmed) params.set("search", trimmed);
+    if (filters.trend) params.set("trend", filters.trend);
+    if (filters.minDemand !== null) params.set("minDemand", String(filters.minDemand));
+    if (filters.maxCompetitiveness !== null) {
+      params.set("maxCompetitiveness", String(filters.maxCompetitiveness));
+    }
+    if (filters.minIncumbentWeakness !== null) {
+      params.set("minIncumbentWeakness", String(filters.minIncumbentWeakness));
+    }
+    if (filters.minOpportunity !== null) {
+      params.set("minOpportunity", String(filters.minOpportunity));
+    }
+    // hideJunk is always driven by the active preset/toggle in this UI (never
+    // an ambiguous "untouched" state), so it's always sent explicitly as the
+    // "true"/"false" STRING the Zod schema expects — z.coerce.boolean() would
+    // treat the string "false" as truthy, so a bare boolean must never be sent.
+    params.set("hideJunk", filters.hideJunk ? "true" : "false");
     return `/api/appstore/opportunities?${params.toString()}`;
-  }, [debouncedSearch, sortKey, sortDir, offset, pageSize]);
+  }, [debouncedSearch, sortKey, sortDir, offset, pageSize, filters]);
 
   // usePolledFetch aborts the previous request and refetches whenever
-  // `listPath` changes (search/sort/page/pageSize), and aborts on unmount —
-  // the same machinery every other polled view relies on instead of
-  // hand-rolled setInterval + AbortController bookkeeping. Because the
+  // `listPath` changes (search/sort/page/pageSize/filters), and aborts on
+  // unmount — the same machinery every other polled view relies on instead
+  // of hand-rolled setInterval + AbortController bookkeeping. Because the
   // in-flight request is aborted before the next one starts, a slow stale
   // response can never clobber state out of order.
   const { data, loading } = usePolledFetch<OpportunitiesResponse>(listPath, {
@@ -368,25 +606,28 @@ export default function OpportunitiesTab() {
   }
 
   // Only the true first load (no data at all yet) unmounts the table into a
-  // full-page spinner; subsequent sort/page/search refetches keep the
+  // full-page spinner; subsequent sort/page/search/filter refetches keep the
   // existing rows visible (dimmed) so the table doesn't flicker/reset scroll.
   const isInitialLoad = loading && data === null;
   if (isInitialLoad) return <LoadingState message="Loading keyword opportunities…" />;
-
-  if (total === 0 && !debouncedSearch.trim()) {
-    return (
-      <EmptyState
-        title="No opportunities yet"
-        description="Keyword gap scans will appear here once the scanner has run."
-      />
-    );
-  }
 
   const rangeStart = rows.length === 0 ? 0 : offset + 1;
   const rangeEnd = offset + rows.length;
 
   return (
     <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-2">
+        <PresetBar activePreset={activePreset} onSelect={applyPreset} />
+        <FilterPanel
+          draft={draft}
+          onDraftChange={setDraft}
+          trend={filters.trend}
+          onTrendChange={setTrend}
+          hideJunk={filters.hideJunk}
+          onHideJunkChange={setHideJunk}
+        />
+      </div>
+
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="max-w-sm flex-1 min-w-[220px]">
           <SearchBar value={search} onChange={setSearch} placeholder="Search all keywords…" />
@@ -397,53 +638,53 @@ export default function OpportunitiesTab() {
         </span>
       </div>
 
-      <div
-        className={cn(
-          "overflow-x-auto rounded-lg border border-border-2 transition-opacity duration-150",
-          loading && "opacity-60",
-        )}
-      >
-        <table className="w-full text-sm border-collapse">
-          <thead>
-            <tr className="border-b border-border-2 bg-bg-1">
-              <th className="w-8" aria-hidden="true" />
-              {COLUMNS.map((col) => (
-                <th
-                  key={col.key}
-                  scope="col"
-                  aria-sort={ariaSortFor(col.key, sortKey, sortDir)}
-                  className="px-3 py-2.5 whitespace-nowrap"
-                >
-                  <button
-                    type="button"
-                    onClick={() => handleSort(col.key)}
-                    aria-label={`Sort by ${col.label}`}
-                    className={cn(
-                      "inline-flex items-center gap-1 cursor-pointer border-none bg-transparent p-0 text-xs font-semibold uppercase tracking-wider transition-colors duration-150",
-                      sortKey === col.key ? "text-accent" : "text-faint hover:text-muted",
-                    )}
+      {total === 0 ? (
+        <EmptyState
+          title="No opportunities yet"
+          description="No keywords match these filters — try widening or hit All."
+        >
+          <Button variant="secondary" size="sm" className="mt-3" onClick={() => applyPreset("all")}>
+            All
+          </Button>
+        </EmptyState>
+      ) : (
+        <div
+          className={cn(
+            "overflow-x-auto rounded-lg border border-border-2 transition-opacity duration-150",
+            loading && "opacity-60",
+          )}
+        >
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="border-b border-border-2 bg-bg-1">
+                <th className="w-8" aria-hidden="true" />
+                {COLUMNS.map((col) => (
+                  <th
+                    key={col.key}
+                    scope="col"
+                    aria-sort={ariaSortFor(col.key, sortKey, sortDir)}
+                    className="px-3 py-2.5 whitespace-nowrap"
                   >
-                    {col.label}
-                    {sortKey === col.key && (
-                      <span aria-hidden="true">{sortDir === "asc" ? "▲" : "▼"}</span>
-                    )}
-                  </button>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={TOTAL_COLUMN_COUNT}
-                  className="px-3 py-6 text-center text-sm text-faint"
-                >
-                  No keywords match &ldquo;{search}&rdquo;.
-                </td>
+                    <button
+                      type="button"
+                      onClick={() => handleSort(col.key)}
+                      aria-label={`Sort by ${col.label}`}
+                      className={cn(
+                        "inline-flex items-center gap-1 cursor-pointer border-none bg-transparent p-0 text-xs font-semibold uppercase tracking-wider transition-colors duration-150",
+                        sortKey === col.key ? "text-accent" : "text-faint hover:text-muted",
+                      )}
+                    >
+                      {col.label}
+                      {sortKey === col.key && (
+                        <span aria-hidden="true">{sortDir === "asc" ? "▲" : "▼"}</span>
+                      )}
+                    </button>
+                  </th>
+                ))}
               </tr>
-            ) : (
-              rows.map((row) => {
+            </thead>
+            <tbody>
+              {rows.map((row) => {
                 const starred = watchlist.has(row.keyword);
                 const isExpanded = expandedKeyword === row.keyword;
                 const rowHistory = history[row.keyword];
@@ -484,26 +725,35 @@ export default function OpportunitiesTab() {
                     {isExpanded && (
                       <tr className="bg-bg-1/50 border-b border-border-2/50">
                         <td colSpan={TOTAL_COLUMN_COUNT} className="px-4 py-3">
-                          {historyLoading === row.keyword ? (
-                            <span className="text-xs text-faint">Loading trend history…</span>
-                          ) : rowHistory ? (
-                            <OpportunityTrendChart
-                              history={rowHistory.history}
-                              meta={rowHistory.meta}
-                            />
-                          ) : (
-                            <span className="text-xs text-faint">Not enough scan history yet.</span>
-                          )}
+                          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:gap-6">
+                            <div className="min-w-0 flex-1">
+                              {historyLoading === row.keyword ? (
+                                <span className="text-xs text-faint">Loading trend history…</span>
+                              ) : rowHistory ? (
+                                <OpportunityTrendChart
+                                  history={rowHistory.history}
+                                  meta={rowHistory.meta}
+                                />
+                              ) : (
+                                <span className="text-xs text-faint">
+                                  Not enough scan history yet.
+                                </span>
+                              )}
+                            </div>
+                            <div className="lg:w-[320px] lg:shrink-0">
+                              <IncumbentsPanel row={row} />
+                            </div>
+                          </div>
                         </td>
                       </tr>
                     )}
                   </Fragment>
                 );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2">
