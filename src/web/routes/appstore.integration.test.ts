@@ -46,6 +46,10 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-web-sweet-spot-decoy",
   "zzz-web-hidejunk-false-keyword",
   "hd",
+  "zzz-web-build-sort-a",
+  "zzz-web-build-sort-b",
+  "zzz-web-build-filter-high",
+  "zzz-web-build-filter-low",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -101,6 +105,7 @@ interface OpportunityRow {
   readonly keyword: string;
   readonly opportunity: number;
   readonly peakOpportunity: number;
+  readonly buildability: number;
   readonly scannedAt: number;
   readonly firstFoundAt: number | null;
   readonly source: string | null;
@@ -403,6 +408,93 @@ describe("appstore opportunities routes", () => {
       expect(res.status).toBe(200);
       const body = await json<OpportunitiesResponse>(res);
       expect(body.data.map((r) => r.keyword)).toEqual(["zzz-web-sweet-spot-match"]);
+      expect(body.meta.total).toBe(1);
+    });
+
+    it("200 accepts sort=buildability and orders rows by it", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-web-build-sort-zone";
+      await upsertKeywords([
+        { keyword: "zzz-web-build-sort-a", genreZone: zone, source: "seed" },
+        { keyword: "zzz-web-build-sort-b", genreZone: zone, source: "seed" },
+      ]);
+      // a: no demand => buildability 0. b: strong demand + weak incumbent => high.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-web-build-sort-a",
+          demand: 0,
+          topAppReviews: 100,
+          avgRating: 3.0,
+          scannedAt: now,
+        }),
+      );
+      await insertScan(
+        makeScan({
+          keyword: "zzz-web-build-sort-b",
+          demand: 200,
+          topAppReviews: 10,
+          avgRating: 2.0,
+          scannedAt: now,
+        }),
+      );
+
+      const app = makeApp();
+      const res = await get(
+        app,
+        `/appstore/opportunities?genreZone=${zone}&sort=buildability&dir=desc`,
+      );
+      expect(res.status).toBe(200);
+      const body = await json<OpportunitiesResponse>(res);
+      expect(body.data.map((r) => r.keyword)).toEqual([
+        "zzz-web-build-sort-b",
+        "zzz-web-build-sort-a",
+      ]);
+      expect(body.data[0]?.buildability).toBeGreaterThan(70);
+      expect(body.data[1]?.buildability).toBe(0);
+    });
+
+    it("400 when minBuildability is above the 100 cap", async () => {
+      const app = makeApp();
+      const res = await get(app, "/appstore/opportunities?minBuildability=150");
+      expect(res.status).toBe(400);
+      const body = await json<{ success: boolean }>(res);
+      expect(body.success).toBe(false);
+    });
+
+    it("200 minBuildability filters out low-buildability rows and total reflects the filtered count", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-web-build-filter-zone";
+      await upsertKeywords([
+        { keyword: "zzz-web-build-filter-high", genreZone: zone, source: "seed" },
+        { keyword: "zzz-web-build-filter-low", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({
+          keyword: "zzz-web-build-filter-high",
+          demand: 200,
+          topAppReviews: 10,
+          avgRating: 2.0,
+          scannedAt: now,
+        }),
+      );
+      await insertScan(
+        makeScan({
+          keyword: "zzz-web-build-filter-low",
+          demand: 0,
+          topAppReviews: 100,
+          avgRating: 3.0,
+          scannedAt: now,
+        }),
+      );
+
+      const app = makeApp();
+      const res = await get(
+        app,
+        `/appstore/opportunities?genreZone=${zone}&minBuildability=50`,
+      );
+      expect(res.status).toBe(200);
+      const body = await json<OpportunitiesResponse>(res);
+      expect(body.data.map((r) => r.keyword)).toEqual(["zzz-web-build-filter-high"]);
       expect(body.meta.total).toBe(1);
     });
   });

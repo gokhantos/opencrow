@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import {
+  buildabilityBand,
   formatFirstFound,
   formatOpportunity,
   sourceBadge,
@@ -33,6 +34,33 @@ test("formatOpportunity: non-finite input returns a dash", () => {
 test("formatOpportunity: clamps out-of-range values", () => {
   expect(formatOpportunity(-0.2)).toBe("0%");
   expect(formatOpportunity(1.5)).toBe("100%");
+});
+
+/* ---------- buildabilityBand ---------- */
+
+test("buildabilityBand: >=70 is the green/Strong band, including the upper boundary and max", () => {
+  expect(buildabilityBand(70).dot).toBe("🟢");
+  expect(buildabilityBand(70).label).toBe("Strong");
+  expect(buildabilityBand(100).dot).toBe("🟢");
+});
+
+test("buildabilityBand: 40..69 is the yellow/Moderate band, at both boundaries", () => {
+  expect(buildabilityBand(40).dot).toBe("🟡");
+  expect(buildabilityBand(40).label).toBe("Moderate");
+  expect(buildabilityBand(69).dot).toBe("🟡");
+  expect(buildabilityBand(69).label).toBe("Moderate");
+});
+
+test("buildabilityBand: <40 is the white/Weak band, including zero", () => {
+  expect(buildabilityBand(39).dot).toBe("⚪");
+  expect(buildabilityBand(39).label).toBe("Weak");
+  expect(buildabilityBand(0).dot).toBe("⚪");
+});
+
+test("buildabilityBand: every band has a non-empty className", () => {
+  for (const score of [0, 39, 40, 69, 70, 100]) {
+    expect(buildabilityBand(score).className.length).toBeGreaterThan(0);
+  }
 });
 
 /* ---------- trendBadge ---------- */

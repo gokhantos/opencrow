@@ -170,3 +170,48 @@ export function computeOpportunity(a: {
   const beatability = clamp01(0.5 * (1 - a.competitiveness / 100) + 0.5 * a.incumbentWeakness);
   return clamp01(demandNorm * beatability * TREND_MULT[a.trend]);
 }
+
+// The "beatable solo" review ceiling for `computeBuildability`'s reviewOpening
+// term — a top incumbent with roughly this many reviews or more reads as
+// fully entrenched (opening -> 0); far fewer reviews reads as wide open.
+// User-chosen (see docs/superpowers/specs/2026-07-14-buildability-score-design.md).
+export const BUILDABILITY_REVIEW_REF = 5000;
+
+// Reference demand for `computeBuildability`'s demandFactor gate. Distinct
+// from `DEMAND_REF` (used by `computeOpportunity`'s ratings/day-based demand
+// blend): this normalizes the per-keyword `demand` scan field specifically
+// for the buildability score. Not exported — an internal tuning knob scoped
+// to this one formula.
+const BUILDABILITY_DEMAND_REF = 50;
+
+/**
+ * Solo-indie "can I win this?" score in 0..100 — read-time, deterministic
+ * function of already-stored per-keyword scan fields (no trend, no I/O).
+ * Distinct from `opportunity`: HARD-GATES on real demand (no search interest
+ * => 0, multiplicatively via `demandFactor`) and centers specifically on
+ * out-competing the TOP incumbent (its review count + rating), rather than
+ * the whole field's mean competitiveness.
+ *
+ * `norm(x, ref) = clamp01(ln(1+x)/ln(1+ref))`
+ * `demandFactor = norm(demand, 50)`
+ * `reviewOpening = clamp01(1 - norm(topAppReviews, 5000))`
+ * `ratingOpening = clamp01((4.5 - avgRating) / 1.5)`
+ * `opening = 0.65*reviewOpening + 0.35*ratingOpening`
+ * `buildability = round(100 * demandFactor * opening)`
+ *
+ * See docs/superpowers/specs/2026-07-14-buildability-score-design.md for the
+ * full design. The mirrored SQL expression in `keyword-store.ts`'s
+ * `BUILDABILITY_SQL` MUST stay in exact agreement with this function — an
+ * integration test drift-guards the two against each other.
+ */
+export function computeBuildability(a: {
+  readonly demand: number;
+  readonly topAppReviews: number;
+  readonly avgRating: number;
+}): number {
+  const demandFactor = norm(a.demand, BUILDABILITY_DEMAND_REF);
+  const reviewOpening = clamp01(1 - norm(a.topAppReviews, BUILDABILITY_REVIEW_REF));
+  const ratingOpening = clamp01((4.5 - a.avgRating) / 1.5);
+  const opening = 0.65 * reviewOpening + 0.35 * ratingOpening;
+  return Math.round(100 * demandFactor * opening);
+}

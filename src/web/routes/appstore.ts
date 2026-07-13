@@ -32,6 +32,7 @@ const opportunitiesQuerySchema = z.object({
   maxCompetitiveness: z.coerce.number().min(0).max(100).optional(),
   minIncumbentWeakness: z.coerce.number().min(0).max(1).optional(),
   minOpportunity: z.coerce.number().min(0).max(1).optional(),
+  minBuildability: z.coerce.number().min(0).max(100).optional(),
   // z.coerce.boolean() would coerce ANY non-empty string (including "false")
   // to true — an explicit "true"/"false" string enum + transform is the only
   // safe way to read a boolean out of a query string.
@@ -90,6 +91,7 @@ export function createAppStoreRoutes(
       "maxCompetitiveness",
       "minIncumbentWeakness",
       "minOpportunity",
+      "minBuildability",
       "hideJunk",
     ] as const) {
       const value = c.req.query(key);
@@ -113,6 +115,7 @@ export function createAppStoreRoutes(
       maxCompetitiveness,
       minIncumbentWeakness,
       minOpportunity,
+      minBuildability,
       hideJunk,
     } = parsed.data;
     const { rows, total } = await getTopOpportunities({
@@ -126,6 +129,7 @@ export function createAppStoreRoutes(
       maxCompetitiveness,
       minIncumbentWeakness,
       minOpportunity,
+      minBuildability,
       hideJunk,
     });
     return c.json({

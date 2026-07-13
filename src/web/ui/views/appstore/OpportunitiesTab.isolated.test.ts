@@ -40,6 +40,7 @@ interface MockOpportunityRow {
   readonly demand: number;
   readonly incumbentWeakness: number;
   readonly opportunity: number;
+  readonly buildability: number;
   readonly peakOpportunity: number;
   readonly trend: string;
   readonly topAppReviews: number;
@@ -54,6 +55,7 @@ interface MockOpportunityRow {
 /** Mirrors the component's `SortKey` — every column is sortable server-side. */
 type SortKey =
   | "keyword"
+  | "buildability"
   | "store"
   | "opportunity"
   | "competitiveness"
@@ -106,6 +108,7 @@ function makeRow(overrides: Partial<MockOpportunityRow> = {}): MockOpportunityRo
     demand: 12.5,
     incumbentWeakness: 0.6,
     opportunity: 0.72,
+    buildability: 55,
     peakOpportunity: 0.85,
     trend: "heating",
     topAppReviews: 5000,
@@ -119,7 +122,8 @@ function makeRow(overrides: Partial<MockOpportunityRow> = {}): MockOpportunityRo
 }
 
 const ALL_ROWS: MockOpportunityRow[] = [
-  makeRow({ id: 1, keyword: "meal planner", store: "app" }),
+  // buildability 76 -> green/"Strong" band (>=70).
+  makeRow({ id: 1, keyword: "meal planner", store: "app", buildability: 76 }),
   makeRow({
     id: 2,
     keyword: "habit tracker",
@@ -132,6 +136,8 @@ const ALL_ROWS: MockOpportunityRow[] = [
     topAppReviews: 12000,
     avgRating: 4.8,
     avgAgeDays: 900,
+    // buildability 34 -> white/"Weak" band (<40).
+    buildability: 34,
   }),
 ];
 
@@ -221,7 +227,7 @@ function applyListQuery(path: string): MockApiResponse {
   const qs = path.split("?")[1] ?? "";
   const params = new URLSearchParams(qs);
   const search = params.get("search")?.trim().toLowerCase() ?? "";
-  const sort = (params.get("sort") as SortKey | null) ?? "opportunity";
+  const sort = (params.get("sort") as SortKey | null) ?? "buildability";
   const dir: SortDir = params.get("dir") === "asc" ? "asc" : "desc";
   const limit = Number(params.get("limit") ?? "50");
   const offset = Number(params.get("offset") ?? "0");
@@ -374,6 +380,26 @@ test("renders the leaderboard rows plus the new Store/Top App Reviews/Avg Rating
   unmount();
 });
 
+test("renders the Buildability column with the number and band badge for each row", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  expect(container.textContent).toContain("Buildability");
+
+  // meal planner: buildability 76 -> green/"Strong" band.
+  expect(container.textContent).toContain("76");
+  expect(container.textContent).toContain("🟢");
+  const strongBadge = container.querySelector('[aria-label="Buildability band: Strong"]');
+  expect(strongBadge).toBeTruthy();
+
+  // habit tracker: buildability 34 -> white/"Weak" band.
+  expect(container.textContent).toContain("34");
+  expect(container.textContent).toContain("⚪");
+  const weakBadge = container.querySelector('[aria-label="Buildability band: Weak"]');
+  expect(weakBadge).toBeTruthy();
+  unmount();
+});
+
 test("shows the peak opportunity as the primary value and latest as subtext", async () => {
   const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
   await flush();
@@ -454,12 +480,12 @@ test("shows a no-match message when the server returns zero rows for the search"
 
 // ─── Server-side sort (clickable column headers) ─────────────────────────────
 
-test("defaults to sort=opportunity, dir=desc with the default limit/offset on the initial fetch", async () => {
+test("defaults to sort=buildability, dir=desc with the default limit/offset on the initial fetch", async () => {
   const { unmount } = mount(React.createElement(OpportunitiesTab, {}));
   await flush();
 
   const firstCall = callPaths()[0] ?? "";
-  expect(firstCall).toContain("sort=opportunity");
+  expect(firstCall).toContain("sort=buildability");
   expect(firstCall).toContain("dir=desc");
   expect(firstCall).toContain("limit=50");
   expect(firstCall).toContain("offset=0");
@@ -483,13 +509,29 @@ test("clicking the already-active column header toggles dir to asc", async () =>
   const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
   await flush();
 
-  // "Opportunity" is already the active sort column (default dir=desc).
+  // "Buildability" is already the active sort column (default dir=desc).
   mockApiFetch.mockClear();
-  await clickButton(findSortButton(container, "Opportunity"));
+  await clickButton(findSortButton(container, "Buildability"));
 
   const lastCall = callPaths().at(-1) ?? "";
-  expect(lastCall).toContain("sort=opportunity");
+  expect(lastCall).toContain("sort=buildability");
   expect(lastCall).toContain("dir=asc");
+  unmount();
+});
+
+test("clicking the Buildability column header (after switching away) resorts by buildability desc", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  // Switch to a different sort column first so Buildability isn't already active.
+  await clickButton(findSortButton(container, "Demand"));
+
+  mockApiFetch.mockClear();
+  await clickButton(findSortButton(container, "Buildability"));
+
+  const lastCall = callPaths().at(-1) ?? "";
+  expect(lastCall).toContain("sort=buildability");
+  expect(lastCall).toContain("dir=desc");
   unmount();
 });
 
@@ -735,7 +777,7 @@ test("opens on the Indie sweet-spot preset by default (not the full corpus)", as
   expect(firstCall).toContain("maxCompetitiveness=45");
   expect(firstCall).toContain("minIncumbentWeakness=0.4");
   expect(firstCall).toContain("hideJunk=true");
-  expect(firstCall).toContain("sort=opportunity");
+  expect(firstCall).toContain("sort=buildability");
   expect(firstCall).toContain("dir=desc");
 
   // The preset button itself is highlighted as active.
@@ -769,6 +811,7 @@ test("clicking All clears every filter, sends hideJunk=false, and resets to page
   expect(lastCall).not.toContain("maxCompetitiveness=");
   expect(lastCall).not.toContain("minIncumbentWeakness=");
   expect(lastCall).not.toContain("minOpportunity=");
+  expect(lastCall).not.toContain("minBuildability=");
   expect(lastCall).not.toContain("trend=");
 
   const allButton = findPresetButton(container, "All");
@@ -810,6 +853,23 @@ test("adjusting a filter after selecting a preset switches the active state to C
 
   const lastCall = callPaths().at(-1) ?? "";
   expect(lastCall).toContain("minDemand=7");
+  unmount();
+});
+
+test("entering a Min buildability filter value sends minBuildability= and switches to Custom", async () => {
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  const minBuildabilityInput = container.querySelector(
+    "input[aria-label='Min buildability']",
+  ) as HTMLInputElement;
+  expect(minBuildabilityInput).toBeTruthy();
+  typeIntoInput(minBuildabilityInput, "60");
+  await waitForFilterDebounce();
+
+  const lastCall = callPaths().at(-1) ?? "";
+  expect(lastCall).toContain("minBuildability=60");
+  expect(container.textContent).toContain("Custom");
   unmount();
 });
 

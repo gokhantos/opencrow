@@ -8,6 +8,7 @@ import { formatNumber } from "../../lib/format";
 import { useDebounce } from "../../lib/use-debounce";
 import {
   ALL_PRESET,
+  buildabilityBand,
   filtersEqual,
   formatAvgAgeDays,
   formatAvgRating,
@@ -50,6 +51,8 @@ interface OpportunityRow {
   readonly demand: number;
   readonly incumbentWeakness: number;
   readonly opportunity: number;
+  /** Solo-indie "can I win this?" score, 0..100 — see opportunities-format.ts `buildabilityBand`. */
+  readonly buildability: number;
   /** Best-ever opportunity score across the keyword's full scan history. */
   readonly peakOpportunity: number;
   readonly trend: string;
@@ -89,6 +92,7 @@ interface HistoryResponse {
 /** Server-side sort key — mirrors the backend `sort` query param. Every column is sortable. */
 type SortKey =
   | "keyword"
+  | "buildability"
   | "store"
   | "opportunity"
   | "competitiveness"
@@ -101,7 +105,10 @@ type SortKey =
 
 type SortDir = "asc" | "desc";
 
-const DEFAULT_SORT_KEY: SortKey = "opportunity";
+// The screen opens on the "Indie sweet spot" preset, which now default-sorts
+// by Buildability (the headline score) rather than raw Opportunity — see
+// docs/superpowers/specs/2026-07-14-buildability-score-design.md.
+const DEFAULT_SORT_KEY: SortKey = "buildability";
 const DEFAULT_SORT_DIR: SortDir = "desc";
 
 const PAGE_SIZE_OPTIONS = [25, 50, 100] as const;
@@ -146,6 +153,7 @@ interface ColumnDef {
 
 const COLUMNS: readonly ColumnDef[] = [
   { key: "keyword", label: "Keyword" },
+  { key: "buildability", label: "Buildability" },
   { key: "store", label: "Store" },
   { key: "opportunity", label: "Opportunity" },
   { key: "competitiveness", label: "Competitiveness" },
@@ -163,6 +171,21 @@ function renderCell(row: OpportunityRow, key: SortKey): React.ReactNode {
   switch (key) {
     case "keyword":
       return <span className="font-medium text-foreground">{row.keyword}</span>;
+    case "buildability": {
+      const band = buildabilityBand(row.buildability);
+      return (
+        <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          <span className="font-mono font-semibold text-foreground">{row.buildability}</span>
+          <span
+            className={cn("px-1 py-0.5 rounded text-xs leading-none", band.className)}
+            aria-label={`Buildability band: ${band.label}`}
+            title={band.label}
+          >
+            {band.dot}
+          </span>
+        </span>
+      );
+    }
     case "store":
       return <span className="text-muted whitespace-nowrap">{formatStore(row.store)}</span>;
     case "opportunity":
@@ -331,6 +354,11 @@ function FilterPanel({
         value={draft.minOpportunity}
         onChange={(v) => onDraftChange({ ...draft, minOpportunity: v })}
       />
+      <NumericFilterInput
+        label="Min buildability"
+        value={draft.minBuildability}
+        onChange={(v) => onDraftChange({ ...draft, minBuildability: v })}
+      />
 
       <div className="flex flex-col gap-1">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-faint">Trend</span>
@@ -373,12 +401,18 @@ function IncumbentsPanel({ row }: IncumbentsPanelProps) {
       }),
     [row.demand, row.incumbentWeakness, row.topApps],
   );
+  const band = useMemo(() => buildabilityBand(row.buildability), [row.buildability]);
 
   return (
     <div className="flex flex-col gap-2 text-xs">
       <div>
         <div className="text-faint mb-1">Verdict</div>
-        <p className="text-foreground">{verdict}</p>
+        <p className="text-foreground">
+          <span aria-hidden="true" className="mr-1">
+            {band.dot}
+          </span>
+          {verdict}
+        </p>
       </div>
       {topApps.length > 0 && (
         <div>
@@ -444,6 +478,7 @@ export default function OpportunitiesTab() {
         maxCompetitiveness: parseDraftNumber(debouncedDraft.maxCompetitiveness),
         minIncumbentWeakness: parseDraftNumber(debouncedDraft.minIncumbentWeakness),
         minOpportunity: parseDraftNumber(debouncedDraft.minOpportunity),
+        minBuildability: parseDraftNumber(debouncedDraft.minBuildability),
       };
       return filtersEqual(prev, next) ? prev : next;
     });
@@ -498,6 +533,9 @@ export default function OpportunitiesTab() {
     }
     if (filters.minOpportunity !== null) {
       params.set("minOpportunity", String(filters.minOpportunity));
+    }
+    if (filters.minBuildability !== null) {
+      params.set("minBuildability", String(filters.minBuildability));
     }
     // hideJunk is always driven by the active preset/toggle in this UI (never
     // an ambiguous "untouched" state), so it's always sent explicitly as the
