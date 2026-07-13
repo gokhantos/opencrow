@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll, afterEach } from "bun:test";
 import { initDb, getDb } from "../../store/db";
+import { computeBuildability } from "./keyword-scoring";
 import {
   upsertKeywords,
   getStaleKeywords,
@@ -91,6 +92,13 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-sweet-spot-decoy-demand",
   "zzz-sweet-spot-decoy-comp",
   "zzz-sweet-spot-decoy-iw",
+  "zzz-build-drift-high",
+  "zzz-build-drift-zero",
+  "zzz-build-sort-a",
+  "zzz-build-sort-b",
+  "zzz-build-sort-c",
+  "zzz-build-filter-high",
+  "zzz-build-filter-low",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -952,6 +960,152 @@ describe("keyword-store", () => {
     it("bounds the distinct names returned to the given limit", async () => {
       const names = await getScannedAppNames(1);
       expect(names.length).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe("buildability", () => {
+    it("drift guard: the SQL-computed buildability on every returned row matches computeBuildability within rounding tolerance", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-build-drift-zone";
+      await upsertKeywords([
+        { keyword: "zzz-build-drift-high", genreZone: zone, source: "seed" },
+        { keyword: "zzz-build-drift-zero", genreZone: zone, source: "seed" },
+      ]);
+      // High buildability: strong demand, a weak (few-review, low-rated) leader.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-build-drift-high",
+          demand: 200,
+          topAppReviews: 10,
+          avgRating: 2.0,
+          scannedAt: now,
+        }),
+      );
+      // Zero buildability: no demand at all.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-build-drift-zero",
+          demand: 0,
+          topAppReviews: 100,
+          avgRating: 3.0,
+          scannedAt: now,
+        }),
+      );
+
+      const top = await getTopOpportunities({ limit: 50, genreZone: zone });
+      const rows = top.rows.filter((r) =>
+        ["zzz-build-drift-high", "zzz-build-drift-zero"].includes(r.keyword),
+      );
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        const expected = computeBuildability({
+          demand: row.demand,
+          topAppReviews: row.topAppReviews,
+          avgRating: row.avgRating,
+        });
+        expect(Math.abs(row.buildability - expected)).toBeLessThanOrEqual(1);
+      }
+
+      const high = rows.find((r) => r.keyword === "zzz-build-drift-high");
+      const zero = rows.find((r) => r.keyword === "zzz-build-drift-zero");
+      expect(high?.buildability).toBeGreaterThan(70);
+      expect(zero?.buildability).toBe(0);
+    });
+
+    it("sorts by buildability ascending and descending", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-build-sort-zone";
+      await upsertKeywords([
+        { keyword: "zzz-build-sort-a", genreZone: zone, source: "seed" },
+        { keyword: "zzz-build-sort-b", genreZone: zone, source: "seed" },
+        { keyword: "zzz-build-sort-c", genreZone: zone, source: "seed" },
+      ]);
+      // a: lowest buildability (no demand). b: highest (strong demand, weak
+      // incumbent). c: mid (moderate demand, moderate incumbent).
+      await insertScan(
+        makeScan({
+          keyword: "zzz-build-sort-a",
+          demand: 0,
+          topAppReviews: 100,
+          avgRating: 3.0,
+          scannedAt: now,
+        }),
+      );
+      await insertScan(
+        makeScan({
+          keyword: "zzz-build-sort-b",
+          demand: 200,
+          topAppReviews: 10,
+          avgRating: 2.0,
+          scannedAt: now,
+        }),
+      );
+      await insertScan(
+        makeScan({
+          keyword: "zzz-build-sort-c",
+          demand: 10,
+          topAppReviews: 500,
+          avgRating: 3.5,
+          scannedAt: now,
+        }),
+      );
+
+      const asc = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        sort: "buildability",
+        dir: "asc",
+      });
+      expect(asc.rows.map((r) => r.keyword)).toEqual([
+        "zzz-build-sort-a",
+        "zzz-build-sort-c",
+        "zzz-build-sort-b",
+      ]);
+
+      const desc = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        sort: "buildability",
+        dir: "desc",
+      });
+      expect(desc.rows.map((r) => r.keyword)).toEqual([
+        "zzz-build-sort-b",
+        "zzz-build-sort-c",
+        "zzz-build-sort-a",
+      ]);
+    });
+
+    it("bounds by minBuildability, and total reflects the filtered count", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-build-filter-zone";
+      await upsertKeywords([
+        { keyword: "zzz-build-filter-high", genreZone: zone, source: "seed" },
+        { keyword: "zzz-build-filter-low", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({
+          keyword: "zzz-build-filter-high",
+          demand: 200,
+          topAppReviews: 10,
+          avgRating: 2.0,
+          scannedAt: now,
+        }),
+      );
+      await insertScan(
+        makeScan({
+          keyword: "zzz-build-filter-low",
+          demand: 0,
+          topAppReviews: 100,
+          avgRating: 3.0,
+          scannedAt: now,
+        }),
+      );
+
+      const top = await getTopOpportunities({ limit: 50, genreZone: zone, minBuildability: 50 });
+      const keywords = top.rows.map((r) => r.keyword);
+      expect(keywords).toContain("zzz-build-filter-high");
+      expect(keywords).not.toContain("zzz-build-filter-low");
+      expect(top.total).toBe(1);
     });
   });
 });

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
+  BUILDABILITY_REVIEW_REF,
   classifyTrend,
+  computeBuildability,
   computeCompetitiveness,
   computeDemand,
   computeIncumbentWeakness,
@@ -203,5 +205,69 @@ describe("classifyTrend — history-based momentum", () => {
   });
   it("stable on a flat series", () => {
     expect(classifyTrend([10, 10.1, 9.9, 10.05])).toBe("stable");
+  });
+});
+
+describe("computeBuildability — solo-indie 0..100 score", () => {
+  it("is 0 when demand is 0, regardless of how weak the incumbent is", () => {
+    expect(computeBuildability({ demand: 0, topAppReviews: 100, avgRating: 3.0 })).toBe(0);
+    // Even a maximally-beatable incumbent (0 reviews, 0 rating) can't rescue
+    // a field with no measured demand — demandFactor is a multiplicative gate.
+    expect(computeBuildability({ demand: 0, topAppReviews: 0, avgRating: 0 })).toBe(0);
+  });
+
+  it("scores high (>70) for real demand + a weak, low-review, low-rated incumbent", () => {
+    const score = computeBuildability({ demand: 200, topAppReviews: 10, avgRating: 2.0 });
+    expect(score).toBeGreaterThan(70);
+    expect(score).toBe(82);
+  });
+
+  it("clamps at 0 when the incumbent is maximally strong (rating above 4.5, reviews far past the ref)", () => {
+    // avgRating > 4.5 would make the raw ratingOpening term negative without
+    // clamp01, and topAppReviews >> REVIEW_REF drives reviewOpening to 0 —
+    // both terms clamp, so opening (and thus buildability) is exactly 0
+    // despite very high demand.
+    const score = computeBuildability({ demand: 1000, topAppReviews: 1_000_000, avgRating: 5.0 });
+    expect(score).toBe(0);
+  });
+
+  it("clamps at 100 for maximal demand + a zero-review, zero-rating incumbent", () => {
+    const score = computeBuildability({ demand: 1000, topAppReviews: 0, avgRating: 0 });
+    expect(score).toBe(100);
+  });
+
+  it("rounds to the nearest integer for a realistic mid-range case", () => {
+    // demandFactor≈0.610, reviewOpening≈0.270, ratingOpening≈0.667 →
+    // opening≈0.409, raw≈24.94 → rounds to 25.
+    const score = computeBuildability({ demand: 10, topAppReviews: 500, avgRating: 3.5 });
+    expect(score).toBe(25);
+  });
+
+  it("is sensitive to BUILDABILITY_REVIEW_REF: a top app right at the ref reads as roughly half-open on the review axis", () => {
+    expect(BUILDABILITY_REVIEW_REF).toBe(5000);
+    const atRef = computeBuildability({
+      demand: 50,
+      topAppReviews: BUILDABILITY_REVIEW_REF,
+      avgRating: 4.5,
+    });
+    const farBelowRef = computeBuildability({ demand: 50, topAppReviews: 1, avgRating: 4.5 });
+    // At the ref, reviewOpening is 0 (norm saturates to 1); far below it,
+    // reviewOpening is close to 1 — so the far-below case scores strictly
+    // higher even with an identical (neutral, 4.5) rating.
+    expect(farBelowRef).toBeGreaterThan(atRef);
+  });
+
+  it("never returns a value outside 0..100 across a spread of inputs", () => {
+    const samples = [
+      { demand: 0, topAppReviews: 0, avgRating: 0 },
+      { demand: 1e9, topAppReviews: 0, avgRating: 0 },
+      { demand: 1e9, topAppReviews: 1e9, avgRating: 5 },
+      { demand: 25, topAppReviews: 2500, avgRating: 4.0 },
+    ];
+    for (const s of samples) {
+      const score = computeBuildability(s);
+      expect(score).toBeGreaterThanOrEqual(0);
+      expect(score).toBeLessThanOrEqual(100);
+    }
   });
 });

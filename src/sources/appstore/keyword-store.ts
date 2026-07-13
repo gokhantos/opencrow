@@ -1,5 +1,6 @@
 import { getDb } from "../../store/db";
 import { JUNK_KEYWORDS } from "./keyword-junk";
+import { computeBuildability } from "./keyword-scoring";
 import type { GapTrend, KeywordGapProfile, TopApp } from "./keyword-types";
 
 /**
@@ -45,6 +46,17 @@ export interface KeywordScanRow {
   readonly avgRating: number;
   readonly avgAgeDays: number;
   readonly topApps: readonly TopApp[];
+  /**
+   * Solo-indie "can I win this?" score, 0..100 — see `computeBuildability`
+   * (`keyword-scoring.ts`). Read-time, deterministic from `demand` /
+   * `topAppReviews` / `avgRating` (no stored column, no scan-time change).
+   * `getTopOpportunities` computes this via the mirrored `BUILDABILITY_SQL`
+   * expression; callers reading a plain `appstore_keyword_scans` row (no
+   * `buildability` column in the raw SELECT, e.g. `getLatestScan` /
+   * `getScanHistory`) get it computed in TS by `rowToScan` instead — same
+   * formula either way.
+   */
+  readonly buildability: number;
 }
 
 /**
@@ -83,6 +95,14 @@ interface KeywordScanDbRow {
   readonly avg_age_days: number | string;
   /** Raw jsonb value — Bun's SQL driver returns this as a JSON string, not a parsed array. */
   readonly top_apps: unknown;
+  /**
+   * Only present when the query's SELECT list added the mirrored
+   * `BUILDABILITY_SQL` expression (`getTopOpportunities`). A plain
+   * `SELECT * FROM appstore_keyword_scans` (`getLatestScan` /
+   * `getScanHistory`) has no such column — `rowToScan` falls back to
+   * computing it in TS via `computeBuildability` in that case.
+   */
+  readonly buildability?: number | string | null;
 }
 
 /** Raw column shape returned by `getTopOpportunities`'s scan+corpus join. */
@@ -93,20 +113,28 @@ interface OpportunityDbRow extends KeywordScanDbRow {
 }
 
 export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
+  const demand = Number(row.demand);
+  const topAppReviews = Number(row.top_app_reviews);
+  const avgRating = Number(row.avg_rating);
+  const buildability =
+    row.buildability === undefined || row.buildability === null
+      ? computeBuildability({ demand, topAppReviews, avgRating })
+      : Number(row.buildability);
   return {
     id: Number(row.id),
     keyword: row.keyword,
     store: row.store as "app" | "play",
     scannedAt: Number(row.scanned_at),
     competitiveness: Number(row.competitiveness),
-    demand: Number(row.demand),
+    demand,
     incumbentWeakness: Number(row.incumbent_weakness),
     opportunity: Number(row.opportunity),
     trend: row.trend as GapTrend,
-    topAppReviews: Number(row.top_app_reviews),
-    avgRating: Number(row.avg_rating),
+    topAppReviews,
+    avgRating,
     avgAgeDays: Number(row.avg_age_days),
     topApps: parseJson<readonly TopApp[]>(row.top_apps, []),
+    buildability,
   };
 }
 
@@ -223,7 +251,8 @@ export type SortKey =
   | "trend"
   | "topAppReviews"
   | "avgRating"
-  | "avgAgeDays";
+  | "avgAgeDays"
+  | "buildability";
 
 /** Every valid `SortKey`, for building the Zod enum at the route boundary. */
 export const SORT_KEYS = [
@@ -237,17 +266,38 @@ export const SORT_KEYS = [
   "topAppReviews",
   "avgRating",
   "avgAgeDays",
+  "buildability",
 ] as const satisfies readonly SortKey[];
 
 /**
- * Whitelist mapping each `SortKey` to its literal SQL column on subquery
- * alias `s` (see `getTopOpportunities`). This is the ONLY place a sort key
- * becomes SQL text: Bun.sql tagged templates parameterize VALUES, not
- * identifiers, so an ORDER BY column can never be interpolated as a normal
- * `${}` placeholder. Caller-supplied `sort`/`dir` only ever select a branch
- * of this frozen constant via `buildOrderByClause` — they never reach SQL
- * text directly, closing off any injection surface even though `sort` is
+ * SQL mirror of `computeBuildability` (`keyword-scoring.ts`) over the `s`
+ * (DISTINCT ON latest-scan) subquery alias's `demand` / `top_app_reviews` /
+ * `avg_rating` columns. Defined ONCE and reused verbatim in the data query's
+ * SELECT list, the `buildability` `SORT_COLUMNS` branch, and the
+ * `minBuildability` filter comparison (`buildFilterClause`), so the three can
+ * never drift out of sync with each other — and an integration test
+ * drift-guards this SQL text against the canonical TS `computeBuildability`
+ * itself. `demand` is REAL NOT NULL and `top_app_reviews` is INTEGER NOT NULL
+ * (migration 037), both always >= 0 in practice, so `ln(1 + x)` never sees a
+ * non-positive argument here. No caller input reaches this string — it is a
+ * frozen constant, embedded via `db.unsafe`, never interpolated as a normal
+ * `${}` value.
+ */
+const BUILDABILITY_SQL = `round(100 * least(1,greatest(0, ln(1+s.demand)/ln(1+50))) *
+      (0.65*least(1,greatest(0, 1 - ln(1+s.top_app_reviews)/ln(1+5000)))
+       + 0.35*least(1,greatest(0, (4.5 - s.avg_rating)/1.5))))`;
+
+/**
+ * Whitelist mapping each `SortKey` to its literal SQL column/expression on
+ * subquery alias `s` (see `getTopOpportunities`). This is the ONLY place a
+ * sort key becomes SQL text: Bun.sql tagged templates parameterize VALUES,
+ * not identifiers, so an ORDER BY column can never be interpolated as a
+ * normal `${}` placeholder. Caller-supplied `sort`/`dir` only ever select a
+ * branch of this frozen constant via `buildOrderByClause` — they never reach
+ * SQL text directly, closing off any injection surface even though `sort` is
  * already narrowed to the `SortKey` union by Zod at the route boundary.
+ * `buildability` maps to the full `BUILDABILITY_SQL` constant expression
+ * rather than a plain column — still no user input in ORDER BY.
  */
 const SORT_COLUMNS: Readonly<Record<SortKey, string>> = Object.freeze({
   keyword: "s.keyword",
@@ -260,6 +310,7 @@ const SORT_COLUMNS: Readonly<Record<SortKey, string>> = Object.freeze({
   topAppReviews: "s.top_app_reviews",
   avgRating: "s.avg_rating",
   avgAgeDays: "s.avg_age_days",
+  buildability: BUILDABILITY_SQL,
 });
 
 /**
@@ -282,6 +333,7 @@ interface OpportunityFilters {
   readonly maxCompetitiveness: number | null;
   readonly minIncumbentWeakness: number | null;
   readonly minOpportunity: number | null;
+  readonly minBuildability: number | null;
   readonly hideJunk: boolean;
 }
 
@@ -315,6 +367,10 @@ function buildFilterClause(db: ReturnType<typeof getDb>, filters: OpportunityFil
       OR s.incumbent_weakness >= ${filters.minIncumbentWeakness}
     )
     AND (${filters.minOpportunity}::numeric IS NULL OR s.opportunity >= ${filters.minOpportunity})
+    AND (
+      ${filters.minBuildability}::numeric IS NULL
+      OR ${db.unsafe(BUILDABILITY_SQL)} >= ${filters.minBuildability}
+    )
     AND (
       ${filters.hideJunk} = FALSE
       OR (
@@ -368,6 +424,8 @@ export interface GetTopOpportunitiesOptions {
   readonly minIncumbentWeakness?: number;
   /** Only include rows whose latest-scan `opportunity` is >= this value. */
   readonly minOpportunity?: number;
+  /** Only include rows whose computed `buildability` (0..100) is >= this value. */
+  readonly minBuildability?: number;
   /**
    * When true, drop junk rows: sole-generic-word keywords (see
    * `JUNK_KEYWORDS`), keywords under 3 characters, and purely
@@ -403,6 +461,7 @@ export async function getTopOpportunities(
     maxCompetitiveness: opts.maxCompetitiveness ?? null,
     minIncumbentWeakness: opts.minIncumbentWeakness ?? null,
     minOpportunity: opts.minOpportunity ?? null,
+    minBuildability: opts.minBuildability ?? null,
     hideJunk: opts.hideJunk ?? false,
   };
   const offset = opts.offset ?? 0;
@@ -423,6 +482,7 @@ export async function getTopOpportunities(
     )
     SELECT
       s.*,
+      ${db.unsafe(BUILDABILITY_SQL)} AS buildability,
       peak.peak_opportunity AS peak_opportunity,
       k.created_at AS keyword_created_at,
       k.source AS keyword_source

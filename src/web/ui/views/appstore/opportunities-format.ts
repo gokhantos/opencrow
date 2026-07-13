@@ -22,6 +22,36 @@ export interface TrendBadge {
   readonly className: string;
 }
 
+// ─── Buildability band (0..100 "can a solo dev win this?" score) ───────────
+// See docs/superpowers/specs/2026-07-14-buildability-score-design.md — the
+// score itself is computed server-side (`computeBuildability` in
+// keyword-scoring.ts); this is purely the display-band mapping.
+
+export interface BuildabilityBand {
+  readonly label: string;
+  readonly className: string;
+  /** At-a-glance emoji indicator, per the design spec (🟢/🟡/⚪). */
+  readonly dot: string;
+}
+
+const BUILDABILITY_STRONG_THRESHOLD = 70;
+const BUILDABILITY_MODERATE_THRESHOLD = 40;
+
+/**
+ * Maps a 0..100 buildability score to a display band: 🟢 "Strong" (>=70),
+ * 🟡 "Moderate" (40..69), ⚪ "Weak" (<40). Pure and total — any finite input
+ * (including out-of-range) falls into one of the three bands.
+ */
+export function buildabilityBand(score: number): BuildabilityBand {
+  if (score >= BUILDABILITY_STRONG_THRESHOLD) {
+    return { label: "Strong", className: "bg-success-subtle text-success", dot: "🟢" };
+  }
+  if (score >= BUILDABILITY_MODERATE_THRESHOLD) {
+    return { label: "Moderate", className: "bg-warning-subtle text-warning", dot: "🟡" };
+  }
+  return { label: "Weak", className: "bg-bg-3 text-faint", dot: "⚪" };
+}
+
 const TREND_BADGES: Readonly<Record<string, TrendBadge>> = {
   heating: { label: "Heating", className: "bg-danger/15 text-danger" },
   cooling: { label: "Cooling", className: "bg-accent/15 text-accent" },
@@ -151,6 +181,7 @@ export interface FilterState {
   readonly maxCompetitiveness: number | null;
   readonly minIncumbentWeakness: number | null;
   readonly minOpportunity: number | null;
+  readonly minBuildability: number | null;
   readonly hideJunk: boolean;
 }
 
@@ -172,6 +203,7 @@ export const ALL_FILTERS: FilterState = {
   maxCompetitiveness: null,
   minIncumbentWeakness: null,
   minOpportunity: null,
+  minBuildability: null,
   hideJunk: false,
 };
 
@@ -181,6 +213,7 @@ export const INDIE_FILTERS: FilterState = {
   maxCompetitiveness: 45,
   minIncumbentWeakness: 0.4,
   minOpportunity: null,
+  minBuildability: null,
   hideJunk: true,
 };
 
@@ -190,14 +223,19 @@ export const HEATING_FILTERS: FilterState = {
   maxCompetitiveness: null,
   minIncumbentWeakness: null,
   minOpportunity: null,
+  minBuildability: null,
   hideJunk: true,
 };
 
+// The "Indie sweet spot" preset defaults to sorting by Buildability (the
+// headline "can a solo dev win this?" score) rather than raw Opportunity —
+// see docs/superpowers/specs/2026-07-14-buildability-score-design.md.
+// Opportunity remains a visible, independently sortable column.
 export const INDIE_PRESET: Preset = {
   id: "indie",
   label: "Indie sweet spot",
   filters: INDIE_FILTERS,
-  sort: "opportunity",
+  sort: "buildability",
   dir: "desc",
 };
 export const HEATING_PRESET: Preset = { id: "heating", label: "Heating", filters: HEATING_FILTERS };
@@ -212,6 +250,7 @@ export function filtersEqual(a: FilterState, b: FilterState): boolean {
     a.maxCompetitiveness === b.maxCompetitiveness &&
     a.minIncumbentWeakness === b.minIncumbentWeakness &&
     a.minOpportunity === b.minOpportunity &&
+    a.minBuildability === b.minBuildability &&
     a.hideJunk === b.hideJunk
   );
 }
@@ -228,6 +267,7 @@ export interface NumericDraft {
   readonly maxCompetitiveness: string;
   readonly minIncumbentWeakness: string;
   readonly minOpportunity: string;
+  readonly minBuildability: string;
 }
 
 export function toDraft(filters: FilterState): NumericDraft {
@@ -237,6 +277,7 @@ export function toDraft(filters: FilterState): NumericDraft {
     minIncumbentWeakness:
       filters.minIncumbentWeakness === null ? "" : String(filters.minIncumbentWeakness),
     minOpportunity: filters.minOpportunity === null ? "" : String(filters.minOpportunity),
+    minBuildability: filters.minBuildability === null ? "" : String(filters.minBuildability),
   };
 }
 
