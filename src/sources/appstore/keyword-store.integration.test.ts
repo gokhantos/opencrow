@@ -8,7 +8,6 @@ import {
   insertScan,
   getLatestScan,
   getTopOpportunities,
-  queryOpportunities,
   getScanHistory,
   getMostRecentScanAt,
   countScansSince,
@@ -56,12 +55,18 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-keyword-meta",
   "zzz-peak-rank-old-glory",
   "zzz-peak-rank-steady",
-  "zzz-search-match-nonce",
-  "zzz-search-nomatch-decoy",
   "zzz-page-test-a",
   "zzz-page-test-b",
   "zzz-page-test-c",
   "zzz-scanned-app-names-fixture",
+  "zzz-sort-num-a",
+  "zzz-sort-num-b",
+  "zzz-sort-num-c",
+  "zzz-sort-text-alpha",
+  "zzz-sort-text-bravo",
+  "zzz-sort-text-charlie",
+  "zzz-sort-default-a",
+  "zzz-sort-default-b",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -186,7 +191,7 @@ describe("keyword-store", () => {
     expect(topApps?.[0]?.recentVelocity).toBeCloseTo(1.5, 6);
 
     const top = await getTopOpportunities({ limit: 50 });
-    expect(top.some((r) => r.keyword === "zzz-gap-test")).toBe(true);
+    expect(top.rows.some((r) => r.keyword === "zzz-gap-test")).toBe(true);
   });
 
   describe("getTopOpportunities filters", () => {
@@ -200,7 +205,7 @@ describe("keyword-store", () => {
       await insertScan(makeScan({ keyword: "zzz-gap-filter-genre-decoy", scannedAt: now }));
 
       const top = await getTopOpportunities({ limit: 50, genreZone: "finance" });
-      const keywords = top.map((r) => r.keyword);
+      const keywords = top.rows.map((r) => r.keyword);
       expect(keywords).toContain("zzz-gap-filter-genre-match");
       expect(keywords).not.toContain("zzz-gap-filter-genre-decoy");
     });
@@ -219,7 +224,7 @@ describe("keyword-store", () => {
       );
 
       const top = await getTopOpportunities({ limit: 50, trend: "cooling" });
-      const keywords = top.map((r) => r.keyword);
+      const keywords = top.rows.map((r) => r.keyword);
       expect(keywords).toContain("zzz-gap-filter-trend-match");
       expect(keywords).not.toContain("zzz-gap-filter-trend-decoy");
     });
@@ -248,7 +253,7 @@ describe("keyword-store", () => {
       );
 
       const top = await getTopOpportunities({ limit: 50, genreZone: "finance", trend: "new" });
-      const keywords = top.map((r) => r.keyword);
+      const keywords = top.rows.map((r) => r.keyword);
       expect(keywords).toContain("zzz-gap-filter-combo-match");
       expect(keywords).not.toContain("zzz-gap-filter-combo-decoy-trend");
       expect(keywords).not.toContain("zzz-gap-filter-combo-decoy-genre");
@@ -264,19 +269,130 @@ describe("keyword-store", () => {
       await insertScan(makeScan({ keyword: "zzz-gap-meta-fields", scannedAt: now }));
 
       const top = await getTopOpportunities({ limit: 50 });
-      const row = top.find((r) => r.keyword === "zzz-gap-meta-fields");
+      const row = top.rows.find((r) => r.keyword === "zzz-gap-meta-fields");
       expect(row).toBeDefined();
       expect(row?.source).toBe("autocomplete");
       expect(typeof row?.firstFoundAt).toBe("number");
     });
   });
 
-  describe("queryOpportunities", () => {
-    it("ranks by peak historical opportunity when sort=peak, by latest scan when sort=latest", async () => {
+  describe("getTopOpportunities pagination + sorting", () => {
+    it("sorts by a numeric column (competitiveness) ascending and descending", async () => {
       const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-sort-num-zone";
       await upsertKeywords([
-        { keyword: "zzz-peak-rank-old-glory", genreZone: "health", source: "seed" },
-        { keyword: "zzz-peak-rank-steady", genreZone: "health", source: "seed" },
+        { keyword: "zzz-sort-num-a", genreZone: zone, source: "seed" },
+        { keyword: "zzz-sort-num-b", genreZone: zone, source: "seed" },
+        { keyword: "zzz-sort-num-c", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-sort-num-a", competitiveness: 10, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-sort-num-b", competitiveness: 30, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-sort-num-c", competitiveness: 20, scannedAt: now }),
+      );
+
+      const asc = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        sort: "competitiveness",
+        dir: "asc",
+      });
+      expect(asc.rows.map((r) => r.keyword)).toEqual([
+        "zzz-sort-num-a",
+        "zzz-sort-num-c",
+        "zzz-sort-num-b",
+      ]);
+
+      const desc = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        sort: "competitiveness",
+        dir: "desc",
+      });
+      expect(desc.rows.map((r) => r.keyword)).toEqual([
+        "zzz-sort-num-b",
+        "zzz-sort-num-c",
+        "zzz-sort-num-a",
+      ]);
+    });
+
+    it("sorts by the keyword text column ascending and descending", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-sort-text-zone";
+      await upsertKeywords([
+        { keyword: "zzz-sort-text-alpha", genreZone: zone, source: "seed" },
+        { keyword: "zzz-sort-text-bravo", genreZone: zone, source: "seed" },
+        { keyword: "zzz-sort-text-charlie", genreZone: zone, source: "seed" },
+      ]);
+      // Inserted out of alphabetical order — sort must not depend on insert order.
+      await insertScan(makeScan({ keyword: "zzz-sort-text-charlie", scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-sort-text-alpha", scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-sort-text-bravo", scannedAt: now }));
+
+      const asc = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        sort: "keyword",
+        dir: "asc",
+      });
+      expect(asc.rows.map((r) => r.keyword)).toEqual([
+        "zzz-sort-text-alpha",
+        "zzz-sort-text-bravo",
+        "zzz-sort-text-charlie",
+      ]);
+
+      const desc = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        sort: "keyword",
+        dir: "desc",
+      });
+      expect(desc.rows.map((r) => r.keyword)).toEqual([
+        "zzz-sort-text-charlie",
+        "zzz-sort-text-bravo",
+        "zzz-sort-text-alpha",
+      ]);
+    });
+
+    it("defaults to sort=opportunity, dir=desc when both are omitted", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-sort-default-zone";
+      await upsertKeywords([
+        { keyword: "zzz-sort-default-a", genreZone: zone, source: "seed" },
+        { keyword: "zzz-sort-default-b", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-sort-default-a", opportunity: 0.2, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-sort-default-b", opportunity: 0.8, scannedAt: now }),
+      );
+
+      const defaulted = await getTopOpportunities({ limit: 50, genreZone: zone });
+      const explicit = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        sort: "opportunity",
+        dir: "desc",
+      });
+      expect(defaulted.rows.map((r) => r.keyword)).toEqual(explicit.rows.map((r) => r.keyword));
+      // Highest opportunity first by default.
+      expect(defaulted.rows.map((r) => r.keyword)).toEqual([
+        "zzz-sort-default-b",
+        "zzz-sort-default-a",
+      ]);
+    });
+
+    it("includes peakOpportunity alongside the latest scan's opportunity regardless of sort column", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-peak-zone";
+      await upsertKeywords([
+        { keyword: "zzz-peak-rank-old-glory", genreZone: zone, source: "seed" },
+        { keyword: "zzz-peak-rank-steady", genreZone: zone, source: "seed" },
       ]);
       // old-glory: peaked long ago, has since collapsed to near-zero demand.
       await insertScan(
@@ -290,106 +406,49 @@ describe("keyword-store", () => {
         makeScan({ keyword: "zzz-peak-rank-steady", opportunity: 0.5, scannedAt: now }),
       );
 
-      // Scoped via `search` to just these two nonce keywords so ordering
-      // assertions are unaffected by the shared DB's real corpus.
-      const latestRanked = await queryOpportunities({
-        limit: 50,
-        search: "zzz-peak-rank",
-        sort: "latest",
-      });
-      const latestKeywords = latestRanked.rows.map((r) => r.keyword);
-      // By latest-scan opportunity, steady (0.5) outranks old-glory's
-      // collapsed latest scan (0.05).
-      expect(latestKeywords.indexOf("zzz-peak-rank-steady")).toBeLessThan(
-        latestKeywords.indexOf("zzz-peak-rank-old-glory"),
+      // Default sort (latest-scan opportunity desc) — steady's 0.5 outranks
+      // old-glory's collapsed 0.05 latest scan, even though old-glory's
+      // ALL-TIME peak (0.95) is higher.
+      const result = await getTopOpportunities({ limit: 50, genreZone: zone });
+      const keywords = result.rows.map((r) => r.keyword);
+      expect(keywords.indexOf("zzz-peak-rank-steady")).toBeLessThan(
+        keywords.indexOf("zzz-peak-rank-old-glory"),
       );
 
-      const peakRanked = await queryOpportunities({
-        limit: 50,
-        search: "zzz-peak-rank",
-        sort: "peak",
-      });
-      const peakKeywords = peakRanked.rows.map((r) => r.keyword);
-      // By peak historical opportunity, old-glory's 0.95 all-time-best
-      // outranks steady's flat 0.5.
-      expect(peakKeywords.indexOf("zzz-peak-rank-old-glory")).toBeLessThan(
-        peakKeywords.indexOf("zzz-peak-rank-steady"),
-      );
-
-      const oldGlory = peakRanked.rows.find((r) => r.keyword === "zzz-peak-rank-old-glory");
+      const oldGlory = result.rows.find((r) => r.keyword === "zzz-peak-rank-old-glory");
       expect(oldGlory?.peakOpportunity).toBeCloseTo(0.95, 2);
       expect(oldGlory?.opportunity).toBeCloseTo(0.05, 2);
-      const steady = peakRanked.rows.find((r) => r.keyword === "zzz-peak-rank-steady");
+      const steady = result.rows.find((r) => r.keyword === "zzz-peak-rank-steady");
       expect(steady?.peakOpportunity).toBeCloseTo(0.5, 2);
       expect(steady?.opportunity).toBeCloseTo(0.5, 2);
     });
 
-    it("filters by case-insensitive keyword substring search, server-side across the whole corpus", async () => {
+    it("paginates via limit/offset and reports the whole-corpus total, scoped by genreZone", async () => {
       const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-page-zone";
       await upsertKeywords([
-        { keyword: "zzz-search-match-nonce", genreZone: "health", source: "seed" },
-        { keyword: "zzz-search-nomatch-decoy", genreZone: "health", source: "seed" },
-      ]);
-      await insertScan(
-        makeScan({ keyword: "zzz-search-match-nonce", opportunity: 0.4, scannedAt: now }),
-      );
-      await insertScan(
-        makeScan({ keyword: "zzz-search-nomatch-decoy", opportunity: 0.4, scannedAt: now }),
-      );
-
-      const result = await queryOpportunities({ limit: 50, search: "ZZZ-Search-Match" });
-      const keywords = result.rows.map((r) => r.keyword);
-      expect(keywords).toContain("zzz-search-match-nonce");
-      expect(keywords).not.toContain("zzz-search-nomatch-decoy");
-      // total reflects the filtered corpus-wide match count, not just this page.
-      expect(result.total).toBe(1);
-    });
-
-    it("paginates via limit/offset and reports the whole-corpus total", async () => {
-      const now = Math.floor(Date.now() / 1000);
-      await upsertKeywords([
-        { keyword: "zzz-page-test-a", genreZone: "health", source: "seed" },
-        { keyword: "zzz-page-test-b", genreZone: "health", source: "seed" },
-        { keyword: "zzz-page-test-c", genreZone: "health", source: "seed" },
+        { keyword: "zzz-page-test-a", genreZone: zone, source: "seed" },
+        { keyword: "zzz-page-test-b", genreZone: zone, source: "seed" },
+        { keyword: "zzz-page-test-c", genreZone: zone, source: "seed" },
       ]);
       await insertScan(makeScan({ keyword: "zzz-page-test-a", opportunity: 0.9, scannedAt: now }));
       await insertScan(makeScan({ keyword: "zzz-page-test-b", opportunity: 0.6, scannedAt: now }));
       await insertScan(makeScan({ keyword: "zzz-page-test-c", opportunity: 0.3, scannedAt: now }));
 
-      const page0 = await queryOpportunities({
-        limit: 1,
-        offset: 0,
-        search: "zzz-page-test",
-        sort: "latest",
-      });
+      const page0 = await getTopOpportunities({ limit: 1, offset: 0, genreZone: zone });
       expect(page0.total).toBe(3);
       expect(page0.rows).toHaveLength(1);
       expect(page0.rows[0]?.keyword).toBe("zzz-page-test-a");
 
-      const page1 = await queryOpportunities({
-        limit: 1,
-        offset: 1,
-        search: "zzz-page-test",
-        sort: "latest",
-      });
+      const page1 = await getTopOpportunities({ limit: 1, offset: 1, genreZone: zone });
       expect(page1.total).toBe(3);
       expect(page1.rows[0]?.keyword).toBe("zzz-page-test-b");
 
-      const page2 = await queryOpportunities({
-        limit: 1,
-        offset: 2,
-        search: "zzz-page-test",
-        sort: "latest",
-      });
+      const page2 = await getTopOpportunities({ limit: 1, offset: 2, genreZone: zone });
       expect(page2.rows[0]?.keyword).toBe("zzz-page-test-c");
 
       // Past the end of the matching set: empty page, same total.
-      const page3 = await queryOpportunities({
-        limit: 1,
-        offset: 3,
-        search: "zzz-page-test",
-        sort: "latest",
-      });
+      const page3 = await getTopOpportunities({ limit: 1, offset: 3, genreZone: zone });
       expect(page3.total).toBe(3);
       expect(page3.rows).toHaveLength(0);
     });
