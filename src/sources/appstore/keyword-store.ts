@@ -1,4 +1,5 @@
 import { getDb } from "../../store/db";
+import { JUNK_KEYWORDS } from "./keyword-junk";
 import type { GapTrend, KeywordGapProfile, TopApp } from "./keyword-types";
 
 /**
@@ -277,6 +278,52 @@ function buildOrderByClause(sort: SortKey, dir: "asc" | "desc"): string {
 interface OpportunityFilters {
   readonly genreZone: string | null;
   readonly trend: GapTrend | null;
+  readonly minDemand: number | null;
+  readonly maxCompetitiveness: number | null;
+  readonly minIncumbentWeakness: number | null;
+  readonly minOpportunity: number | null;
+  readonly hideJunk: boolean;
+}
+
+/**
+ * Builds the shared WHERE-condition fragment for both `getTopOpportunities`'s
+ * data query and `countFilteredOpportunities`'s count query, so the two can
+ * never drift out of sync (a mismatch would make `total` lie about the
+ * actual filtered page count). Every numeric/trend/zone filter is a
+ * NULL-guarded `${}` value placeholder — omitted filters (`null`) are true
+ * no-ops, never string-interpolated.
+ *
+ * The `hideJunk` branch drops a row when its ENTIRE (trimmed, lowercased)
+ * keyword is a sole generic word from `JUNK_KEYWORDS` (bound as a `text[]`
+ * array parameter via `db.array`, never interpolated), OR the trimmed
+ * keyword is under 3 characters, OR the keyword is purely
+ * numeric/punctuation/whitespace. A multi-word keyword survives even if one
+ * token is generic (e.g. "budget planner" is kept) — only a keyword that IS
+ * (whole, trimmed) a stoplist entry is junk.
+ */
+function buildFilterClause(db: ReturnType<typeof getDb>, filters: OpportunityFilters) {
+  return db`
+    (${filters.genreZone}::text IS NULL OR k.genre_zone = ${filters.genreZone})
+    AND (${filters.trend}::text IS NULL OR s.trend = ${filters.trend})
+    AND (${filters.minDemand}::numeric IS NULL OR s.demand >= ${filters.minDemand})
+    AND (
+      ${filters.maxCompetitiveness}::numeric IS NULL
+      OR s.competitiveness <= ${filters.maxCompetitiveness}
+    )
+    AND (
+      ${filters.minIncumbentWeakness}::numeric IS NULL
+      OR s.incumbent_weakness >= ${filters.minIncumbentWeakness}
+    )
+    AND (${filters.minOpportunity}::numeric IS NULL OR s.opportunity >= ${filters.minOpportunity})
+    AND (
+      ${filters.hideJunk} = FALSE
+      OR (
+        lower(btrim(s.keyword)) <> ALL(${db.array([...JUNK_KEYWORDS], "text")})
+        AND char_length(btrim(s.keyword)) >= 3
+        AND s.keyword !~ '^[0-9[:punct:][:space:]]+$'
+      )
+    )
+  `;
 }
 
 /**
@@ -284,22 +331,21 @@ interface OpportunityFilters {
  * pagination — backs `meta.total` so the dashboard can page through the
  * whole corpus rather than just the returned slice. Counts the same
  * DISTINCT-ON (keyword, store) latest-scan set that `getTopOpportunities`
- * pages through, so `total` always matches the filtered result-set size
- * before `limit`/`offset`.
+ * pages through, applying the identical `buildFilterClause` fragment, so
+ * `total` always matches the filtered result-set size before `limit`/`offset`.
  */
 async function countFilteredOpportunities(filters: OpportunityFilters): Promise<number> {
   const db = getDb();
   const rows = await db`
     WITH s AS (
-      SELECT DISTINCT ON (keyword, store) keyword, store, trend
+      SELECT DISTINCT ON (keyword, store) *
       FROM appstore_keyword_scans
       ORDER BY keyword, store, scanned_at DESC
     )
     SELECT count(*) AS count
     FROM s
     LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
-    WHERE (${filters.genreZone}::text IS NULL OR k.genre_zone = ${filters.genreZone})
-      AND (${filters.trend}::text IS NULL OR s.trend = ${filters.trend})
+    WHERE ${buildFilterClause(db, filters)}
   `;
   const count = (rows as ReadonlyArray<{ count: number | string }>)[0]?.count;
   return count === undefined ? 0 : Number(count);
@@ -314,11 +360,25 @@ export interface GetTopOpportunitiesOptions {
   readonly dir?: "asc" | "desc";
   readonly genreZone?: string;
   readonly trend?: GapTrend;
+  /** Only include rows whose latest-scan `demand` is >= this value. */
+  readonly minDemand?: number;
+  /** Only include rows whose latest-scan `competitiveness` is <= this value. */
+  readonly maxCompetitiveness?: number;
+  /** Only include rows whose latest-scan `incumbentWeakness` is >= this value. */
+  readonly minIncumbentWeakness?: number;
+  /** Only include rows whose latest-scan `opportunity` is >= this value. */
+  readonly minOpportunity?: number;
+  /**
+   * When true, drop junk rows: sole-generic-word keywords (see
+   * `JUNK_KEYWORDS`), keywords under 3 characters, and purely
+   * numeric/punctuation/whitespace keywords. Default false (no suppression).
+   */
+  readonly hideJunk?: boolean;
 }
 
 export interface GetTopOpportunitiesResult {
   readonly rows: readonly OpportunityRow[];
-  /** Count of (keyword, store) rows matching `genreZone`/`trend`, ignoring `limit`/`offset` — for pagination. */
+  /** Count of (keyword, store) rows matching ALL supplied filters, ignoring `limit`/`offset` — for pagination. */
   readonly total: number;
 }
 
@@ -336,8 +396,15 @@ export async function getTopOpportunities(
   opts: GetTopOpportunitiesOptions,
 ): Promise<GetTopOpportunitiesResult> {
   const db = getDb();
-  const genreZone = opts.genreZone ?? null;
-  const trend = opts.trend ?? null;
+  const filters: OpportunityFilters = {
+    genreZone: opts.genreZone ?? null,
+    trend: opts.trend ?? null,
+    minDemand: opts.minDemand ?? null,
+    maxCompetitiveness: opts.maxCompetitiveness ?? null,
+    minIncumbentWeakness: opts.minIncumbentWeakness ?? null,
+    minOpportunity: opts.minOpportunity ?? null,
+    hideJunk: opts.hideJunk ?? false,
+  };
   const offset = opts.offset ?? 0;
   const sort = opts.sort ?? "opportunity";
   const dir = opts.dir ?? "desc";
@@ -362,16 +429,12 @@ export async function getTopOpportunities(
     FROM s
     LEFT JOIN peak ON peak.keyword = s.keyword
     LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
-    WHERE (${genreZone}::text IS NULL OR k.genre_zone = ${genreZone})
-      AND (${trend}::text IS NULL OR s.trend = ${trend})
+    WHERE ${buildFilterClause(db, filters)}
     ORDER BY ${db.unsafe(orderByClause)}
     LIMIT ${opts.limit} OFFSET ${offset}
   `;
 
-  const [rows, total] = await Promise.all([
-    dataQuery,
-    countFilteredOpportunities({ genreZone, trend }),
-  ]);
+  const [rows, total] = await Promise.all([dataQuery, countFilteredOpportunities(filters)]);
 
   return {
     rows: (rows as OpportunityDbRow[]).map(rowToOpportunity),

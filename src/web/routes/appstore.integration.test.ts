@@ -42,6 +42,10 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-web-sort-text-alpha",
   "zzz-web-sort-text-bravo",
   "zzz-web-empty-genre-zone-keyword",
+  "zzz-web-sweet-spot-match",
+  "zzz-web-sweet-spot-decoy",
+  "zzz-web-hidejunk-false-keyword",
+  "hd",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -331,6 +335,75 @@ describe("appstore opportunities routes", () => {
       expect(body.data.map((r) => r.keyword)).toContain(
         "zzz-web-empty-genre-zone-keyword",
       );
+    });
+
+    it("400 when maxCompetitiveness is out of the 0..100 range", async () => {
+      const app = makeApp();
+      const res = await get(app, "/appstore/opportunities?maxCompetitiveness=200");
+      expect(res.status).toBe(400);
+      const body = await json<{ success: boolean }>(res);
+      expect(body.success).toBe(false);
+    });
+
+    it("400 when minIncumbentWeakness is out of the 0..1 range", async () => {
+      const app = makeApp();
+      const res = await get(app, "/appstore/opportunities?minIncumbentWeakness=5");
+      expect(res.status).toBe(400);
+      const body = await json<{ success: boolean }>(res);
+      expect(body.success).toBe(false);
+    });
+
+    it("parses hideJunk=false correctly (does not coerce the string 'false' to true)", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([{ keyword: "hd", genreZone: "zzz-web-hidejunk-zone", source: "seed" }]);
+      await insertScan(makeScan({ keyword: "hd", scannedAt: now }));
+
+      const app = makeApp();
+      const res = await get(
+        app,
+        "/appstore/opportunities?genreZone=zzz-web-hidejunk-zone&hideJunk=false",
+      );
+      expect(res.status).toBe(200);
+      const body = await json<OpportunitiesResponse>(res);
+      expect(body.data.map((r) => r.keyword)).toContain("hd");
+    });
+
+    it("200 the 'Indie sweet spot' filter set (minDemand/maxCompetitiveness/minIncumbentWeakness/hideJunk) returns only matching rows, and meta.total reflects the filtered count", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-web-sweet-spot-zone";
+      await upsertKeywords([
+        { keyword: "zzz-web-sweet-spot-match", genreZone: zone, source: "seed" },
+        { keyword: "zzz-web-sweet-spot-decoy", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({
+          keyword: "zzz-web-sweet-spot-match",
+          demand: 10,
+          competitiveness: 30,
+          incumbentWeakness: 0.6,
+          scannedAt: now,
+        }),
+      );
+      // Fails minDemand.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-web-sweet-spot-decoy",
+          demand: 1,
+          competitiveness: 30,
+          incumbentWeakness: 0.6,
+          scannedAt: now,
+        }),
+      );
+
+      const app = makeApp();
+      const res = await get(
+        app,
+        `/appstore/opportunities?genreZone=${zone}&minDemand=5&maxCompetitiveness=45&minIncumbentWeakness=0.4&hideJunk=true`,
+      );
+      expect(res.status).toBe(200);
+      const body = await json<OpportunitiesResponse>(res);
+      expect(body.data.map((r) => r.keyword)).toEqual(["zzz-web-sweet-spot-match"]);
+      expect(body.meta.total).toBe(1);
     });
   });
 

@@ -1,8 +1,10 @@
-// Pure formatting helpers for the App Store "Opportunities" dashboard tab.
-// Kept side-effect-free and framework-agnostic so they're trivially unit
-// testable without rendering React.
+// Pure formatting/state helpers for the App Store "Opportunities" dashboard
+// tab. Kept side-effect-free and framework-agnostic so they're trivially unit
+// testable without rendering React. See also
+// docs/superpowers/specs/2026-07-13-buildable-keyword-filters-design.md for
+// the buildable-keyword filter/preset design this half of the file backs.
 
-import { timeAgo } from "../../lib/format";
+import { formatNumber, timeAgo } from "../../lib/format";
 
 /**
  * Formats a 0..1 opportunity/incumbent-weakness ratio as a whole-number
@@ -78,4 +80,237 @@ export function sourceBadge(source: string | null): TrendBadge {
 export function formatFirstFound(epochSeconds: number | null): string {
   if (epochSeconds === null || !Number.isFinite(epochSeconds)) return "—";
   return timeAgo(epochSeconds);
+}
+
+// ─── Table cell formatters (shared with the leaderboard columns) ────────────
+
+export function formatDemand(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return value.toFixed(1);
+}
+
+export function formatCompetitiveness(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return Math.round(value).toString();
+}
+
+export function formatStore(store: "app" | "play"): string {
+  return store === "play" ? "Play" : "App Store";
+}
+
+export function formatTopAppReviews(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return Math.round(value).toLocaleString();
+}
+
+export function formatAvgRating(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return value.toFixed(1);
+}
+
+export function formatAvgAgeDays(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  return Math.round(value).toLocaleString();
+}
+
+// ─── Incumbent snapshot (row-level, powers the row-expand incumbents panel) ──
+
+/** Mirrors `TopApp` (src/sources/appstore/keyword-types.ts), display fields only. */
+export interface TopApp {
+  readonly id: string;
+  readonly name: string;
+  readonly reviews: number;
+  readonly rating: number;
+  readonly ageDays: number;
+  readonly ratingsPerDay: number;
+  readonly titleMatch: boolean;
+}
+
+// ─── Buildable-keyword filters + presets ─────────────────────────────────────
+// The screen opens on the "Indie sweet spot" preset (not the full corpus) —
+// sorting by raw Opportunity alone buries buildable keywords under dead/noise
+// terms, so the default view applies a demand floor + junk suppression.
+
+/** Mirrors the backend's `GapTrend` enum, for the `trend` filter only. */
+export type TrendFilterValue = "heating" | "stable" | "cooling" | "new";
+
+export const TREND_OPTIONS: ReadonlyArray<{
+  readonly value: TrendFilterValue | "";
+  readonly label: string;
+}> = [
+  { value: "", label: "Any trend" },
+  { value: "heating", label: "Heating" },
+  { value: "stable", label: "Stable" },
+  { value: "cooling", label: "Cooling" },
+  { value: "new", label: "New" },
+];
+
+export interface FilterState {
+  readonly trend: TrendFilterValue | null;
+  readonly minDemand: number | null;
+  readonly maxCompetitiveness: number | null;
+  readonly minIncumbentWeakness: number | null;
+  readonly minOpportunity: number | null;
+  readonly hideJunk: boolean;
+}
+
+export type PresetId = "indie" | "heating" | "all";
+
+/** A sort key/dir the component owns — kept as a loose string pair here to avoid a type-only import cycle. */
+export interface Preset {
+  readonly id: PresetId;
+  readonly label: string;
+  readonly filters: FilterState;
+  /** Only the Indie preset pins sort/dir per the design spec — Heating/All leave the current sort alone. */
+  readonly sort?: string;
+  readonly dir?: "asc" | "desc";
+}
+
+export const ALL_FILTERS: FilterState = {
+  trend: null,
+  minDemand: null,
+  maxCompetitiveness: null,
+  minIncumbentWeakness: null,
+  minOpportunity: null,
+  hideJunk: false,
+};
+
+export const INDIE_FILTERS: FilterState = {
+  trend: null,
+  minDemand: 5,
+  maxCompetitiveness: 45,
+  minIncumbentWeakness: 0.4,
+  minOpportunity: null,
+  hideJunk: true,
+};
+
+export const HEATING_FILTERS: FilterState = {
+  trend: "heating",
+  minDemand: 3,
+  maxCompetitiveness: null,
+  minIncumbentWeakness: null,
+  minOpportunity: null,
+  hideJunk: true,
+};
+
+export const INDIE_PRESET: Preset = {
+  id: "indie",
+  label: "Indie sweet spot",
+  filters: INDIE_FILTERS,
+  sort: "opportunity",
+  dir: "desc",
+};
+export const HEATING_PRESET: Preset = { id: "heating", label: "Heating", filters: HEATING_FILTERS };
+export const ALL_PRESET: Preset = { id: "all", label: "All", filters: ALL_FILTERS };
+
+export const PRESETS: readonly Preset[] = [INDIE_PRESET, HEATING_PRESET, ALL_PRESET];
+
+export function filtersEqual(a: FilterState, b: FilterState): boolean {
+  return (
+    a.trend === b.trend &&
+    a.minDemand === b.minDemand &&
+    a.maxCompetitiveness === b.maxCompetitiveness &&
+    a.minIncumbentWeakness === b.minIncumbentWeakness &&
+    a.minOpportunity === b.minOpportunity &&
+    a.hideJunk === b.hideJunk
+  );
+}
+
+/** Which preset (if any) the current filter state matches — `null` means "Custom". */
+export function matchPreset(filters: FilterState): PresetId | null {
+  return PRESETS.find((p) => filtersEqual(p.filters, filters))?.id ?? null;
+}
+
+// ─── Numeric filter drafts (debounced text inputs) ──────────────────────────
+
+export interface NumericDraft {
+  readonly minDemand: string;
+  readonly maxCompetitiveness: string;
+  readonly minIncumbentWeakness: string;
+  readonly minOpportunity: string;
+}
+
+export function toDraft(filters: FilterState): NumericDraft {
+  return {
+    minDemand: filters.minDemand === null ? "" : String(filters.minDemand),
+    maxCompetitiveness: filters.maxCompetitiveness === null ? "" : String(filters.maxCompetitiveness),
+    minIncumbentWeakness:
+      filters.minIncumbentWeakness === null ? "" : String(filters.minIncumbentWeakness),
+    minOpportunity: filters.minOpportunity === null ? "" : String(filters.minOpportunity),
+  };
+}
+
+/** Blank/whitespace-only or non-finite input means "unset" — never sent as NaN. */
+export function parseDraftNumber(raw: string): number | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  return Number.isFinite(n) ? n : null;
+}
+
+// ─── Keyword verdict (pure, unit-testable — no React) ───────────────────────
+// Derives a one-line buildability read from the row's demand/incumbent-
+// weakness bands plus the strongest incumbent, e.g. "Strong demand, weak
+// incumbents — top app: 1.8K reviews @ 3.6★ → beatable." Bands echo the
+// Indie-sweet-spot preset thresholds (minDemand 5/3, minIncumbentWeakness 0.4)
+// so the verdict reads consistently with the filter bar.
+
+export interface VerdictTopApp {
+  readonly reviews: number;
+  readonly rating: number;
+}
+
+export interface VerdictInput {
+  readonly demand: number;
+  readonly incumbentWeakness: number;
+  readonly topApps: readonly VerdictTopApp[];
+}
+
+function demandBand(demand: number): "low" | "moderate" | "strong" {
+  if (demand >= 10) return "strong";
+  if (demand >= 3) return "moderate";
+  return "low";
+}
+
+function weaknessBand(incumbentWeakness: number): "weak" | "moderate" | "strong" {
+  if (incumbentWeakness >= 0.4) return "weak";
+  if (incumbentWeakness >= 0.15) return "moderate";
+  return "strong";
+}
+
+function topAppSummary(topApps: readonly VerdictTopApp[]): string | null {
+  const top = [...topApps].sort((a, b) => b.reviews - a.reviews)[0];
+  if (!top) return null;
+  return `top app: ${formatNumber(top.reviews)} reviews @ ${top.rating.toFixed(1)}★`;
+}
+
+/** Small, pure, unit-testable helper — no React, no formatting side effects. */
+export function keywordVerdict(input: VerdictInput): string {
+  const dBand = demandBand(input.demand);
+  const wBand = weaknessBand(input.incumbentWeakness);
+  const summary = topAppSummary(input.topApps);
+
+  if (dBand === "low") {
+    return summary
+      ? `Low demand; ${summary} — probably not worth building.`
+      : "Low demand — probably not worth building.";
+  }
+
+  const demandLabel = dBand === "strong" ? "Strong demand" : "Moderate demand";
+
+  if (wBand === "weak") {
+    return summary
+      ? `${demandLabel}, weak incumbents — ${summary} → beatable.`
+      : `${demandLabel}, weak incumbents → beatable.`;
+  }
+
+  if (wBand === "moderate") {
+    return summary
+      ? `${demandLabel}; incumbents are middling — ${summary}, worth a closer look.`
+      : `${demandLabel}; incumbents are middling — worth a closer look.`;
+  }
+
+  return summary
+    ? `${demandLabel}; incumbents look strong — tough to unseat. (${summary})`
+    : `${demandLabel}; incumbents look strong — tough to unseat.`;
 }

@@ -67,6 +67,30 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-sort-text-charlie",
   "zzz-sort-default-a",
   "zzz-sort-default-b",
+  "zzz-filter-demand-high",
+  "zzz-filter-demand-low",
+  "zzz-filter-comp-low",
+  "zzz-filter-comp-high",
+  "zzz-filter-iw-high",
+  "zzz-filter-iw-low",
+  "zzz-filter-opp-high",
+  "zzz-filter-opp-low",
+  // Literal single-word junk-stoplist / short / numeric keywords — verified
+  // absent from the real corpus before adding here (see the design doc's
+  // hideJunk test notes): these specific tokens ("hd", "42", "q9") are
+  // structurally un-minable by keyword-miner.ts (STOPWORDS drops "the"/"and"/
+  // "for"; MIN_TOKEN_LENGTH=3 drops 1-2 char tokens like "hd"/"42"/"q9"), so
+  // they can never be produced by the live scraping pipeline and are safe to
+  // insert/delete here without risking real corpus/scan data.
+  "hd",
+  "42",
+  "q9",
+  "zzz-junk-keep-budget-hd-planner",
+  "zzz-legit-buildable-keyword",
+  "zzz-sweet-spot-match",
+  "zzz-sweet-spot-decoy-demand",
+  "zzz-sweet-spot-decoy-comp",
+  "zzz-sweet-spot-decoy-iw",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -257,6 +281,242 @@ describe("keyword-store", () => {
       expect(keywords).toContain("zzz-gap-filter-combo-match");
       expect(keywords).not.toContain("zzz-gap-filter-combo-decoy-trend");
       expect(keywords).not.toContain("zzz-gap-filter-combo-decoy-genre");
+    });
+  });
+
+  describe("getTopOpportunities buildable-keyword filters", () => {
+    it("bounds by minDemand", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-filter-demand-zone";
+      await upsertKeywords([
+        { keyword: "zzz-filter-demand-high", genreZone: zone, source: "seed" },
+        { keyword: "zzz-filter-demand-low", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-filter-demand-high", demand: 10, scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-filter-demand-low", demand: 1, scannedAt: now }));
+
+      const top = await getTopOpportunities({ limit: 50, genreZone: zone, minDemand: 5 });
+      const keywords = top.rows.map((r) => r.keyword);
+      expect(keywords).toContain("zzz-filter-demand-high");
+      expect(keywords).not.toContain("zzz-filter-demand-low");
+    });
+
+    it("bounds by maxCompetitiveness", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-filter-comp-zone";
+      await upsertKeywords([
+        { keyword: "zzz-filter-comp-low", genreZone: zone, source: "seed" },
+        { keyword: "zzz-filter-comp-high", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-filter-comp-low", competitiveness: 20, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-filter-comp-high", competitiveness: 80, scannedAt: now }),
+      );
+
+      const top = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        maxCompetitiveness: 45,
+      });
+      const keywords = top.rows.map((r) => r.keyword);
+      expect(keywords).toContain("zzz-filter-comp-low");
+      expect(keywords).not.toContain("zzz-filter-comp-high");
+    });
+
+    it("bounds by minIncumbentWeakness", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-filter-iw-zone";
+      await upsertKeywords([
+        { keyword: "zzz-filter-iw-high", genreZone: zone, source: "seed" },
+        { keyword: "zzz-filter-iw-low", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-filter-iw-high", incumbentWeakness: 0.8, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-filter-iw-low", incumbentWeakness: 0.1, scannedAt: now }),
+      );
+
+      const top = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        minIncumbentWeakness: 0.4,
+      });
+      const keywords = top.rows.map((r) => r.keyword);
+      expect(keywords).toContain("zzz-filter-iw-high");
+      expect(keywords).not.toContain("zzz-filter-iw-low");
+    });
+
+    it("bounds by minOpportunity", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-filter-opp-zone";
+      await upsertKeywords([
+        { keyword: "zzz-filter-opp-high", genreZone: zone, source: "seed" },
+        { keyword: "zzz-filter-opp-low", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-filter-opp-high", opportunity: 0.9, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-filter-opp-low", opportunity: 0.05, scannedAt: now }),
+      );
+
+      const top = await getTopOpportunities({ limit: 50, genreZone: zone, minOpportunity: 0.5 });
+      const keywords = top.rows.map((r) => r.keyword);
+      expect(keywords).toContain("zzz-filter-opp-high");
+      expect(keywords).not.toContain("zzz-filter-opp-low");
+    });
+
+    describe("hideJunk", () => {
+      it("removes a sole stoplist-word keyword", async () => {
+        const now = Math.floor(Date.now() / 1000);
+        await upsertKeywords([{ keyword: "hd", genreZone: "zzz-junk-zone", source: "seed" }]);
+        await insertScan(makeScan({ keyword: "hd", scannedAt: now }));
+
+        const hidden = await getTopOpportunities({
+          limit: 50,
+          genreZone: "zzz-junk-zone",
+          hideJunk: true,
+        });
+        expect(hidden.rows.map((r) => r.keyword)).not.toContain("hd");
+
+        const shown = await getTopOpportunities({
+          limit: 50,
+          genreZone: "zzz-junk-zone",
+          hideJunk: false,
+        });
+        expect(shown.rows.map((r) => r.keyword)).toContain("hd");
+      });
+
+      it("removes a keyword shorter than 3 characters", async () => {
+        const now = Math.floor(Date.now() / 1000);
+        await upsertKeywords([{ keyword: "q9", genreZone: "zzz-junk-zone", source: "seed" }]);
+        await insertScan(makeScan({ keyword: "q9", scannedAt: now }));
+
+        const hidden = await getTopOpportunities({
+          limit: 50,
+          genreZone: "zzz-junk-zone",
+          hideJunk: true,
+        });
+        expect(hidden.rows.map((r) => r.keyword)).not.toContain("q9");
+      });
+
+      it("removes a purely numeric keyword", async () => {
+        const now = Math.floor(Date.now() / 1000);
+        await upsertKeywords([{ keyword: "42", genreZone: "zzz-junk-zone", source: "seed" }]);
+        await insertScan(makeScan({ keyword: "42", scannedAt: now }));
+
+        const hidden = await getTopOpportunities({
+          limit: 50,
+          genreZone: "zzz-junk-zone",
+          hideJunk: true,
+        });
+        expect(hidden.rows.map((r) => r.keyword)).not.toContain("42");
+      });
+
+      it("keeps a multi-word keyword even when one token is a generic stoplist word", async () => {
+        const now = Math.floor(Date.now() / 1000);
+        await upsertKeywords([
+          {
+            keyword: "zzz-junk-keep-budget-hd-planner",
+            genreZone: "zzz-junk-zone",
+            source: "seed",
+          },
+          { keyword: "zzz-legit-buildable-keyword", genreZone: "zzz-junk-zone", source: "seed" },
+        ]);
+        await insertScan(
+          makeScan({ keyword: "zzz-junk-keep-budget-hd-planner", scannedAt: now }),
+        );
+        await insertScan(makeScan({ keyword: "zzz-legit-buildable-keyword", scannedAt: now }));
+
+        const hidden = await getTopOpportunities({
+          limit: 50,
+          genreZone: "zzz-junk-zone",
+          hideJunk: true,
+        });
+        const keywords = hidden.rows.map((r) => r.keyword);
+        expect(keywords).toContain("zzz-junk-keep-budget-hd-planner");
+        expect(keywords).toContain("zzz-legit-buildable-keyword");
+      });
+    });
+
+    it("combines minDemand + maxCompetitiveness + minIncumbentWeakness + hideJunk ('Indie sweet spot'), and total reflects the filtered count", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-sweet-spot-zone";
+      await upsertKeywords([
+        { keyword: "zzz-sweet-spot-match", genreZone: zone, source: "seed" },
+        { keyword: "zzz-sweet-spot-decoy-demand", genreZone: zone, source: "seed" },
+        { keyword: "zzz-sweet-spot-decoy-comp", genreZone: zone, source: "seed" },
+        { keyword: "zzz-sweet-spot-decoy-iw", genreZone: zone, source: "seed" },
+        // Reuses the literal junk word "hd" as the decoy that fails only
+        // hideJunk while passing every numeric bound.
+        { keyword: "hd", genreZone: zone, source: "seed" },
+      ]);
+      // Meets every "Indie sweet spot" bound: demand >= 5, competitiveness <= 45,
+      // incumbentWeakness >= 0.4, not junk.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-sweet-spot-match",
+          demand: 10,
+          competitiveness: 30,
+          incumbentWeakness: 0.6,
+          scannedAt: now,
+        }),
+      );
+      // Fails minDemand only.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-sweet-spot-decoy-demand",
+          demand: 2,
+          competitiveness: 30,
+          incumbentWeakness: 0.6,
+          scannedAt: now,
+        }),
+      );
+      // Fails maxCompetitiveness only.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-sweet-spot-decoy-comp",
+          demand: 10,
+          competitiveness: 80,
+          incumbentWeakness: 0.6,
+          scannedAt: now,
+        }),
+      );
+      // Fails minIncumbentWeakness only.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-sweet-spot-decoy-iw",
+          demand: 10,
+          competitiveness: 30,
+          incumbentWeakness: 0.1,
+          scannedAt: now,
+        }),
+      );
+      // Passes every numeric bound but is junk (sole stoplist word).
+      await insertScan(
+        makeScan({
+          keyword: "hd",
+          demand: 10,
+          competitiveness: 30,
+          incumbentWeakness: 0.6,
+          scannedAt: now,
+        }),
+      );
+
+      const top = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        minDemand: 5,
+        maxCompetitiveness: 45,
+        minIncumbentWeakness: 0.4,
+        hideJunk: true,
+      });
+      expect(top.rows.map((r) => r.keyword)).toEqual(["zzz-sweet-spot-match"]);
+      // total reflects the FILTERED count (1), not the 5 rows inserted.
+      expect(top.total).toBe(1);
     });
   });
 
