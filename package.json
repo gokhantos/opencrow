@@ -89,6 +89,7 @@
     "google-play-scraper": "^10.1.2",
     "grammy": "^1.40.0",
     "hono": "^4.12.0",
+    "jose": "^6.2.3",
     "js-tiktoken": "^1.0.21",
     "lucide-react": "^0.575.0",
     "neo4j-driver": "6.1.0",

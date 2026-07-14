@@ -17,6 +17,7 @@ import IdeasSettings from "./settings/IdeasSettings";
 import GraphSettings from "./settings/GraphSettings";
 import EmbeddingsMemorySettings from "./settings/Embeddings-memorySettings";
 import RuntimeSettings from "./settings/RuntimeSettings";
+import AppleAdsSettings from "./settings/AppleAdsSettings";
 
 /* ── Settings sub-tabs ──
  * The app-level Sidebar routes a single "settings" tab to this view; rather
@@ -33,6 +34,7 @@ const SETTINGS_TABS = [
   { id: "graph", label: "Graph" },
   { id: "embeddings-memory", label: "Embeddings & Memory" },
   { id: "runtime", label: "Runtime" },
+  { id: "apple-ads", label: "Apple Ads" },
 ] as const;
 
 type SettingsTabId = (typeof SETTINGS_TABS)[number]["id"];
@@ -846,6 +848,7 @@ export default function Settings() {
       {tab === "graph" && <GraphSettings />}
       {tab === "embeddings-memory" && <EmbeddingsMemorySettings />}
       {tab === "runtime" && <RuntimeSettings />}
+      {tab === "apple-ads" && <AppleAdsSettings />}
     </div>
   );
 }
