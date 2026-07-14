@@ -70,6 +70,23 @@ export function trendBadge(trend: string): TrendBadge {
   return TREND_BADGES[trend] ?? { label: trend, className: UNKNOWN_TREND_CLASSNAME };
 }
 
+// ─── Cluster label formatting (Concepts view) ───────────────────────────────
+// A cluster's `label` is the raw text of its highest-demand member keyword
+// (see `keyword-clustering.ts`) — typically lowercase, e.g. "meal planner".
+// Title-cased purely for display so concept cards read like app names.
+
+/**
+ * Title-cases a cluster label for display, e.g. `"meal planner"` ->
+ * `"Meal Planner"`. Pure and total: empty/whitespace-only input round-trips
+ * unchanged rather than throwing.
+ */
+export function titleCaseLabel(label: string): string {
+  return label
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 // ─── Source badge (keyword provenance) ─────────────────────────────────────
 
 /** Mirrors `KeywordSeedRow["source"]` (src/sources/appstore/keyword-store.ts). */

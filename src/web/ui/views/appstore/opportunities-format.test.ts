@@ -4,6 +4,7 @@ import {
   formatFirstFound,
   formatOpportunity,
   sourceBadge,
+  titleCaseLabel,
   trendBadge,
 } from "./opportunities-format";
 
@@ -170,4 +171,26 @@ test("formatOpportunity: peak can equal latest (never scanned again)", () => {
   const peak = 0.42;
   const latest = 0.42;
   expect(formatOpportunity(peak)).toBe(formatOpportunity(latest));
+});
+
+/* ---------- titleCaseLabel ---------- */
+
+test("titleCaseLabel: capitalizes each word of a lowercase multi-word label", () => {
+  expect(titleCaseLabel("meal planner")).toBe("Meal Planner");
+});
+
+test("titleCaseLabel: single word", () => {
+  expect(titleCaseLabel("budgeting")).toBe("Budgeting");
+});
+
+test("titleCaseLabel: already-capitalized input round-trips unchanged", () => {
+  expect(titleCaseLabel("Sleep Tracker")).toBe("Sleep Tracker");
+});
+
+test("titleCaseLabel: empty string round-trips unchanged rather than throwing", () => {
+  expect(titleCaseLabel("")).toBe("");
+});
+
+test("titleCaseLabel: collapses no whitespace — repeated spaces keep empty segments intact", () => {
+  expect(titleCaseLabel("meal  planner")).toBe("Meal  Planner");
 });

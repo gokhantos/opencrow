@@ -7,9 +7,10 @@
 import { useCallback, useState } from "react";
 import { Search, ArrowRight } from "lucide-react";
 import { apiFetch } from "../api";
-import { PageHeader, Button } from "../components";
+import { PageHeader, Button, FilterTabs } from "../components";
 import { useToast } from "../components/Toast";
 import type { Tab } from "../navigation";
+import ConceptsTab from "./appstore/ConceptsTab";
 import OpportunitiesTab from "./appstore/OpportunitiesTab";
 
 // ─── Props ───────────────────────────────────────────────────────────────────
@@ -29,6 +30,15 @@ interface RunPipelineResponse {
 
 const IDEAS_PIPELINE_ID = "mobile-app-ideas";
 
+// ─── View toggle (Keywords table vs. Concepts clusters) ─────────────────────
+
+type ResearchView = "keywords" | "concepts";
+
+const VIEW_TABS: ReadonlyArray<{ readonly id: ResearchView; readonly label: string }> = [
+  { id: "keywords", label: "Keywords" },
+  { id: "concepts", label: "Concepts" },
+];
+
 // ─── KeywordResearch (main) ────────────────────────────────────────────────
 
 export default function KeywordResearch({ navigateTo }: KeywordResearchProps) {
@@ -36,6 +46,8 @@ export default function KeywordResearch({ navigateTo }: KeywordResearchProps) {
   const [generating, setGenerating] = useState(false);
   const [lastRunId, setLastRunId] = useState<string | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  // Defaults to the existing Keywords table — Concepts is opt-in.
+  const [view, setView] = useState<ResearchView>("keywords");
 
   const handleGenerateIdeas = useCallback(async () => {
     setGenerating(true);
@@ -100,7 +112,13 @@ export default function KeywordResearch({ navigateTo }: KeywordResearchProps) {
         </div>
       )}
 
-      <OpportunitiesTab />
+      <FilterTabs
+        tabs={VIEW_TABS}
+        active={view}
+        onChange={(id) => setView(id as ResearchView)}
+      />
+
+      {view === "keywords" ? <OpportunitiesTab /> : <ConceptsTab />}
     </div>
   );
 }

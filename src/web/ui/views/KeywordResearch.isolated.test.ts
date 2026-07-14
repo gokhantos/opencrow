@@ -13,16 +13,21 @@ import { act } from "react";
 // ─── Mock apiFetch BEFORE importing the component ────────────────────────────
 //
 // Dispatch by path: OpportunitiesTab (rendered inside KeywordResearch) fetches
-// `/api/appstore/opportunities`, while the "Generate ideas" button POSTs to
-// `/api/pipelines/mobile-app-ideas/run`.
+// `/api/appstore/opportunities`, ConceptsTab (the "Concepts" toggle target)
+// fetches `/api/appstore/opportunity-clusters`, and the "Generate ideas"
+// button POSTs to `/api/pipelines/mobile-app-ideas/run`.
 interface MockApiResponse {
   readonly success: boolean;
   readonly data?: readonly unknown[];
+  readonly meta?: { readonly total: number; readonly limit: number; readonly offset: number };
   readonly message?: string;
   readonly runId?: string;
 }
 
 function defaultApiFetchImpl(path: string, _opts?: unknown): Promise<MockApiResponse> {
+  if (path.startsWith("/api/appstore/opportunity-clusters")) {
+    return Promise.resolve({ success: true, data: [], meta: { total: 0, limit: 24, offset: 0 } });
+  }
   if (path.startsWith("/api/appstore/opportunities")) {
     return Promise.resolve({ success: true, data: [] });
   }
@@ -208,5 +213,56 @@ test("navigateTo is called when 'View Pipeline Ideas' is clicked after success",
   });
 
   expect(navigateTo).toHaveBeenCalledWith("pipeline-ideas");
+  unmount();
+});
+
+// ─── Keywords | Concepts toggle ─────────────────────────────────────────────
+
+test("defaults to the Keywords view and does not fetch clusters until toggled", async () => {
+  const { container, unmount } = mount(React.createElement(KeywordResearch, {}));
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(container.textContent).toContain("No opportunities yet");
+  expect(
+    mockApiFetch.mock.calls.some((call) =>
+      (call[0] as string).startsWith("/api/appstore/opportunity-clusters"),
+    ),
+  ).toBe(false);
+  unmount();
+});
+
+test("clicking Concepts switches the view and fires the clusters query; clicking Keywords switches back", async () => {
+  const { container, unmount } = mount(React.createElement(KeywordResearch, {}));
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  const conceptsTab = findButtonByText(container, "Concepts");
+  await act(async () => {
+    conceptsTab.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(
+    mockApiFetch.mock.calls.some((call) =>
+      (call[0] as string).startsWith("/api/appstore/opportunity-clusters"),
+    ),
+  ).toBe(true);
+  expect(container.textContent).toContain("No concepts match these filters");
+  expect(container.textContent).not.toContain("No opportunities yet");
+
+  const keywordsTab = findButtonByText(container, "Keywords");
+  await act(async () => {
+    keywordsTab.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(container.textContent).toContain("No opportunities yet");
   unmount();
 });

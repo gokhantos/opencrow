@@ -1,5 +1,6 @@
 import { getDb } from "../../store/db";
 import { JUNK_KEYWORDS } from "./keyword-junk";
+import type { ClusterAssignmentRow, RawCandidate } from "./keyword-clustering";
 import { computeBuildability } from "./keyword-scoring";
 import type { GapTrend, KeywordGapProfile, TopApp } from "./keyword-types";
 
@@ -765,4 +766,394 @@ export async function getKeywordMeta(keyword: string): Promise<KeywordMeta | nul
     firstFoundAt: Number(row.created_at),
     source: row.source as KeywordMeta["source"],
   };
+}
+
+// ===========================================================================
+// Semantic keyword clustering (see keyword-clustering.ts + migration 038)
+// ===========================================================================
+
+/**
+ * Load clusterable candidate keywords: the latest scan per keyword (DISTINCT ON
+ * (keyword) — one row per keyword, matching the `appstore_keyword_clusters`
+ * keyword PK), restricted to `demand >= 1`, at least 3 characters, and not
+ * purely numeric/punctuation, ordered highest-demand-first. `buildability` is
+ * the mirrored `BUILDABILITY_SQL` expression so labeling can fall back to it.
+ * The junk/sole-generic-token prefilter is applied in TS by
+ * `isClusterableKeyword` (the clustering module owns that stoplist), not here —
+ * this SQL only does the cheap, index-friendly bounds.
+ */
+export async function selectClusterCandidateRows(): Promise<readonly RawCandidate[]> {
+  const db = getDb();
+  const rows = await db`
+    WITH s AS (
+      SELECT DISTINCT ON (keyword) *
+      FROM appstore_keyword_scans
+      ORDER BY keyword, scanned_at DESC
+    )
+    SELECT
+      s.keyword AS keyword,
+      s.demand AS demand,
+      ${db.unsafe(BUILDABILITY_SQL)} AS buildability
+    FROM s
+    WHERE s.demand >= 1
+      AND char_length(btrim(s.keyword)) >= 3
+      AND s.keyword !~ '^[0-9[:punct:][:space:]]+$'
+    ORDER BY s.demand DESC, s.keyword ASC
+  `;
+  return (
+    rows as ReadonlyArray<{
+      keyword: string;
+      demand: number | string;
+      buildability: number | string;
+    }>
+  ).map((r) => ({
+    keyword: r.keyword,
+    demand: Number(r.demand),
+    buildability: Number(r.buildability),
+  }));
+}
+
+/** Max rows per bulk INSERT — keeps each statement well under param limits. */
+const CLUSTER_INSERT_CHUNK = 1000;
+
+/**
+ * Replace the ENTIRE prior cluster assignment set with `rows` in ONE
+ * transaction (delete-all-then-insert), stamped with `updatedAt`. A clustering
+ * run is a full recompute, so stale keywords from a prior run must not linger —
+ * clearing first (rather than upserting) guarantees the table only ever holds
+ * the latest run's assignments. Inserts are chunked multi-row statements.
+ */
+export async function replaceClusterAssignments(
+  rows: readonly ClusterAssignmentRow[],
+  updatedAt: number,
+): Promise<void> {
+  const db = getDb();
+  await db.begin(async (tx) => {
+    await tx`DELETE FROM appstore_keyword_clusters`;
+    for (let i = 0; i < rows.length; i += CLUSTER_INSERT_CHUNK) {
+      const chunk = rows.slice(i, i + CLUSTER_INSERT_CHUNK).map((r) => ({
+        keyword: r.keyword,
+        cluster_id: r.clusterId,
+        cluster_label: r.clusterLabel,
+        similarity: r.similarity,
+        updated_at: updatedAt,
+      }));
+      if (chunk.length > 0) {
+        await tx`INSERT INTO appstore_keyword_clusters ${tx(chunk)}`;
+      }
+    }
+  });
+}
+
+/**
+ * Cluster-level sort keys the concepts view can order by. Each maps to a
+ * literal SQL alias produced by the `getOpportunityClusters` aggregate SELECT —
+ * frozen + whitelisted exactly like `SORT_COLUMNS`, so caller input never
+ * reaches ORDER BY text.
+ */
+export type ClusterSortKey = "maxBuildability" | "memberCount" | "avgDemand";
+
+export const CLUSTER_SORT_KEYS = [
+  "maxBuildability",
+  "memberCount",
+  "avgDemand",
+] as const satisfies readonly ClusterSortKey[];
+
+const CLUSTER_SORT_COLUMNS: Readonly<Record<ClusterSortKey, string>> = Object.freeze({
+  maxBuildability: "max_buildability",
+  memberCount: "member_count",
+  avgDemand: "avg_demand",
+});
+
+/**
+ * ORDER BY fragment for `getOpportunityClusters`: the whitelisted aggregate
+ * column in the requested direction, then `cluster_id ASC` as a deterministic
+ * tiebreaker so pagination stays stable across pages.
+ */
+function buildClusterOrderByClause(sort: ClusterSortKey, dir: "asc" | "desc"): string {
+  const column = CLUSTER_SORT_COLUMNS[sort];
+  const direction = dir === "asc" ? "ASC" : "DESC";
+  return `${column} ${direction} NULLS LAST, cluster_id ASC`;
+}
+
+export interface GetOpportunityClustersOptions {
+  readonly limit: number;
+  readonly offset?: number;
+  /** Cluster-level sort column. Default "maxBuildability". */
+  readonly sort?: ClusterSortKey;
+  /** Sort direction. Default "desc". */
+  readonly dir?: "asc" | "desc";
+  readonly trend?: GapTrend;
+  readonly minDemand?: number;
+  readonly maxCompetitiveness?: number;
+  readonly minIncumbentWeakness?: number;
+  readonly minOpportunity?: number;
+  readonly minBuildability?: number;
+  readonly hideJunk?: boolean;
+}
+
+/** A cluster's strongest member keywords (top by buildability). */
+export interface ClusterTopMember {
+  readonly keyword: string;
+  readonly buildability: number;
+  readonly demand: number;
+  readonly opportunity: number;
+}
+
+/** One aggregated app-concept cluster for the concepts view. */
+export interface OpportunityCluster {
+  readonly clusterId: number;
+  readonly label: string;
+  readonly memberCount: number;
+  readonly maxBuildability: number;
+  readonly maxOpportunity: number;
+  readonly avgDemand: number;
+  readonly minTopAppReviews: number;
+  readonly topMembers: readonly ClusterTopMember[];
+}
+
+export interface GetOpportunityClustersResult {
+  readonly clusters: readonly OpportunityCluster[];
+  /** Distinct cluster count after member-level filters — for pagination. */
+  readonly total: number;
+}
+
+/** Max member rows returned per cluster in the aggregated concepts view. */
+const CLUSTER_TOP_MEMBERS = 6;
+
+/**
+ * Build the member-level `OpportunityFilters` for the cluster queries. Clusters
+ * never filter by genre zone (concepts span zones), so `genreZone` is always
+ * null; every other filter mirrors `getTopOpportunities` exactly, so a member
+ * keyword is included in its cluster's aggregate iff it would pass the same
+ * filter on the opportunities endpoint.
+ */
+function clusterMemberFilters(opts: GetOpportunityClustersOptions): OpportunityFilters {
+  return {
+    genreZone: null,
+    trend: opts.trend ?? null,
+    minDemand: opts.minDemand ?? null,
+    maxCompetitiveness: opts.maxCompetitiveness ?? null,
+    minIncumbentWeakness: opts.minIncumbentWeakness ?? null,
+    minOpportunity: opts.minOpportunity ?? null,
+    minBuildability: opts.minBuildability ?? null,
+    hideJunk: opts.hideJunk ?? false,
+  };
+}
+
+/**
+ * Aggregated app-concept clusters — backs `GET /appstore/opportunity-clusters`.
+ * Joins each keyword's latest scan (DISTINCT ON (keyword)) to its cluster row,
+ * applies the SAME member-level filters as `getTopOpportunities` BEFORE
+ * aggregation, then groups by cluster. Each cluster carries its buildability /
+ * opportunity / demand aggregates plus its top members (by buildability).
+ * `total` is the distinct cluster count after filters (pre-pagination). Sorting
+ * is whitelisted (`buildClusterOrderByClause`) — no caller input reaches SQL.
+ */
+export async function getOpportunityClusters(
+  opts: GetOpportunityClustersOptions,
+): Promise<GetOpportunityClustersResult> {
+  const db = getDb();
+  const filters = clusterMemberFilters(opts);
+  const offset = opts.offset ?? 0;
+  const sort = opts.sort ?? "maxBuildability";
+  const dir = opts.dir ?? "desc";
+  const orderByClause = buildClusterOrderByClause(sort, dir);
+  const filterClause = buildFilterClause(db, filters);
+
+  const aggregateQuery = db`
+    WITH s AS (
+      SELECT DISTINCT ON (keyword) *
+      FROM appstore_keyword_scans
+      ORDER BY keyword, scanned_at DESC
+    ),
+    members AS (
+      SELECT
+        c.cluster_id AS cluster_id,
+        c.cluster_label AS cluster_label,
+        s.demand AS demand,
+        s.opportunity AS opportunity,
+        s.top_app_reviews AS top_app_reviews,
+        ${db.unsafe(BUILDABILITY_SQL)} AS buildability
+      FROM s
+      JOIN appstore_keyword_clusters c ON c.keyword = s.keyword
+      LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
+      WHERE ${filterClause}
+    )
+    SELECT
+      cluster_id,
+      cluster_label,
+      count(*)::int AS member_count,
+      max(buildability) AS max_buildability,
+      max(opportunity) AS max_opportunity,
+      avg(demand) AS avg_demand,
+      min(top_app_reviews) AS min_top_app_reviews
+    FROM members
+    GROUP BY cluster_id, cluster_label
+    ORDER BY ${db.unsafe(orderByClause)}
+    LIMIT ${opts.limit} OFFSET ${offset}
+  `;
+
+  const countQuery = db`
+    WITH s AS (
+      SELECT DISTINCT ON (keyword) *
+      FROM appstore_keyword_scans
+      ORDER BY keyword, scanned_at DESC
+    ),
+    members AS (
+      SELECT
+        c.cluster_id AS cluster_id,
+        ${db.unsafe(BUILDABILITY_SQL)} AS buildability
+      FROM s
+      JOIN appstore_keyword_clusters c ON c.keyword = s.keyword
+      LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
+      WHERE ${filterClause}
+    )
+    SELECT count(DISTINCT cluster_id)::int AS count FROM members
+  `;
+
+  const [aggRows, countRows] = await Promise.all([aggregateQuery, countQuery]);
+
+  const clusterRows = aggRows as ReadonlyArray<{
+    cluster_id: number | string;
+    cluster_label: string;
+    member_count: number | string;
+    max_buildability: number | string | null;
+    max_opportunity: number | string | null;
+    avg_demand: number | string | null;
+    min_top_app_reviews: number | string | null;
+  }>;
+
+  const clusterIds = clusterRows.map((r) => Number(r.cluster_id));
+  const topMembersByCluster = await getClusterTopMembers(db, clusterIds, filterClause);
+
+  const clusters: OpportunityCluster[] = clusterRows.map((r) => {
+    const clusterId = Number(r.cluster_id);
+    return {
+      clusterId,
+      label: r.cluster_label,
+      memberCount: Number(r.member_count),
+      maxBuildability: r.max_buildability === null ? 0 : Number(r.max_buildability),
+      maxOpportunity: r.max_opportunity === null ? 0 : Number(r.max_opportunity),
+      avgDemand: r.avg_demand === null ? 0 : Number(r.avg_demand),
+      minTopAppReviews: r.min_top_app_reviews === null ? 0 : Number(r.min_top_app_reviews),
+      topMembers: topMembersByCluster.get(clusterId) ?? [],
+    };
+  });
+
+  const total = (countRows as ReadonlyArray<{ count: number | string }>)[0]?.count;
+
+  return {
+    clusters,
+    total: total === undefined ? 0 : Number(total),
+  };
+}
+
+/**
+ * Top `CLUSTER_TOP_MEMBERS` members (by buildability) for each cluster id in
+ * `clusterIds`, applying the SAME member filter clause as the aggregate query
+ * so a member excluded from the aggregate can never resurface as a top member.
+ * One windowed query for the whole page, grouped back into a per-cluster map.
+ */
+async function getClusterTopMembers(
+  db: ReturnType<typeof getDb>,
+  clusterIds: readonly number[],
+  filterClause: ReturnType<typeof buildFilterClause>,
+): Promise<ReadonlyMap<number, readonly ClusterTopMember[]>> {
+  if (clusterIds.length === 0) return new Map();
+  const rows = await db`
+    WITH s AS (
+      SELECT DISTINCT ON (keyword) *
+      FROM appstore_keyword_scans
+      ORDER BY keyword, scanned_at DESC
+    ),
+    members AS (
+      SELECT
+        c.cluster_id AS cluster_id,
+        s.keyword AS keyword,
+        s.demand AS demand,
+        s.opportunity AS opportunity,
+        ${db.unsafe(BUILDABILITY_SQL)} AS buildability
+      FROM s
+      JOIN appstore_keyword_clusters c ON c.keyword = s.keyword
+      LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
+      WHERE ${filterClause} AND c.cluster_id IN ${db(clusterIds)}
+    ),
+    ranked AS (
+      SELECT
+        cluster_id, keyword, demand, opportunity, buildability,
+        ROW_NUMBER() OVER (
+          PARTITION BY cluster_id ORDER BY buildability DESC, keyword ASC
+        ) AS rn
+      FROM members
+    )
+    SELECT cluster_id, keyword, demand, opportunity, buildability
+    FROM ranked
+    WHERE rn <= ${CLUSTER_TOP_MEMBERS}
+    ORDER BY cluster_id ASC, buildability DESC, keyword ASC
+  `;
+
+  const byCluster = new Map<number, ClusterTopMember[]>();
+  for (const row of rows as ReadonlyArray<{
+    cluster_id: number | string;
+    keyword: string;
+    demand: number | string;
+    opportunity: number | string;
+    buildability: number | string;
+  }>) {
+    const clusterId = Number(row.cluster_id);
+    const list = byCluster.get(clusterId) ?? [];
+    list.push({
+      keyword: row.keyword,
+      demand: Number(row.demand),
+      opportunity: Number(row.opportunity),
+      buildability: Number(row.buildability),
+    });
+    byCluster.set(clusterId, list);
+  }
+  return byCluster;
+}
+
+export interface GetClusterMembersOptions extends GetOpportunityClustersOptions {
+  readonly clusterId: number;
+}
+
+/**
+ * All member keyword rows of a single cluster as full `OpportunityRow`s (the
+ * same projection `getTopOpportunities` returns), for the concept expand view.
+ * Applies the same member-level filters, ordered by buildability desc, bounded
+ * by `limit`. Returns `[]` for an unknown cluster id.
+ */
+export async function getClusterMembers(
+  opts: GetClusterMembersOptions,
+): Promise<readonly OpportunityRow[]> {
+  const db = getDb();
+  const filters = clusterMemberFilters(opts);
+  const filterClause = buildFilterClause(db, filters);
+  const rows = await db`
+    WITH s AS (
+      SELECT DISTINCT ON (keyword) *
+      FROM appstore_keyword_scans
+      ORDER BY keyword, scanned_at DESC
+    ),
+    peak AS (
+      SELECT keyword, MAX(opportunity) AS peak_opportunity
+      FROM appstore_keyword_scans
+      GROUP BY keyword
+    )
+    SELECT
+      s.*,
+      ${db.unsafe(BUILDABILITY_SQL)} AS buildability,
+      peak.peak_opportunity AS peak_opportunity,
+      k.created_at AS keyword_created_at,
+      k.source AS keyword_source
+    FROM s
+    JOIN appstore_keyword_clusters c ON c.keyword = s.keyword AND c.cluster_id = ${opts.clusterId}
+    LEFT JOIN peak ON peak.keyword = s.keyword
+    LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
+    WHERE ${filterClause}
+    ORDER BY ${db.unsafe(BUILDABILITY_SQL)} DESC, s.keyword ASC
+    LIMIT ${opts.limit} OFFSET ${opts.offset ?? 0}
+  `;
+  return (rows as OpportunityDbRow[]).map(rowToOpportunity);
 }
