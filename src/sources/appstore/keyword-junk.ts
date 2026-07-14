@@ -31,3 +31,44 @@ export const JUNK_KEYWORDS: readonly string[] = Object.freeze([
   "and",
   "for",
 ]);
+
+// Extra generic-noise tokens discovered in the semantic-clustering spike
+// (docs/superpowers/specs/2026-07-14-semantic-keyword-concepts-design.md).
+// Left OUT of `JUNK_KEYWORDS` on purpose: these are platform/recency/quantifier
+// filler ("updated", "ios", "recent", "all") that pollute *clustering* (they
+// form a generic-"app"/"updated" mega-bucket) but are NOT the display-time
+// buildable-keyword stoplist the opportunities `hideJunk` filter uses — keeping
+// them separate leaves that endpoint's behavior untouched.
+const CLUSTERING_NOISE_TOKENS: readonly string[] = Object.freeze([
+  "updated",
+  "update",
+  "updating",
+  "application",
+  "applications",
+  "ios",
+  "iphone",
+  "ipad",
+  "android",
+  "recent",
+  "what",
+  "whats",
+  "more",
+  "all",
+  "full",
+  "popular",
+]);
+
+/**
+ * The generic-token stoplist used ONLY by semantic keyword clustering
+ * (`keyword-clustering.ts`): `JUNK_KEYWORDS` PLUS `CLUSTERING_NOISE_TOKENS`.
+ * A keyword is dropped from the clustering candidate set when EVERY one of its
+ * (lowercased, whitespace-split) tokens is in this set — so a sole generic word
+ * ("updated", "app") is dropped, but a real multi-word concept ("budget
+ * planner") survives even if one token is generic. Distinct, and deliberately
+ * broader than, `JUNK_KEYWORDS`: the opportunities `hideJunk` filter still uses
+ * only `JUNK_KEYWORDS`, so this extension cannot change that endpoint.
+ */
+export const CLUSTERING_JUNK_KEYWORDS: readonly string[] = Object.freeze([
+  ...JUNK_KEYWORDS,
+  ...CLUSTERING_NOISE_TOKENS,
+]);

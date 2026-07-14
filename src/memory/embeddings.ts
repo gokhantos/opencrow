@@ -148,6 +148,39 @@ function createOpenAICompatibleEmbeddingProvider(
   };
 }
 
+/** Default local Ollama OpenAI-compatible embeddings endpoint + model. */
+export const DEFAULT_OLLAMA_EMBEDDINGS_URL = "http://127.0.0.1:11434/v1";
+export const DEFAULT_OLLAMA_EMBEDDINGS_MODEL = "nomic-embed-text";
+
+/**
+ * Construct a LOCAL Ollama embedding provider DIRECTLY — independent of the
+ * memory `features/embeddings` config (which may be set to OpenRouter and lack
+ * a key). For jobs that must always embed locally (e.g. the App Store keyword
+ * clustering batch job), regardless of how memory search is configured. Ollama
+ * exposes an OpenAI-compatible `/embeddings` endpoint and needs no auth, and its
+ * local models emit a FIXED native dimension — so no `dimensions` size is
+ * requested (mirrors `createEmbeddingProviderFromConfig`'s ollama branch).
+ */
+export function createLocalOllamaEmbeddingProvider(opts: {
+  readonly baseUrl?: string;
+  readonly model?: string;
+  readonly batchSize?: number;
+} = {}): EmbeddingProvider {
+  const baseUrl = opts.baseUrl ?? DEFAULT_OLLAMA_EMBEDDINGS_URL;
+  const model = opts.model ?? DEFAULT_OLLAMA_EMBEDDINGS_MODEL;
+  log.info("Using direct local Ollama embedding provider", { baseUrl, model });
+  return createOpenAICompatibleEmbeddingProvider({
+    baseUrl,
+    // Local Ollama needs no auth — the header is omitted entirely for a falsy key.
+    apiKey: undefined,
+    model,
+    // Local models emit a fixed native dimension — never request a custom size.
+    dimensions: undefined,
+    batchSize: opts.batchSize ?? 64,
+    label: "ollama",
+  });
+}
+
 /**
  * Create an embedding provider from config.
  *

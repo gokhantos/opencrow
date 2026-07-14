@@ -5,7 +5,10 @@ import {
   getTopOpportunities,
   getScanHistory,
   getKeywordMeta,
+  getOpportunityClusters,
+  getClusterMembers,
   SORT_KEYS,
+  CLUSTER_SORT_KEYS,
 } from "../../sources/appstore/keyword-store";
 import type { GapTrend } from "../../sources/appstore/keyword-types";
 import {
@@ -45,6 +48,51 @@ const opportunitiesQuerySchema = z.object({
 const scanHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(30),
 });
+
+// Member-level filters shared by both cluster endpoints — identical semantics
+// to the opportunities filters (minus genreZone, which clusters span). Kept as
+// a base so the aggregate list and the :clusterId expand view validate the same
+// filter surface.
+const clusterMemberFilterSchema = z.object({
+  trend: z.enum(GAP_TRENDS).optional(),
+  minDemand: z.coerce.number().min(0).optional(),
+  maxCompetitiveness: z.coerce.number().min(0).max(100).optional(),
+  minIncumbentWeakness: z.coerce.number().min(0).max(1).optional(),
+  minOpportunity: z.coerce.number().min(0).max(1).optional(),
+  minBuildability: z.coerce.number().min(0).max(100).optional(),
+  hideJunk: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
+});
+
+const opportunityClustersQuerySchema = clusterMemberFilterSchema.extend({
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+  sort: z.enum(CLUSTER_SORT_KEYS).default("maxBuildability"),
+  dir: z.enum(["asc", "desc"]).default("desc"),
+});
+
+const clusterMembersQuerySchema = clusterMemberFilterSchema.extend({
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
+});
+
+const clusterIdParamSchema = z.coerce.number().int().min(0).max(2_147_483_647);
+
+const CLUSTER_QUERY_KEYS = [
+  "limit",
+  "offset",
+  "sort",
+  "dir",
+  "trend",
+  "minDemand",
+  "maxCompetitiveness",
+  "minIncumbentWeakness",
+  "minOpportunity",
+  "minBuildability",
+  "hideJunk",
+] as const;
 
 export function createAppStoreRoutes(
   opts: { coreClient?: CoreClient } = {},
@@ -163,6 +211,66 @@ export function createAppStoreRoutes(
           source: meta?.source ?? null,
         },
       },
+    });
+  });
+
+  app.get("/appstore/opportunity-clusters", async (c) => {
+    const rawQuery: Record<string, string> = {};
+    for (const key of CLUSTER_QUERY_KEYS) {
+      const value = c.req.query(key);
+      if (value) rawQuery[key] = value;
+    }
+
+    const parsed = opportunityClustersQuerySchema.safeParse(rawQuery);
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+
+    const { limit, offset, sort, dir, ...filters } = parsed.data;
+    const { clusters, total } = await getOpportunityClusters({
+      limit,
+      offset,
+      sort,
+      dir,
+      ...filters,
+    });
+    return c.json({
+      success: true,
+      data: clusters,
+      meta: { total, limit, offset },
+    });
+  });
+
+  app.get("/appstore/opportunity-clusters/:clusterId", async (c) => {
+    const parsedId = clusterIdParamSchema.safeParse(c.req.param("clusterId"));
+    if (!parsedId.success) {
+      return c.json({ success: false, error: "Invalid cluster id" }, 400);
+    }
+
+    const rawQuery: Record<string, string> = {};
+    for (const key of CLUSTER_QUERY_KEYS) {
+      const value = c.req.query(key);
+      if (value) rawQuery[key] = value;
+    }
+
+    const parsed = clusterMembersQuerySchema.safeParse(rawQuery);
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+
+    const { limit, offset, ...filters } = parsed.data;
+    const members = await getClusterMembers({
+      clusterId: parsedId.data,
+      limit,
+      offset,
+      ...filters,
+    });
+    return c.json({
+      success: true,
+      data: members,
+      meta: { clusterId: parsedId.data, count: members.length, limit, offset },
     });
   });
 
