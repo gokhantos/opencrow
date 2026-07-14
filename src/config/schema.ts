@@ -643,6 +643,20 @@ export const appstoreSyncConfigSchema = z
   });
 export type AppstoreSyncConfig = z.infer<typeof appstoreSyncConfigSchema>;
 
+// Apple Ads (Search Ads) external-demand connection foundation — Phase 4a.
+// Default OFF. This flag is a FUTURE activation switch for a not-yet-built
+// automated fetch/store/scoring pipeline; it does NOT gate the manual
+// test-connection / probe routes in src/web/routes/apple-ads.ts (those work
+// whenever credentials are configured, regardless of this flag, so an admin
+// can validate a new Apple Ads account before flipping it on). See
+// docs/superpowers/specs/2026-07-14-apple-ads-demand-foundation-design.md.
+export const appstoreExternalDemandConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+  })
+  .default({ enabled: false });
+export type AppstoreExternalDemandConfig = z.infer<typeof appstoreExternalDemandConfigSchema>;
+
 export const processesConfigSchema = z
   .object({
     static: z.array(processSpecSchema).default([]),
@@ -2033,6 +2047,9 @@ export const opencrowConfigSchema = z.object({
   // App Store ranking-sync breadth (per-category limit/list-types + global
   // feed limit). See appstoreSyncConfigSchema.
   appstoreSync: appstoreSyncConfigSchema,
+  // Apple Ads (Search Ads) external-demand connection foundation. Default
+  // OFF; see appstoreExternalDemandConfigSchema.
+  appstoreExternalDemand: appstoreExternalDemandConfigSchema,
   pipelines: pipelinesConfigSchema.default({
     ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
   }),
