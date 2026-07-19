@@ -111,6 +111,10 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-tier1-cap-manual-b",
   "zzz-tier1-cap-manual-c",
   "zzz-tier2-cap-mined",
+  // Self-supplied tier-2 "stale competition" decoys for the fresh-manual-
+  // keyword exclusion test — see that test's comment (PR #321 CI failure)
+  // for why these must exist regardless of ambient corpus size.
+  ...Array.from({ length: 10 }, (_, i) => `zzz-tier1-fresh-decoy-${i}`),
   // deactivateJunkKeywords fixtures
   "zzz-deactivate-mined",
   "zzz-deactivate-manual-protected",
@@ -1159,10 +1163,30 @@ describe("keyword-store", () => {
 
     it("does NOT prioritize a fresh (recently-scanned) manual keyword into a small batch", async () => {
       const now = Math.floor(Date.now() / 1000);
+      const decoys = Array.from({ length: 10 }, (_, i) => `zzz-tier1-fresh-decoy-${i}`);
       await upsertKeywords([
         { keyword: "zzz-tier1-manual-fresh", genreZone: "zzz-tier-zone", source: "manual" },
+        ...decoys.map((keyword) => ({ keyword, genreZone: "zzz-tier-zone", source: "mined" as const })),
       ]);
-      await markScanned(["zzz-tier1-manual-fresh"], now - 60); // 1 minute ago — fresh, NOT stale
+      // 1h ago — comfortably fresh (well inside the 24h threshold, not a
+      // tight race against it).
+      await markScanned(["zzz-tier1-manual-fresh"], now - 3_600);
+      // 48h ago — comfortably stale (well past the 24h threshold), and
+      // structurally tier-1-INELIGIBLE (mined, no signature hit), so these
+      // can only ever surface via tier 2 — exactly the competition tier 2
+      // needs to fill its slots ahead of the fresh keyword.
+      //
+      // These decoys are NOT just a safety margin: without them, this test
+      // only passes when the shared `appstore_keywords` table already has
+      // enough OTHER stale rows to fill tier 2's small `LIMIT` ahead of the
+      // lone fresh fixture — true against a real dev DB (100k+ accumulated
+      // rows) but false against a freshly-migrated, empty CI Postgres, where
+      // the fresh keyword was the ONLY row available and tier 2 (which has
+      // no staleness gate of its own — see `getStaleKeywordsTiered`) had no
+      // choice but to return it. Self-supplied decoys make this
+      // deterministic regardless of ambient corpus size (see PR #321 CI
+      // failure).
+      await markScanned(decoys, now - 172_800);
 
       // A fresh (just-scanned) keyword fails the tier-1 staleness predicate
       // outright, so it can only appear via tier 2's stalest-first fallback —
