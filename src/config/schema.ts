@@ -608,6 +608,33 @@ export const appstoreKeywordGapConfigSchema = z
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 
+// ─── App Store newborn-velocity screener ───────────────────────────────────
+// Runs AFTER the keyword-gap scanner's scan batches (see `scraper.ts` /
+// `keyword-screener.ts`): evaluates the validated "window-opening signature"
+// against the latest scan of every keyword and persists hits to
+// `appstore_signature_hits` (migration 039). Gated like `appstoreKeywordGap`
+// above, but default ON — this is a read-only pass over data the scanner
+// already collected (no extra network calls), so there is no cost reason to
+// default it off.
+export const appstoreSignatureScreenerConfigSchema = z
+  .object({
+    // Master switch. Default ON.
+    enabled: z.boolean().default(true),
+    // Minimum gap between full-corpus screener runs, regardless of how often
+    // the scraper's scan-batch cycle fires — the screener re-evaluates the
+    // WHOLE corpus each run (cheap, index-friendly SQL prefilter + a small
+    // in-memory pass over the matches), so this exists purely to cap runs
+    // when scans are batched more frequently than this. Default 6h.
+    minRunIntervalMs: z.number().int().min(60_000).default(6 * 60 * 60 * 1000),
+  })
+  .default({
+    enabled: true,
+    minRunIntervalMs: 6 * 60 * 60 * 1000,
+  });
+export type AppstoreSignatureScreenerConfig = z.infer<
+  typeof appstoreSignatureScreenerConfigSchema
+>;
+
 // App Store ranking-sync breadth: how aggressively the scraper's ~hourly
 // ranking tick (scraper.ts `scrape()`) pulls chart data. Feeds the keyword
 // miner (more distinct apps → more candidate keywords), so wider breadth
@@ -2044,6 +2071,9 @@ export const opencrowConfigSchema = z.object({
   // App Store keyword-gap scanner: standalone feature, independent of the
   // SIGE ideas pipeline. Default OFF (see appstoreKeywordGapConfigSchema).
   appstoreKeywordGap: appstoreKeywordGapConfigSchema,
+  // Newborn-velocity screener: runs after the keyword-gap scanner's scan
+  // batches. Default ON (see appstoreSignatureScreenerConfigSchema).
+  appstoreSignatureScreener: appstoreSignatureScreenerConfigSchema,
   // App Store ranking-sync breadth (per-category limit/list-types + global
   // feed limit). See appstoreSyncConfigSchema.
   appstoreSync: appstoreSyncConfigSchema,
