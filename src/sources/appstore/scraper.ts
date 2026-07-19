@@ -3,6 +3,7 @@ import type { AppstoreSyncListType } from "../../config/schema";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
 import { runKeywordSweep } from "./keyword-gaps";
+import { runScreener } from "./keyword-screener";
 import { mineKeywords } from "./keyword-miner";
 import {
   upsertRankings,
@@ -374,6 +375,12 @@ export function createAppStoreScraper(config?: {
   // faster cadence (`appstoreKeywordGap.scanIntervalMs`, default 5 min).
   let keywordSweepTimer: ReturnType<typeof setInterval> | null = null;
   let keywordSweepRunning = false;
+  // Soft cadence gate for the newborn-velocity screener (`keyword-screener.ts`):
+  // process-local, not persisted — a restart simply lets the next due tick run
+  // it again, which is harmless (the screener is idempotent and cheap). Keeps
+  // a screener run from firing on every keyword-sweep tick (as often as every
+  // minute) when config wants it capped to `minRunIntervalMs` (default 6h).
+  let lastScreenerRunAt = 0;
 
   async function fetchTopApps(
     url: string,
@@ -753,10 +760,42 @@ export function createAppStoreScraper(config?: {
           failed: result.failed,
         });
       }
+
+      // Screener runs after each sweep batch (whether or not this particular
+      // cycle scanned anything new — it evaluates the corpus's LATEST scans,
+      // not just this cycle's), gated to its own cadence internally.
+      await runSignatureScreenerIfDue();
     } catch (err) {
       log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
     } finally {
       keywordSweepRunning = false;
+    }
+  }
+
+  // Runs the newborn-velocity screener over the whole corpus's latest scans,
+  // gated to `appstoreSignatureScreener.minRunIntervalMs` (default 6h) so it
+  // doesn't re-scan the full corpus on every keyword-sweep tick. Gated by its
+  // own `enabled` flag (default ON — the screener is a read-only pass over
+  // data the sweep already collected, no extra network calls). Never allowed
+  // to break the sweep — a failure is logged and swallowed, mirroring
+  // `keywordSweepTick`'s own failure handling.
+  async function runSignatureScreenerIfDue(): Promise<void> {
+    try {
+      const cfg = loadConfig().appstoreSignatureScreener;
+      if (!cfg.enabled) return;
+
+      const now = Date.now();
+      if (now - lastScreenerRunAt < cfg.minRunIntervalMs) return;
+      lastScreenerRunAt = now;
+
+      const result = await runScreener();
+      log.info("Newborn-velocity screener triggered", {
+        evaluated: result.evaluated,
+        hits: result.hits,
+        newHits: result.newHits,
+      });
+    } catch (err) {
+      log.warn("Newborn-velocity screener failed", { error: getErrorMessage(err) });
     }
   }
 

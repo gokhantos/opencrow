@@ -27,6 +27,7 @@ import { createFeaturesRoutes } from "./routes/features";
 import { createSecretsRoutes } from "./routes/secrets";
 import { createRoutingRulesRoutes } from "./routes/routing-rules";
 import { createAppStoreRoutes } from "./routes/appstore";
+import { createAppStoreSignatureHitsRoutes } from "./routes/appstore-signature-hits";
 import { createAppleAdsRoutes } from "./routes/apple-ads";
 import { createPlayStoreRoutes } from "./routes/playstore";
 import { createWorkflowRoutes } from "./routes/workflows";
@@ -386,6 +387,9 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
   const appStore = createAppStoreRoutes({ coreClient: cc });
   app.route("/api", appStore);
+
+  const appStoreSignatureHits = createAppStoreSignatureHitsRoutes();
+  app.route("/api", appStoreSignatureHits);
 
   const appleAds = createAppleAdsRoutes();
   app.route("/api", appleAds);

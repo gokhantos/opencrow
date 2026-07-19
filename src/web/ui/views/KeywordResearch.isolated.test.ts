@@ -14,8 +14,9 @@ import { act } from "react";
 //
 // Dispatch by path: OpportunitiesTab (rendered inside KeywordResearch) fetches
 // `/api/appstore/opportunities`, ConceptsTab (the "Concepts" toggle target)
-// fetches `/api/appstore/opportunity-clusters`, and the "Generate ideas"
-// button POSTs to `/api/pipelines/mobile-app-ideas/run`.
+// fetches `/api/appstore/opportunity-clusters`, ScreenerTab (the "Screener"
+// toggle target) fetches `/api/appstore/signature-hits`, and the "Generate
+// ideas" button POSTs to `/api/pipelines/mobile-app-ideas/run`.
 interface MockApiResponse {
   readonly success: boolean;
   readonly data?: readonly unknown[];
@@ -29,6 +30,9 @@ function defaultApiFetchImpl(path: string, _opts?: unknown): Promise<MockApiResp
     return Promise.resolve({ success: true, data: [], meta: { total: 0, limit: 24, offset: 0 } });
   }
   if (path.startsWith("/api/appstore/opportunities")) {
+    return Promise.resolve({ success: true, data: [] });
+  }
+  if (path.startsWith("/api/appstore/signature-hits")) {
     return Promise.resolve({ success: true, data: [] });
   }
   if (path.startsWith("/api/pipelines/")) {
@@ -259,6 +263,39 @@ test("clicking Concepts switches the view and fires the clusters query; clicking
   const keywordsTab = findButtonByText(container, "Keywords");
   await act(async () => {
     keywordsTab.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(container.textContent).toContain("No opportunities yet");
+  unmount();
+});
+
+test("clicking Screener switches the view and fires the signature-hits query; clicking Keywords switches back", async () => {
+  const { container, unmount } = mount(React.createElement(KeywordResearch, {}));
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  const screenerTab = findButtonByText(container, "Screener");
+  await act(async () => {
+    screenerTab.click();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  expect(
+    mockApiFetch.mock.calls.some((call) =>
+      (call[0] as string).startsWith("/api/appstore/signature-hits"),
+    ),
+  ).toBe(true);
+  expect(container.textContent).toContain("No signature hits");
+  expect(container.textContent).not.toContain("No opportunities yet");
+
+  const keywordsTab2 = findButtonByText(container, "Keywords");
+  await act(async () => {
+    keywordsTab2.click();
     await Promise.resolve();
     await Promise.resolve();
   });

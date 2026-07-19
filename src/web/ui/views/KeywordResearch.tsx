@@ -12,6 +12,7 @@ import { useToast } from "../components/Toast";
 import type { Tab } from "../navigation";
 import ConceptsTab from "./appstore/ConceptsTab";
 import OpportunitiesTab from "./appstore/OpportunitiesTab";
+import ScreenerTab from "./appstore/ScreenerTab";
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -30,13 +31,14 @@ interface RunPipelineResponse {
 
 const IDEAS_PIPELINE_ID = "mobile-app-ideas";
 
-// ─── View toggle (Keywords table vs. Concepts clusters) ─────────────────────
+// ─── View toggle (Keywords table vs. Concepts clusters vs. Screener hits) ───
 
-type ResearchView = "keywords" | "concepts";
+type ResearchView = "keywords" | "concepts" | "screener";
 
 const VIEW_TABS: ReadonlyArray<{ readonly id: ResearchView; readonly label: string }> = [
   { id: "keywords", label: "Keywords" },
   { id: "concepts", label: "Concepts" },
+  { id: "screener", label: "Screener" },
 ];
 
 // ─── KeywordResearch (main) ────────────────────────────────────────────────
@@ -118,7 +120,9 @@ export default function KeywordResearch({ navigateTo }: KeywordResearchProps) {
         onChange={(id) => setView(id as ResearchView)}
       />
 
-      {view === "keywords" ? <OpportunitiesTab /> : <ConceptsTab />}
+      {view === "keywords" && <OpportunitiesTab />}
+      {view === "concepts" && <ConceptsTab />}
+      {view === "screener" && <ScreenerTab />}
     </div>
   );
 }
