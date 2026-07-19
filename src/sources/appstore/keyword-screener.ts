@@ -34,8 +34,17 @@ const log = createLogger("appstore:keyword-screener");
 // automatically from corpus stats.
 // ---------------------------------------------------------------------------
 
-/** Gate 1: field must not already be crowded. */
-export const COMPETITIVENESS_MAX = 35;
+/**
+ * Gate 1: field must not already be crowded.
+ *
+ * Widened 2026-07-19 from 35 to 50 after backtesting against real GO-grade
+ * markets: "peptide tracker" (comp 44.5) and "card grading" (comp 44.0) are
+ * both validated GO markets that the 35 bound was rejecting outright, while
+ * "block shorts" (comp 10.7) still clears the widened bound with room to
+ * spare — 50 recovers the false negatives without materially opening the
+ * gate for the bulk of the corpus (competitiveness is heavily right-skewed).
+ */
+export const COMPETITIVENESS_MAX = 50;
 
 /** Gate 2: demand must be measurably rising, not merely stable. */
 export const REQUIRED_TREND: GapTrend = "heating";
@@ -70,6 +79,92 @@ export const VELOCITY_RATIO_MIN = 1.5;
 
 /** An app at or above this age (days) counts as "established" for the ratio's denominator. */
 export const ESTABLISHED_AGE_DAYS_MIN = NEWCOMER_AGE_DAYS_MAX;
+
+// ---------------------------------------------------------------------------
+// Alternative qualification path — "single-dominant-newcomer" / the "Yardly
+// garage-sale" pattern: ONE newcomer growing fast against an ancient, stale
+// incumbent field, rather than >=2 newcomers racing each other. The primary
+// path's `MIN_FAST_NEWCOMERS` gate structurally cannot see this shape (a lone
+// newcomer never reaches 2), so it was rejecting a real validated GO market
+// (Yardly: one modern entrant at 13 ratings/day against a 17-year-old, stale
+// incumbent) outright. This path is OR'd with the primary path below — it
+// never replaces it — and bypasses the primary path's trend requirement and
+// >=2-newcomer count, but still requires an actual established incumbent to
+// be measurably slower than the newcomer (no incumbent means there's no
+// "garage sale" to detect, so the ratio gate below demands a usable
+// baseline). Gates outside competitiveness/trend/newcomer-count (max-reviews
+// ceiling, suppression, junk, genre) still apply — see `gatesPass` below.
+// ---------------------------------------------------------------------------
+
+/**
+ * The lone newcomer must be gaining reviews at least this fast to qualify —
+ * deliberately stricter than the primary path's `NEWCOMER_MIN_RATINGS_PER_DAY`
+ * (>1) because this path only requires ONE newcomer, so it must be
+ * unambiguous, outlier-grade traction rather than merely-not-dead.
+ *
+ * Tuned 2026-07-19 against the live corpus (86k keywords): an initial floor
+ * of 8 alone produced ~900 alt-path hits — root-caused to a broad, GENUINE
+ * pattern (large, real incumbents — tens of thousands of reviews — that have
+ * simply aged and slowed down, with `ratingsPerDay` mechanically diluted by
+ * dividing lifetime reviews by a large `ageDays`), not corpus junk; a
+ * materiality check on the established app's review COUNT (as a proxy for
+ * "is this a real incumbent") barely moved the count, confirming the excess
+ * hits are legitimate signature matches, not noise the ratio math is fooled
+ * by. Raising the floor to 12 (this repo's own suggested next rung) cuts the
+ * live alt-path count to ~656 while still comfortably admitting the
+ * validated Yardly backtest case (13 ratings/day) with headroom — 12 is the
+ * tightest reasonable floor that (a) still accepts that backtest case and
+ * (b) isn't suspiciously pinned to the exact backtest value. The live count
+ * still runs above this task's ~250-300 planning estimate; further
+ * tightening would need a different lever (e.g. a genre/quality signal) and
+ * is left as a follow-up — see the live-DB run notes in the PR.
+ */
+export const ALT_SINGLE_NEWCOMER_MIN_RATINGS_PER_DAY = 12;
+
+/**
+ * Newcomer/established ratio floor for the alt path. Lower than the primary
+ * path's `VELOCITY_RATIO_MIN` (1.5) because the alt path already demands a
+ * much higher absolute newcomer velocity
+ * (`ALT_SINGLE_NEWCOMER_MIN_RATINGS_PER_DAY`) — the two gates jointly
+ * replace the primary path's newcomer-count requirement as the signal that
+ * something real is happening.
+ */
+export const ALT_SINGLE_NEWCOMER_VELOCITY_RATIO_MIN = 1.2;
+
+/**
+ * Absolute review-COUNT floor for the alt path's lone newcomer — distinct
+ * from its ratings/day floor. Added 2026-07-19 after a live-corpus run of
+ * the rpd-only alt path surfaced hundreds of low-substance/foreign-script
+ * hits (e.g. a keyword whose "newcomer" had just a handful of reviews but a
+ * high rpd purely because it was very young). The real Yardly backtest case
+ * had 957 reviews, far above this floor — this only excludes newcomers that
+ * are still too thin to represent a real, judged app.
+ */
+export const ALT_SINGLE_NEWCOMER_MIN_REVIEWS = 150;
+
+/**
+ * Minimum scan-level `demand` for the alt path. Reuses the same threshold
+ * (5) as the dashboard's "Indie sweet spot" `minDemand` preset (see
+ * `opportunities-format.ts`) — the corpus's own established "this keyword
+ * has credible search demand" floor — rather than inventing a new one.
+ * Added alongside the review-count floor for the same reason: without it,
+ * near-zero-demand keywords with a lone fast-but-thin newcomer were passing.
+ */
+export const ALT_MIN_DEMAND = 5;
+
+/**
+ * Minimum established-baseline ratingsPerDay for the alt path's ratio gate.
+ * Unlike the primary path (where a missing/zero baseline satisfies the ratio
+ * gate — see `ratioGatePass` — because there SHOULD be nothing to be faster
+ * than), the alt path's entire premise is "the newcomer is measurably faster
+ * than a real, still-standing incumbent". A near-zero denominator (e.g.
+ * 0.001 ratings/day) produces astronomical, meaningless ratios (seen live up
+ * to 77,264x) that trivially clear any ratio floor regardless of whether the
+ * newcomer's own traction is real — this floor guards against that div-by-
+ * near-zero blowup by requiring an established baseline that is itself a
+ * minimally live app, not a statistically-dead one.
+ */
+export const ALT_MIN_ESTABLISHED_RPD = 0.2;
 
 /** Gate 5: no single app in the SERP may already be this entrenched. */
 export const MAX_REVIEWS_CEILING = 120_000;
@@ -108,6 +203,11 @@ export interface SignatureScanInput {
   readonly keyword: string;
   readonly competitiveness: number;
   readonly trend: GapTrend;
+  /**
+   * Scan-level demand (same field the dashboard's `minDemand` filter reads).
+   * Only gates the alt (single-dominant-newcomer) path — see `ALT_MIN_DEMAND`.
+   */
+  readonly demand: number;
   readonly topApps: readonly TopApp[];
   /** `null` when the keyword has no corresponding `appstore_keywords` corpus row. */
   readonly genreZone: string | null;
@@ -149,7 +249,7 @@ function mean(values: readonly number[]): number | null {
  * plain value already read from the DB by the caller (`runScreener`).
  */
 export function computeSignature(input: SignatureScanInput): SignatureResult {
-  const { keyword, competitiveness, trend, topApps, genreZone } = input;
+  const { keyword, competitiveness, trend, demand, topApps, genreZone } = input;
 
   const newcomers = topApps.filter(
     (a) => a.ageDays < NEWCOMER_AGE_DAYS_MAX && a.ratingsPerDay > NEWCOMER_MIN_RATINGS_PER_DAY,
@@ -180,6 +280,12 @@ export function computeSignature(input: SignatureScanInput): SignatureResult {
     return a.recentVelocity / a.ratingsPerDay >= ACCELERATING_VELOCITY_RATIO_MIN;
   }).length;
 
+  // No alt-path-specific change needed here: suppression only fires for an
+  // ACTIVELY MAINTAINED leader (`lastUpdatedDays < 90`). The alt path's
+  // "Yardly garage-sale" shape is, by definition, an ANCIENT/STALE incumbent
+  // — it structurally can't have a recent `lastUpdatedDays`, so it can never
+  // trip this veto. A quality incumbent that genuinely IS still active and
+  // winning the field correctly still suppresses both paths.
   const suppressed = topApps.some(
     (a) =>
       a.lastUpdatedDays !== undefined &&
@@ -190,11 +296,38 @@ export function computeSignature(input: SignatureScanInput): SignatureResult {
 
   const genreZoneOk = (genreZone ?? "").trim().toLowerCase() !== EXCLUDED_GENRE_ZONE;
 
+  // Primary path: heating trend + >=2 fast newcomers clearly outpacing the
+  // established baseline (or no established baseline to outpace at all).
+  const primaryPathPass =
+    trend === REQUIRED_TREND && fastNewcomers >= MIN_FAST_NEWCOMERS && ratioGatePass;
+
+  // Alternative path: single-dominant-newcomer / "Yardly garage-sale"
+  // pattern (see constants above). Requires an ACTUAL established baseline,
+  // and a MINIMALLY LIVE one at that (`ALT_MIN_ESTABLISHED_RPD`) — unlike
+  // the primary path's `ratioGatePass`, a missing OR near-zero baseline does
+  // NOT satisfy this gate, since a near-zero denominator produces
+  // meaningless, astronomical ratios (see `ALT_MIN_ESTABLISHED_RPD`'s doc
+  // comment) rather than a genuine "field is stalling out" signal. Also
+  // requires the lone newcomer to have real review volume
+  // (`ALT_SINGLE_NEWCOMER_MIN_REVIEWS`) and the keyword to have credible
+  // scan-level demand (`ALT_MIN_DEMAND`) — both added after a live-corpus
+  // run of the rpd/ratio-only version surfaced thin, low-substance hits.
+  const soleNewcomer = fastNewcomers === 1 ? newcomers[0] : undefined;
+  const altPathPass =
+    fastNewcomers === 1 &&
+    soleNewcomer !== undefined &&
+    soleNewcomer.reviews >= ALT_SINGLE_NEWCOMER_MIN_REVIEWS &&
+    demand >= ALT_MIN_DEMAND &&
+    newcomerRpd !== null &&
+    newcomerRpd >= ALT_SINGLE_NEWCOMER_MIN_RATINGS_PER_DAY &&
+    establishedRpd !== null &&
+    establishedRpd >= ALT_MIN_ESTABLISHED_RPD &&
+    velocityRatio !== null &&
+    velocityRatio >= ALT_SINGLE_NEWCOMER_VELOCITY_RATIO_MIN;
+
   const gatesPass =
     competitiveness <= COMPETITIVENESS_MAX &&
-    trend === REQUIRED_TREND &&
-    fastNewcomers >= MIN_FAST_NEWCOMERS &&
-    ratioGatePass &&
+    (primaryPathPass || altPathPass) &&
     maxReviews < MAX_REVIEWS_CEILING &&
     genreZoneOk &&
     !isJunkKeyword(keyword);
@@ -248,11 +381,15 @@ function toUpsertInput(candidate: ScreenerCandidate, signature: SignatureResult)
  * hit row for every keyword whose full signature (including the per-app
  * gates SQL can't cheaply express, and suppression) passes. Never throws for
  * a single bad candidate — a upsert failure is logged and the run continues.
+ *
+ * Deliberately does NOT pass `requiredTrend` to the SQL prefilter: the alt
+ * (single-dominant-newcomer) path in `computeSignature` accepts non-'heating'
+ * trends, so prefiltering on trend in SQL would silently drop candidates the
+ * TS gate could still accept — see `getScreenerCandidates`'s doc comment.
  */
 export async function runScreener(): Promise<RunScreenerResult> {
   const candidates = await getScreenerCandidates({
     maxCompetitiveness: COMPETITIVENESS_MAX,
-    requiredTrend: REQUIRED_TREND,
     excludedGenreZone: EXCLUDED_GENRE_ZONE,
   });
 
@@ -266,6 +403,7 @@ export async function runScreener(): Promise<RunScreenerResult> {
       keyword: candidate.keyword,
       competitiveness: candidate.competitiveness,
       trend: candidate.trend,
+      demand: candidate.demand,
       topApps: candidate.topApps,
       genreZone: candidate.genreZone,
     });
