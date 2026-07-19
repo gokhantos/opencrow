@@ -112,11 +112,20 @@ export interface ScreenerCandidate {
 /**
  * Candidate keywords for the screener: the LATEST `app`-store scan per
  * keyword (`DISTINCT ON (keyword) ORDER BY scanned_at DESC`), left-joined to
- * `appstore_keywords` for `genre_zone`, pre-filtered in SQL to the two
- * cheapest gates (`competitiveness`, `trend`, `genre_zone`) so the full corpus
- * scan stays index-friendly — the remaining, per-app gates (newcomer count,
- * velocity ratio, max reviews, suppression, junk) are evaluated in TS by
- * `computeSignature` against this narrowed set, not here.
+ * `appstore_keywords` for `genre_zone`, pre-filtered in SQL to the cheapest
+ * gates (`competitiveness`, `genre_zone`, optionally `trend`) so the full
+ * corpus scan stays index-friendly — the remaining, per-app gates (newcomer
+ * count, velocity ratio, max reviews, suppression, junk) are evaluated in TS
+ * by `computeSignature` against this narrowed set, not here.
+ *
+ * `requiredTrend` is OPTIONAL and, since the alt (single-dominant-newcomer)
+ * path in `computeSignature` accepts non-'heating' trends, `runScreener`
+ * deliberately omits it — the SQL prefilter must always be a strict
+ * SUPERSET of what `computeSignature` can accept, never a stricter subset,
+ * or rows the TS gate would now accept get silently dropped before it ever
+ * sees them. It remains a parameter (rather than being deleted outright) so
+ * a narrower, trend-scoped candidate scan stays available/testable if a
+ * future caller wants one.
  *
  * `top_apps` is stored DOUBLE-ENCODED (see `keyword-store.ts`'s
  * `getScannedAppNames` doc comment): `(top_apps #>> '{}')::jsonb` un-escapes
@@ -126,10 +135,11 @@ export interface ScreenerCandidate {
  */
 export async function getScreenerCandidates(opts: {
   readonly maxCompetitiveness: number;
-  readonly requiredTrend: GapTrend;
+  readonly requiredTrend?: GapTrend;
   readonly excludedGenreZone: string;
 }): Promise<readonly ScreenerCandidate[]> {
   const db = getDb();
+  const requiredTrend = opts.requiredTrend ?? null;
   const rows = await db`
     WITH latest AS (
       SELECT DISTINCT ON (keyword) *
@@ -147,7 +157,7 @@ export async function getScreenerCandidates(opts: {
     FROM latest s
     LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
     WHERE s.competitiveness <= ${opts.maxCompetitiveness}
-      AND s.trend = ${opts.requiredTrend}
+      AND (${requiredTrend}::text IS NULL OR s.trend = ${requiredTrend})
       AND (k.genre_zone IS NULL OR k.genre_zone <> ${opts.excludedGenreZone})
   `;
   return (

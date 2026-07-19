@@ -78,23 +78,49 @@ const JUNK_KEYWORD_SET: ReadonlySet<string> = new Set(JUNK_KEYWORDS.map((w) => w
 // Purely numeric / punctuation / whitespace keywords carry no buildable signal.
 const NUMERIC_OR_PUNCT_ONLY = /^[0-9\s\p{P}]+$/u;
 
+// Non-Latin-script keywords (Cyrillic, Arabic, CJK, Hangul, etc). Added
+// 2026-07-19: the newborn-velocity screener's live-corpus run surfaced
+// hundreds of hits like "сотрудник", "마음대로", "传奇高爆99999" — real scan
+// rows for real App Store keywords, but not buildable English-corpus keyword
+// intents (this corpus is generated in English — see `keyword-corpus.ts`),
+// and no existing stoplist caught them (they're neither short, numeric-only,
+// nor a sole English generic word). A keyword containing ANY letter from one
+// of these scripts is treated as junk; digits/Latin-punctuation mixed in
+// (e.g. a CJK keyword with trailing numbers) still trips this the moment a
+// non-Latin letter is present, so no separate "gibberish" heuristic is
+// needed. Deliberately NOT added to the SQL-mirrored `hideJunk` predicate in
+// `keyword-store.ts` (no other caller of `isJunkKeyword` reads from it — see
+// this function's doc comment) — that dashboard filter staying exactly as-is
+// is out of scope here; only this TS-side function (used by the screener)
+// gains the check.
+const NON_LATIN_SCRIPT = new RegExp(
+  "[\\p{Script=Cyrillic}\\p{Script=Arabic}\\p{Script=Hebrew}\\p{Script=Han}" +
+    "\\p{Script=Hangul}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Thai}" +
+    "\\p{Script=Devanagari}\\p{Script=Greek}]",
+  "u",
+);
+
 /**
  * Pure, unit-testable mirror of the `hideJunk` SQL predicate in
- * `keyword-store.ts`'s `buildFilterClause` — kept in exact behavioral parity
- * (same three checks, same `JUNK_KEYWORDS` list) so any TS-side caller (e.g.
- * the newborn-velocity screener in `keyword-screener.ts`, which has no SQL
- * query to attach a WHERE clause to for its per-app gate logic) gets the
- * IDENTICAL junk verdict the opportunities dashboard's `hideJunk` filter would
- * give the same keyword, rather than a second, drifting definition of "junk".
+ * `keyword-store.ts`'s `buildFilterClause`, PLUS one TS-only addition (see
+ * `NON_LATIN_SCRIPT` below) — the shared checks are kept in exact behavioral
+ * parity (same `JUNK_KEYWORDS` list, short-keyword and numeric-only rules)
+ * so any TS-side caller (e.g. the newborn-velocity screener in
+ * `keyword-screener.ts`, which has no SQL query to attach a WHERE clause to
+ * for its per-app gate logic) gets the same junk verdict the opportunities
+ * dashboard's `hideJunk` filter would give the same keyword, plus the
+ * non-Latin-script check the SQL predicate doesn't (yet) have.
  *
  * True when the keyword should be treated as junk (excluded): its entire
  * (trimmed, lowercased) text IS one of `JUNK_KEYWORDS` (not per-token — a
  * multi-word keyword merely containing a junk word is NOT junk), OR it is
- * under 3 characters, OR it is purely numeric/punctuation/whitespace.
+ * under 3 characters, OR it is purely numeric/punctuation/whitespace, OR it
+ * contains any non-Latin-script letter.
  */
 export function isJunkKeyword(keyword: string): boolean {
   const trimmed = keyword.trim().toLowerCase();
   if (trimmed.length < 3) return true;
   if (NUMERIC_OR_PUNCT_ONLY.test(trimmed)) return true;
+  if (NON_LATIN_SCRIPT.test(trimmed)) return true;
   return JUNK_KEYWORD_SET.has(trimmed);
 }

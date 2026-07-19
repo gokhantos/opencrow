@@ -3,6 +3,10 @@ import {
   ACCELERATING_MIN_RECENT_VELOCITY,
   ACCELERATING_MIN_REVIEWS,
   ACCELERATING_VELOCITY_RATIO_MIN,
+  ALT_MIN_DEMAND,
+  ALT_MIN_ESTABLISHED_RPD,
+  ALT_SINGLE_NEWCOMER_MIN_RATINGS_PER_DAY,
+  ALT_SINGLE_NEWCOMER_MIN_REVIEWS,
   computeSignature,
   ESTABLISHED_AGE_DAYS_MIN,
   MAX_REVIEWS_CEILING,
@@ -54,6 +58,7 @@ function textbookInput(overrides: Partial<SignatureScanInput> = {}): SignatureSc
     keyword: "peptide tracker for beginners",
     competitiveness: 25,
     trend: "heating",
+    demand: 10,
     topApps: textbookApps(),
     genreZone: "health",
     ...overrides,
@@ -85,6 +90,144 @@ describe("computeSignature — textbook hit", () => {
     );
     expect(result.hit).toBe(true);
     expect(result.velocityRatio).toBeCloseTo(4.88, 1);
+  });
+});
+
+describe("computeSignature — calibration backtest (2026-07-19 gate widening)", () => {
+  it("accepts peptide-tracker-shaped input (backtest: comp 44.5, ratio 2.98, primary path)", () => {
+    // 3 fast newcomers at ratingsPerDay 5.96 vs a single established app at
+    // 2/day => ratio 5.96/2 = 2.98. comp 44.5 clears the widened
+    // COMPETITIVENESS_MAX (50) but would have been rejected under the old 35
+    // bound — this test locks the calibration fix, not just the gate math.
+    const result = computeSignature(
+      textbookInput({
+        competitiveness: 44.5,
+        trend: "heating",
+        topApps: [
+          app({ id: "n1", ageDays: 100, ratingsPerDay: 5.96, reviews: 300 }),
+          app({ id: "n2", ageDays: 200, ratingsPerDay: 5.96, reviews: 350 }),
+          app({ id: "n3", ageDays: 300, ratingsPerDay: 5.96, reviews: 400 }),
+          app({ id: "e1", ageDays: 700, ratingsPerDay: 2, reviews: 3000, lastUpdatedDays: 200 }),
+        ],
+      }),
+    );
+    expect(result.fastNewcomers).toBe(3);
+    expect(result.velocityRatio).toBeCloseTo(2.98, 2);
+    expect(result.hit).toBe(true);
+  });
+
+  it("accepts card-grading-shaped input (backtest: comp 44, ratio 2.11, primary path)", () => {
+    // 2 fast newcomers at ratingsPerDay 8.44 vs a single established app at
+    // 4/day => ratio 8.44/4 = 2.11. comp 44 clears the widened bound.
+    const result = computeSignature(
+      textbookInput({
+        competitiveness: 44,
+        trend: "heating",
+        topApps: [
+          app({ id: "n1", ageDays: 150, ratingsPerDay: 8.44, reviews: 500 }),
+          app({ id: "n2", ageDays: 350, ratingsPerDay: 8.44, reviews: 600 }),
+          app({ id: "e1", ageDays: 800, ratingsPerDay: 4, reviews: 4000, lastUpdatedDays: 250 }),
+        ],
+      }),
+    );
+    expect(result.fastNewcomers).toBe(2);
+    expect(result.velocityRatio).toBeCloseTo(2.11, 2);
+    expect(result.hit).toBe(true);
+  });
+
+  it("accepts the 'Yardly garage-sale' single-dominant-newcomer shape via the alt path (comp 46, one newcomer at 13/day + 250 reviews, ratio 1.3, demand 10, non-heating trend)", () => {
+    // ONE newcomer (ageDays 200 < 540) at 13 ratings/day and 250 reviews —
+    // above ALT_SINGLE_NEWCOMER_MIN_RATINGS_PER_DAY (12) and
+    // ALT_SINGLE_NEWCOMER_MIN_REVIEWS (150) — growing against a single
+    // ancient, stale incumbent (ageDays 6500+, not recently updated, 10/day
+    // velocity, comfortably above ALT_MIN_ESTABLISHED_RPD's 0.2 floor) =>
+    // ratio 13/10 = 1.3, clearing ALT_SINGLE_NEWCOMER_VELOCITY_RATIO_MIN
+    // (1.2). Demand (10, via textbookInput's default) clears ALT_MIN_DEMAND
+    // (5). Trend is deliberately 'stable' (not 'heating') and there is only
+    // 1 fast newcomer (not >=2) — both would reject on the primary path
+    // alone, proving this hits via the alt path, not a primary-path
+    // coincidence.
+    expect(ALT_SINGLE_NEWCOMER_MIN_RATINGS_PER_DAY).toBeLessThanOrEqual(13);
+    const result = computeSignature(
+      textbookInput({
+        competitiveness: 46,
+        trend: "stable",
+        topApps: [
+          app({ id: "newcomer", ageDays: 200, ratingsPerDay: 13, reviews: 250 }),
+          app({
+            id: "ancient-incumbent",
+            ageDays: 6500,
+            ratingsPerDay: 10,
+            reviews: 8000,
+            rating: 3.5,
+            lastUpdatedDays: 900, // stale — nowhere near the 90-day suppression window
+          }),
+        ],
+      }),
+    );
+    expect(result.fastNewcomers).toBe(1);
+    expect(result.velocityRatio).toBeCloseTo(1.3, 2);
+    expect(result.suppressed).toBe(false);
+    expect(result.hit).toBe(true);
+  });
+
+  it("rejects an alt-path candidate whose lone newcomer has real velocity but thin review volume (< ALT_SINGLE_NEWCOMER_MIN_REVIEWS)", () => {
+    // Same shape as the Yardly case but the newcomer is one review short of
+    // the floor — young-and-fast, but not yet a real, judged app. This is
+    // exactly the "hundreds of thin hits" class the live-corpus run surfaced.
+    const result = computeSignature(
+      textbookInput({
+        competitiveness: 46,
+        trend: "stable",
+        topApps: [
+          app({ id: "newcomer", ageDays: 200, ratingsPerDay: 13, reviews: ALT_SINGLE_NEWCOMER_MIN_REVIEWS - 1 }),
+          app({ id: "ancient-incumbent", ageDays: 6500, ratingsPerDay: 10, reviews: 8000, lastUpdatedDays: 900 }),
+        ],
+      }),
+    );
+    expect(result.hit).toBe(false);
+  });
+
+  it("rejects an alt-path candidate with credible velocity/reviews but sub-floor demand (< ALT_MIN_DEMAND)", () => {
+    const result = computeSignature(
+      textbookInput({
+        competitiveness: 46,
+        trend: "stable",
+        demand: ALT_MIN_DEMAND - 1,
+        topApps: [
+          app({ id: "newcomer", ageDays: 200, ratingsPerDay: 13, reviews: 250 }),
+          app({ id: "ancient-incumbent", ageDays: 6500, ratingsPerDay: 10, reviews: 8000, lastUpdatedDays: 900 }),
+        ],
+      }),
+    );
+    expect(result.hit).toBe(false);
+  });
+
+  it("rejects an alt-path candidate whose established baseline is near-zero (< ALT_MIN_ESTABLISHED_RPD), guarding against a div-by-near-zero ratio blowup", () => {
+    // establishedRpd 0.05 is below ALT_MIN_ESTABLISHED_RPD (0.2); without
+    // that guard, ratio = 13/0.05 = 260, which would trivially clear
+    // ALT_SINGLE_NEWCOMER_VELOCITY_RATIO_MIN and hit — this is the
+    // astronomical-ratio pattern (seen live up to 77,264x) the guard exists
+    // to reject.
+    const nearZeroEstablishedRpd = ALT_MIN_ESTABLISHED_RPD - 0.15;
+    const result = computeSignature(
+      textbookInput({
+        competitiveness: 46,
+        trend: "stable",
+        topApps: [
+          app({ id: "newcomer", ageDays: 200, ratingsPerDay: 13, reviews: 250 }),
+          app({
+            id: "near-dead-incumbent",
+            ageDays: 6500,
+            ratingsPerDay: nearZeroEstablishedRpd,
+            reviews: 8000,
+            lastUpdatedDays: 900,
+          }),
+        ],
+      }),
+    );
+    expect(result.velocityRatio).toBeGreaterThan(200); // the astronomical ratio the guard rejects despite clearing 1.2
+    expect(result.hit).toBe(false);
   });
 });
 
@@ -131,8 +274,8 @@ describe("computeSignature — suppression (window already closed)", () => {
 });
 
 describe("computeSignature — each gate rejects in isolation", () => {
-  it("rejects on competitiveness > 35", () => {
-    const result = computeSignature(textbookInput({ competitiveness: 40 }));
+  it("rejects on competitiveness > 50", () => {
+    const result = computeSignature(textbookInput({ competitiveness: 55 }));
     expect(result.hit).toBe(false);
     expect(result.suppressed).toBe(false);
   });
@@ -198,6 +341,33 @@ describe("computeSignature — each gate rejects in isolation", () => {
     // keyword — mirrors the opportunities `hideJunk` filter's semantics.
     const result = computeSignature(textbookInput({ keyword: "free budget planner" }));
     expect(result.hit).toBe(true);
+  });
+
+  it("rejects non-Latin-script keywords via both the primary and alt paths (live-corpus finding: сотрудник / 마음대로 / 传奇高爆99999)", () => {
+    // Real keywords the newborn-velocity screener's live-corpus run hit
+    // before this fix — Cyrillic, Hangul, and Han (mixed with digits) — none
+    // of which the pre-existing JUNK_KEYWORDS/numeric-only/short-keyword
+    // checks caught. Junk filtering is applied ONCE in `gatesPass`, ANDed
+    // after `(primaryPathPass || altPathPass)`, so proving it here on both a
+    // primary-path-shaped and an alt-path-shaped input covers both branches.
+    const cyrillic = computeSignature(textbookInput({ keyword: "сотрудник" })); // primary-path-shaped (textbookInput default)
+    expect(cyrillic.hit).toBe(false);
+
+    const hangul = computeSignature(
+      textbookInput({
+        keyword: "마음대로",
+        competitiveness: 46,
+        trend: "stable",
+        topApps: [
+          app({ id: "newcomer", ageDays: 200, ratingsPerDay: 13, reviews: 250 }),
+          app({ id: "ancient-incumbent", ageDays: 6500, ratingsPerDay: 10, reviews: 8000, lastUpdatedDays: 900 }),
+        ],
+      }),
+    ); // alt-path-shaped — otherwise identical to the passing Yardly fixture above
+    expect(hangul.hit).toBe(false);
+
+    const hanWithDigits = computeSignature(textbookInput({ keyword: "传奇高爆99999" }));
+    expect(hanWithDigits.hit).toBe(false);
   });
 });
 
