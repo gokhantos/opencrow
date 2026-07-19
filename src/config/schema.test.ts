@@ -416,12 +416,15 @@ describe("appstoreKeywordGap config", () => {
     expect(g.enabled).toBe(true);
     expect(g.topN).toBe(20);
     expect(g.scanIntervalMs).toBe(60_000);
-    expect(g.dailyKeywordBudget).toBe(40_000);
-    expect(g.keywordsPerSweep).toBe(25);
+    expect(g.sweepDelayMs).toBe(1000);
+    expect(g.dailyKeywordBudget).toBe(60_000);
+    expect(g.keywordsPerSweep).toBe(75);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);
     expect(g.corpusDiscovery.enabled).toBe(true);
     expect(g.corpusDiscovery.maxMinedPerCycle).toBe(500);
+    expect(g.sweepRateSafety.adaptiveThrottleEnabled).toBe(true);
+    expect(g.sweepRateSafety.legacyRateOverride).toBe(false);
   });
 
   test("is tunable via config", () => {

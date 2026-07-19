@@ -5,6 +5,8 @@ import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../..
 import { runKeywordSweep } from "./keyword-gaps";
 import { runScreener } from "./keyword-screener";
 import { mineKeywords } from "./keyword-miner";
+import { advanceThrottle, computeEffectiveSweepRate, computeErrorRate, INITIAL_THROTTLE_STATE } from "./sweep-throttle";
+import type { ThrottleState } from "./sweep-throttle";
 import {
   upsertRankings,
   upsertReviews,
@@ -381,6 +383,11 @@ export function createAppStoreScraper(config?: {
   // a screener run from firing on every keyword-sweep tick (as often as every
   // minute) when config wants it capped to `minRunIntervalMs` (default 6h).
   let lastScreenerRunAt = 0;
+  // Adaptive-throttle state for the keyword-gap sweep's scan rate (see
+  // sweep-throttle.ts) — process-local like `lastScreenerRunAt` above; a
+  // restart resets to full rate, which is harmless (the state machine
+  // re-detects a real problem within one sweep).
+  let sweepThrottleState: ThrottleState = INITIAL_THROTTLE_STATE;
 
   async function fetchTopApps(
     url: string,
@@ -729,10 +736,11 @@ export function createAppStoreScraper(config?: {
   }
 
   // Runs the keyword-gap sweep on its own timer. Scans the globally stalest
-  // `keywordsPerSweep` keywords across the whole corpus each cycle; gated by
-  // `enabled` and internally rate-limited by the `dailyKeywordBudget`
-  // rolling-24h ceiling in `runKeywordSweep`. Never allowed to break the
-  // scraper — a failure is logged and swallowed here, mirroring `tick()`.
+  // `keywordsPerSweep` keywords across the whole corpus each cycle (scaled by
+  // the adaptive throttle — see sweep-throttle.ts); gated by `enabled` and
+  // internally rate-limited by the `dailyKeywordBudget` rolling-24h ceiling
+  // in `runKeywordSweep`. Never allowed to break the scraper — a failure is
+  // logged and swallowed here, mirroring `tick()`.
   async function keywordSweepTick(): Promise<void> {
     if (keywordSweepRunning) {
       log.debug("Keyword-gap sweep already running, skipping");
@@ -747,10 +755,14 @@ export function createAppStoreScraper(config?: {
         return;
       }
 
-      const result = await runKeywordSweep({
-        limit: cfg.keywordsPerSweep,
-        delayMs: REQUEST_DELAY_MS,
+      const { keywordsPerSweep, delayMs } = computeEffectiveSweepRate({
+        configuredKeywordsPerSweep: cfg.keywordsPerSweep,
+        configuredDelayMs: cfg.sweepDelayMs,
+        legacyRateOverride: cfg.sweepRateSafety.legacyRateOverride,
+        throttleMultiplier: sweepThrottleState.multiplier,
       });
+
+      const result = await runKeywordSweep({ limit: keywordsPerSweep, delayMs });
 
       if (result.skipped) {
         log.debug("Keyword-gap sweep skipped this cycle — rolling 24h budget reached");
@@ -758,7 +770,38 @@ export function createAppStoreScraper(config?: {
         log.info("Keyword-gap sweep complete", {
           scanned: result.scanned,
           failed: result.failed,
+          rateLimitErrors: result.rateLimitErrors,
+          effectiveKeywordsPerSweep: keywordsPerSweep,
+          effectiveDelayMs: delayMs,
         });
+
+        // Adaptive throttle: only tracked when NOT under the hard kill-switch
+        // — legacyRateOverride means the operator wants a fixed, known-safe
+        // rate with no automation second-guessing it.
+        if (cfg.sweepRateSafety.adaptiveThrottleEnabled && !cfg.sweepRateSafety.legacyRateOverride) {
+          const attempted = result.scanned + result.failed;
+          const errorRate = computeErrorRate(result.rateLimitErrors, attempted);
+          const wasThrottled = sweepThrottleState.throttled;
+          sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+
+          if (!wasThrottled && sweepThrottleState.throttled) {
+            log.warn("Keyword-gap sweep adaptive throttle TRIPPED — halving effective rate", {
+              errorRate,
+              attempted,
+              rateLimitErrors: result.rateLimitErrors,
+              newMultiplier: sweepThrottleState.multiplier,
+            });
+          } else if (wasThrottled && !sweepThrottleState.throttled) {
+            log.info("Keyword-gap sweep adaptive throttle fully recovered", {
+              multiplier: sweepThrottleState.multiplier,
+            });
+          } else if (wasThrottled) {
+            log.debug("Keyword-gap sweep adaptive throttle still active", {
+              multiplier: sweepThrottleState.multiplier,
+              sweepsSinceChange: sweepThrottleState.sweepsSinceChange,
+            });
+          }
+        }
       }
 
       // Screener runs after each sweep batch (whether or not this particular

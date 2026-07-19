@@ -6,7 +6,10 @@
 import { z } from "zod";
 import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
-import { ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
+import { RateLimitError, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
+import { recordVelocityObservationsForScan } from "./app-velocity-store";
+import { shouldDeactivateKeyword, DEACTIVATION_MIN_SCANS } from "./keyword-deactivation";
+import type { DeactivationCandidate } from "./keyword-deactivation";
 import {
   classifyTrend,
   computeCompetitiveness,
@@ -17,9 +20,11 @@ import {
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 import {
   countScansSince,
+  deactivateJunkKeywords,
+  getKeywordMeta,
   getScanHistory,
   getStaleKeywords,
-  getStaleKeywordsAcrossZones,
+  getStaleKeywordsTiered,
   insertScan,
   markScanned,
 } from "./keyword-store";
@@ -272,13 +277,58 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Builds the `keyword-deactivation.ts` predicate input for `profile`'s
+ * keyword: its corpus `source` (via `getKeywordMeta`) and its total scan
+ * count (via a `LIMIT DEACTIVATION_MIN_SCANS` history probe — cheap, and we
+ * only need to know whether it's >= that threshold, not the exact count). A
+ * keyword with no corpus row (shouldn't happen in practice — scans only ever
+ * target corpus keywords) returns `null`, skipping deactivation for it
+ * rather than guessing a source.
+ */
+async function buildDeactivationCandidate(
+  profile: KeywordGapProfile,
+): Promise<DeactivationCandidate | null> {
+  const meta = await getKeywordMeta(profile.keyword);
+  if (!meta) return null;
+  const history = await getScanHistory(profile.keyword, DEACTIVATION_MIN_SCANS);
+  return {
+    keyword: profile.keyword,
+    source: meta.source,
+    scanCount: history.length,
+    demand: profile.demand,
+    topApps: profile.topApps,
+    topAppReviews: profile.topAppReviews,
+  };
+}
+
+/**
+ * True iff `err` is (or carries the code of) `RateLimitError` — thrown by
+ * `ssrfSafeFetch` when its rate-limit backoff retries are exhausted (see
+ * `fetchTopApps` above, which opts in via `retryOnRateLimit: true`). Checked
+ * via BOTH `instanceof` and the `.code` string per `RateLimitError`'s own
+ * doc comment: the `.code` duck-type check is primary (works even if a test
+ * mocks `../shared/ssrf-safe-fetch` without re-exporting the real class, or
+ * if the error crossed some other module boundary that lost class
+ * identity); `RateLimitError &&` guards `instanceof` against that same
+ * mocked-module case, where the import itself would be `undefined` and
+ * `instanceof undefined` would throw.
+ */
+function isRateLimitError(err: unknown): boolean {
+  if (RateLimitError && err instanceof RateLimitError) return true;
+  return (err as { code?: unknown } | null)?.code === "RATE_LIMITED";
+}
+
 async function scanAndRecord(
   keywords: readonly string[],
   opts: { readonly topN: number; readonly delayMs: number; readonly logContext?: Record<string, unknown> },
-): Promise<{ scanned: number; failed: number; bailed: boolean }> {
+): Promise<{ scanned: number; failed: number; bailed: boolean; rateLimitErrors: number }> {
+  const { appstoreVelocity, appstoreJunkDeactivation } = loadConfig();
   const succeeded: string[] = [];
+  const toDeactivate: string[] = [];
   let scanned = 0;
   let failed = 0;
+  let rateLimitErrors = 0;
   let consecutiveFailures = 0;
   let bailed = false;
 
@@ -289,9 +339,34 @@ async function scanAndRecord(
       succeeded.push(keyword);
       scanned++;
       consecutiveFailures = 0;
+
+      // Newborn-velocity time-series: bounded, read-mostly bookkeeping over
+      // data this scan already fetched — never allowed to break the sweep.
+      if (appstoreVelocity.enabled) {
+        try {
+          await recordVelocityObservationsForScan(profile);
+        } catch (err) {
+          log.warn("Velocity observation recording failed — skipping", { keyword, error: err });
+        }
+      }
+
+      // Junk deactivation: evaluated per-keyword here (needs this scan's
+      // fresh profile), applied in ONE bulk UPDATE after the batch — see
+      // below.
+      if (appstoreJunkDeactivation.enabled) {
+        try {
+          const candidate = await buildDeactivationCandidate(profile);
+          if (candidate && shouldDeactivateKeyword(candidate)) {
+            toDeactivate.push(keyword);
+          }
+        } catch (err) {
+          log.warn("Junk-deactivation check failed — skipping", { keyword, error: err });
+        }
+      }
     } catch (err) {
       failed++;
       consecutiveFailures++;
+      if (isRateLimitError(err)) rateLimitErrors++;
       log.warn("Keyword scan failed — skipping", { keyword, ...opts.logContext, error: err });
       // Upstream looks wedged (e.g. rate-limit backoff): stop burning the rest
       // of the batch into a wall of failures and return what we have so far.
@@ -312,7 +387,16 @@ async function scanAndRecord(
     await markScanned(succeeded, Math.floor(Date.now() / 1000));
   }
 
-  return { scanned, failed, bailed };
+  if (toDeactivate.length > 0) {
+    const deactivated = await deactivateJunkKeywords(toDeactivate);
+    log.info("Junk-keyword deactivation", {
+      evaluated: toDeactivate.length,
+      deactivated,
+      ...opts.logContext,
+    });
+  }
+
+  return { scanned, failed, bailed, rateLimitErrors };
 }
 
 export async function runScanSlice(opts: {
@@ -331,8 +415,9 @@ export async function runScanSlice(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// Timer-driven sweep — scans the globally stalest `limit` keywords across the
-// WHOLE corpus (no genre-zone rotation) each cycle. The cadence comes from
+// Timer-driven sweep — scans `limit` keywords across the WHOLE corpus (no
+// genre-zone rotation) each cycle, selected via the two-tier priority lane
+// (`getStaleKeywordsTiered` — see keyword-tiering.ts). The cadence comes from
 // the caller's own timer (see scraper.ts), not from an interval gate here.
 // Enforces `dailyKeywordBudget` as a rolling 24h safety ceiling: if the
 // corpus has already been scanned that many times in the last 24h, the sweep
@@ -342,7 +427,13 @@ export async function runScanSlice(opts: {
 export async function runKeywordSweep(opts: {
   readonly limit: number;
   readonly delayMs: number;
-}): Promise<{ scanned: number; failed: number; skipped: boolean; bailed: boolean }> {
+}): Promise<{
+  scanned: number;
+  failed: number;
+  skipped: boolean;
+  bailed: boolean;
+  rateLimitErrors: number;
+}> {
   const { topN, dailyKeywordBudget } = loadConfig().appstoreKeywordGap;
 
   const since = Math.floor(Date.now() / 1000) - 86_400;
@@ -352,10 +443,14 @@ export async function runKeywordSweep(opts: {
       scansLast24h,
       dailyKeywordBudget,
     });
-    return { scanned: 0, failed: 0, skipped: true, bailed: false };
+    return { scanned: 0, failed: 0, skipped: true, bailed: false, rateLimitErrors: 0 };
   }
 
-  const keywords = await getStaleKeywordsAcrossZones(opts.limit);
+  // Two-tier priority re-scan lane (see keyword-tiering.ts): manual/seed and
+  // actively-watchlisted keywords due for a re-scan fill first, up to a
+  // capped share of the batch, then the rest of the batch falls back to the
+  // pre-existing stalest-first behavior across the whole corpus.
+  const keywords = await getStaleKeywordsTiered(opts.limit);
   const result = await scanAndRecord(keywords, { topN, delayMs: opts.delayMs });
   return { ...result, skipped: false };
 }

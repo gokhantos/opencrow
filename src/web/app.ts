@@ -28,6 +28,7 @@ import { createSecretsRoutes } from "./routes/secrets";
 import { createRoutingRulesRoutes } from "./routes/routing-rules";
 import { createAppStoreRoutes } from "./routes/appstore";
 import { createAppStoreSignatureHitsRoutes } from "./routes/appstore-signature-hits";
+import { createAppStoreVelocityRoutes } from "./routes/appstore-velocity";
 import { createAppleAdsRoutes } from "./routes/apple-ads";
 import { createPlayStoreRoutes } from "./routes/playstore";
 import { createWorkflowRoutes } from "./routes/workflows";
@@ -390,6 +391,9 @@ export function createWebApp(deps: WebAppDeps): Hono {
 
   const appStoreSignatureHits = createAppStoreSignatureHitsRoutes();
   app.route("/api", appStoreSignatureHits);
+
+  const appStoreVelocity = createAppStoreVelocityRoutes();
+  app.route("/api", appStoreVelocity);
 
   const appleAds = createAppleAdsRoutes();
   app.route("/api", appleAds);

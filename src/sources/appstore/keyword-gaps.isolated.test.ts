@@ -1,4 +1,13 @@
 import { describe, expect, it, mock, beforeEach } from "bun:test";
+// Real (unmocked) import, resolved at file-load time BEFORE any
+// `mock.module` call runs (those only execute inside `beforeEach`/`it`
+// bodies) — re-exported from every `../shared/ssrf-safe-fetch` mock below so
+// `keyword-gaps.ts`'s own `import { RateLimitError, ssrfSafeFetch } from
+// "../shared/ssrf-safe-fetch"` always finds a real named export. Omitting it
+// from a mock's returned object is a hard ESM SyntaxError at import time
+// (missing named export), not a silent `undefined` — every mock factory
+// below MUST include it.
+import { RateLimitError } from "../shared/ssrf-safe-fetch";
 
 const sample = {
   results: [
@@ -43,6 +52,7 @@ describe("scanKeyword velocity baseline", () => {
 
   beforeEach(() => {
     mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
       ssrfSafeFetch: async () => ({ ok: true, json: async () => velSample }),
     }));
   });
@@ -53,9 +63,12 @@ describe("scanKeyword velocity baseline", () => {
       getScanHistory: async () => rows,
       getStaleKeywords: async () => [],
       getStaleKeywordsAcrossZones: async () => [],
+      getStaleKeywordsTiered: async () => [],
       insertScan: async () => {},
       markScanned: async () => {},
       countScansSince: async () => 0,
+      getKeywordMeta: async () => null,
+      deactivateJunkKeywords: async () => 0,
     }));
   }
 
@@ -109,6 +122,7 @@ describe("scanKeyword velocity baseline", () => {
 describe("scanKeyword", () => {
   beforeEach(() => {
     mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
       ssrfSafeFetch: async () => ({ ok: true, json: async () => sample }),
     }));
     mock.module("./keyword-store", () => ({
@@ -116,9 +130,12 @@ describe("scanKeyword", () => {
       getScanHistory: async () => [],
       getStaleKeywords: async () => [],
       getStaleKeywordsAcrossZones: async () => [],
+      getStaleKeywordsTiered: async () => [],
       insertScan: async () => {},
       markScanned: async () => {},
       countScansSince: async () => 0,
+      getKeywordMeta: async () => null,
+      deactivateJunkKeywords: async () => 0,
     }));
   });
 
@@ -142,7 +159,7 @@ describe("runScanSlice", () => {
 
     mock.module("./keyword-store", () => ({
       getStaleKeywords: async () => ["a", "b"],
-      getStaleKeywordsAcrossZones: async () => [],
+      getStaleKeywordsTiered: async () => [],
       insertScan: async (p: unknown) => {
         insertScanCalls.push(p);
       },
@@ -152,10 +169,22 @@ describe("runScanSlice", () => {
       getLatestScan: async () => null,
       getScanHistory: async () => [],
       countScansSince: async () => 0,
+      // Junk-deactivation lookups (`scanAndRecord`'s `buildDeactivationCandidate`)
+      // — no corpus row means deactivation is skipped for every keyword here.
+      getKeywordMeta: async () => null,
+      deactivateJunkKeywords: async () => 0,
+    }));
+
+    // Velocity recording (`scanAndRecord`) is a no-op in these orchestration
+    // tests — its own bucketing/insert behavior is covered by
+    // app-velocity-store.integration.test.ts.
+    mock.module("./app-velocity-store", () => ({
+      recordVelocityObservationsForScan: async () => ({ recorded: 0 }),
     }));
 
     let fetchCallCount = 0;
     mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
       ssrfSafeFetch: async () => {
         fetchCallCount++;
         if (fetchCallCount === 1) {
@@ -178,6 +207,7 @@ describe("runScanSlice", () => {
 
   it("never throws even if every keyword fails", async () => {
     mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
       ssrfSafeFetch: async () => {
         throw new Error("network failure");
       },
@@ -195,17 +225,17 @@ describe("runScanSlice", () => {
 describe("runKeywordSweep", () => {
   let insertScanCalls: unknown[];
   let markScannedCalls: Array<{ keywords: readonly string[]; at: number }>;
-  let staleKeywordsAcrossZonesCalls: number[];
+  let staleKeywordsTieredCalls: number[];
 
   beforeEach(() => {
     insertScanCalls = [];
     markScannedCalls = [];
-    staleKeywordsAcrossZonesCalls = [];
+    staleKeywordsTieredCalls = [];
 
     mock.module("./keyword-store", () => ({
       getStaleKeywords: async () => [],
-      getStaleKeywordsAcrossZones: async (limit: number) => {
-        staleKeywordsAcrossZonesCalls.push(limit);
+      getStaleKeywordsTiered: async (limit: number) => {
+        staleKeywordsTieredCalls.push(limit);
         return ["a", "b"];
       },
       insertScan: async (p: unknown) => {
@@ -217,10 +247,17 @@ describe("runKeywordSweep", () => {
       getLatestScan: async () => null,
       getScanHistory: async () => [],
       countScansSince: async () => 0,
+      getKeywordMeta: async () => null,
+      deactivateJunkKeywords: async () => 0,
+    }));
+
+    mock.module("./app-velocity-store", () => ({
+      recordVelocityObservationsForScan: async () => ({ recorded: 0 }),
     }));
 
     let fetchCallCount = 0;
     mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
       ssrfSafeFetch: async () => {
         fetchCallCount++;
         if (fetchCallCount === 1) {
@@ -235,8 +272,8 @@ describe("runKeywordSweep", () => {
     const { runKeywordSweep } = await import("./keyword-gaps");
     const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
 
-    expect(result).toEqual({ scanned: 1, failed: 1, skipped: false, bailed: false });
-    expect(staleKeywordsAcrossZonesCalls).toEqual([25]);
+    expect(result).toEqual({ scanned: 1, failed: 1, skipped: false, bailed: false, rateLimitErrors: 0 });
+    expect(staleKeywordsTieredCalls).toEqual([25]);
     expect(insertScanCalls.length).toBe(1);
     expect(markScannedCalls.length).toBe(1);
     expect(markScannedCalls[0]?.keywords).toEqual(["a"]);
@@ -245,8 +282,8 @@ describe("runKeywordSweep", () => {
   it("skips the sweep without scanning anything when the rolling 24h budget is reached", async () => {
     mock.module("./keyword-store", () => ({
       getStaleKeywords: async () => [],
-      getStaleKeywordsAcrossZones: async (limit: number) => {
-        staleKeywordsAcrossZonesCalls.push(limit);
+      getStaleKeywordsTiered: async (limit: number) => {
+        staleKeywordsTieredCalls.push(limit);
         return ["a", "b"];
       },
       insertScan: async (p: unknown) => {
@@ -257,16 +294,18 @@ describe("runKeywordSweep", () => {
       },
       getLatestScan: async () => null,
       getScanHistory: async () => [],
-      // Default config's dailyKeywordBudget is 40_000 — return a count that
+      // Default config's dailyKeywordBudget is 60_000 — return a count that
       // already meets it so the sweep must skip.
-      countScansSince: async () => 40_000,
+      countScansSince: async () => 60_000,
+      getKeywordMeta: async () => null,
+      deactivateJunkKeywords: async () => 0,
     }));
 
     const { runKeywordSweep } = await import("./keyword-gaps");
     const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
 
-    expect(result).toEqual({ scanned: 0, failed: 0, skipped: true, bailed: false });
-    expect(staleKeywordsAcrossZonesCalls.length).toBe(0);
+    expect(result).toEqual({ scanned: 0, failed: 0, skipped: true, bailed: false, rateLimitErrors: 0 });
+    expect(staleKeywordsTieredCalls.length).toBe(0);
     expect(insertScanCalls.length).toBe(0);
     expect(markScannedCalls.length).toBe(0);
   });
@@ -276,8 +315,8 @@ describe("runKeywordSweep", () => {
     // consecutive failure rather than attempting all seven.
     mock.module("./keyword-store", () => ({
       getStaleKeywords: async () => [],
-      getStaleKeywordsAcrossZones: async (limit: number) => {
-        staleKeywordsAcrossZonesCalls.push(limit);
+      getStaleKeywordsTiered: async (limit: number) => {
+        staleKeywordsTieredCalls.push(limit);
         return ["a", "b", "c", "d", "e", "f", "g"];
       },
       insertScan: async (p: unknown) => {
@@ -289,10 +328,13 @@ describe("runKeywordSweep", () => {
       getLatestScan: async () => null,
       getScanHistory: async () => [],
       countScansSince: async () => 0,
+      getKeywordMeta: async () => null,
+      deactivateJunkKeywords: async () => 0,
     }));
 
     let fetchCalls = 0;
     mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
       ssrfSafeFetch: async () => {
         fetchCalls++;
         throw new Error("rate limited");
@@ -303,9 +345,50 @@ describe("runKeywordSweep", () => {
     const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
 
     // Stopped at the 5-consecutive-failure threshold: 5 attempted, 2 untouched.
-    expect(result).toEqual({ scanned: 0, failed: 5, skipped: false, bailed: true });
+    expect(result).toEqual({ scanned: 0, failed: 5, skipped: false, bailed: true, rateLimitErrors: 0 });
     expect(fetchCalls).toBe(5);
     expect(insertScanCalls.length).toBe(0);
     expect(markScannedCalls.length).toBe(0);
+  });
+
+  it("counts rate-limit failures separately in `rateLimitErrors` (feeds the adaptive throttle)", async () => {
+    // A rate-limit-shaped error carries `code: 'RATE_LIMITED'` (what the real
+    // `RateLimitError` from ssrf-safe-fetch.ts exposes) — `scanAndRecord`
+    // must detect it via duck-typing, since this mock doesn't re-export the
+    // real class (see `isRateLimitError`'s doc comment in keyword-gaps.ts).
+    mock.module("./keyword-store", () => ({
+      getStaleKeywords: async () => [],
+      getStaleKeywordsTiered: async (limit: number) => {
+        staleKeywordsTieredCalls.push(limit);
+        return ["a", "b"];
+      },
+      insertScan: async (p: unknown) => {
+        insertScanCalls.push(p);
+      },
+      markScanned: async (keywords: readonly string[], at: number) => {
+        markScannedCalls.push({ keywords, at });
+      },
+      getLatestScan: async () => null,
+      getScanHistory: async () => [],
+      countScansSince: async () => 0,
+      getKeywordMeta: async () => null,
+      deactivateJunkKeywords: async () => 0,
+    }));
+
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async () => {
+        const err = new Error("Rate limited (HTTP 429)");
+        (err as { code?: string }).code = "RATE_LIMITED";
+        throw err;
+      },
+    }));
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(result.failed).toBe(2);
+    expect(result.rateLimitErrors).toBe(2);
+    expect(result.scanned).toBe(0);
   });
 });

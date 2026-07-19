@@ -1,5 +1,6 @@
 import { getDb } from "../../store/db";
 import { JUNK_KEYWORDS } from "./keyword-junk";
+import { computeTier1Cap, TIER1_STALE_THRESHOLD_MS } from "./keyword-tiering";
 import type { ClusterAssignmentRow, RawCandidate } from "./keyword-clustering";
 import { computeBuildability } from "./keyword-scoring";
 import type { GapTrend, KeywordGapProfile, TopApp } from "./keyword-types";
@@ -199,6 +200,57 @@ export async function getStaleKeywordsAcrossZones(limit: number): Promise<readon
     LIMIT ${limit}
   `;
   return rows.map((r: { keyword: string }) => r.keyword);
+}
+
+/**
+ * Two-tier stalest-first slice across the whole active corpus, backing the
+ * timer-driven keyword-gap sweep's priority re-scan lane (see
+ * `keyword-tiering.ts` for the full rationale). Tier 1 — stale (per
+ * `TIER1_STALE_THRESHOLD_MS`) manual/seed keywords, or stale keywords with an
+ * active (non-dismissed) `appstore_signature_hits` watchlist entry — fills up
+ * to `computeTier1Cap(limit)` slots first; tier 2 fills the rest with the
+ * pre-existing stalest-first behavior (`getStaleKeywordsAcrossZones`),
+ * excluding whatever tier 1 already picked so no keyword is returned twice.
+ * `keyword = ANY('{}')` is always FALSE (never NULL) in Postgres, so an empty
+ * tier-1 list needs no special-casing in the tier-2 exclusion.
+ */
+export async function getStaleKeywordsTiered(limit: number): Promise<readonly string[]> {
+  const db = getDb();
+  const now = Math.floor(Date.now() / 1000);
+  const staleThresholdAt = now - Math.floor(TIER1_STALE_THRESHOLD_MS / 1000);
+  const tier1Cap = computeTier1Cap(limit);
+
+  const tier1Rows =
+    tier1Cap > 0
+      ? await db`
+          SELECT k.keyword FROM appstore_keywords k
+          WHERE k.active = TRUE
+            AND (k.last_scanned_at IS NULL OR k.last_scanned_at < ${staleThresholdAt})
+            AND (
+              k.source IN ('manual', 'seed')
+              OR EXISTS (
+                SELECT 1 FROM appstore_signature_hits h
+                WHERE h.keyword = k.keyword AND h.status != 'dismissed'
+              )
+            )
+          ORDER BY k.last_scanned_at ASC NULLS FIRST
+          LIMIT ${tier1Cap}
+        `
+      : [];
+
+  const tier1Keywords = (tier1Rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
+  const remaining = limit - tier1Keywords.length;
+  if (remaining <= 0) return tier1Keywords;
+
+  const tier2Rows = await db`
+    SELECT keyword FROM appstore_keywords
+    WHERE active = TRUE
+      AND NOT (keyword = ANY(${db.array(tier1Keywords, "text")}))
+    ORDER BY last_scanned_at ASC NULLS FIRST
+    LIMIT ${remaining}
+  `;
+
+  return [...tier1Keywords, ...(tier2Rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword)];
 }
 
 export async function markScanned(keywords: readonly string[], at: number): Promise<void> {
@@ -766,6 +818,31 @@ export async function getKeywordMeta(keyword: string): Promise<KeywordMeta | nul
     firstFoundAt: Number(row.created_at),
     source: row.source as KeywordMeta["source"],
   };
+}
+
+/**
+ * Deactivates (`active = FALSE`) the subset of `keywords` that are
+ * structurally hopeless (see `keyword-deactivation.ts`'s
+ * `shouldDeactivateKeyword` — the caller evaluates that predicate and passes
+ * only the keywords that should be deactivated). `source NOT IN
+ * ('manual', 'seed')` is enforced HERE too, independent of the caller's own
+ * check — belt + suspenders, so a caller bug can never deactivate a keyword
+ * a human explicitly seeded. Reversible: only ever flips `active`, never
+ * deletes. Returns the count actually deactivated (may be less than
+ * `keywords.length` if some were already inactive or protected).
+ */
+export async function deactivateJunkKeywords(keywords: readonly string[]): Promise<number> {
+  if (keywords.length === 0) return 0;
+  const db = getDb();
+  const rows = await db`
+    UPDATE appstore_keywords
+    SET active = FALSE
+    WHERE keyword IN ${db(keywords)}
+      AND active = TRUE
+      AND source NOT IN ('manual', 'seed')
+    RETURNING keyword
+  `;
+  return (rows as ReadonlyArray<{ keyword: string }>).length;
 }
 
 // ===========================================================================

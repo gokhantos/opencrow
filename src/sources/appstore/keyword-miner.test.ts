@@ -121,6 +121,32 @@ describe("extractCandidatesFromApp", () => {
     });
     expect(keywords.filter((k) => k === "budget").length).toBe(1);
   });
+
+  // Tightened rejection (2026-07-19): candidates are now filtered through
+  // isJunkKeyword at MINING time, not just at screening/display time — see
+  // the module doc comment's SUBTITLE MINING note.
+  it("drops a sole-generic-word candidate via the shared JUNK_KEYWORDS stoplist", () => {
+    // "Free" alone (no brand separator, no other tokens) mines to a single
+    // n-gram "free" — a JUNK_KEYWORDS entry, so it must be rejected even
+    // though it's not a stopword and passes the length/number filters.
+    const keywords = keywordsOf({ name: "Free", artist: "", category: "" });
+    expect(keywords).not.toContain("free");
+  });
+
+  it("keeps a multi-word phrase that merely CONTAINS a junk word", () => {
+    // "budget free planner" -> n-grams include "budget free"/"free planner"/
+    // "free" as a unigram. Only the SOLE "free" unigram is junk; the bigrams
+    // are not sole matches and survive.
+    const keywords = keywordsOf({ name: "Budget Free Planner", artist: "", category: "" });
+    expect(keywords).not.toContain("free");
+    expect(keywords).toContain("budget free");
+    expect(keywords).toContain("free planner");
+  });
+
+  it("drops a non-Latin-script candidate", () => {
+    const keywords = keywordsOf({ name: "Сотрудник Трекер", artist: "", category: "" });
+    expect(keywords).toEqual([]);
+  });
 });
 
 describe("extractCandidates", () => {
