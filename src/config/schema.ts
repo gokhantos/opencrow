@@ -553,19 +553,38 @@ export const appstoreKeywordGapConfigSchema = z
     // timer independent of the ranking tick. Default 1 minute — the floor —
     // so the scanner sweeps as many times per day as the throttle allows.
     // (Each sweep still spaces its per-keyword iTunes calls by
-    // REQUEST_DELAY_MS, so ~25 keywords/sweep fits inside a 1-minute window;
-    // a single-flight guard skips the next tick if a sweep runs long.)
+    // `sweepDelayMs`, so `keywordsPerSweep` keywords/sweep fits inside a
+    // 1-minute window; a single-flight guard skips the next tick if a sweep
+    // runs long — see `sweep-throttle.ts` for the full throughput math.)
     scanIntervalMs: z.number().int().min(60_000).default(60_000),
+    // Delay between each keyword's iTunes call WITHIN a sweep. Was a
+    // hardcoded 2000ms shared with the ranking scraper's own per-app calls
+    // (`REQUEST_DELAY_MS` in scraper.ts) — split out so the sweep's rate can
+    // be tuned (and adaptively throttled — see `sweepRateSafety` below)
+    // independent of the ranking scraper. Lowered default to 1000ms as part
+    // of the ~3x sweep-throughput increase (see `keywordsPerSweep` below).
+    sweepDelayMs: z.number().int().min(100).max(10_000).default(1000),
     // How many keyword scans may be spent per rolling 24h window — a safety
     // ceiling, not a per-cycle spend. Enforced against a live count of
     // `appstore_keyword_scans` rows from the last 24h; a sweep cycle is
-    // skipped once the ceiling is reached. Set above the near-continuous
-    // 1-minute cadence's daily throughput (~25/min ≈ 36k/day) so the ceiling
-    // is a runaway backstop, not a routine throttle.
-    dailyKeywordBudget: z.number().int().min(1).max(50_000).default(40_000),
+    // skipped once the ceiling is reached. Raised (was 40_000/50_000 max) to
+    // cover the higher sustained rate: ~2,250/hr * 24h ≈ 54,000/day
+    // theoretical — see `keywordsPerSweep` below.
+    dailyKeywordBudget: z.number().int().min(1).max(100_000).default(60_000),
     // How many of the globally stalest active keywords to scan per sweep
-    // cycle.
-    keywordsPerSweep: z.number().int().min(1).max(500).default(25),
+    // cycle. Raised from 25 to 75 (~3x) together with the lowered
+    // `sweepDelayMs` above to target ~2,250 scans/hour (was ~750/hour): at
+    // an assumed ~400ms average iTunes fetch latency on top of the
+    // configured delay, a 75-keyword batch takes ~105s, which the
+    // interval-aligned single-flight guard rounds up to a 120s effective
+    // cadence — 75 * 3600 / 120 ≈ 2,250/hour. Against the ~114k-keyword
+    // corpus (at the time this was written) that's a ~2.1-day full
+    // round-robin cycle; combined with junk deactivation (expected to
+    // roughly halve the active corpus over time — see
+    // `keyword-deactivation.ts`) the target steady-state cadence is ~1 day.
+    // Real-world latency varies — `sweepRateSafety` below backs the rate off
+    // automatically if Apple starts throttling.
+    keywordsPerSweep: z.number().int().min(1).max(500).default(75),
     // How many top-ranked gap candidates to surface per scan.
     topN: z.number().int().min(5).max(50).default(20),
     // Weight applied to demand-side signal when scoring a keyword gap.
@@ -595,16 +614,38 @@ export const appstoreKeywordGapConfigSchema = z
         maxMinedPerCycle: z.number().int().min(1).max(2000).default(500),
       })
       .default({ enabled: true, maxMinedPerCycle: 500 }),
+    // Safety rails for the higher sweep rate above — see `sweep-throttle.ts`.
+    // Apple's tolerance for request volume is the real constraint here, not
+    // anything under our control, so both an automatic backoff and a manual
+    // kill-switch exist.
+    sweepRateSafety: z
+      .object({
+        // Tracks each sweep's rate-limit (429/503) error rate and halves the
+        // effective `keywordsPerSweep` when it spikes (see
+        // `sweep-throttle.ts`'s `THROTTLE_ERROR_RATE_THRESHOLD`), recovering
+        // gradually once errors subside. Default ON.
+        adaptiveThrottleEnabled: z.boolean().default(true),
+        // MANDATORY hard kill-switch: when true, ignores `keywordsPerSweep` /
+        // `sweepDelayMs` / the adaptive throttle entirely and reverts to the
+        // pre-throughput-bump rate (`LEGACY_KEYWORDS_PER_SWEEP` = 25,
+        // `LEGACY_SWEEP_DELAY_MS` = 2000ms — see `sweep-throttle.ts`). Flip
+        // this on for an immediate, unambiguous revert if the higher rate
+        // ever causes real trouble with Apple's endpoints. Default OFF.
+        legacyRateOverride: z.boolean().default(false),
+      })
+      .default({ adaptiveThrottleEnabled: true, legacyRateOverride: false }),
   })
   .default({
     enabled: true,
     scanIntervalMs: 60_000,
-    dailyKeywordBudget: 40_000,
-    keywordsPerSweep: 25,
+    sweepDelayMs: 1000,
+    dailyKeywordBudget: 60_000,
+    keywordsPerSweep: 75,
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.15,
     corpusDiscovery: { enabled: true, maxMinedPerCycle: 500 },
+    sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 
@@ -633,6 +674,37 @@ export const appstoreSignatureScreenerConfigSchema = z
   });
 export type AppstoreSignatureScreenerConfig = z.infer<
   typeof appstoreSignatureScreenerConfigSchema
+>;
+
+// ─── App Store newborn-velocity time-series ────────────────────────────────
+// Hooked into the SERP-scan persist path (`keyword-gaps.ts` `scanAndRecord`):
+// records one bucketed observation per newborn app per scan (see
+// `app-velocity.ts` / `app-velocity-store.ts`, migration 040). Default ON —
+// like the signature screener, this is bounded, read-mostly bookkeeping over
+// data the scan already fetched (no extra network calls).
+export const appstoreVelocityConfigSchema = z
+  .object({
+    // Master switch. Default ON.
+    enabled: z.boolean().default(true),
+  })
+  .default({ enabled: true });
+export type AppstoreVelocityConfig = z.infer<typeof appstoreVelocityConfigSchema>;
+
+// ─── App Store junk-keyword deactivation ───────────────────────────────────
+// Hooked into the same SERP-scan persist path: after a scan persists,
+// deactivates (`active = false`) keywords that are structurally hopeless —
+// see `keyword-deactivation.ts`'s `shouldDeactivateKeyword`. Reversible
+// (flips `active` back on) and never touches `source: 'manual' | 'seed'`.
+// Default ON — it only ever narrows future sweep spend toward keywords more
+// likely to matter.
+export const appstoreJunkDeactivationConfigSchema = z
+  .object({
+    // Master switch. Default ON.
+    enabled: z.boolean().default(true),
+  })
+  .default({ enabled: true });
+export type AppstoreJunkDeactivationConfig = z.infer<
+  typeof appstoreJunkDeactivationConfigSchema
 >;
 
 // App Store ranking-sync breadth: how aggressively the scraper's ~hourly
@@ -2074,6 +2146,12 @@ export const opencrowConfigSchema = z.object({
   // Newborn-velocity screener: runs after the keyword-gap scanner's scan
   // batches. Default ON (see appstoreSignatureScreenerConfigSchema).
   appstoreSignatureScreener: appstoreSignatureScreenerConfigSchema,
+  // Newborn-velocity time-series: records bucketed per-app observations off
+  // the SERP scan. Default ON (see appstoreVelocityConfigSchema).
+  appstoreVelocity: appstoreVelocityConfigSchema,
+  // Post-scan junk-keyword deactivation. Default ON (see
+  // appstoreJunkDeactivationConfigSchema).
+  appstoreJunkDeactivation: appstoreJunkDeactivationConfigSchema,
   // App Store ranking-sync breadth (per-category limit/list-types + global
   // feed limit). See appstoreSyncConfigSchema.
   appstoreSync: appstoreSyncConfigSchema,

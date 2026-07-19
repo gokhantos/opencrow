@@ -26,8 +26,28 @@
 // brand/developer token (colon/dash/pipe-prefixed app titles, plus any
 // token matching the app's own `artist`/developer name), generate 1-2 word
 // n-grams, and filter stopwords, too-short tokens, and pure numbers.
+//
+// SUBTITLE MINING — investigated 2026-07-19, not implemented: App Store
+// "subtitles" (the short tagline under an app's name) are NOT present in any
+// payload this scraper already fetches. Verified live against every
+// endpoint in this pipeline: the iTunes Search API (`keyword-gaps.ts`
+// `fetchTopApps`, used for every keyword SERP scan), the iTunes RSS top-chart
+// feeds (`scraper.ts` `parseTopAppsItunes`), the rss.applemarketingtools.com
+// v2 feed (`parseTopAppsV2`), and the `itunes.apple.com/lookup` endpoint
+// (`fetchRelatedApps`) — none of their response objects carry a subtitle
+// field (confirmed against the full key set of each live response). Apple
+// only exposes it via scraped storefront HTML or the App Store Connect API
+// (developer-authenticated, own-apps-only) — both out of scope for a
+// no-new-network-calls PR. Rather than add a new fetch, this miner instead
+// tightens NAME-based mining: every candidate n-gram is now rejected via
+// `isJunkKeyword` (the same stoplist/short/numeric/non-Latin-script rules
+// the newborn-velocity screener and the dashboard's `hideJunk` filter
+// already apply) — previously that check only ran at screening/display
+// time, never at mining time, so junk could enter the corpus in the first
+// place.
 
 import { createLogger } from "../../logger";
+import { isJunkKeyword } from "./keyword-junk";
 import { getScannedAppNames, keywordsExist, upsertKeywords } from "./keyword-store";
 import type { KeywordSeedRow } from "./keyword-store";
 import { getRankings } from "./store";
@@ -239,6 +259,11 @@ export function extractCandidatesFromApp(app: MinerAppInput): readonly MinedCand
   for (const gram of buildNGrams(cleaned)) {
     if (seen.has(gram)) continue;
     seen.add(gram);
+    // Tightened rejection (see module doc comment): the same junk check the
+    // dashboard/screener apply at read time, now applied at mining time too,
+    // so junk (sole generic words, non-Latin script, etc.) never enters the
+    // corpus in the first place.
+    if (isJunkKeyword(gram)) continue;
     candidates.push({ keyword: gram, genreZone: zone });
   }
 
