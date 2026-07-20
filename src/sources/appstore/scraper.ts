@@ -2,10 +2,11 @@ import { loadConfig } from "../../config/loader";
 import type { AppstoreSyncListType } from "../../config/schema";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
-import { runKeywordSweep } from "./keyword-gaps";
+import { runKeywordSweep, runDeStorefrontSweep } from "./keyword-gaps";
 import { runScreener } from "./keyword-screener";
 import { expandCorpus } from "./keyword-autocomplete";
 import { mineKeywords } from "./keyword-miner";
+import { backfillMinedDeactivation, countScansSince } from "./keyword-store";
 import { advanceThrottle, computeEffectiveSweepRate, computeErrorRate, INITIAL_THROTTLE_STATE } from "./sweep-throttle";
 import type { ThrottleState } from "./sweep-throttle";
 import {
@@ -390,6 +391,21 @@ export function createAppStoreScraper(config?: {
   // `autocompleteExpansion.minIntervalMs` (default 15min) so its network
   // fan-out (one request per seed) doesn't run on every ~1min sweep tick.
   let lastAutocompleteRunAt = 0;
+  // Soft cadence gate for the DE storefront lane (2026-07-21 scan-budget
+  // retune — see `keyword-gaps.ts`'s `runDeStorefrontSweep`): process-local,
+  // same rationale as `lastAutocompleteRunAt` — gated to its own
+  // `deStorefrontLane.minIntervalMs` (default 24h, "a daily pass") so it
+  // doesn't re-scan the whole tier-1-protected corpus on every ~1min sweep
+  // tick.
+  let lastDeStorefrontRunAt = 0;
+  // One-shot guard for the mined-pool deactivation backfill (see
+  // `keyword-store.ts`'s `backfillMinedDeactivation`) — runs at most ONCE per
+  // process lifetime, off the async sweep tick so it never blocks startup. A
+  // restart simply lets it run again, which is harmless: the backfill query
+  // itself is idempotent (`active = TRUE` in its WHERE clause), so a second
+  // run only ever touches keywords the first run (or the inline per-scan
+  // check) hasn't already caught.
+  let minedBackfillDone = false;
   // Adaptive-throttle state for the keyword-gap sweep's scan rate (see
   // sweep-throttle.ts) — process-local like `lastScreenerRunAt` above; a
   // restart resets to full rate, which is harmless (the state machine
@@ -826,6 +842,17 @@ export function createAppStoreScraper(config?: {
       // keyword-autocomplete.ts) also runs off this tick, gated to its own
       // slower cadence internally, same pattern as the screener above.
       await runAutocompleteExpansionIfDue();
+
+      // DE storefront lane (2026-07-21 scan-budget retune) — daily pass over
+      // the tier-1-protected corpus against the German App Store, gated to
+      // its own cadence internally, same pattern as the screener/autocomplete
+      // passes above.
+      await runDeStorefrontSweepIfDue();
+
+      // One-shot mined-pool deactivation backfill — see `minedBackfillDone`'s
+      // doc comment. Runs at most once, off this tick so it never blocks
+      // scraper startup.
+      await runMinedBackfillOnce();
     } catch (err) {
       log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
     } finally {
@@ -900,6 +927,77 @@ export function createAppStoreScraper(config?: {
       }
     } catch (err) {
       log.warn("Autocomplete expansion failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // Runs the DE storefront lane (see `keyword-gaps.ts`'s
+  // `runDeStorefrontSweep`), gated to `deStorefrontLane.minIntervalMs`
+  // (default 24h) and to the SAME `sweepRateSafety` rails as the scan sweep
+  // and autocomplete expansion above: the hard kill-switch
+  // (`legacyRateOverride`) skips this pass entirely, and any rate-limit
+  // errors it hits feed into the SHARED `sweepThrottleState` — a spike here
+  // backs off the US sweep too, "the shared throttle envelope". Also checks
+  // the rolling 24h `dailyKeywordBudget` ceiling directly (rather than
+  // relying solely on `runKeywordSweep`'s own check) since this pass can run
+  // independently of a US sweep tick. Never allowed to break the sweep tick —
+  // a failure is logged and swallowed, mirroring the other "IfDue" passes.
+  async function runDeStorefrontSweepIfDue(): Promise<void> {
+    try {
+      const cfg = loadConfig().appstoreKeywordGap;
+      const de = cfg.deStorefrontLane;
+      if (!de.enabled) return;
+      if (cfg.sweepRateSafety.legacyRateOverride) {
+        log.debug("DE storefront lane skipped — legacy rate override active");
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastDeStorefrontRunAt < de.minIntervalMs) return;
+
+      const since = Math.floor(Date.now() / 1000) - 86_400;
+      const scansLast24h = await countScansSince(since);
+      if (scansLast24h >= cfg.dailyKeywordBudget) {
+        log.debug("DE storefront lane skipped — rolling 24h budget reached", { scansLast24h });
+        return;
+      }
+
+      lastDeStorefrontRunAt = now;
+
+      const result = await runDeStorefrontSweep({ delayMs: de.delayMs });
+      log.info("DE storefront lane complete", {
+        scanned: result.scanned,
+        failed: result.failed,
+        bailed: result.bailed,
+        rateLimitErrors: result.rateLimitErrors,
+      });
+
+      if (cfg.sweepRateSafety.adaptiveThrottleEnabled) {
+        const attempted = result.scanned + result.failed;
+        const errorRate = computeErrorRate(result.rateLimitErrors, attempted);
+        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+      }
+    } catch (err) {
+      log.warn("DE storefront lane failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // One-shot backfill of the mined-pool deactivation rule against the
+  // EXISTING corpus (see `keyword-store.ts`'s `backfillMinedDeactivation` for
+  // why this is a single set-based UPDATE rather than budgeted batches).
+  // Gated by `appstoreJunkDeactivation.minedBackfillEnabled` and
+  // `minedBackfillDone` — runs at most once per process lifetime. Never
+  // allowed to break the sweep tick — a failure is logged and swallowed.
+  async function runMinedBackfillOnce(): Promise<void> {
+    if (minedBackfillDone) return;
+    minedBackfillDone = true;
+    try {
+      const cfg = loadConfig().appstoreJunkDeactivation;
+      if (!cfg.enabled || !cfg.minedBackfillEnabled) return;
+
+      const deactivated = await backfillMinedDeactivation();
+      log.info("Mined-pool deactivation backfill complete", { deactivated });
+    } catch (err) {
+      log.warn("Mined-pool deactivation backfill failed", { error: getErrorMessage(err) });
     }
   }
 

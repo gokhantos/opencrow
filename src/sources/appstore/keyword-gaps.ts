@@ -8,8 +8,12 @@ import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import { RateLimitError, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
 import { recordVelocityObservationsForScan } from "./app-velocity-store";
-import { shouldDeactivateKeyword, DEACTIVATION_MIN_SCANS } from "./keyword-deactivation";
-import type { DeactivationCandidate } from "./keyword-deactivation";
+import {
+  shouldDeactivateKeyword,
+  shouldDeactivateMinedKeyword,
+  DEACTIVATION_MIN_SCANS,
+} from "./keyword-deactivation";
+import type { DeactivationCandidate, MinedDeactivationCandidate } from "./keyword-deactivation";
 import {
   classifyTrend,
   computeCompetitiveness,
@@ -19,12 +23,15 @@ import {
 } from "./keyword-scoring";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 import {
+  countMinedScansSince,
   countScansSince,
   deactivateJunkKeywords,
   getKeywordMeta,
+  getMinedDeactivationStats,
   getScanHistory,
   getStaleKeywords,
   getStaleKeywordsTiered,
+  getTier1ProtectedKeywords,
   insertScan,
   markScanned,
 } from "./keyword-store";
@@ -139,8 +146,12 @@ export function toTopApp(raw: ItunesSoftwareResult, keyword: string, now: number
 // Fetch
 // ---------------------------------------------------------------------------
 
-export async function fetchTopApps(keyword: string, topN: number): Promise<readonly TopApp[]> {
-  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(keyword)}&entity=software&limit=${topN}&country=us`;
+export async function fetchTopApps(
+  keyword: string,
+  topN: number,
+  country: string = "us",
+): Promise<readonly TopApp[]> {
+  const url = `https://itunes.apple.com/search?term=${encodeURIComponent(keyword)}&entity=software&limit=${topN}&country=${encodeURIComponent(country)}`;
 
   // Opt into the shared rate-limit backoff: at the ~1/min sweep cadence this
   // scanner must honor iTunes 429/503 instead of hammering. On exhausted
@@ -199,17 +210,24 @@ function enrichWithVelocity(
 
 export async function scanKeyword(
   keyword: string,
-  opts?: { readonly topN?: number; readonly store?: "app" | "play" },
+  opts?: {
+    readonly topN?: number;
+    readonly store?: "app" | "play" | "DE";
+    /** iTunes `country` query param. Defaults from `store`: "DE" -> "de", else "us". */
+    readonly country?: string;
+  },
 ): Promise<KeywordGapProfile> {
   const topN = opts?.topN ?? DEFAULT_TOP_N;
   const store = opts?.store ?? "app";
+  const country = opts?.country ?? (store === "DE" ? "de" : "us");
   const scannedAt = Math.floor(Date.now() / 1000);
 
-  const fetched = await fetchTopApps(keyword, topN);
+  const fetched = await fetchTopApps(keyword, topN, country);
 
   // Prior scans (this store, newest-first) drive both live velocity and
   // momentum: an old-enough scan is the velocity baseline; the whole series
-  // feeds trend.
+  // feeds trend. Scoping by `store` keeps the DE lane's history (a distinct
+  // storefront's review counts/ratings) from being diffed against US scans.
   const history = (await getScanHistory(keyword, HISTORY_LIMIT)).filter((h) => h.store === store);
 
   // Velocity baseline: the NEWEST prior scan at least MIN_VELOCITY_WINDOW_DAYS
@@ -321,9 +339,37 @@ function isRateLimitError(err: unknown): boolean {
 
 async function scanAndRecord(
   keywords: readonly string[],
-  opts: { readonly topN: number; readonly delayMs: number; readonly logContext?: Record<string, unknown> },
+  opts: {
+    readonly topN: number;
+    readonly delayMs: number;
+    readonly logContext?: Record<string, unknown>;
+    readonly store?: "app" | "play" | "DE";
+    readonly country?: string;
+    /**
+     * Run junk-deactivation + velocity bookkeeping for this batch. Default
+     * true. The DE storefront lane (store: "DE") sets this false: DE-derived
+     * demand/reviews must never deactivate a keyword's single, store-agnostic
+     * `active` flag based on how it looks in a DIFFERENT storefront, and DE
+     * review counts must never be diffed into the same `appstore_app_velocity`
+     * series as US observations of the same app id — see `keyword-gaps.ts`
+     * module doc / `runDeStorefrontSweep`.
+     */
+    readonly runBookkeeping?: boolean;
+    /**
+     * Update `appstore_keywords.last_scanned_at` for scanned keywords.
+     * Default true. The DE lane sets this false so it never interferes with
+     * the US tier-1/mined-exploration staleness cadence — that column drives
+     * `getStaleKeywordsTiered` exclusively, and the DE lane is a wholly
+     * separate daily pass, not a US-rescan substitute.
+     */
+    readonly markCorpusScanned?: boolean;
+  },
 ): Promise<{ scanned: number; failed: number; bailed: boolean; rateLimitErrors: number }> {
   const { appstoreVelocity, appstoreJunkDeactivation } = loadConfig();
+  const store = opts.store ?? "app";
+  const country = opts.country;
+  const runBookkeeping = opts.runBookkeeping ?? true;
+  const markCorpusScanned = opts.markCorpusScanned ?? true;
   const succeeded: string[] = [];
   const toDeactivate: string[] = [];
   let scanned = 0;
@@ -334,7 +380,7 @@ async function scanAndRecord(
 
   for (const keyword of keywords) {
     try {
-      const profile = await scanKeyword(keyword, { topN: opts.topN });
+      const profile = await scanKeyword(keyword, { topN: opts.topN, store, ...(country ? { country } : {}) });
       await insertScan(profile);
       succeeded.push(keyword);
       scanned++;
@@ -342,7 +388,7 @@ async function scanAndRecord(
 
       // Newborn-velocity time-series: bounded, read-mostly bookkeeping over
       // data this scan already fetched — never allowed to break the sweep.
-      if (appstoreVelocity.enabled) {
+      if (appstoreVelocity.enabled && runBookkeeping) {
         try {
           await recordVelocityObservationsForScan(profile);
         } catch (err) {
@@ -352,12 +398,27 @@ async function scanAndRecord(
 
       // Junk deactivation: evaluated per-keyword here (needs this scan's
       // fresh profile), applied in ONE bulk UPDATE after the batch — see
-      // below.
-      if (appstoreJunkDeactivation.enabled) {
+      // below. Two independent rules OR together: the general data-hopeless
+      // rule (any non-protected source, latest-scan demand), and the
+      // mined-pool-specific rule (source: 'mined' only, demand EVER reached
+      // across the whole scan history, exempt on any signature hit — see
+      // `keyword-deactivation.ts`'s `shouldDeactivateMinedKeyword`).
+      if (appstoreJunkDeactivation.enabled && runBookkeeping) {
         try {
           const candidate = await buildDeactivationCandidate(profile);
-          if (candidate && shouldDeactivateKeyword(candidate)) {
-            toDeactivate.push(keyword);
+          if (candidate) {
+            let deactivate = shouldDeactivateKeyword(candidate);
+            if (!deactivate && candidate.source === "mined") {
+              const stats = await getMinedDeactivationStats(keyword);
+              const minedCandidate: MinedDeactivationCandidate = {
+                source: candidate.source,
+                scanCount: stats.scanCount,
+                maxDemandEver: stats.maxDemand,
+                hasSignatureHit: stats.hasSignatureHit,
+              };
+              deactivate = shouldDeactivateMinedKeyword(minedCandidate);
+            }
+            if (deactivate) toDeactivate.push(keyword);
           }
         } catch (err) {
           log.warn("Junk-deactivation check failed — skipping", { keyword, error: err });
@@ -383,7 +444,7 @@ async function scanAndRecord(
     await sleep(opts.delayMs);
   }
 
-  if (succeeded.length > 0) {
+  if (succeeded.length > 0 && markCorpusScanned) {
     await markScanned(succeeded, Math.floor(Date.now() / 1000));
   }
 
@@ -416,12 +477,14 @@ export async function runScanSlice(opts: {
 
 // ---------------------------------------------------------------------------
 // Timer-driven sweep — scans `limit` keywords across the WHOLE corpus (no
-// genre-zone rotation) each cycle, selected via the two-tier priority lane
-// (`getStaleKeywordsTiered` — see keyword-tiering.ts). The cadence comes from
-// the caller's own timer (see scraper.ts), not from an interval gate here.
-// Enforces `dailyKeywordBudget` as a rolling 24h safety ceiling: if the
-// corpus has already been scanned that many times in the last 24h, the sweep
-// is skipped for this cycle rather than spending more lookups.
+// genre-zone rotation) each cycle, selected via the tier-1-guaranteed +
+// mined-quota lane (`getStaleKeywordsTiered` — see keyword-tiering.ts). The
+// cadence comes from the caller's own timer (see scraper.ts), not from an
+// interval gate here. Enforces `dailyKeywordBudget` as a rolling 24h safety
+// ceiling: if the corpus has already been scanned that many times in the
+// last 24h, the sweep is skipped for this cycle rather than spending more
+// lookups. Mined exploration additionally enforces its own, smaller rolling
+// quota (`minedExploration.dailyQuota`) — see `countMinedScansSince`.
 // ---------------------------------------------------------------------------
 
 export async function runKeywordSweep(opts: {
@@ -434,7 +497,7 @@ export async function runKeywordSweep(opts: {
   bailed: boolean;
   rateLimitErrors: number;
 }> {
-  const { topN, dailyKeywordBudget } = loadConfig().appstoreKeywordGap;
+  const { topN, dailyKeywordBudget, minedExploration } = loadConfig().appstoreKeywordGap;
 
   const since = Math.floor(Date.now() / 1000) - 86_400;
   const scansLast24h = await countScansSince(since);
@@ -446,11 +509,46 @@ export async function runKeywordSweep(opts: {
     return { scanned: 0, failed: 0, skipped: true, bailed: false, rateLimitErrors: 0 };
   }
 
-  // Two-tier priority re-scan lane (see keyword-tiering.ts): manual/seed and
-  // actively-watchlisted keywords due for a re-scan fill first, up to a
-  // capped share of the batch, then the rest of the batch falls back to the
-  // pre-existing stalest-first behavior across the whole corpus.
-  const keywords = await getStaleKeywordsTiered(opts.limit);
+  // Mined exploration's OWN rolling-24h quota, tracked independently of the
+  // whole-corpus `dailyKeywordBudget` ceiling above — see keyword-tiering.ts
+  // module doc / getStaleKeywordsTiered.
+  const minedScansLast24h = await countMinedScansSince(since);
+  const mineQuotaRemaining = Math.max(0, minedExploration.dailyQuota - minedScansLast24h);
+
+  // Priority re-scan lane (see keyword-tiering.ts): ALL due
+  // seed/manual/autocomplete/signature-hit keywords fill first (uncapped),
+  // then mined exploration fills whatever's left of the batch, capped by its
+  // own daily quota.
+  const keywords = await getStaleKeywordsTiered({ batchLimit: opts.limit, mineQuotaRemaining });
   const result = await scanAndRecord(keywords, { topN, delayMs: opts.delayMs });
   return { ...result, skipped: false };
+}
+
+// ---------------------------------------------------------------------------
+// DE storefront lane (2026-07-21 scan-budget retune) — a daily pass over the
+// human-curated corpus (active seed/manual/autocomplete keywords) against the
+// German App Store, purely for querying/mining. Deliberately bypasses
+// junk-deactivation, velocity bookkeeping, and `last_scanned_at` updates (see
+// `scanAndRecord`'s `runBookkeeping`/`markCorpusScanned` doc comments) — this
+// data augments the corpus without perturbing the US tier-1/mined cadence or
+// risking a keyword being deactivated for looking weak in a market it was
+// never curated for. The signature screener stays exclusively US (`store =
+// 'app'` — see `signature-hits-store.ts`'s `getScreenerCandidates`), so DE
+// rows are structurally invisible to it regardless.
+// ---------------------------------------------------------------------------
+
+export async function runDeStorefrontSweep(opts: {
+  readonly delayMs: number;
+}): Promise<{ scanned: number; failed: number; bailed: boolean; rateLimitErrors: number }> {
+  const { topN } = loadConfig().appstoreKeywordGap;
+  const keywords = await getTier1ProtectedKeywords();
+  return scanAndRecord(keywords, {
+    topN,
+    delayMs: opts.delayMs,
+    store: "DE",
+    country: "de",
+    runBookkeeping: false,
+    markCorpusScanned: false,
+    logContext: { lane: "de-storefront" },
+  });
 }

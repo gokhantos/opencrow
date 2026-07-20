@@ -73,3 +73,50 @@ export function shouldDeactivateKeyword(candidate: DeactivationCandidate): boole
 
   return candidate.topAppReviews < DEACTIVATION_MAX_REVIEWS_CEILING;
 }
+
+// ---------------------------------------------------------------------------
+// Mined-pool-specific rule (2026-07-21 scan-budget retune) — see PR notes.
+// Measured 2026-07-21: 97.9% of the ~36k daily SERP scans went to the
+// `source: 'mined'` n-gram pool (114,656 keywords), which had produced 304
+// signature hits — ALL triaged as noise; every validated candidate ever came
+// from seed/manual (2% of budget). The general data-hopeless branch above
+// only looks at the LATEST scan's `demand` and applies to any non-protected
+// source (autocomplete included); this rule is narrower (mined only) but
+// looks at demand EVER reached across the keyword's WHOLE scan history
+// (never just the latest reading — a keyword that spiked once and cooled is
+// not hopeless) and unconditionally exempts anything that has ever crossed
+// the signature screener's watchlist, however marginal or since-dismissed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mined keywords that have never reached this much demand, in ANY scan, are
+ * considered to have shown no real signal. Matches `ALT_MIN_DEMAND` in
+ * `keyword-screener.ts` — the corpus's own established "this keyword has
+ * credible search demand" floor — rather than inventing a new threshold.
+ */
+export const MINED_DEACTIVATION_MAX_DEMAND_EVER = 5;
+
+export interface MinedDeactivationCandidate {
+  readonly source: string;
+  /** Total scans this keyword has EVER had. */
+  readonly scanCount: number;
+  /** MAX(demand) across the keyword's entire scan history (all stores). */
+  readonly maxDemandEver: number;
+  /** True iff the keyword has ANY row in `appstore_signature_hits`, regardless of status. */
+  readonly hasSignatureHit: boolean;
+}
+
+/**
+ * True iff `candidate` is a `source: 'mined'` keyword that has been scanned
+ * at least `DEACTIVATION_MIN_SCANS` times, has NEVER reached
+ * `MINED_DEACTIVATION_MAX_DEMAND_EVER` demand in any scan, and has no row in
+ * `appstore_signature_hits`. Pure — no I/O. Evaluated in ADDITION to (never
+ * instead of) `shouldDeactivateKeyword` above — either one firing is enough
+ * to deactivate.
+ */
+export function shouldDeactivateMinedKeyword(candidate: MinedDeactivationCandidate): boolean {
+  if (candidate.source !== "mined") return false;
+  if (candidate.scanCount < DEACTIVATION_MIN_SCANS) return false;
+  if (candidate.maxDemandEver >= MINED_DEACTIVATION_MAX_DEMAND_EVER) return false;
+  return !candidate.hasSignatureHit;
+}

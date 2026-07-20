@@ -6,8 +6,33 @@ import { describe, expect, it, mock, beforeEach } from "bun:test";
 // "../shared/ssrf-safe-fetch"` always finds a real named export. Omitting it
 // from a mock's returned object is a hard ESM SyntaxError at import time
 // (missing named export), not a silent `undefined` — every mock factory
-// below MUST include it.
+// below MUST include it. Same rule applies to EVERY named export
+// `keyword-gaps.ts` imports from "./keyword-store" — every `mock.module("./
+// keyword-store", ...)` factory below must include all of them, even ones a
+// given test doesn't exercise.
 import { RateLimitError } from "../shared/ssrf-safe-fetch";
+
+/** Every `./keyword-store` export `keyword-gaps.ts` imports, with inert defaults. */
+function keywordStoreMockBase() {
+  return {
+    getStaleKeywords: async () => [],
+    getStaleKeywordsTiered: async () => [],
+    insertScan: async () => {},
+    markScanned: async () => {},
+    getLatestScan: async () => null,
+    getScanHistory: async () => [],
+    countScansSince: async () => 0,
+    countMinedScansSince: async () => 0,
+    getKeywordMeta: async () => null,
+    deactivateJunkKeywords: async () => 0,
+    getMinedDeactivationStats: async () => ({
+      scanCount: 0,
+      maxDemand: 0,
+      hasSignatureHit: false,
+    }),
+    getTier1ProtectedKeywords: async () => [],
+  };
+}
 
 const sample = {
   results: [
@@ -59,16 +84,8 @@ describe("scanKeyword velocity baseline", () => {
 
   function mockHistory(rows: readonly unknown[]): void {
     mock.module("./keyword-store", () => ({
-      getLatestScan: async () => null,
+      ...keywordStoreMockBase(),
       getScanHistory: async () => rows,
-      getStaleKeywords: async () => [],
-      getStaleKeywordsAcrossZones: async () => [],
-      getStaleKeywordsTiered: async () => [],
-      insertScan: async () => {},
-      markScanned: async () => {},
-      countScansSince: async () => 0,
-      getKeywordMeta: async () => null,
-      deactivateJunkKeywords: async () => 0,
     }));
   }
 
@@ -125,18 +142,7 @@ describe("scanKeyword", () => {
       RateLimitError,
       ssrfSafeFetch: async () => ({ ok: true, json: async () => sample }),
     }));
-    mock.module("./keyword-store", () => ({
-      getLatestScan: async () => null,
-      getScanHistory: async () => [],
-      getStaleKeywords: async () => [],
-      getStaleKeywordsAcrossZones: async () => [],
-      getStaleKeywordsTiered: async () => [],
-      insertScan: async () => {},
-      markScanned: async () => {},
-      countScansSince: async () => 0,
-      getKeywordMeta: async () => null,
-      deactivateJunkKeywords: async () => 0,
-    }));
+    mock.module("./keyword-store", () => keywordStoreMockBase());
   });
 
   it("scores an open gap from live results", async () => {
@@ -146,6 +152,22 @@ describe("scanKeyword", () => {
     expect(p.competitiveness).toBeLessThan(30);
     expect(p.trend).toBe("new");
     expect(p.opportunity).toBeGreaterThan(0);
+  });
+
+  it("scores against the DE storefront when opts.store is 'DE', tagging the profile accordingly", async () => {
+    let requestedUrl = "";
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        requestedUrl = url;
+        return { ok: true, json: async () => sample };
+      },
+    }));
+
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword("fatty liver diet", { store: "DE" });
+    expect(p.store).toBe("DE");
+    expect(requestedUrl).toContain("country=de");
   });
 });
 
@@ -158,21 +180,14 @@ describe("runScanSlice", () => {
     markScannedCalls = [];
 
     mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
       getStaleKeywords: async () => ["a", "b"],
-      getStaleKeywordsTiered: async () => [],
       insertScan: async (p: unknown) => {
         insertScanCalls.push(p);
       },
       markScanned: async (keywords: readonly string[], at: number) => {
         markScannedCalls.push({ keywords, at });
       },
-      getLatestScan: async () => null,
-      getScanHistory: async () => [],
-      countScansSince: async () => 0,
-      // Junk-deactivation lookups (`scanAndRecord`'s `buildDeactivationCandidate`)
-      // — no corpus row means deactivation is skipped for every keyword here.
-      getKeywordMeta: async () => null,
-      deactivateJunkKeywords: async () => 0,
     }));
 
     // Velocity recording (`scanAndRecord`) is a no-op in these orchestration
@@ -225,7 +240,7 @@ describe("runScanSlice", () => {
 describe("runKeywordSweep", () => {
   let insertScanCalls: unknown[];
   let markScannedCalls: Array<{ keywords: readonly string[]; at: number }>;
-  let staleKeywordsTieredCalls: number[];
+  let staleKeywordsTieredCalls: Array<{ batchLimit: number; mineQuotaRemaining: number }>;
 
   beforeEach(() => {
     insertScanCalls = [];
@@ -233,9 +248,9 @@ describe("runKeywordSweep", () => {
     staleKeywordsTieredCalls = [];
 
     mock.module("./keyword-store", () => ({
-      getStaleKeywords: async () => [],
-      getStaleKeywordsTiered: async (limit: number) => {
-        staleKeywordsTieredCalls.push(limit);
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+        staleKeywordsTieredCalls.push(opts);
         return ["a", "b"];
       },
       insertScan: async (p: unknown) => {
@@ -244,11 +259,6 @@ describe("runKeywordSweep", () => {
       markScanned: async (keywords: readonly string[], at: number) => {
         markScannedCalls.push({ keywords, at });
       },
-      getLatestScan: async () => null,
-      getScanHistory: async () => [],
-      countScansSince: async () => 0,
-      getKeywordMeta: async () => null,
-      deactivateJunkKeywords: async () => 0,
     }));
 
     mock.module("./app-velocity-store", () => ({
@@ -273,7 +283,7 @@ describe("runKeywordSweep", () => {
     const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
 
     expect(result).toEqual({ scanned: 1, failed: 1, skipped: false, bailed: false, rateLimitErrors: 0 });
-    expect(staleKeywordsTieredCalls).toEqual([25]);
+    expect(staleKeywordsTieredCalls).toEqual([{ batchLimit: 25, mineQuotaRemaining: 5_000 }]);
     expect(insertScanCalls.length).toBe(1);
     expect(markScannedCalls.length).toBe(1);
     expect(markScannedCalls[0]?.keywords).toEqual(["a"]);
@@ -281,9 +291,9 @@ describe("runKeywordSweep", () => {
 
   it("skips the sweep without scanning anything when the rolling 24h budget is reached", async () => {
     mock.module("./keyword-store", () => ({
-      getStaleKeywords: async () => [],
-      getStaleKeywordsTiered: async (limit: number) => {
-        staleKeywordsTieredCalls.push(limit);
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+        staleKeywordsTieredCalls.push(opts);
         return ["a", "b"];
       },
       insertScan: async (p: unknown) => {
@@ -292,13 +302,9 @@ describe("runKeywordSweep", () => {
       markScanned: async (keywords: readonly string[], at: number) => {
         markScannedCalls.push({ keywords, at });
       },
-      getLatestScan: async () => null,
-      getScanHistory: async () => [],
       // Default config's dailyKeywordBudget is 60_000 — return a count that
       // already meets it so the sweep must skip.
       countScansSince: async () => 60_000,
-      getKeywordMeta: async () => null,
-      deactivateJunkKeywords: async () => 0,
     }));
 
     const { runKeywordSweep } = await import("./keyword-gaps");
@@ -310,13 +316,46 @@ describe("runKeywordSweep", () => {
     expect(markScannedCalls.length).toBe(0);
   });
 
+  it("subtracts countMinedScansSince from the mined daily quota when computing mineQuotaRemaining", async () => {
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+        staleKeywordsTieredCalls.push(opts);
+        return [];
+      },
+      // Default config's minedExploration.dailyQuota is 5_000.
+      countMinedScansSince: async () => 4_990,
+    }));
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(staleKeywordsTieredCalls).toEqual([{ batchLimit: 25, mineQuotaRemaining: 10 }]);
+  });
+
+  it("floors mineQuotaRemaining at 0 rather than going negative when mined scans exceed the quota", async () => {
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+        staleKeywordsTieredCalls.push(opts);
+        return [];
+      },
+      countMinedScansSince: async () => 999_999,
+    }));
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(staleKeywordsTieredCalls).toEqual([{ batchLimit: 25, mineQuotaRemaining: 0 }]);
+  });
+
   it("bails early after too many consecutive scan failures instead of burning the whole slice", async () => {
     // Seven keywords, every fetch throws: the sweep must stop after the 5th
     // consecutive failure rather than attempting all seven.
     mock.module("./keyword-store", () => ({
-      getStaleKeywords: async () => [],
-      getStaleKeywordsTiered: async (limit: number) => {
-        staleKeywordsTieredCalls.push(limit);
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+        staleKeywordsTieredCalls.push(opts);
         return ["a", "b", "c", "d", "e", "f", "g"];
       },
       insertScan: async (p: unknown) => {
@@ -325,11 +364,6 @@ describe("runKeywordSweep", () => {
       markScanned: async (keywords: readonly string[], at: number) => {
         markScannedCalls.push({ keywords, at });
       },
-      getLatestScan: async () => null,
-      getScanHistory: async () => [],
-      countScansSince: async () => 0,
-      getKeywordMeta: async () => null,
-      deactivateJunkKeywords: async () => 0,
     }));
 
     let fetchCalls = 0;
@@ -357,9 +391,9 @@ describe("runKeywordSweep", () => {
     // must detect it via duck-typing, since this mock doesn't re-export the
     // real class (see `isRateLimitError`'s doc comment in keyword-gaps.ts).
     mock.module("./keyword-store", () => ({
-      getStaleKeywords: async () => [],
-      getStaleKeywordsTiered: async (limit: number) => {
-        staleKeywordsTieredCalls.push(limit);
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+        staleKeywordsTieredCalls.push(opts);
         return ["a", "b"];
       },
       insertScan: async (p: unknown) => {
@@ -368,11 +402,6 @@ describe("runKeywordSweep", () => {
       markScanned: async (keywords: readonly string[], at: number) => {
         markScannedCalls.push({ keywords, at });
       },
-      getLatestScan: async () => null,
-      getScanHistory: async () => [],
-      countScansSince: async () => 0,
-      getKeywordMeta: async () => null,
-      deactivateJunkKeywords: async () => 0,
     }));
 
     mock.module("../shared/ssrf-safe-fetch", () => ({
@@ -390,5 +419,141 @@ describe("runKeywordSweep", () => {
     expect(result.failed).toBe(2);
     expect(result.rateLimitErrors).toBe(2);
     expect(result.scanned).toBe(0);
+  });
+});
+
+describe("scanAndRecord mined-specific deactivation (via runKeywordSweep)", () => {
+  let deactivateCalls: string[][];
+
+  beforeEach(() => {
+    deactivateCalls = [];
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async () => ({ ok: true, json: async () => sample }),
+    }));
+    mock.module("./app-velocity-store", () => ({
+      recordVelocityObservationsForScan: async () => ({ recorded: 0 }),
+    }));
+  });
+
+  it("deactivates a mined keyword whose demand never crossed 5 in any scan and has no signature hit", async () => {
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async () => ["hopeless-mined-term"],
+      getKeywordMeta: async () => ({ firstFoundAt: 0, source: "mined" as const }),
+      getMinedDeactivationStats: async () => ({
+        scanCount: 3,
+        maxDemand: 2, // never reached 5
+        hasSignatureHit: false,
+      }),
+      deactivateJunkKeywords: async (keywords: readonly string[]) => {
+        deactivateCalls.push([...keywords]);
+        return keywords.length;
+      },
+    }));
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(deactivateCalls).toEqual([["hopeless-mined-term"]]);
+  });
+
+  it("does NOT deactivate a mined keyword with a signature hit, even with low demand", async () => {
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async () => ["watchlisted-mined-term"],
+      getKeywordMeta: async () => ({ firstFoundAt: 0, source: "mined" as const }),
+      getMinedDeactivationStats: async () => ({
+        scanCount: 3,
+        maxDemand: 2,
+        hasSignatureHit: true, // exempt
+      }),
+      deactivateJunkKeywords: async (keywords: readonly string[]) => {
+        deactivateCalls.push([...keywords]);
+        return keywords.length;
+      },
+    }));
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(deactivateCalls).toEqual([]);
+  });
+
+  it("does NOT apply the mined-specific rule to a non-mined source, even with the same low-demand stats", async () => {
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async () => ["seed-term"],
+      getKeywordMeta: async () => ({ firstFoundAt: 0, source: "seed" as const }),
+      // getMinedDeactivationStats must not even matter here — 'seed' is
+      // protected outright by shouldDeactivateKeyword, and the mined-specific
+      // rule never fires for a non-mined source.
+      getMinedDeactivationStats: async () => ({
+        scanCount: 3,
+        maxDemand: 0,
+        hasSignatureHit: false,
+      }),
+      deactivateJunkKeywords: async (keywords: readonly string[]) => {
+        deactivateCalls.push([...keywords]);
+        return keywords.length;
+      },
+    }));
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(deactivateCalls).toEqual([]);
+  });
+});
+
+describe("runDeStorefrontSweep", () => {
+  it("scans the tier-1-protected corpus against the DE storefront, tags rows store: 'DE', and never marks appstore_keywords.last_scanned_at or runs deactivation/velocity bookkeeping", async () => {
+    const insertScanCalls: Array<{ store: string }> = [];
+    const markScannedCalls: unknown[] = [];
+    const deactivateCalls: unknown[] = [];
+    const velocityCalls: unknown[] = [];
+    let requestedUrl = "";
+
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        requestedUrl = url;
+        return { ok: true, json: async () => sample };
+      },
+    }));
+    mock.module("./app-velocity-store", () => ({
+      recordVelocityObservationsForScan: async (p: unknown) => {
+        velocityCalls.push(p);
+        return { recorded: 0 };
+      },
+    }));
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getTier1ProtectedKeywords: async () => ["de-lane-term"],
+      insertScan: async (p: { store: string }) => {
+        insertScanCalls.push(p);
+      },
+      markScanned: async (keywords: readonly string[]) => {
+        markScannedCalls.push(keywords);
+      },
+      deactivateJunkKeywords: async (keywords: readonly string[]) => {
+        deactivateCalls.push(keywords);
+        return keywords.length;
+      },
+      getKeywordMeta: async () => ({ firstFoundAt: 0, source: "seed" as const }),
+    }));
+
+    const { runDeStorefrontSweep } = await import("./keyword-gaps");
+    const result = await runDeStorefrontSweep({ delayMs: 0 });
+
+    expect(result.scanned).toBe(1);
+    expect(insertScanCalls).toHaveLength(1);
+    expect(insertScanCalls[0]?.store).toBe("DE");
+    expect(requestedUrl).toContain("country=de");
+    // Never touches the shared US staleness cadence.
+    expect(markScannedCalls).toHaveLength(0);
+    // Never runs junk-deactivation or velocity bookkeeping against DE data.
+    expect(deactivateCalls).toHaveLength(0);
+    expect(velocityCalls).toHaveLength(0);
   });
 });

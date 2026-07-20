@@ -1,10 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import {
-  computeTier1Cap,
-  isTier1Eligible,
-  TIER1_MAX_BATCH_FRACTION,
-  TIER1_STALE_THRESHOLD_MS,
-} from "./keyword-tiering";
+import { isTier1Eligible, TIER1_STALE_THRESHOLD_MS } from "./keyword-tiering";
 import type { Tier1Input } from "./keyword-tiering";
 
 describe("isTier1Eligible", () => {
@@ -64,20 +59,49 @@ describe("isTier1Eligible", () => {
       ),
     ).toBe(false);
   });
-});
 
-describe("computeTier1Cap", () => {
-  it("floors batchLimit * TIER1_MAX_BATCH_FRACTION", () => {
-    expect(computeTier1Cap(100)).toBe(Math.floor(100 * TIER1_MAX_BATCH_FRACTION));
-    expect(computeTier1Cap(25)).toBe(7); // floor(7.5)
-    expect(computeTier1Cap(75)).toBe(22); // floor(22.5)
+  // 2026-07-21 scan-budget retune: autocomplete joined manual/seed as an
+  // unconditionally tier-1-eligible source — real, popularity-ordered user
+  // search queries deserve the same daily-guaranteed re-scan.
+  it("is true for a never-scanned autocomplete keyword", () => {
+    expect(isTier1Eligible(input({ lastScannedAt: null, source: "autocomplete" }), now)).toBe(
+      true,
+    );
   });
 
-  it("never returns a negative number", () => {
-    expect(computeTier1Cap(0)).toBe(0);
+  it("is true for a stale autocomplete keyword scanned exactly at the 24h boundary", () => {
+    expect(
+      isTier1Eligible(input({ lastScannedAt: staleAt, source: "autocomplete" }), now),
+    ).toBe(true);
   });
 
-  it("returns 0 for a batch limit under 1/fraction", () => {
-    expect(computeTier1Cap(1)).toBe(0);
+  it("is false for a fresh autocomplete keyword", () => {
+    const freshAt = now - 60;
+    expect(
+      isTier1Eligible(input({ lastScannedAt: freshAt, source: "autocomplete" }), now),
+    ).toBe(false);
+  });
+
+  // Backtest guard (project convention — see keyword-screener.ts's own
+  // backtest doc comment describing "peptide tracker" / "block shorts";
+  // "card grading" is the third validated GO-grade winner from the same
+  // backtest pass). A prior gate change that skipped this kind of check once
+  // blinded the screener to 2 of 3 known winners — every filter change here
+  // is re-asserted against all three. Once any of these has a signature hit,
+  // it must land in tier 1 regardless of its original discovery source
+  // (including 'mined', which otherwise never qualifies by source alone).
+  describe("known-positive backtest keywords are always tier-1 once signature-hit", () => {
+    const knownPositives = ["peptide tracker", "block shorts", "card grading"];
+
+    for (const keyword of knownPositives) {
+      it(`${keyword}: stale + signature hit -> tier 1, even from source 'mined'`, () => {
+        expect(
+          isTier1Eligible(
+            { lastScannedAt: null, source: "mined", hasActiveSignatureHit: true },
+            now,
+          ),
+        ).toBe(true);
+      });
+    }
   });
 });

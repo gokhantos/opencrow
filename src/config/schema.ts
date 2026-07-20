@@ -699,6 +699,45 @@ export const appstoreKeywordGapConfigSchema = z
         legacyRateOverride: z.boolean().default(false),
       })
       .default({ adaptiveThrottleEnabled: true, legacyRateOverride: false }),
+    // ─── Mined exploration quota (2026-07-21 scan-budget retune) ───────────
+    // Measured 2026-07-21: 97.9% of the ~36k daily SERP scans went to the
+    // `source: 'mined'` pool (114,656 keywords), which had produced 304
+    // signature hits — ALL triaged as noise; every validated candidate ever
+    // came from seed/manual. `getStaleKeywordsTiered` (keyword-store.ts) now
+    // guarantees tier 1 (seed/manual/autocomplete/signature-hit) a daily
+    // re-scan UNCAPPED, and gives mined exploration only this separate,
+    // capped daily quota — never-scanned mined keywords first, then
+    // oldest-scanned still-active ones (see keyword-tiering.ts). The freed
+    // scan capacity funds `deStorefrontLane` below.
+    minedExploration: z
+      .object({
+        // Rolling-24h cap on `source: 'mined'` scans, tracked independently
+        // of `dailyKeywordBudget` via `countMinedScansSince`. ~5,000/day is a
+        // small fraction of the prior ~35k/day mined spend — enough to keep
+        // exploring for brand-new apps/terms without dominating the budget.
+        dailyQuota: z.number().int().min(0).max(100_000).default(5_000),
+      })
+      .default({ dailyQuota: 5_000 }),
+    // ─── DE storefront lane (2026-07-21 scan-budget retune) ────────────────
+    // Daily pass scanning every active seed/manual/autocomplete keyword
+    // (`keyword-store.ts`'s `getTier1ProtectedKeywords`) against the German
+    // App Store, funded by budget freed from the mined-pool tightening
+    // above. Querying/mining data only this iteration — deliberately does
+    // NOT feed junk-deactivation, velocity bookkeeping, or the (US-calibrated)
+    // signature screener; see `keyword-gaps.ts`'s `runDeStorefrontSweep`.
+    deStorefrontLane: z
+      .object({
+        // Master switch. Default ON.
+        enabled: z.boolean().default(true),
+        // Minimum gap between DE-lane passes — its own cadence, decoupled
+        // from the ~1min scan-sweep timer, since one pass scans the WHOLE
+        // tier-1-protected corpus in one shot. Default 24h ("a daily pass").
+        minIntervalMs: z.number().int().min(60_000).default(24 * 60 * 60 * 1000),
+        // Delay between each keyword's iTunes call within one DE-lane pass —
+        // same spirit as `sweepDelayMs`, scoped to this separate pass.
+        delayMs: z.number().int().min(100).max(10_000).default(1000),
+      })
+      .default({ enabled: true, minIntervalMs: 24 * 60 * 60 * 1000, delayMs: 1000 }),
   })
   .default({
     enabled: true,
@@ -720,6 +759,8 @@ export const appstoreKeywordGapConfigSchema = z
       storefront: "143441-1,29",
     },
     sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
+    minedExploration: { dailyQuota: 5_000 },
+    deStorefrontLane: { enabled: true, minIntervalMs: 24 * 60 * 60 * 1000, delayMs: 1000 },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 
@@ -775,8 +816,15 @@ export const appstoreJunkDeactivationConfigSchema = z
   .object({
     // Master switch. Default ON.
     enabled: z.boolean().default(true),
+    // One-time, set-based backfill of the mined-pool-specific rule
+    // (`shouldDeactivateMinedKeyword`) against the EXISTING mined pool — see
+    // `keyword-store.ts`'s `backfillMinedDeactivation` and `scraper.ts`'s
+    // `runMinedBackfillOnce`. Runs once per process lifetime off the async
+    // keyword-sweep tick (never blocking startup). Default ON; flip off to
+    // rely purely on the inline per-scan check pruning the pool gradually.
+    minedBackfillEnabled: z.boolean().default(true),
   })
-  .default({ enabled: true });
+  .default({ enabled: true, minedBackfillEnabled: true });
 export type AppstoreJunkDeactivationConfig = z.infer<
   typeof appstoreJunkDeactivationConfigSchema
 >;
