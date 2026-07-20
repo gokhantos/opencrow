@@ -13,6 +13,7 @@ import {
   getScanHistory,
   getMostRecentScanAt,
   countScansSince,
+  countMinedScansSince,
   getWinnerKeywords,
   keywordsExist,
   getDiverseZoneSample,
@@ -20,6 +21,9 @@ import {
   getKeywordMeta,
   getScannedAppNames,
   deactivateJunkKeywords,
+  getMinedDeactivationStats,
+  backfillMinedDeactivation,
+  getTier1ProtectedKeywords,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 
@@ -105,21 +109,38 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-tier1-manual-stale",
   "zzz-tier1-manual-fresh",
   "zzz-tier1-seed-never-scanned",
+  "zzz-tier1-autocomplete-stale",
   "zzz-tier1-signature-hit",
   "zzz-tier2-mined-stale",
   "zzz-tier1-cap-manual-a",
   "zzz-tier1-cap-manual-b",
   "zzz-tier1-cap-manual-c",
-  "zzz-tier2-cap-mined",
-  // Self-supplied tier-2 "stale competition" decoys for the fresh-manual-
-  // keyword exclusion test — see that test's comment (PR #321 CI failure)
-  // for why these must exist regardless of ambient corpus size.
+  "zzz-mine-quota-a",
+  "zzz-mine-quota-b",
+  "zzz-mine-quota-c",
+  // Self-supplied mined-exploration "stale competition" decoys for the
+  // fresh-manual-keyword exclusion test — see that test's comment (PR #321
+  // CI failure) for why these must exist regardless of ambient corpus size.
   ...Array.from({ length: 10 }, (_, i) => `zzz-tier1-fresh-decoy-${i}`),
   // deactivateJunkKeywords fixtures
   "zzz-deactivate-mined",
   "zzz-deactivate-manual-protected",
   "zzz-deactivate-seed-protected",
   "zzz-deactivate-already-inactive",
+  // countMinedScansSince / getMinedDeactivationStats / backfillMinedDeactivation
+  // / getTier1ProtectedKeywords fixtures (2026-07-21 scan-budget retune)
+  "zzz-mined-scan-count-mined",
+  "zzz-mined-scan-count-seed",
+  "zzz-mined-stats-fixture",
+  "zzz-backfill-mined-hopeless",
+  "zzz-backfill-mined-sighit",
+  "zzz-backfill-manual-protected",
+  "zzz-backfill-idempotent",
+  "zzz-de-lane-seed",
+  "zzz-de-lane-manual",
+  "zzz-de-lane-autocomplete",
+  "zzz-de-lane-mined-excluded",
+  "zzz-de-lane-inactive",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -1156,9 +1177,20 @@ describe("keyword-store", () => {
       await markScanned(["zzz-tier1-manual-stale"], now - 100_000_000);
       // zzz-tier1-seed-never-scanned is left with last_scanned_at = NULL.
 
-      const stale = await getStaleKeywordsTiered(100_000);
+      const stale = await getStaleKeywordsTiered({ batchLimit: 100_000, mineQuotaRemaining: 0 });
       expect(stale).toContain("zzz-tier1-manual-stale");
       expect(stale).toContain("zzz-tier1-seed-never-scanned");
+    });
+
+    it("prioritizes a stale autocomplete keyword into tier 1 (2026-07-21 retune)", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-tier1-autocomplete-stale", genreZone: "zzz-tier-zone", source: "autocomplete" },
+      ]);
+      await markScanned(["zzz-tier1-autocomplete-stale"], now - 100_000_000);
+
+      const stale = await getStaleKeywordsTiered({ batchLimit: 100_000, mineQuotaRemaining: 0 });
+      expect(stale).toContain("zzz-tier1-autocomplete-stale");
     });
 
     it("does NOT prioritize a fresh (recently-scanned) manual keyword into a small batch", async () => {
@@ -1173,33 +1205,35 @@ describe("keyword-store", () => {
       await markScanned(["zzz-tier1-manual-fresh"], now - 3_600);
       // 48h ago — comfortably stale (well past the 24h threshold), and
       // structurally tier-1-INELIGIBLE (mined, no signature hit), so these
-      // can only ever surface via tier 2 — exactly the competition tier 2
-      // needs to fill its slots ahead of the fresh keyword.
+      // can only ever surface via the mined-exploration quota — exactly the
+      // competition that quota needs to fill its slots ahead of the fresh
+      // keyword.
       //
       // These decoys are NOT just a safety margin: without them, this test
       // only passes when the shared `appstore_keywords` table already has
-      // enough OTHER stale rows to fill tier 2's small `LIMIT` ahead of the
+      // enough OTHER stale mined rows to fill the small `LIMIT` ahead of the
       // lone fresh fixture — true against a real dev DB (100k+ accumulated
-      // rows) but false against a freshly-migrated, empty CI Postgres, where
-      // the fresh keyword was the ONLY row available and tier 2 (which has
-      // no staleness gate of its own — see `getStaleKeywordsTiered`) had no
-      // choice but to return it. Self-supplied decoys make this
-      // deterministic regardless of ambient corpus size (see PR #321 CI
-      // failure).
+      // rows) but false against a freshly-migrated, empty CI Postgres. Self-
+      // supplied decoys make this deterministic regardless of ambient corpus
+      // size (see PR #321 CI failure).
       await markScanned(decoys, now - 172_800);
 
       // A fresh (just-scanned) keyword fails the tier-1 staleness predicate
-      // outright, so it can only appear via tier 2's stalest-first fallback —
+      // outright, so it can only appear via the mined-exploration fallback —
       // and having just been scanned, it is one of the FRESHEST keywords in
       // the whole corpus, so a small batch (stalest-first) should never reach
       // it. (See keyword-tiering.test.ts's `isTier1Eligible` unit tests for
       // the exhaustive, DB-independent coverage of the staleness predicate
-      // itself — this integration test only confirms the SQL wiring.)
-      const smallSlice = await getStaleKeywordsTiered(5);
+      // itself — this integration test only confirms the SQL wiring.) A
+      // generous `mineQuotaRemaining` lets the mined decoys fill the batch.
+      const smallSlice = await getStaleKeywordsTiered({
+        batchLimit: 5,
+        mineQuotaRemaining: 100_000,
+      });
       expect(smallSlice).not.toContain("zzz-tier1-manual-fresh");
     });
 
-    it("prioritizes a stale keyword with an active signature hit regardless of source", async () => {
+    it("prioritizes a stale keyword with a signature hit regardless of source, even without mined quota", async () => {
       const now = Math.floor(Date.now() / 1000);
       const db = getDb();
       await upsertKeywords([
@@ -1211,55 +1245,237 @@ describe("keyword-store", () => {
         VALUES ('zzz-tier1-signature-hit', ${now}, ${now}, 'active')
       `;
 
-      const stale = await getStaleKeywordsTiered(100_000);
+      // mineQuotaRemaining: 0 — a signature-hit keyword must reach tier 1
+      // regardless of source, NEVER through the mined-exploration path.
+      const stale = await getStaleKeywordsTiered({ batchLimit: 100_000, mineQuotaRemaining: 0 });
       expect(stale).toContain("zzz-tier1-signature-hit");
     });
 
-    it("does NOT prioritize a mined keyword with no signature hit, even if stale — falls to tier 2", async () => {
+    it("does NOT prioritize a mined keyword with no signature hit into tier 1 — only reachable via mined quota", async () => {
       const now = Math.floor(Date.now() / 1000);
       await upsertKeywords([
         { keyword: "zzz-tier2-mined-stale", genreZone: "zzz-tier-zone", source: "mined" },
       ]);
-      // Ancient timestamp (see the ancient-vs-large-limit note above): being
-      // "mined" with no signature hit, this keyword is structurally
-      // INELIGIBLE for tier 1 regardless of staleness — it can only ever
-      // reach the result via tier 2's stalest-first fallback, so making it
-      // maximally stale just guarantees tier 2 reaches it deterministically.
       await markScanned(["zzz-tier2-mined-stale"], now - 100_000_000);
 
-      const full = await getStaleKeywordsTiered(100_000);
-      expect(full).toContain("zzz-tier2-mined-stale");
+      // No mined quota at all: a plain mined keyword must NOT appear.
+      const noQuota = await getStaleKeywordsTiered({ batchLimit: 100_000, mineQuotaRemaining: 0 });
+      expect(noQuota).not.toContain("zzz-tier2-mined-stale");
+
+      // With quota, it becomes reachable via mined exploration.
+      const withQuota = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 100_000,
+      });
+      expect(withQuota).toContain("zzz-tier2-mined-stale");
     });
 
-    it("caps tier 1 at TIER1_MAX_BATCH_FRACTION of the batch, never fully starving tier 2", async () => {
+    it("tier 1 is UNCAPPED (2026-07-21 retune): every eligible keyword fits, even in a batch smaller than the old fraction cap would have allowed", async () => {
       const now = Math.floor(Date.now() / 1000);
       await upsertKeywords([
         { keyword: "zzz-tier1-cap-manual-a", genreZone: "zzz-tier-cap-zone", source: "manual" },
         { keyword: "zzz-tier1-cap-manual-b", genreZone: "zzz-tier-cap-zone", source: "manual" },
         { keyword: "zzz-tier1-cap-manual-c", genreZone: "zzz-tier-cap-zone", source: "manual" },
-        { keyword: "zzz-tier2-cap-mined", genreZone: "zzz-tier-cap-zone", source: "mined" },
       ]);
+      // Ancient timestamp (see the ancient-vs-large-limit note on the
+      // `getStaleKeywordsAcrossZones` test above) so these three reliably
+      // sort ahead of any other real, ALREADY-SCANNED manual/seed/
+      // autocomplete keyword in this shared DB — a merely-"2 days stale"
+      // timestamp previously lost a batchLimit-3 race to real corpus rows.
+      // NULLS FIRST still beats even an ancient non-null timestamp, though:
+      // the live autocomplete-expansion pass continuously adds brand-new
+      // tier-1-eligible keywords with `last_scanned_at IS NULL` that haven't
+      // had their first sweep pass yet (observed live: ~4 at any moment,
+      // scanned away again within about a minute) — a `batchLimit` of
+      // exactly 3 previously lost to that transient NULL backlog too.
       await markScanned(
         ["zzz-tier1-cap-manual-a", "zzz-tier1-cap-manual-b", "zzz-tier1-cap-manual-c"],
-        now - 2 * 86_400,
+        now - 100_000_000,
       );
-      await markScanned(["zzz-tier2-cap-mined"], now - 3 * 86_400); // stalest of all — tier 2 fallback
 
-      // Batch limit of 3: tier1Cap = floor(3 * 0.3) = 0, so NONE of the tier-1
-      // eligible manual keywords fit — the whole batch falls to tier 2's
-      // stalest-first ordering, so the stalest keyword overall (the mined
-      // one) must win the tiny batch.
-      const tinyBatch = await getStaleKeywordsTiered(3);
-      expect(tinyBatch.length).toBeLessThanOrEqual(3);
-      // With only 3 slots and tier 1 capped to 0, tier 2 (stalest-first
-      // across the WHOLE corpus, not just this fixture's zone) fills every
-      // slot — the tier-1-eligible manual keywords inserted here, being
-      // fresher than zzz-tier2-cap-mined, are not guaranteed a slot in a
-      // batch this small once real corpus data is present. The direct,
-      // fixture-scoped guarantee is on the tier-1 cap math itself, already
-      // covered by keyword-tiering.test.ts's `computeTier1Cap` unit tests —
-      // this test's job is just to confirm no more than the batch limit is
-      // ever returned and the call does not throw.
+      // Under the OLD 30%-fraction cap, a batch this size would floor to
+      // tier1Cap = floor(50 * 0.3) = 15 — comfortably tight enough that the
+      // OLD code would drop these 3 the moment more than ~12 other stale/
+      // never-scanned tier-1-eligible keywords existed live (a real
+      // possibility, unlike a batch of literally 3). The retune removed
+      // that cap entirely: all 3 must now fit regardless of how many other
+      // tier-1-eligible keywords are also due, with margin over the small,
+      // transient live NULL backlog noted above.
+      const tinyBatch = await getStaleKeywordsTiered({ batchLimit: 50, mineQuotaRemaining: 0 });
+      expect(tinyBatch).toContain("zzz-tier1-cap-manual-a");
+      expect(tinyBatch).toContain("zzz-tier1-cap-manual-b");
+      expect(tinyBatch).toContain("zzz-tier1-cap-manual-c");
+    });
+
+    it("mined exploration respects mineQuotaRemaining even when batch slots are available", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-mine-quota-a", genreZone: "zzz-mine-quota-zone", source: "mined" },
+        { keyword: "zzz-mine-quota-b", genreZone: "zzz-mine-quota-zone", source: "mined" },
+        { keyword: "zzz-mine-quota-c", genreZone: "zzz-mine-quota-zone", source: "mined" },
+      ]);
+      await markScanned(
+        ["zzz-mine-quota-a", "zzz-mine-quota-b", "zzz-mine-quota-c"],
+        now - 100_000_000,
+      );
+
+      // Plenty of batch room (50), but the mined quota is exhausted for the
+      // day — none of these mined-only keywords should be drawn.
+      const exhausted = await getStaleKeywordsTiered({ batchLimit: 50, mineQuotaRemaining: 0 });
+      expect(exhausted).not.toContain("zzz-mine-quota-a");
+      expect(exhausted).not.toContain("zzz-mine-quota-b");
+      expect(exhausted).not.toContain("zzz-mine-quota-c");
+
+      // Quota of exactly 1: at most 1 of the three eligible mined keywords
+      // may be drawn.
+      const capped = await getStaleKeywordsTiered({ batchLimit: 50, mineQuotaRemaining: 1 });
+      const capturedCount = ["zzz-mine-quota-a", "zzz-mine-quota-b", "zzz-mine-quota-c"].filter(
+        (k) => capped.includes(k),
+      ).length;
+      expect(capturedCount).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe("countMinedScansSince", () => {
+    it("counts only source: 'mined' scans recorded at or after the given epoch", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-mined-scan-count-mined", genreZone: "zzz-mined-count-zone", source: "mined" },
+        { keyword: "zzz-mined-scan-count-seed", genreZone: "zzz-mined-count-zone", source: "seed" },
+      ]);
+
+      const before = await countMinedScansSince(now - 10);
+      await insertScan(makeScan({ keyword: "zzz-mined-scan-count-mined", scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-mined-scan-count-seed", scannedAt: now }));
+      const after = await countMinedScansSince(now - 10);
+
+      // Only the mined-source scan should count toward the delta — tolerant
+      // of other real activity landing scans in this shared DB concurrently.
+      expect(after).toBeGreaterThanOrEqual(before + 1);
+    });
+  });
+
+  describe("getMinedDeactivationStats", () => {
+    it("reports scan count, max demand ever, and signature-hit presence for a keyword", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const db = getDb();
+      await upsertKeywords([
+        { keyword: "zzz-mined-stats-fixture", genreZone: "zzz-mined-stats-zone", source: "mined" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-mined-stats-fixture", demand: 2, scannedAt: now - 200 }));
+      await insertScan(makeScan({ keyword: "zzz-mined-stats-fixture", demand: 9, scannedAt: now - 100 }));
+      await insertScan(makeScan({ keyword: "zzz-mined-stats-fixture", demand: 1, scannedAt: now }));
+
+      const noHit = await getMinedDeactivationStats("zzz-mined-stats-fixture");
+      expect(noHit.scanCount).toBe(3);
+      expect(noHit.maxDemand).toBe(9); // MAX across history, not the latest scan's demand (1)
+      expect(noHit.hasSignatureHit).toBe(false);
+
+      await db`
+        INSERT INTO appstore_signature_hits (keyword, first_detected_at, last_seen_at, status)
+        VALUES ('zzz-mined-stats-fixture', ${now}, ${now}, 'dismissed')
+      `;
+      const withHit = await getMinedDeactivationStats("zzz-mined-stats-fixture");
+      // ANY row counts, even a dismissed one — this is a permanent exemption.
+      expect(withHit.hasSignatureHit).toBe(true);
+    });
+
+    it("returns zeroed stats for a keyword with no scan history", async () => {
+      const stats = await getMinedDeactivationStats("zzz-mined-stats-absent");
+      expect(stats.scanCount).toBe(0);
+      expect(stats.maxDemand).toBe(0);
+      expect(stats.hasSignatureHit).toBe(false);
+    });
+  });
+
+  describe("backfillMinedDeactivation", () => {
+    it("deactivates a mined keyword that never reached demand 5, and NEVER touches a signature-hit or non-mined one", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const db = getDb();
+      await upsertKeywords([
+        { keyword: "zzz-backfill-mined-hopeless", genreZone: "zzz-backfill-zone", source: "mined" },
+        { keyword: "zzz-backfill-mined-sighit", genreZone: "zzz-backfill-zone", source: "mined" },
+        { keyword: "zzz-backfill-manual-protected", genreZone: "zzz-backfill-zone", source: "manual" },
+      ]);
+      // Hopeless: 2 scans, demand always < 5, no signature hit.
+      await insertScan(
+        makeScan({ keyword: "zzz-backfill-mined-hopeless", demand: 1, scannedAt: now - 200 }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-backfill-mined-hopeless", demand: 2, scannedAt: now }),
+      );
+      // Same low-demand shape, but has a signature hit — must be exempt.
+      await insertScan(
+        makeScan({ keyword: "zzz-backfill-mined-sighit", demand: 1, scannedAt: now - 200 }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-backfill-mined-sighit", demand: 1, scannedAt: now }),
+      );
+      await db`
+        INSERT INTO appstore_signature_hits (keyword, first_detected_at, last_seen_at, status)
+        VALUES ('zzz-backfill-mined-sighit', ${now}, ${now}, 'dismissed')
+      `;
+      // Same low-demand shape, but source is 'manual' — protected outright.
+      await insertScan(
+        makeScan({ keyword: "zzz-backfill-manual-protected", demand: 1, scannedAt: now - 200 }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-backfill-manual-protected", demand: 1, scannedAt: now }),
+      );
+
+      await backfillMinedDeactivation();
+
+      const rows = await db`
+        SELECT keyword, active FROM appstore_keywords
+        WHERE keyword IN ('zzz-backfill-mined-hopeless', 'zzz-backfill-mined-sighit', 'zzz-backfill-manual-protected')
+      `;
+      const byKeyword = new Map(
+        (rows as ReadonlyArray<{ keyword: string; active: boolean }>).map((r) => [r.keyword, r.active]),
+      );
+      expect(byKeyword.get("zzz-backfill-mined-hopeless")).toBe(false);
+      expect(byKeyword.get("zzz-backfill-mined-sighit")).toBe(true);
+      expect(byKeyword.get("zzz-backfill-manual-protected")).toBe(true);
+    });
+
+    it("is idempotent — a second call deactivates nothing further for the same keyword", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-backfill-idempotent", genreZone: "zzz-backfill-zone", source: "mined" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-backfill-idempotent", demand: 0, scannedAt: now - 200 }));
+      await insertScan(makeScan({ keyword: "zzz-backfill-idempotent", demand: 0, scannedAt: now }));
+
+      await backfillMinedDeactivation();
+      const db = getDb();
+      const rows = await db`SELECT active FROM appstore_keywords WHERE keyword = 'zzz-backfill-idempotent'`;
+      expect((rows as ReadonlyArray<{ active: boolean }>)[0]?.active).toBe(false);
+
+      // Second call: already inactive, so the WHERE k.active = TRUE clause
+      // excludes it — no error, no re-processing.
+      await backfillMinedDeactivation();
+      const rows2 = await db`SELECT active FROM appstore_keywords WHERE keyword = 'zzz-backfill-idempotent'`;
+      expect((rows2 as ReadonlyArray<{ active: boolean }>)[0]?.active).toBe(false);
+    });
+  });
+
+  describe("getTier1ProtectedKeywords", () => {
+    it("returns active seed/manual/autocomplete keywords, excluding mined and inactive rows", async () => {
+      const db = getDb();
+      await upsertKeywords([
+        { keyword: "zzz-de-lane-seed", genreZone: "zzz-de-lane-zone", source: "seed" },
+        { keyword: "zzz-de-lane-manual", genreZone: "zzz-de-lane-zone", source: "manual" },
+        { keyword: "zzz-de-lane-autocomplete", genreZone: "zzz-de-lane-zone", source: "autocomplete" },
+        { keyword: "zzz-de-lane-mined-excluded", genreZone: "zzz-de-lane-zone", source: "mined" },
+        { keyword: "zzz-de-lane-inactive", genreZone: "zzz-de-lane-zone", source: "seed" },
+      ]);
+      await db`UPDATE appstore_keywords SET active = FALSE WHERE keyword = 'zzz-de-lane-inactive'`;
+
+      const protectedKeywords = await getTier1ProtectedKeywords();
+      expect(protectedKeywords).toContain("zzz-de-lane-seed");
+      expect(protectedKeywords).toContain("zzz-de-lane-manual");
+      expect(protectedKeywords).toContain("zzz-de-lane-autocomplete");
+      expect(protectedKeywords).not.toContain("zzz-de-lane-mined-excluded");
+      expect(protectedKeywords).not.toContain("zzz-de-lane-inactive");
     });
   });
 

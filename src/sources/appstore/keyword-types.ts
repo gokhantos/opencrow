@@ -24,7 +24,11 @@ export interface TopApp {
 
 export interface KeywordGapProfile {
   readonly keyword: string;
-  readonly store: "app" | "play";
+  // "DE" — the German storefront lane (2026-07-21 scan-budget retune, see
+  // keyword-gaps.ts's `runDeStorefrontSweep`): querying/mining data only,
+  // deliberately excluded from the (US-calibrated) signature screener and
+  // from junk-deactivation/velocity bookkeeping this iteration.
+  readonly store: "app" | "play" | "DE";
   readonly competitiveness: number; // 0..100
   readonly demand: number; // lifetime ratings/day baseline + recent-velocity momentum, over matched incumbents
   readonly incumbentWeakness: number; // 0..1

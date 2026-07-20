@@ -1,6 +1,10 @@
 import { getDb } from "../../store/db";
 import { JUNK_KEYWORDS } from "./keyword-junk";
-import { computeTier1Cap, TIER1_STALE_THRESHOLD_MS } from "./keyword-tiering";
+import { TIER1_ELIGIBLE_SOURCES, TIER1_STALE_THRESHOLD_MS } from "./keyword-tiering";
+import {
+  DEACTIVATION_MIN_SCANS,
+  MINED_DEACTIVATION_MAX_DEMAND_EVER,
+} from "./keyword-deactivation";
 import type { ClusterAssignmentRow, RawCandidate } from "./keyword-clustering";
 import { computeBuildability } from "./keyword-scoring";
 import type { GapTrend, KeywordGapProfile, TopApp } from "./keyword-types";
@@ -43,7 +47,7 @@ export interface KeywordSeedRow {
 export interface KeywordScanRow {
   readonly id: number;
   readonly keyword: string;
-  readonly store: "app" | "play";
+  readonly store: "app" | "play" | "DE";
   readonly scannedAt: number;
   readonly competitiveness: number;
   readonly demand: number;
@@ -131,7 +135,7 @@ export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
   return {
     id: Number(row.id),
     keyword: row.keyword,
-    store: row.store as "app" | "play",
+    store: row.store as "app" | "play" | "DE",
     scannedAt: Number(row.scanned_at),
     competitiveness: Number(row.competitiveness),
     demand,
@@ -209,54 +213,78 @@ export async function getStaleKeywordsAcrossZones(limit: number): Promise<readon
 }
 
 /**
- * Two-tier stalest-first slice across the whole active corpus, backing the
- * timer-driven keyword-gap sweep's priority re-scan lane (see
- * `keyword-tiering.ts` for the full rationale). Tier 1 — stale (per
- * `TIER1_STALE_THRESHOLD_MS`) manual/seed keywords, or stale keywords with an
- * active (non-dismissed) `appstore_signature_hits` watchlist entry — fills up
- * to `computeTier1Cap(limit)` slots first; tier 2 fills the rest with the
- * pre-existing stalest-first behavior (`getStaleKeywordsAcrossZones`),
- * excluding whatever tier 1 already picked so no keyword is returned twice.
- * `keyword = ANY('{}')` is always FALSE (never NULL) in Postgres, so an empty
- * tier-1 list needs no special-casing in the tier-2 exclusion.
+ * Tier-1-guaranteed + mined-quota slice across the whole active corpus,
+ * backing the timer-driven keyword-gap sweep's priority re-scan lane (see
+ * `keyword-tiering.ts` for the full rationale, updated 2026-07-21's
+ * scan-budget retune). Tier 1 — stale (per `TIER1_STALE_THRESHOLD_MS`)
+ * seed/manual/autocomplete keywords, or stale keywords with ANY
+ * `appstore_signature_hits` row — is UNCAPPED, filling up to the whole batch
+ * if needed; mined exploration fills whatever's left, bounded by BOTH the
+ * remaining batch slots and the caller-supplied rolling-daily mined quota
+ * (`opts.mineQuotaRemaining`), excluding whatever tier 1 already picked so
+ * no keyword is returned twice. `keyword = ANY('{}')` is always FALSE (never
+ * NULL) in Postgres, so an empty tier-1 list needs no special-casing in the
+ * mined exclusion.
  */
-export async function getStaleKeywordsTiered(limit: number): Promise<readonly string[]> {
+export async function getStaleKeywordsTiered(opts: {
+  /** This cycle's overall scan batch size (throttle-adjusted `keywordsPerSweep`). */
+  readonly batchLimit: number;
+  /**
+   * Remaining mined-exploration quota for the rolling 24h window (
+   * `minedExploration.dailyQuota` minus `countMinedScansSince`'s count for
+   * the same window — computed by the caller, `runKeywordSweep`). Once this
+   * hits 0, no more mined keywords are drawn for the rest of the day — the
+   * batch returns tier 1 only, even if `batchLimit` has slots left over.
+   */
+  readonly mineQuotaRemaining: number;
+}): Promise<readonly string[]> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   const staleThresholdAt = now - Math.floor(TIER1_STALE_THRESHOLD_MS / 1000);
-  const tier1Cap = computeTier1Cap(limit);
 
+  // Tier 1 — UNCAPPED (see keyword-tiering.ts doc comment): every stale
+  // eligible-source or signature-hit keyword competes for this cycle's
+  // batch, stalest-first, up to the WHOLE batch if needed. Self-limiting in
+  // practice — see module doc comment.
   const tier1Rows =
-    tier1Cap > 0
+    opts.batchLimit > 0
       ? await db`
           SELECT k.keyword FROM appstore_keywords k
           WHERE k.active = TRUE
             AND (k.last_scanned_at IS NULL OR k.last_scanned_at < ${staleThresholdAt})
             AND (
-              k.source IN ('manual', 'seed')
+              k.source IN ${db([...TIER1_ELIGIBLE_SOURCES])}
               OR EXISTS (
                 SELECT 1 FROM appstore_signature_hits h
                 WHERE h.keyword = k.keyword AND h.status != 'dismissed'
               )
             )
           ORDER BY k.last_scanned_at ASC NULLS FIRST
-          LIMIT ${tier1Cap}
+          LIMIT ${opts.batchLimit}
         `
       : [];
 
   const tier1Keywords = (tier1Rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
-  const remaining = limit - tier1Keywords.length;
-  if (remaining <= 0) return tier1Keywords;
+  const remainingBatch = opts.batchLimit - tier1Keywords.length;
+  const mineSlots = Math.max(0, Math.min(remainingBatch, opts.mineQuotaRemaining));
+  if (mineSlots <= 0) return tier1Keywords;
 
-  const tier2Rows = await db`
+  // Mined exploration — never-scanned first (NULLS FIRST), then
+  // oldest-scanned-still-active, capped by whatever's left of BOTH this
+  // cycle's batch and the rolling daily mined quota.
+  const mineRows = await db`
     SELECT keyword FROM appstore_keywords
     WHERE active = TRUE
+      AND source = 'mined'
       AND NOT (keyword = ANY(${db.array(tier1Keywords, "text")}))
     ORDER BY last_scanned_at ASC NULLS FIRST
-    LIMIT ${remaining}
+    LIMIT ${mineSlots}
   `;
 
-  return [...tier1Keywords, ...(tier2Rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword)];
+  return [
+    ...tier1Keywords,
+    ...(mineRows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword),
+  ];
 }
 
 export async function markScanned(keywords: readonly string[], at: number): Promise<void> {
@@ -281,7 +309,7 @@ export async function insertScan(p: KeywordGapProfile): Promise<void> {
 
 export async function getLatestScan(
   keyword: string,
-  store: "app" | "play" = "app",
+  store: "app" | "play" | "DE" = "app",
 ): Promise<KeywordScanRow | null> {
   const db = getDb();
   const rows = await db`
@@ -594,6 +622,29 @@ export async function countScansSince(epochSeconds: number): Promise<number> {
 }
 
 /**
+ * Count of `source: 'mined'` keyword scans recorded at or after
+ * `epochSeconds` — backs the mined-exploration daily quota
+ * (`appstoreKeywordGap.minedExploration.dailyQuota`), tracked SEPARATELY
+ * from `countScansSince`'s whole-corpus rolling budget so tier-1
+ * (seed/manual/autocomplete/signature-hit) scans never eat into the mined
+ * pool's own daily cap, and vice versa. Joins to `appstore_keywords` for
+ * `source` since `appstore_keyword_scans` itself has no source column; the
+ * `scanned_at >= epochSeconds` filter is applied before the join so this
+ * stays index-friendly against `idx_appstore_keyword_scans_top`.
+ */
+export async function countMinedScansSince(epochSeconds: number): Promise<number> {
+  const db = getDb();
+  const rows = await db`
+    SELECT count(*) AS count
+    FROM appstore_keyword_scans s
+    JOIN appstore_keywords k ON k.keyword = s.keyword
+    WHERE s.scanned_at >= ${epochSeconds} AND k.source = 'mined'
+  `;
+  const count = (rows as ReadonlyArray<{ count: number | string }>)[0]?.count;
+  return count === undefined ? 0 : Number(count);
+}
+
+/**
  * Latest scan per keyword, joined to its corpus row for `genre_zone`,
  * filtered to `opportunity >= minOpportunity` and ordered richest-first.
  * Used to seed autocomplete expansion from proven high-opportunity
@@ -849,6 +900,107 @@ export async function deactivateJunkKeywords(keywords: readonly string[]): Promi
     RETURNING keyword
   `;
   return (rows as ReadonlyArray<{ keyword: string }>).length;
+}
+
+/**
+ * Per-keyword stats backing `keyword-deactivation.ts`'s
+ * `shouldDeactivateMinedKeyword` — the mined-pool-specific deactivation rule
+ * evaluated inline during the sweep (see `keyword-gaps.ts`'s
+ * `scanAndRecord`, which only calls this for `source: 'mined'` candidates so
+ * the extra query cost is paid only by the pool it's meant to prune). Three
+ * cheap, keyword-scoped subqueries rather than a full `getScanHistory` fetch
+ * — `maxDemand` needs the WHOLE scan history, not just the most recent rows.
+ */
+export async function getMinedDeactivationStats(keyword: string): Promise<{
+  readonly scanCount: number;
+  readonly maxDemand: number;
+  readonly hasSignatureHit: boolean;
+}> {
+  const db = getDb();
+  const rows = await db`
+    SELECT
+      (SELECT count(*) FROM appstore_keyword_scans WHERE keyword = ${keyword}) AS scan_count,
+      (SELECT max(demand) FROM appstore_keyword_scans WHERE keyword = ${keyword}) AS max_demand,
+      EXISTS (SELECT 1 FROM appstore_signature_hits WHERE keyword = ${keyword}) AS has_signature_hit
+  `;
+  const row = (
+    rows as ReadonlyArray<{
+      scan_count: number | string;
+      max_demand: number | string | null;
+      has_signature_hit: boolean;
+    }>
+  )[0];
+  return {
+    scanCount: row ? Number(row.scan_count) : 0,
+    maxDemand: row?.max_demand === null || row?.max_demand === undefined ? 0 : Number(row.max_demand),
+    hasSignatureHit: row?.has_signature_hit === true,
+  };
+}
+
+/**
+ * One-time, set-based backfill of `shouldDeactivateMinedKeyword` against the
+ * EXISTING mined pool (see `scraper.ts`'s `runMinedBackfillOnce` — run once
+ * per process lifetime off the async keyword-sweep tick, never blocking
+ * startup). A single UPDATE rather than budgeted batches: narrowing the join
+ * to only currently-`active`, `source = 'mined'` keywords BEFORE aggregating
+ * their scans (rather than aggregating the whole `appstore_keyword_scans`
+ * table first) keeps the query's cost proportional to the CURRENT active
+ * mined pool, not the full historical scan volume — and that pool only ever
+ * shrinks across repeated calls (idempotent: `k.active = TRUE` in the WHERE
+ * clause means a keyword already deactivated by a prior run, or by the
+ * per-scan inline check, is never re-touched). The final UPDATE also
+ * re-asserts `k.active = TRUE AND k.source = 'mined'` directly in its own
+ * WHERE clause — belt + suspenders (mirroring `deactivateJunkKeywords`'s own
+ * redundant `source NOT IN ('manual', 'seed')` check): the CTE already
+ * scopes `agg` to exactly this set via the join, but the mass-write itself
+ * must stay self-limiting even if that scoping/query shape ever changes,
+ * rather than relying solely on the keyword PK join to stay mined-scoped.
+ * Returns the count actually deactivated.
+ */
+export async function backfillMinedDeactivation(): Promise<number> {
+  const db = getDb();
+  const rows = await db`
+    WITH candidates AS (
+      SELECT keyword FROM appstore_keywords WHERE active = TRUE AND source = 'mined'
+    ),
+    agg AS (
+      SELECT s.keyword AS keyword, count(*) AS scan_count, max(s.demand) AS max_demand
+      FROM appstore_keyword_scans s
+      JOIN candidates c ON c.keyword = s.keyword
+      GROUP BY s.keyword
+    )
+    UPDATE appstore_keywords k
+    SET active = FALSE
+    FROM agg
+    WHERE k.keyword = agg.keyword
+      AND k.active = TRUE
+      AND k.source = 'mined'
+      AND agg.scan_count >= ${DEACTIVATION_MIN_SCANS}
+      AND agg.max_demand < ${MINED_DEACTIVATION_MAX_DEMAND_EVER}
+      AND NOT EXISTS (
+        SELECT 1 FROM appstore_signature_hits h WHERE h.keyword = k.keyword
+      )
+    RETURNING k.keyword
+  `;
+  return (rows as ReadonlyArray<{ keyword: string }>).length;
+}
+
+/**
+ * ALL active seed/manual/autocomplete keywords, unpaginated — backs the DE
+ * storefront lane's daily pass (see `keyword-gaps.ts`'s
+ * `runDeStorefrontSweep`). Deliberately NARROWER than tier 1's full
+ * definition (which also admits any signature-hit keyword regardless of
+ * source) — the DE lane's scope this iteration is explicitly the
+ * human-curated/real-user-query corpus, not the (US-calibrated) signature-hit
+ * watchlist.
+ */
+export async function getTier1ProtectedKeywords(): Promise<readonly string[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT keyword FROM appstore_keywords
+    WHERE active = TRUE AND source IN ('seed', 'manual', 'autocomplete')
+  `;
+  return (rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
 }
 
 // ===========================================================================

@@ -141,8 +141,10 @@ export function formatCompetitiveness(value: number): string {
   return Math.round(value).toString();
 }
 
-export function formatStore(store: "app" | "play"): string {
-  return store === "play" ? "Play" : "App Store";
+export function formatStore(store: "app" | "play" | "DE"): string {
+  if (store === "play") return "Play";
+  if (store === "DE") return "App Store (DE)";
+  return "App Store";
 }
 
 export function formatTopAppReviews(value: number): string {

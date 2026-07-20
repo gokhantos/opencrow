@@ -31,7 +31,7 @@ export function formatGapProfile(p: KeywordGapProfile): string {
   const safeKeyword = sanitizeScrapedField(p.keyword, MAX_APP_NAME_LEN);
 
   const lines = [
-    `Keyword Gap: "${safeKeyword}" (${p.store === "app" ? "App Store" : "Google Play"})`,
+    `Keyword Gap: "${safeKeyword}" (${p.store === "app" ? "App Store (US)" : p.store === "DE" ? "App Store (DE)" : "Google Play"})`,
     `  Competitiveness: ${Math.round(p.competitiveness)}/100`,
     `  Demand: ${p.demand.toFixed(1)} ratings/day`,
     `  Incumbent weakness: ${toPercent(p.incumbentWeakness)}`,
