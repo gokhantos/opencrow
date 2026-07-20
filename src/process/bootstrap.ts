@@ -5,6 +5,7 @@ import type { ResolvedAgent } from "../agents/types";
 import type { MemoryManager } from "../memory/types";
 import type { CronToolConfig } from "../tools/cron";
 import { initDb } from "../store/db";
+import { armParentWatchdog } from "./parent-watchdog";
 import { createToolRegistry } from "../tools/registry";
 import { createAgentRegistry, type AgentRegistry } from "../agents/registry";
 import { loadConfigWithOverrides } from "../config/loader";
@@ -126,6 +127,14 @@ export async function bootstrap(
 
   if (opts.processName) setProcessName(opts.processName);
   setLogLevel(config.logLevel);
+
+  // Arm the parent-death watchdog as early as possible. bootstrap() is the ONE
+  // shared entry point every orchestrator child runs (web, cron, agent, scraper,
+  // sige, ingestion) and the core never calls it — so this single call reaps
+  // orphans across all children without per-entry copy-paste. It self-gates
+  // (no-op unless spawned by the orchestrator with an IPC channel), so it is
+  // inert in monolith/dev and in tests that call bootstrap directly.
+  armParentWatchdog();
 
   const dbUrl = process.env.DATABASE_URL ?? config.postgres.url;
   const db = await initDb(dbUrl, {

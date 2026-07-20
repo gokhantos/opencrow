@@ -185,7 +185,17 @@ async function main(): Promise<void> {
   Bun.serve<WsData>({
     port: config.web.port,
     hostname: config.web.host,
-    reusePort: true,
+    // reusePort intentionally OFF. With SO_REUSEPORT, a stale/orphaned web child
+    // (e.g. one that outlived a SIGKILLed core) keeps binding the same port and
+    // the kernel round-robins connections across live AND zombie listeners —
+    // silently splitting traffic and hanging requests. With it off, a second
+    // binder fails loudly with EADDRINUSE, so the new child crashes and the
+    // supervisor's restart/backoff surfaces the conflict instead of hiding it.
+    // The parent-death watchdog (src/process/parent-watchdog.ts) reaps the stale
+    // child within a few seconds, after which the restart succeeds. Orchestrator
+    // restarts are sequential (killChild awaits exit before re-spawn), so there
+    // is no intentional zero-downtime overlap that relied on reusePort.
+    reusePort: false,
     development:
       process.env.NODE_ENV === "production"
         ? false
