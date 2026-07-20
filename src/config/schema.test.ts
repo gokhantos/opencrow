@@ -422,7 +422,14 @@ describe("appstoreKeywordGap config", () => {
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);
     expect(g.corpusDiscovery.enabled).toBe(true);
-    expect(g.corpusDiscovery.maxMinedPerCycle).toBe(500);
+    expect(g.corpusDiscovery.maxMinedPerCycle).toBe(100);
+    expect(g.autocompleteExpansion.enabled).toBe(true);
+    expect(g.autocompleteExpansion.minIntervalMs).toBe(900_000);
+    expect(g.autocompleteExpansion.winnerLimit).toBe(15);
+    expect(g.autocompleteExpansion.diverseLimit).toBe(10);
+    expect(g.autocompleteExpansion.perSeed).toBe(8);
+    expect(g.autocompleteExpansion.delayMs).toBe(1000);
+    expect(g.autocompleteExpansion.storefront).toBe("143441-1,29");
     expect(g.sweepRateSafety.adaptiveThrottleEnabled).toBe(true);
     expect(g.sweepRateSafety.legacyRateOverride).toBe(false);
   });
@@ -433,12 +440,17 @@ describe("appstoreKeywordGap config", () => {
         enabled: true,
         topN: 10,
         corpusDiscovery: { enabled: true, maxMinedPerCycle: 10 },
+        autocompleteExpansion: { enabled: true, winnerLimit: 5, storefront: "143441-1,17" },
       },
     });
     expect(cfg.appstoreKeywordGap.enabled).toBe(true);
     expect(cfg.appstoreKeywordGap.topN).toBe(10);
     expect(cfg.appstoreKeywordGap.corpusDiscovery.enabled).toBe(true);
     expect(cfg.appstoreKeywordGap.corpusDiscovery.maxMinedPerCycle).toBe(10);
+    expect(cfg.appstoreKeywordGap.autocompleteExpansion.winnerLimit).toBe(5);
+    expect(cfg.appstoreKeywordGap.autocompleteExpansion.storefront).toBe("143441-1,17");
+    // Untouched sibling fields keep their defaults.
+    expect(cfg.appstoreKeywordGap.autocompleteExpansion.diverseLimit).toBe(10);
   });
 
   test("can be disabled via config", () => {
@@ -446,10 +458,12 @@ describe("appstoreKeywordGap config", () => {
       appstoreKeywordGap: {
         enabled: false,
         corpusDiscovery: { enabled: false },
+        autocompleteExpansion: { enabled: false },
       },
     });
     expect(cfg.appstoreKeywordGap.enabled).toBe(false);
     expect(cfg.appstoreKeywordGap.corpusDiscovery.enabled).toBe(false);
+    expect(cfg.appstoreKeywordGap.autocompleteExpansion.enabled).toBe(false);
   });
 });
 

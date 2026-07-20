@@ -26,11 +26,17 @@ function parseJson<T>(val: unknown, fallback: T): T {
 export interface KeywordSeedRow {
   readonly keyword: string;
   readonly genreZone: string;
-  // "autocomplete" is retired (Apple's MZSearchHints endpoint now just echoes
-  // the query — see the deleted keyword-autocomplete.ts) but kept in the
-  // union since historical rows still carry it. "mined" is the current
-  // corpus-discovery source: candidates extracted from scraped App Store
-  // ranking data (see keyword-miner.ts).
+  // "autocomplete" is the PRIMARY corpus-discovery source (restored
+  // 2026-07-21 — see keyword-autocomplete.ts): real, popularity-ordered user
+  // search queries pulled from Apple's MZSearchHints search-suggest
+  // endpoint. It was briefly believed retired (the endpoint appeared to just
+  // echo the query back) but that was a missing-header misdiagnosis — the
+  // endpoint requires `X-Apple-Store-Front`, which Apple made mandatory at
+  // some point; with it, real suggestions come back. "mined" is the
+  // SECONDARY corpus-discovery source: candidates extracted from scraped
+  // App Store ranking data (see keyword-miner.ts) — still useful for
+  // brand-new apps autocomplete hasn't indexed yet, but demoted to a small
+  // top-up now that autocomplete works.
   readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined";
 }
 

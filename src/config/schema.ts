@@ -600,24 +600,88 @@ export const appstoreKeywordGapConfigSchema = z
     // scores currently top out around ~0.324, so 0.4 never fires — lowered
     // to 0.15 so genuinely strong winners actually seed further discovery.
     opportunityThresholdForSeed: z.number().min(0).max(1).default(0.15),
-    // Corpus-discovery: mines new keyword candidates from App Store data the
-    // scraper already fetches (top-chart app names + categories — see
-    // keyword-miner.ts), instead of the retired Apple search-suggest
-    // (MZSearchHints) expansion, which now just echoes the query back and
-    // can never find new terms. Default ON.
+    // SECONDARY corpus-discovery: mines new keyword candidates from App
+    // Store data the scraper already fetches (top-chart app names +
+    // categories — see keyword-miner.ts). Demoted 2026-07-21 in favor of
+    // `autocompleteExpansion` (below) as the PRIMARY discovery source — the
+    // 2026-07-18 "Apple search-suggest is dead" diagnosis this miner's doc
+    // comment describes was WRONG (the endpoint requires an
+    // `X-Apple-Store-Front` header Apple made mandatory at some point; it
+    // was never actually retired — see keyword-autocomplete.ts). This miner
+    // still runs (small default cap) because it catches brand-new apps
+    // autocomplete hasn't indexed yet, which real user search queries can't
+    // surface until the app has enough install/search volume. Default ON.
     corpusDiscovery: z
       .object({
         enabled: z.boolean().default(true),
-        // Upper bound on newly-added corpus keywords per mining cycle, so
-        // corpus growth stays bounded even if a scan surfaces many
-        // candidates at once.
-        maxMinedPerCycle: z.number().int().min(1).max(2000).default(500),
+        // Upper bound on newly-added corpus keywords per mining cycle.
+        // Lowered 500 -> 100 as part of the 2026-07-21 demotion to secondary
+        // status: corpus growth should now be dominated by
+        // `autocompleteExpansion`'s real user-query terms, not app-name
+        // n-gram fragments.
+        maxMinedPerCycle: z.number().int().min(1).max(2000).default(100),
       })
-      .default({ enabled: true, maxMinedPerCycle: 500 }),
+      .default({ enabled: true, maxMinedPerCycle: 100 }),
+    // PRIMARY corpus-discovery source (restored 2026-07-21): pulls Apple's
+    // own search-suggest ("autocomplete") hints for a batch of expansion
+    // seeds each cycle — real, popularity-ordered user search queries (e.g.
+    // "budget planner", "budget bestie"), not app-name fragments. MUST send
+    // the `X-Apple-Store-Front` header: verified live 2026-07-20/21 that the
+    // endpoint returns an EMPTY hints array without it (the cause of the
+    // 2026-07-18 "autocomplete is dead" misdiagnosis that led to
+    // `corpusDiscovery` above) but real suggestions with it. See
+    // keyword-autocomplete.ts for the fetch + plist-parsing implementation
+    // and scraper.ts's `runAutocompleteExpansionIfDue` for the cadence gate.
+    // Default ON.
+    autocompleteExpansion: z
+      .object({
+        enabled: z.boolean().default(true),
+        // Minimum gap between expansion passes. Its own cadence — decoupled
+        // from both the ~1min scan-sweep timer and the ~hourly ranking tick
+        // — so its network fan-out (one request per seed) stays bounded and
+        // infrequent relative to the SERP scan sweep it shares an upstream
+        // (Apple) with.
+        minIntervalMs: z.number().int().min(60_000).default(900_000), // 15 min
+        // How many current high-opportunity "winner" keywords seed an
+        // expansion pass — see keyword-store.ts `getWinnerKeywords`.
+        winnerLimit: z.number().int().min(0).max(100).default(15),
+        // How many additional zone-diverse picks (least-recently-scanned per
+        // genre zone) round out the seed set, so expansion isn't purely
+        // winner-driven and under-covered zones still get a turn — see
+        // `getDiverseZoneSample`. Anti rich-get-richer monoculture, same
+        // rationale as the diversity guard elsewhere in the funnel.
+        diverseLimit: z.number().int().min(0).max(100).default(10),
+        // Upper bound on GOOD (post-`isJunkKeyword`) suggestions kept per
+        // seed. Apple returns suggestions in popularity order, so this keeps
+        // the top-N most-popular per seed rather than an arbitrary slice.
+        perSeed: z.number().int().min(1).max(20).default(8),
+        // Delay between each seed's hint request within one expansion pass —
+        // same spirit as `sweepDelayMs`, scoped to this separate endpoint.
+        delayMs: z.number().int().min(100).max(10_000).default(1000),
+        // Apple storefront to query, in the raw `X-Apple-Store-Front` header
+        // format (`"<storefront-id>-<lang-id>[,<lang-id>...]"`). Defaults to
+        // the US storefront verified live 2026-07-20/21. The header itself
+        // is MANDATORY — see the field doc above.
+        storefront: z.string().min(1).default("143441-1,29"),
+      })
+      .default({
+        enabled: true,
+        minIntervalMs: 900_000,
+        winnerLimit: 15,
+        diverseLimit: 10,
+        perSeed: 8,
+        delayMs: 1000,
+        storefront: "143441-1,29",
+      }),
     // Safety rails for the higher sweep rate above — see `sweep-throttle.ts`.
     // Apple's tolerance for request volume is the real constraint here, not
     // anything under our control, so both an automatic backoff and a manual
-    // kill-switch exist.
+    // kill-switch exist. Shared with `autocompleteExpansion`: both hit an
+    // Apple search endpoint on the same corpus, so a rate-limit spike from
+    // either source trips the SAME throttle state and backs off both (see
+    // scraper.ts's shared `sweepThrottleState`); the kill-switch below also
+    // disables `autocompleteExpansion` for the cycle, not just the scan
+    // sweep.
     sweepRateSafety: z
       .object({
         // Tracks each sweep's rate-limit (429/503) error rate and halves the
@@ -628,9 +692,10 @@ export const appstoreKeywordGapConfigSchema = z
         // MANDATORY hard kill-switch: when true, ignores `keywordsPerSweep` /
         // `sweepDelayMs` / the adaptive throttle entirely and reverts to the
         // pre-throughput-bump rate (`LEGACY_KEYWORDS_PER_SWEEP` = 25,
-        // `LEGACY_SWEEP_DELAY_MS` = 2000ms — see `sweep-throttle.ts`). Flip
-        // this on for an immediate, unambiguous revert if the higher rate
-        // ever causes real trouble with Apple's endpoints. Default OFF.
+        // `LEGACY_SWEEP_DELAY_MS` = 2000ms — see `sweep-throttle.ts`), and
+        // skips `autocompleteExpansion` entirely for the cycle. Flip this on
+        // for an immediate, unambiguous revert if the higher rate ever
+        // causes real trouble with Apple's endpoints. Default OFF.
         legacyRateOverride: z.boolean().default(false),
       })
       .default({ adaptiveThrottleEnabled: true, legacyRateOverride: false }),
@@ -644,7 +709,16 @@ export const appstoreKeywordGapConfigSchema = z
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.15,
-    corpusDiscovery: { enabled: true, maxMinedPerCycle: 500 },
+    corpusDiscovery: { enabled: true, maxMinedPerCycle: 100 },
+    autocompleteExpansion: {
+      enabled: true,
+      minIntervalMs: 900_000,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      delayMs: 1000,
+      storefront: "143441-1,29",
+    },
     sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;

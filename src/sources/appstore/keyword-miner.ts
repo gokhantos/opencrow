@@ -1,13 +1,21 @@
-// Self-sufficient App Store keyword miner.
+// Self-sufficient App Store keyword miner — SECONDARY corpus-discovery
+// source (see keyword-autocomplete.ts for the PRIMARY one).
 //
-// Replaces the retired Apple search-suggest ("autocomplete") corpus
-// expansion — see the deleted keyword-autocomplete.ts — which relied on
-// Apple's MZSearchHints endpoint. That endpoint now just echoes the query
-// back verbatim and returns no suggestions, so it could never discover new
-// keywords (confirmed live: `budget` -> `budget`, `budg` -> `budg`).
+// CORRECTION (2026-07-21): this miner originally replaced Apple
+// search-suggest ("autocomplete") entirely, on the diagnosis that its
+// MZSearchHints endpoint just echoed the query back with no suggestions
+// (confirmed live at the time: `budget` -> `budget`, `budg` -> `budg`). That
+// diagnosis was WRONG — the endpoint requires an `X-Apple-Store-Front`
+// header (verified live 2026-07-20/21: without it, an empty hints array;
+// with it, real popularity-ordered user queries). Apple made the header
+// mandatory at some point; the endpoint itself was never actually dead. See
+// keyword-autocomplete.ts, now restored as the PRIMARY discovery source —
+// this miner is demoted to a secondary top-up (small `maxMinedPerCycle`; see
+// `corpusDiscovery` in config/schema.ts) that still earns its keep by
+// catching brand-new apps autocomplete hasn't indexed yet.
 //
-// This miner instead extracts candidate keyword phrases from App Store data
-// the scraper already fetches. It blends TWO sources:
+// This miner extracts candidate keyword phrases from App Store data the
+// scraper already fetches. It blends TWO sources:
 //
 //   1. Top-chart app NAMES and CATEGORIES (see store.ts `getRankings`) —
 //      finite (~a few thousand distinct apps) and plateaus once exhausted.
