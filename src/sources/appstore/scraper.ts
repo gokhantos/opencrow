@@ -4,6 +4,7 @@ import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
 import { runKeywordSweep } from "./keyword-gaps";
 import { runScreener } from "./keyword-screener";
+import { expandCorpus } from "./keyword-autocomplete";
 import { mineKeywords } from "./keyword-miner";
 import { advanceThrottle, computeEffectiveSweepRate, computeErrorRate, INITIAL_THROTTLE_STATE } from "./sweep-throttle";
 import type { ThrottleState } from "./sweep-throttle";
@@ -383,10 +384,19 @@ export function createAppStoreScraper(config?: {
   // a screener run from firing on every keyword-sweep tick (as often as every
   // minute) when config wants it capped to `minRunIntervalMs` (default 6h).
   let lastScreenerRunAt = 0;
+  // Soft cadence gate for autocomplete corpus expansion (see
+  // keyword-autocomplete.ts's `expandCorpus`) — process-local, same
+  // rationale as `lastScreenerRunAt`: gated to its own
+  // `autocompleteExpansion.minIntervalMs` (default 15min) so its network
+  // fan-out (one request per seed) doesn't run on every ~1min sweep tick.
+  let lastAutocompleteRunAt = 0;
   // Adaptive-throttle state for the keyword-gap sweep's scan rate (see
   // sweep-throttle.ts) — process-local like `lastScreenerRunAt` above; a
   // restart resets to full rate, which is harmless (the state machine
-  // re-detects a real problem within one sweep).
+  // re-detects a real problem within one sweep). SHARED with autocomplete
+  // expansion below: both hit an Apple search endpoint on the same
+  // corpus-scan cadence, so a rate-limit spike from either source trips this
+  // one throttle and backs off both.
   let sweepThrottleState: ThrottleState = INITIAL_THROTTLE_STATE;
 
   async function fetchTopApps(
@@ -703,17 +713,20 @@ export function createAppStoreScraper(config?: {
       // (`keywordSweepTimer` below), decoupled from this ~hourly ranking
       // tick — see `keywordSweepTick()`.
 
-      // Keyword-corpus discovery: mine new candidate keywords from the App
-      // Store ranking data this scrape cycle already fetched (top-chart app
-      // names + categories — see keyword-miner.ts), instead of the retired
-      // Apple search-suggest ("autocomplete") expansion, whose MZSearchHints
-      // endpoint now just echoes the query back and can never find new
-      // terms. No extra network calls — purely reads what's already in the
-      // DB — so it's kept on this ~hourly ranking tick (not the faster
-      // keyword-sweep timer) simply to run once per scrape rather than
-      // every sweep cycle. Gated by its own `corpusDiscovery.enabled` flag
-      // and never allowed to break the rest of the scrape cycle — a failure
-      // here is logged and swallowed.
+      // Keyword-corpus discovery — SECONDARY source: mine new candidate
+      // keywords from the App Store ranking data this scrape cycle already
+      // fetched (top-chart app names + categories — see keyword-miner.ts).
+      // Demoted 2026-07-21 in favor of autocomplete expansion (the PRIMARY
+      // source — see keyword-autocomplete.ts and
+      // `runAutocompleteExpansionIfDue` in this file's `keywordSweepTick`);
+      // this miner still runs at a small capped contribution to catch
+      // brand-new apps autocomplete hasn't indexed yet. No extra network
+      // calls — purely reads what's already in the DB — so it's kept on
+      // this ~hourly ranking tick (not the faster keyword-sweep timer)
+      // simply to run once per scrape rather than every sweep cycle. Gated
+      // by its own `corpusDiscovery.enabled` flag and never allowed to
+      // break the rest of the scrape cycle — a failure here is logged and
+      // swallowed.
       try {
         const cfg = loadConfig().appstoreKeywordGap;
         if (cfg.corpusDiscovery.enabled) {
@@ -808,10 +821,85 @@ export function createAppStoreScraper(config?: {
       // cycle scanned anything new — it evaluates the corpus's LATEST scans,
       // not just this cycle's), gated to its own cadence internally.
       await runSignatureScreenerIfDue();
+
+      // Autocomplete corpus expansion (PRIMARY discovery source — see
+      // keyword-autocomplete.ts) also runs off this tick, gated to its own
+      // slower cadence internally, same pattern as the screener above.
+      await runAutocompleteExpansionIfDue();
     } catch (err) {
       log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
     } finally {
       keywordSweepRunning = false;
+    }
+  }
+
+  // Runs autocomplete-driven corpus expansion (see keyword-autocomplete.ts's
+  // `expandCorpus`), gated to `autocompleteExpansion.minIntervalMs` (default
+  // 15min) so its network fan-out — one Apple search-suggest request per
+  // seed keyword — stays infrequent relative to the ~1min scan-sweep tick
+  // this is called from. Respects the SAME `sweepRateSafety` rails as the
+  // scan sweep: the hard kill-switch (`legacyRateOverride`) skips this pass
+  // entirely, and (when adaptive throttling is on) any rate-limit errors
+  // this pass hits are folded into the SHARED `sweepThrottleState`, so a
+  // spike here backs off the scan sweep too and vice versa — both hit an
+  // Apple search endpoint on the same corpus. Never allowed to break the
+  // sweep tick — a failure is logged and swallowed, mirroring
+  // `runSignatureScreenerIfDue`.
+  async function runAutocompleteExpansionIfDue(): Promise<void> {
+    try {
+      const cfg = loadConfig().appstoreKeywordGap;
+      const ac = cfg.autocompleteExpansion;
+      if (!ac.enabled) return;
+      if (cfg.sweepRateSafety.legacyRateOverride) {
+        log.debug("Autocomplete expansion skipped — legacy rate override active");
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastAutocompleteRunAt < ac.minIntervalMs) return;
+      lastAutocompleteRunAt = now;
+
+      // Scale this pass's seed fan-out by the SAME throttle multiplier the
+      // scan sweep uses — if Apple is already rate-limiting the sweep, this
+      // pass backs off in lockstep rather than piling on more requests.
+      const multiplier = cfg.sweepRateSafety.adaptiveThrottleEnabled
+        ? sweepThrottleState.multiplier
+        : 1;
+      const winnerLimit = Math.max(0, Math.floor(ac.winnerLimit * multiplier));
+      const diverseLimit = Math.max(0, Math.floor(ac.diverseLimit * multiplier));
+
+      const result = await expandCorpus({
+        minOpportunity: cfg.opportunityThresholdForSeed,
+        winnerLimit,
+        diverseLimit,
+        perSeed: ac.perSeed,
+        storefront: ac.storefront,
+        delayMs: ac.delayMs,
+      });
+
+      log.info("Autocomplete expansion tick", {
+        added: result.added,
+        seedsUsed: result.seedsUsed,
+        rateLimitErrors: result.rateLimitErrors,
+        throttleMultiplier: multiplier,
+      });
+
+      if (cfg.sweepRateSafety.adaptiveThrottleEnabled && result.attempted > 0) {
+        const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
+        const wasThrottled = sweepThrottleState.throttled;
+        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+
+        if (!wasThrottled && sweepThrottleState.throttled) {
+          log.warn("Autocomplete expansion tripped the shared sweep throttle", {
+            errorRate,
+            attempted: result.attempted,
+            rateLimitErrors: result.rateLimitErrors,
+            newMultiplier: sweepThrottleState.multiplier,
+          });
+        }
+      }
+    } catch (err) {
+      log.warn("Autocomplete expansion failed", { error: getErrorMessage(err) });
     }
   }
 
