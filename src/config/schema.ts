@@ -566,23 +566,31 @@ export const appstoreKeywordGapConfigSchema = z
     sweepDelayMs: z.number().int().min(100).max(10_000).default(1000),
     // How many keyword scans may be spent per rolling 24h window — a safety
     // ceiling, not a per-cycle spend. Enforced against a live count of
-    // `appstore_keyword_scans` rows from the last 24h; a sweep cycle is
-    // skipped once the ceiling is reached. Raised (was 40_000/50_000 max) to
-    // cover the higher sustained rate: ~2,250/hr * 24h ≈ 54,000/day
-    // theoretical — see `keywordsPerSweep` below.
+    // `appstore_keyword_scans` rows from the last 24h (tier1 + mined + the
+    // DE storefront lane below all write through the same table, so all
+    // three count toward this one ceiling — see `keyword-store.ts`'s
+    // `countScansSince`); a sweep cycle is skipped once the ceiling is
+    // reached. Raised (was 40_000/50_000 max) to cover the higher sustained
+    // rate: ~2,250/hr * 24h ≈ 54,000/day theoretical — see `keywordsPerSweep`
+    // below. Left at 60,000 during the 2026-07-21 capacity-raise escalation
+    // (`minedExploration.dailyQuota` 20k->30k + `deStorefrontLane` 24h->12h
+    // cadence): projected new total ≈ 33.4k/day (tier1 ~1,135 + mined 30,000
+    // + DE storefront ~2,270), still ~45% under this ceiling — no need to
+    // raise it yet. Revisit if `countScansSince` starts approaching 60,000.
     dailyKeywordBudget: z.number().int().min(1).max(100_000).default(60_000),
     // Throughput wave (2026-07-21), item 1: routes this lane's iTunes
     // Search API calls (tier1 + mined SERP scan, AND the DE storefront lane
     // below — both go through `keyword-gaps.ts`'s `fetchTopApps`) through
     // the Webshare rotating proxy when `getAppstoreProxyUrl()` resolves
-    // (see `appstore-proxy.ts`). Default OFF: this is the highest-volume
-    // lane and the one with an empirically PROVEN safe direct-fetch rate
-    // (see `dailyKeywordBudget`'s history + `minedExploration`'s doc
-    // comment) — no reason to add a proxy hop to traffic that's already
-    // known-safe. Flip on only if this lane starts seeing rate-limit
-    // pressure at the direct-fetch ceiling documented in item 4's budget
-    // table below.
-    useProxy: z.boolean().default(false),
+    // (see `appstore-proxy.ts`). Was default OFF ("this lane has an
+    // empirically proven safe direct-fetch rate, no reason to add a proxy
+    // hop"). Flipped ON 2026-07-21 (capacity-raise escalation): the proxy is
+    // now armed and PAID (per-request rotating IP, not a shared/free tier),
+    // so this is a proactive move ahead of raising `minedExploration`'s
+    // quota and `deStorefrontLane`'s cadence below — spreading the
+    // highest-volume lane's traffic across rotating IPs before it needs to,
+    // rather than waiting for 429s to force the flip.
+    useProxy: z.boolean().default(true),
     // How many of the globally stalest active keywords to scan per sweep
     // cycle. Raised from 25 to 75 (~3x) together with the lowered
     // `sweepDelayMs` above to target ~2,250 scans/hour (was ~750/hour): at
@@ -604,8 +612,12 @@ export const appstoreKeywordGapConfigSchema = z
     // as part of the 2026-07-21 audit's NOW-tier fixes — halved to a 12h
     // default so tier 1's ~829 protected + 306 signature-hit keywords get
     // ~daily trend/velocity resolution at roughly double the old cadence,
-    // and so an operator can retune it without a code change.
-    tier1StaleThresholdMs: z.number().int().min(60_000).default(12 * 60 * 60 * 1000),
+    // and so an operator can retune it without a code change. Halved again
+    // to 6h (2026-07-21 capacity-raise escalation, now that the Webshare
+    // proxy is armed/paid) so tier 1 gets ~4x/day resolution — the search
+    // family has proven headroom (see item 4's budget table) and tier 1 is
+    // the highest-value slice of the corpus.
+    tier1StaleThresholdMs: z.number().int().min(60_000).default(6 * 60 * 60 * 1000),
     // How many top-ranked gap candidates to surface per scan.
     topN: z.number().int().min(5).max(50).default(20),
     // Weight applied to demand-side signal when scoring a keyword gap.
@@ -835,10 +847,18 @@ export const appstoreKeywordGapConfigSchema = z
         // starving itself at ~7k/day steady state while sitting on proven
         // headroom — 20,000 is a conservative slice of that verified-safe
         // capacity, still well under the old ~35k/day mined spend that
-        // produced zero validated candidates.
-        dailyQuota: z.number().int().min(0).max(100_000).default(20_000),
+        // produced zero validated candidates. Raised again 20,000 -> 30,000
+        // (2026-07-21 capacity-raise escalation): the Webshare proxy is now
+        // armed/paid and `appstoreKeywordGap.useProxy` above defaults ON,
+        // so this lane's traffic routes off this box's direct IP — proactive
+        // headroom, not a reaction to rate-limit pressure. Projected new
+        // total against the 60,000 `dailyKeywordBudget` ceiling (tier1
+        // ~1,135 + mined 30,000 + DE storefront ~2,270 at its new 12h
+        // cadence ≈ ~33.4k/day) still leaves comfortable margin — see the
+        // ceiling's own doc comment.
+        dailyQuota: z.number().int().min(0).max(100_000).default(30_000),
       })
-      .default({ dailyQuota: 20_000 }),
+      .default({ dailyQuota: 30_000 }),
     // ─── DE storefront lane (2026-07-21 scan-budget retune) ────────────────
     // Daily pass scanning every active seed/manual/autocomplete keyword
     // (`keyword-store.ts`'s `getTier1ProtectedKeywords`) against the German
@@ -852,13 +872,17 @@ export const appstoreKeywordGapConfigSchema = z
         enabled: z.boolean().default(true),
         // Minimum gap between DE-lane passes — its own cadence, decoupled
         // from the ~1min scan-sweep timer, since one pass scans the WHOLE
-        // tier-1-protected corpus in one shot. Default 24h ("a daily pass").
-        minIntervalMs: z.number().int().min(60_000).default(24 * 60 * 60 * 1000),
+        // tier-1-protected corpus in one shot. Was default 24h ("a daily
+        // pass"); halved to 12h (2026-07-21 capacity-raise escalation, now
+        // that the search family routes through the armed/paid Webshare
+        // proxy — see `appstoreKeywordGap.useProxy` above) so the German
+        // storefront gets ~2x/day resolution instead of once.
+        minIntervalMs: z.number().int().min(60_000).default(12 * 60 * 60 * 1000),
         // Delay between each keyword's iTunes call within one DE-lane pass —
         // same spirit as `sweepDelayMs`, scoped to this separate pass.
         delayMs: z.number().int().min(100).max(10_000).default(1000),
       })
-      .default({ enabled: true, minIntervalMs: 24 * 60 * 60 * 1000, delayMs: 1000 }),
+      .default({ enabled: true, minIntervalMs: 12 * 60 * 60 * 1000, delayMs: 1000 }),
     // ─── Deep SERP fetch (serp-rank Stage 1, deep-scrape build) ─────────────
     // How many results to request from the iTunes Search API for the hot/
     // tier1/DE lanes (see `keyword-gaps.ts`'s `scanKeywordDeep`) — a strictly
@@ -882,9 +906,9 @@ export const appstoreKeywordGapConfigSchema = z
     scanIntervalMs: 60_000,
     sweepDelayMs: 1000,
     dailyKeywordBudget: 60_000,
-    useProxy: false,
+    useProxy: true,
     keywordsPerSweep: 75,
-    tier1StaleThresholdMs: 12 * 60 * 60 * 1000,
+    tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.15,
@@ -912,8 +936,8 @@ export const appstoreKeywordGapConfigSchema = z
       },
     },
     sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
-    minedExploration: { dailyQuota: 20_000 },
-    deStorefrontLane: { enabled: true, minIntervalMs: 24 * 60 * 60 * 1000, delayMs: 1000 },
+    minedExploration: { dailyQuota: 30_000 },
+    deStorefrontLane: { enabled: true, minIntervalMs: 12 * 60 * 60 * 1000, delayMs: 1000 },
     serpDepth: 200,
     deepScanMined: false,
   });
@@ -1043,6 +1067,51 @@ export type AppstoreJunkDeactivationConfig = z.infer<
 //     Review-RSS: raised from 10,000/day to 15,000/day.
 //     App-page HTML (heaviest per-request payload, proxy default ON):
 //       raised from 3,000/day to 5,000/day.
+//
+// ─── Capacity-raise escalation (2026-07-21, post PR #328) ──────────────────
+// PR #328 (above) armed the Webshare rotating-proxy layer but kept every
+// lane's `useProxy` conservative-default-OFF except app-page HTML, deferring
+// to "flip the valve if a lane starts rate-limiting." This pass escalates
+// PROACTIVELY instead of waiting for 429s: the proxy has since been renewed
+// as a PAID plan (per-request rotating IP, not a shared/free tier), so
+// spreading volume across it ahead of need is now cheap insurance rather
+// than a step to save for an emergency.
+//
+//   Search-endpoint family — `appstoreKeywordGap.useProxy` flipped OFF ->
+//   ON (now covers tier1 SERP scan, mined SERP scan, AND the DE storefront
+//   lane — all three share `fetchTopApps`/this one flag):
+//     SERP scan (tier1 protected, uncapped)      ~1,135/day (dynamic, unchanged)
+//     SERP scan (mined, dailyQuota 20k -> 30k)   30,000/day
+//     DE storefront lane (24h -> 12h cadence)     ~2,270/day (dynamic, ~2x)
+//     Autocomplete expansion, US/GB (unchanged,   12,240/day (still direct —
+//       still direct — not touched by this pass)              not proxied)
+//     ─────────────────────────────────────────────────────────
+//     TOTAL (search family)                       ~45,645/day (~33.4k of it
+//                                                    now proxied)
+//
+//   Other endpoint families:
+//     Lookup API (`/lookup`) — enrichment dailyRequestBudget 2,400 -> 6,000
+//       (stays DIRECT — no proxy flip for this lane in this pass) + ~384/day
+//       portfolio + ~225/day newborn re-observation (both unchanged,
+//       direct) ≈ 6,609/day combined, direct.
+//     Review-RSS — dailyRequestBudget 15,000 -> 30,000, `useProxy` flipped
+//       OFF -> ON (this lane runs AT its cap, so the extra volume needed
+//       rotating IPs, not just a bigger number).
+//     App-page HTML — dailyPageBudget 5,000 -> 15,000 (already proxied
+//       since PR #328; the single largest raise, since it's the proxy's
+//       primary target lane).
+//
+//   Aggregate of the four explicit ledger-capped ceilings (mined 30,000 +
+//   review-RSS 30,000 + app-page 15,000 + lookup 6,000) ≈ 81,000/day
+//   (~80k/day) — the search family's tier1/autocomplete slices are
+//   dynamic/uncapped and add on top of that, not folded in (per this
+//   table's own caveat above: the four endpoint families are plausibly
+//   rate-limited independently, so a single grand total isn't meaningful —
+//   this ~80k figure is the sum of the operator-facing daily BUDGET knobs,
+//   not a claim that Apple enforces one shared bucket across them).
+//   `appstoreKeywordGap.dailyKeywordBudget` (the rolling ceiling gating
+//   tier1+mined+DE together) stays at 60,000 — projected new usage
+//   (~33.4k/day) leaves ~45% headroom, so it did not need raising.
 export const appstoreAppEnrichmentConfigSchema = z
   .object({
     // Master switch. Default ON.
@@ -1084,7 +1153,12 @@ export const appstoreAppEnrichmentConfigSchema = z
     // (2026-07-21, item 4): raised 1,200 -> 2,400/day — see the budget
     // table above (was the build plan's §6 worst-case cap; real usage has
     // stayed well under it since PR #326/#327 fixed the dormant-lanes bug).
-    dailyRequestBudget: z.number().int().min(0).max(50_000).default(2_400),
+    // Raised again 2,400 -> 6,000/day (2026-07-21 capacity-raise escalation)
+    // on the same separate-headroom grounds — this lane stays DIRECT
+    // (`useProxy` below unchanged, still no proven ceiling data point either
+    // way for the Lookup-API endpoint family), so the raise is a proactive
+    // bet on the existing observed headroom, not proxy-enabled capacity.
+    dailyRequestBudget: z.number().int().min(0).max(50_000).default(6_000),
     // Throughput wave item 1: routes `/lookup` batch + portfolio requests
     // through the Webshare proxy when set. Default OFF — this endpoint has
     // no proven ceiling data point either way; raised via the cap above on
@@ -1131,7 +1205,7 @@ export const appstoreAppEnrichmentConfigSchema = z
     staleAfterMs: 30 * 24 * 60 * 60 * 1000,
     acceleratingLimit: 50,
     delistMissThreshold: 1,
-    dailyRequestBudget: 2_400,
+    dailyRequestBudget: 6_000,
     useProxy: false,
     portfolio: {
       enabled: true,
@@ -1256,13 +1330,20 @@ export const appstoreReviewHarvestConfigSchema = z
     // runs at its cap today (real demand exceeds it), so raising it directly
     // unlocks more review coverage rather than sitting on unused headroom
     // like the lookup/app-page lanes — see the budget table on
-    // `appstoreAppEnrichmentConfigSchema`.
-    dailyRequestBudget: z.number().int().min(0).max(100_000).default(15_000),
+    // `appstoreAppEnrichmentConfigSchema`. Raised again 15,000 -> 30,000/day
+    // (2026-07-21 capacity-raise escalation), paired with flipping `useProxy`
+    // below ON: since this lane runs AT its cap (real demand exceeds it),
+    // doubling the budget without spreading the extra volume across rotating
+    // IPs would be the most likely lane to trip a rate limit first.
+    dailyRequestBudget: z.number().int().min(0).max(100_000).default(30_000),
     // Throughput wave item 1: routes review-feed page fetches through the
-    // Webshare proxy when set. Default OFF — this endpoint has no proven
-    // ceiling data point either way; raised via the cap above on separate
-    // headroom grounds instead.
-    useProxy: z.boolean().default(false),
+    // Webshare proxy when set. Was default OFF ("no proven ceiling data
+    // point either way"). Flipped ON 2026-07-21 (capacity-raise escalation)
+    // alongside doubling `dailyRequestBudget` above — this lane runs at its
+    // cap today, so the extra volume goes out over rotating IPs rather than
+    // this box's direct one. Gracefully falls back to direct fetch if the
+    // proxy is unconfigured (see `appstore-proxy.ts`).
+    useProxy: z.boolean().default(true),
     // Cohort-refresh sub-pass (build plan §0.4 slot 6 inner pass:
     // "runCohortRefreshIfDue 6h") — re-scans the 3 candidate sources (open
     // signature hits, accelerating newborns, chart-sourced newborns) and
@@ -1301,8 +1382,8 @@ export const appstoreReviewHarvestConfigSchema = z
     pageDelayMs: 500,
     maxConsecutiveEmptyHarvests: 5,
     memoryIndexing: "low-star-only",
-    dailyRequestBudget: 15_000,
-    useProxy: false,
+    dailyRequestBudget: 30_000,
+    useProxy: true,
     cohortRefresh: {
       enabled: true,
       minIntervalMs: 6 * 60 * 60 * 1000,
@@ -1354,8 +1435,12 @@ export const appstoreAppPagesConfigSchema = z
     // `appstoreAppEnrichmentConfigSchema`. Safe to raise further than the
     // lookup/review lanes precisely BECAUSE `useProxy` below defaults ON
     // for this lane (item 1): the heaviest per-request payload (~0.6-1MB
-    // HTML) already routes off this box's direct IP.
-    dailyPageBudget: z.number().int().min(0).max(50_000).default(5_000),
+    // HTML) already routes off this box's direct IP. Raised again
+    // 5,000 -> 15,000/day (2026-07-21 capacity-raise escalation): this lane
+    // was already proxied and is the primary target the proxy layer was
+    // built to protect, so it absorbs the largest single raise of all the
+    // lanes touched in this pass.
+    dailyPageBudget: z.number().int().min(0).max(50_000).default(15_000),
     // Throughput wave item 1: routes product-page HTML fetches through the
     // Webshare proxy when set. Default ON (unlike every other App Store
     // lane) — this is the PRIMARY target lane for the proxy: heaviest
@@ -1422,7 +1507,7 @@ export const appstoreAppPagesConfigSchema = z
     pagesPerBatch: 10,
     storefront: "us",
     requestDelayMs: 1_000,
-    dailyPageBudget: 5_000,
+    dailyPageBudget: 15_000,
     useProxy: true,
     hotIntervalMs: 24 * 60 * 60 * 1000,
     rollingIntervalMs: 14 * 24 * 60 * 60 * 1000,

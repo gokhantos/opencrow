@@ -594,7 +594,7 @@ describe("appstoreSync config", () => {
 // ── appstoreReviewHarvest config (deep-scrape build Stage 4) ───────────────
 
 describe("appstoreReviewHarvest config", () => {
-  test("defaults: enabled, 60s minIntervalMs, budget 15,000, low-star-only indexing", () => {
+  test("defaults: enabled, 60s minIntervalMs, budget 30,000, low-star-only indexing", () => {
     const cfg = opencrowConfigSchema.parse({});
     const rh = cfg.appstoreReviewHarvest;
     expect(rh.enabled).toBe(true);
@@ -606,10 +606,13 @@ describe("appstoreReviewHarvest config", () => {
     expect(rh.memoryIndexing).toBe("low-star-only");
     // Throughput wave (2026-07-21, item 4): raised 10,000 -> 15,000 — this
     // lane runs at its cap in practice, so raising it directly unlocks more
-    // review coverage. See the budget-table comment on
+    // review coverage. Capacity-raise escalation (2026-07-21, post PR #328):
+    // raised again 15,000 -> 30,000 and `useProxy` flipped OFF -> ON (this
+    // lane runs at its cap, so the extra volume needed rotating IPs, not
+    // just a bigger number). See the budget-table comment on
     // appstoreAppEnrichmentConfigSchema.
-    expect(rh.dailyRequestBudget).toBe(15_000);
-    expect(rh.useProxy).toBe(false);
+    expect(rh.dailyRequestBudget).toBe(30_000);
+    expect(rh.useProxy).toBe(true);
   });
 
   test("has NO tickIntervalMs — replaced by minIntervalMs (build plan §0.2/§0.4: no new timer)", () => {

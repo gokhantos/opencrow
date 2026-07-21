@@ -188,11 +188,13 @@ async function cleanupTestKeywords(): Promise<void> {
   await db`DELETE FROM appstore_keywords WHERE keyword IN ${db(TEST_KEYWORDS)}`;
 }
 
-// Shared defaults for `getStaleKeywordsTiered` call sites below — matches
-// the production config defaults (12h tier-1 staleness; a large perSweepCap
-// so pre-existing tests that pass a big `mineQuotaRemaining` aren't
-// incidentally re-capped by the per-sweep slice, unless a test is
-// specifically exercising that cap).
+// Shared fixture threshold for `getStaleKeywordsTiered` call sites below —
+// an explicit, self-contained value (no longer tracking the production
+// config default, which moved to 6h in the 2026-07-21 capacity-raise
+// escalation — see `tier1StaleThresholdMs` in src/config/schema.ts); a
+// large perSweepCap so pre-existing tests that pass a big
+// `mineQuotaRemaining` aren't incidentally re-capped by the per-sweep slice,
+// unless a test is specifically exercising that cap.
 const TIER1_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
 const UNLIMITED_PER_SWEEP_CAP = 1_000_000;
 
