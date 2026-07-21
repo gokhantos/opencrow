@@ -4,12 +4,8 @@ import {
   computeMineSlots,
   HOT_LANE_MAX_BATCH,
   HOT_LANE_STALE_THRESHOLD_MS,
-  TIER1_ELIGIBLE_SOURCES,
 } from "./keyword-tiering";
-import {
-  DEACTIVATION_MIN_SCANS,
-  MINED_DEACTIVATION_MAX_DEMAND_EVER,
-} from "./keyword-deactivation";
+import { DEACTIVATION_MIN_SCANS, MINED_DEACTIVATION_MAX_DEMAND_EVER } from "./keyword-deactivation";
 import type { ClusterAssignmentRow, RawCandidate } from "./keyword-clustering";
 import { computeBuildability } from "./keyword-scoring";
 import type { GapTrend, KeywordGapProfile, TopApp } from "./keyword-types";
@@ -79,6 +75,13 @@ export interface KeywordScanRow {
    * `KeywordGapProfile.lowConfidence` (keyword-types.ts) and migration 042.
    */
   readonly lowConfidence: boolean;
+  /**
+   * True iff this scan's field looked brand-navigational — see
+   * `KeywordGapProfile.brandNavigational` (keyword-types.ts), migration 050,
+   * and `keyword-brand.ts`'s `isBrandNavigationalScan` (Batch A budget
+   * rescue, 2026-07-22).
+   */
+  readonly brandNavigational: boolean;
 }
 
 /**
@@ -127,6 +130,8 @@ interface KeywordScanDbRow {
   readonly buildability?: number | string | null;
   /** Migration 042. Absent/null on any pre-migration row — treated as `false`. */
   readonly low_confidence?: boolean | null;
+  /** Migration 050. Absent/null on any pre-migration row — treated as `false`. */
+  readonly brand_navigational?: boolean | null;
 }
 
 /** Raw column shape returned by `getTopOpportunities`'s scan+corpus join. */
@@ -148,7 +153,8 @@ interface OpportunityDbRow extends KeywordScanDbRow {
  */
 const SCAN_COLUMNS_SQL = `
   id, keyword, store, scanned_at, competitiveness, demand, incumbent_weakness,
-  opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps, low_confidence
+  opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps, low_confidence,
+  brand_navigational
 `;
 
 export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
@@ -175,6 +181,7 @@ export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
     topApps: parseJson<readonly TopApp[]>(row.top_apps, []),
     buildability,
     lowConfidence: row.low_confidence === true,
+    brandNavigational: row.brand_navigational === true,
   };
 }
 
@@ -252,19 +259,194 @@ export interface TieredKeyword {
 }
 
 /**
+ * How many of a keyword's most recent (US-store) scans `getStaleKeywordsTiered`'s
+ * tier-1 query looks at to band its effective staleness threshold — see
+ * `buildTier1ThresholdCaseSql` and `keyword-tiering.ts`'s
+ * `computeEffectiveStaleThreshold`. Small and fixed: only the boundary
+ * `>= TIER1_SLOW_BAND_MIN_SCANS` (2) matters for the scan-count check, and
+ * only the latest reading (or the recent MAX when it's `low_confidence`)
+ * matters for the opportunity check — 5 gives that recent-max check a small
+ * cushion without pulling a keyword's whole scan history per row.
+ */
+const TIER1_RECENT_SCAN_WINDOW = 5;
+
+/**
+ * Frozen SQL CASE expression mirroring `keyword-tiering.ts`'s
+ * `computeEffectiveStaleThreshold`, PLUS its two documented adjustments —
+ * hand-mirrored (same convention as `isTier1Eligible`'s relationship to the
+ * inline eligibility SQL below: a pure, unit-tested TS function documents
+ * the intended semantics; SQL cannot call back into TS at query time, so the
+ * bands are re-expressed here). References the `tier1_candidates c` /
+ * `scan_stats s` aliases from `getStaleKeywordsTiered`'s tier-1 CTE.
+ * `baseMs` is a validated (Zod `z.number().int()`) config value, never
+ * caller/agent-supplied text, so embedding it as a numeric literal is safe —
+ * same convention as `BUILDABILITY_SQL`'s frozen numeric constants.
+ *
+ *   - adjustment (a): a keyword with an active signature hit
+ *     (`c.has_active_signature_hit`) ALWAYS keeps the fast band, regardless
+ *     of opportunity.
+ *   - adjustment (b): the opportunity value banded against is the LATEST
+ *     reading, UNLESS the latest scan was `low_confidence` — in that case
+ *     the RECENT-MAX opportunity (over `TIER1_RECENT_SCAN_WINDOW` scans) is
+ *     used instead, so one degraded read can't demote a real opportunity.
+ *   - otherwise: the same high/mid/slow/grace bands as
+ *     `computeEffectiveStaleThreshold`.
+ *
+ * Deliberately DOES NOT special-case `scan_count = 0` as immediately
+ * eligible (unlike `computeEffectiveStaleThreshold`'s own `scanCount === 0`
+ * branch): the outer query's `c.last_scanned_at IS NULL` check already
+ * covers every GENUINE never-scanned keyword (an `OR` ahead of this CASE
+ * entirely — see the `WHERE` clause below), so a redundant zero-scan-count
+ * fast path here would only ever fire for the narrow, non-genuine edge case
+ * of a keyword with `last_scanned_at` SET (e.g. touched by something other
+ * than a real scan) but zero rows in `appstore_keyword_scans` — where
+ * treating it as immediately-eligible would be WRONG (it isn't actually
+ * "never scanned", staleness should still be judged against its
+ * `last_scanned_at`). Falling through to the opportunity bands with
+ * `effectiveOpportunity` defaulting to 0 (via the `COALESCE`) lands it in
+ * the mid/grace band instead, which is the safe, conservative choice.
+ */
+function buildTier1ThresholdCaseSql(baseMs: number): string {
+  const base = Math.trunc(baseMs);
+  const mid = base * 2;
+  const slow = base * 8;
+  const effectiveOpportunity = `
+    COALESCE(
+      CASE WHEN s.latest_low_confidence THEN s.recent_max_opportunity ELSE s.latest_opportunity END,
+      0
+    )
+  `;
+  return `
+    CASE
+      WHEN c.has_active_signature_hit THEN ${base}
+      WHEN ${effectiveOpportunity} >= 0.4 THEN ${base}
+      WHEN ${effectiveOpportunity} >= 0.1 THEN ${mid}
+      WHEN s.scan_count >= 2 THEN ${slow}
+      ELSE ${mid}
+    END
+  `;
+}
+
+/**
+ * Frozen SQL condition (safe to embed via `db.unsafe` — no caller/agent
+ * input) selecting the GUARANTEED tier-1 sources: manual/seed (a human
+ * explicitly asked for daily coverage) OR any active signature hit. Does
+ * NOT include `autocomplete` — see `AUTOCOMPLETE_TIER1_SOURCE_CONDITION_SQL`
+ * and the structural guard note below.
+ */
+const GUARANTEED_TIER1_SOURCE_CONDITION_SQL = `(
+  k.source IN ('manual', 'seed')
+  OR EXISTS (
+    SELECT 1 FROM appstore_signature_hits h
+    WHERE h.keyword = k.keyword AND h.status != 'dismissed'
+  )
+)`;
+
+/** Frozen SQL condition selecting ONLY `source: 'autocomplete'` keywords. */
+const AUTOCOMPLETE_TIER1_SOURCE_CONDITION_SQL = `k.source = 'autocomplete'`;
+
+/**
+ * Selects up to `limit` stale (per `thresholdCaseSql`'s banded per-keyword
+ * threshold) active keywords matching `sourceConditionSql`, excluding
+ * `excludeKeywords`, stalest-first. Shared core for `getStaleKeywordsTiered`'s
+ * TWO tier-1 sub-lanes (Batch A budget rescue, 2026-07-22 — structural
+ * guard, coordinated with the promise-tiered cadence banding above):
+ *
+ *   1. GUARANTEED (manual/seed/signature-hit) — UNCAPPED, `limit` is
+ *      whatever's left of the batch after the hot lane.
+ *   2. AUTOCOMPLETE — CAPPED at `tier1AutocompleteCap` per sweep, so a
+ *      brand-new (or merely numerous) autocomplete keyword can no longer
+ *      unconditionally compete for the WHOLE daily-guaranteed lane the way
+ *      seed/manual do. Measured 2026-07-21/22: autocomplete had grown to
+ *      83% of the tier-1 pool (4,175 keywords), 89% at opportunity < 0.1 —
+ *      the promise-tiered cadence above already backs off an INDIVIDUAL
+ *      autocomplete keyword's re-scan rate once it's proven weak, but this
+ *      cap additionally bounds how many autocomplete keywords can occupy
+ *      the guaranteed lane in the FIRST PLACE, protecting seed/manual (the
+ *      corpus every validated candidate has ever come from) from ever being
+ *      crowded out by sheer autocomplete volume.
+ *
+ * `sourceConditionSql`/`thresholdCaseSql` are frozen, non-caller-controlled
+ * SQL text (see their own doc comments) — never string-built from request
+ * input.
+ */
+async function selectTier1Slice(
+  db: ReturnType<typeof getDb>,
+  opts: {
+    readonly now: number;
+    readonly sourceConditionSql: string;
+    readonly excludeKeywords: readonly string[];
+    readonly thresholdCaseSql: string;
+    readonly limit: number;
+  },
+): Promise<readonly string[]> {
+  if (opts.limit <= 0) return [];
+  const rows = await db`
+    WITH tier1_candidates AS (
+      SELECT
+        k.keyword,
+        k.last_scanned_at,
+        EXISTS (
+          SELECT 1 FROM appstore_signature_hits h
+          WHERE h.keyword = k.keyword AND h.status != 'dismissed'
+        ) AS has_active_signature_hit
+      FROM appstore_keywords k
+      WHERE k.active = TRUE
+        AND NOT (k.keyword = ANY(${db.array([...opts.excludeKeywords], "text")}))
+        AND ${db.unsafe(opts.sourceConditionSql)}
+    ),
+    scan_stats AS (
+      SELECT
+        c.keyword,
+        recent.scan_count,
+        recent.latest_opportunity,
+        recent.latest_low_confidence,
+        recent.recent_max_opportunity
+      FROM tier1_candidates c
+      LEFT JOIN LATERAL (
+        SELECT
+          count(*) AS scan_count,
+          max(opportunity) AS recent_max_opportunity,
+          (array_agg(opportunity ORDER BY scanned_at DESC))[1] AS latest_opportunity,
+          (array_agg(low_confidence ORDER BY scanned_at DESC))[1] AS latest_low_confidence
+        FROM (
+          SELECT opportunity, low_confidence, scanned_at
+          FROM appstore_keyword_scans
+          WHERE keyword = c.keyword AND store = 'app'
+          ORDER BY scanned_at DESC
+          LIMIT ${TIER1_RECENT_SCAN_WINDOW}
+        ) recent
+      ) recent ON TRUE
+    )
+    SELECT c.keyword
+    FROM tier1_candidates c
+    LEFT JOIN scan_stats s ON s.keyword = c.keyword
+    WHERE (
+      c.last_scanned_at IS NULL
+      OR (${opts.now} - c.last_scanned_at) * 1000 >= ${db.unsafe(opts.thresholdCaseSql)}
+    )
+    ORDER BY c.last_scanned_at ASC NULLS FIRST
+    LIMIT ${opts.limit}
+  `;
+  return (rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
+}
+
+/**
  * Tier-1-guaranteed + mined-quota slice across the whole active corpus,
  * backing the timer-driven keyword-gap sweep's priority re-scan lane (see
  * `keyword-tiering.ts` for the full rationale, updated 2026-07-21's
- * scan-budget retune). Tier 1 — stale (per `TIER1_STALE_THRESHOLD_MS`)
- * seed/manual/autocomplete keywords, or stale keywords with ANY
- * `appstore_signature_hits` row — is UNCAPPED, filling up to the whole batch
- * if needed; mined exploration fills whatever's left, bounded by BOTH the
- * remaining batch slots and the caller-supplied rolling-daily mined quota
- * (`opts.mineQuotaRemaining`), excluding whatever tier 1 already picked so
- * no keyword is returned twice. `keyword = ANY('{}')` is always FALSE (never
- * NULL) in Postgres, so an empty tier-1 list needs no special-casing in the
- * mined exclusion. Each returned entry is tagged with its lane
- * (`TieredKeyword`) — see that type's doc comment.
+ * scan-budget retune, and again 2026-07-22's promise-tiered cadence budget
+ * rescue). Tier 1 — seed/manual/autocomplete keywords, or keywords with ANY
+ * `appstore_signature_hits` row, whose OWN banded effective staleness
+ * threshold has elapsed (see `buildTier1ThresholdCaseSql` — no longer one
+ * flat threshold for the whole pool) — is UNCAPPED, filling up to the whole
+ * batch if needed; mined exploration fills whatever's left, bounded by BOTH
+ * the remaining batch slots and the caller-supplied rolling-daily mined
+ * quota (`opts.mineQuotaRemaining`), excluding whatever tier 1 already
+ * picked so no keyword is returned twice. `keyword = ANY('{}')` is always
+ * FALSE (never NULL) in Postgres, so an empty tier-1 list needs no
+ * special-casing in the mined exclusion. Each returned entry is tagged with
+ * its lane (`TieredKeyword`) — see that type's doc comment.
  */
 export async function getStaleKeywordsTiered(opts: {
   /** This cycle's overall scan batch size (throttle-adjusted `keywordsPerSweep`). */
@@ -278,9 +460,13 @@ export async function getStaleKeywordsTiered(opts: {
    */
   readonly mineQuotaRemaining: number;
   /**
-   * Tier 1's staleness window in ms (`appstoreKeywordGap.tier1StaleThresholdMs`
-   * config, default 12h — see keyword-tiering.ts module doc). Computed by the
-   * caller so this module stays config-free, matching `mineQuotaRemaining`.
+   * Tier 1's FAST/BASE staleness window in ms
+   * (`appstoreKeywordGap.tier1StaleThresholdMs` config, default 6h — see
+   * keyword-tiering.ts module doc). No longer applied flat to every tier-1
+   * keyword (Batch A budget rescue, 2026-07-22) — see
+   * `buildTier1ThresholdCaseSql` for how each keyword's own effective
+   * threshold is banded off this base. Computed by the caller so this module
+   * stays config-free, matching `mineQuotaRemaining`.
    */
   readonly tier1StaleThresholdMs: number;
   /**
@@ -292,10 +478,17 @@ export async function getStaleKeywordsTiered(opts: {
    * exploration".
    */
   readonly perSweepCap: number;
+  /**
+   * Per-sweep cap on how many `source: 'autocomplete'` keywords the tier-1
+   * GUARANTEED lane may include (Batch A budget rescue, 2026-07-22 —
+   * structural guard; see `selectTier1Slice`'s doc comment). manual/seed/
+   * signature-hit keywords stay uncapped. `appstoreKeywordGap.tier1AutocompleteCap`
+   * config, computed by the caller so this module stays config-free.
+   */
+  readonly tier1AutocompleteCap: number;
 }): Promise<readonly TieredKeyword[]> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
-  const staleThresholdAt = now - Math.floor(opts.tier1StaleThresholdMs / 1000);
   const hotStaleThresholdAt = now - Math.floor(HOT_LANE_STALE_THRESHOLD_MS / 1000);
 
   // Hot lane — open signature-hit watchlist entries, stale by the SHORTER
@@ -321,28 +514,47 @@ export async function getStaleKeywordsTiered(opts: {
   // eligible-source or signature-hit keyword not already claimed by the hot
   // lane competes for the rest of this cycle's batch, stalest-first, up to
   // the WHOLE remaining batch if needed. Self-limiting in practice — see
-  // module doc comment.
+  // module doc comment. "Stale" is no longer one flat `tier1StaleThresholdMs`
+  // for the whole pool (Batch A budget rescue, 2026-07-22): each keyword's
+  // OWN effective threshold is banded by its own recent opportunity — see
+  // `buildTier1ThresholdCaseSql`'s doc comment for the full band + adjustment
+  // rules, and `keyword-tiering.ts`'s `computeEffectiveStaleThreshold` for
+  // the canonical pure-function statement of the same bands. `scan_stats`
+  // uses a LATERAL join bounded to `TIER1_RECENT_SCAN_WINDOW` rows per
+  // keyword (via the existing `idx_appstore_keyword_scans_history (keyword,
+  // store, scanned_at DESC)` index) rather than a window function over the
+  // whole scans table, so this stays a per-keyword index seek, not a table
+  // scan, even though it now runs once per active tier1-eligible keyword
+  // every sweep cycle (bounded by the tier-1 pool size, not the far larger
+  // whole-corpus scan history).
   const remainingAfterHot = opts.batchLimit - hotKeywords.length;
-  const tier1Rows =
-    remainingAfterHot > 0
-      ? await db`
-          SELECT k.keyword FROM appstore_keywords k
-          WHERE k.active = TRUE
-            AND (k.last_scanned_at IS NULL OR k.last_scanned_at < ${staleThresholdAt})
-            AND NOT (k.keyword = ANY(${db.array(hotKeywords, "text")}))
-            AND (
-              k.source IN ${db([...TIER1_ELIGIBLE_SOURCES])}
-              OR EXISTS (
-                SELECT 1 FROM appstore_signature_hits h
-                WHERE h.keyword = k.keyword AND h.status != 'dismissed'
-              )
-            )
-          ORDER BY k.last_scanned_at ASC NULLS FIRST
-          LIMIT ${remainingAfterHot}
-        `
-      : [];
+  const tier1ThresholdCaseSql = buildTier1ThresholdCaseSql(opts.tier1StaleThresholdMs);
 
-  const tier1Keywords = (tier1Rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
+  // Guaranteed sub-lane (manual/seed/signature-hit) — UNCAPPED, exactly the
+  // pre-2026-07-22 tier-1 behavior, restricted to the sources an operator
+  // (or the signature screener) explicitly asked for daily coverage.
+  const guaranteedKeywords = await selectTier1Slice(db, {
+    now,
+    sourceConditionSql: GUARANTEED_TIER1_SOURCE_CONDITION_SQL,
+    excludeKeywords: hotKeywords,
+    thresholdCaseSql: tier1ThresholdCaseSql,
+    limit: remainingAfterHot,
+  });
+
+  // Autocomplete sub-lane — CAPPED at `tier1AutocompleteCap` per sweep (see
+  // `selectTier1Slice`'s doc comment, "structural guard"): fills whatever's
+  // left after the guaranteed sub-lane, up to the cap.
+  const remainingAfterGuaranteed = remainingAfterHot - guaranteedKeywords.length;
+  const autocompleteLimit = Math.min(remainingAfterGuaranteed, opts.tier1AutocompleteCap);
+  const autocompleteKeywords = await selectTier1Slice(db, {
+    now,
+    sourceConditionSql: AUTOCOMPLETE_TIER1_SOURCE_CONDITION_SQL,
+    excludeKeywords: [...hotKeywords, ...guaranteedKeywords],
+    thresholdCaseSql: tier1ThresholdCaseSql,
+    limit: autocompleteLimit,
+  });
+
+  const tier1Keywords = [...guaranteedKeywords, ...autocompleteKeywords];
   const claimedKeywords = [...hotKeywords, ...tier1Keywords];
   const claimedTiered: readonly TieredKeyword[] = [
     ...hotKeywords.map((keyword) => ({ keyword, lane: "hot" as const })),
@@ -390,12 +602,12 @@ export async function insertScan(p: KeywordGapProfile): Promise<void> {
     INSERT INTO appstore_keyword_scans (
       keyword, store, scanned_at, competitiveness, demand, incumbent_weakness,
       opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps,
-      low_confidence, serp_tail
+      low_confidence, serp_tail, brand_navigational
     ) VALUES (
       ${p.keyword}, ${p.store}, ${p.scannedAt}, ${p.competitiveness}, ${p.demand},
       ${p.incumbentWeakness}, ${p.opportunity}, ${p.trend}, ${p.topAppReviews},
       ${p.avgRating}, ${p.avgAgeDays}, ${JSON.stringify(p.topApps)}, ${p.lowConfidence},
-      ${p.serpTail ? JSON.stringify(p.serpTail) : null}
+      ${p.serpTail ? JSON.stringify(p.serpTail) : null}, ${p.brandNavigational}
     )
   `;
 }
@@ -532,6 +744,13 @@ interface OpportunityFilters {
  * numeric/punctuation/whitespace. A multi-word keyword survives even if one
  * token is generic (e.g. "budget planner" is kept) — only a keyword that IS
  * (whole, trimmed) a stoplist entry is junk.
+ *
+ * `s.brand_navigational` (migration 050, Batch A budget rescue,
+ * 2026-07-22 — see `keyword-brand.ts`) is EXCLUDED unconditionally, unlike
+ * `hideJunk` — a brand-navigational SERP (one incumbent dominating the
+ * field, matched to the keyword) is never a genuine whitespace opportunity
+ * by definition, so there is no legitimate reason for the dashboard to ever
+ * surface one here.
  */
 function buildFilterClause(db: ReturnType<typeof getDb>, filters: OpportunityFilters) {
   return db`
@@ -551,6 +770,7 @@ function buildFilterClause(db: ReturnType<typeof getDb>, filters: OpportunityFil
       ${filters.minBuildability}::numeric IS NULL
       OR ${db.unsafe(BUILDABILITY_SQL)} >= ${filters.minBuildability}
     )
+    AND s.brand_navigational = FALSE
     AND (
       ${filters.hideJunk} = FALSE
       OR (
@@ -861,7 +1081,6 @@ export async function getExpansionSeeds(opts: {
   return combined;
 }
 
-
 /**
  * Marks `keywords` as having just been used as autocomplete expansion seeds
  * (2026-07-21 audit item D fix) — upserts `last_expanded_at = at` into
@@ -1109,7 +1328,8 @@ export async function getMinedDeactivationStats(keyword: string): Promise<{
   )[0];
   return {
     scanCount: row ? Number(row.scan_count) : 0,
-    maxDemand: row?.max_demand === null || row?.max_demand === undefined ? 0 : Number(row.max_demand),
+    maxDemand:
+      row?.max_demand === null || row?.max_demand === undefined ? 0 : Number(row.max_demand),
     hasSignatureHit: row?.has_signature_hit === true,
   };
 }
@@ -1163,21 +1383,50 @@ export async function backfillMinedDeactivation(): Promise<number> {
 }
 
 /**
- * ALL active seed/manual/autocomplete keywords, unpaginated — backs the DE
- * storefront lane's daily pass (see `keyword-gaps.ts`'s
- * `runDeStorefrontSweep`). Deliberately NARROWER than tier 1's full
- * definition (which also admits any signature-hit keyword regardless of
- * source) — the DE lane's scope this iteration is explicitly the
- * human-curated/real-user-query corpus, not the (US-calibrated) signature-hit
- * watchlist.
+ * The `limit` stalest-by-DE-scan active seed/manual/autocomplete keywords —
+ * backs the DE storefront lane's now-CHUNKED pass (Batch A budget rescue,
+ * 2026-07-22 — see `keyword-gaps.ts`'s `runDeStorefrontSweep`). Deliberately
+ * NARROWER than tier 1's full definition (which also admits any
+ * signature-hit keyword regardless of source) — the DE lane's scope is
+ * explicitly the human-curated/real-user-query corpus, not the
+ * (US-calibrated) signature-hit watchlist.
+ *
+ * Previously unpaginated (the whole ~4,175-keyword protected pool scanned in
+ * ONE pass, ~110 minutes at the live per-keyword rate — see PR #327's
+ * `pass-deadline.ts`, which fixed the same class of wedge for other lanes
+ * but not this one). Now ordered `last_de_scanned_at ASC NULLS FIRST` — a
+ * dedicated column (migration 050) maintained by the DE lane itself
+ * (`markDeScanned`), distinct from the US-cadence `last_scanned_at` this
+ * lane must never touch (see `scanAndRecord`'s `markCorpusScanned` doc
+ * comment) — so each chunk resumes from wherever the LAST chunk left off:
+ * the staleness ordering itself is the resume cursor, no separate offset/
+ * cursor state needs to be persisted. A never-DE-scanned keyword sorts first
+ * (`NULLS FIRST`), so new tier-1-protected keywords get picked up promptly
+ * rather than waiting behind the whole existing pool.
  */
-export async function getTier1ProtectedKeywords(): Promise<readonly string[]> {
+export async function getTier1ProtectedKeywords(limit: number): Promise<readonly string[]> {
   const db = getDb();
   const rows = await db`
     SELECT keyword FROM appstore_keywords
     WHERE active = TRUE AND source IN ('seed', 'manual', 'autocomplete')
+    ORDER BY last_de_scanned_at ASC NULLS FIRST
+    LIMIT ${limit}
   `;
   return (rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
+}
+
+/**
+ * Marks `keywords` as just having been DE-scanned (`last_de_scanned_at = at`)
+ * — the DE storefront lane's OWN resume cursor (Batch A budget rescue,
+ * 2026-07-22 — see `getTier1ProtectedKeywords`), deliberately separate from
+ * `markScanned`'s `last_scanned_at`, which drives the US tier-1/mined
+ * staleness cadence and must never be touched by this lane (mirrors
+ * `scanAndRecord`'s existing `markCorpusScanned: false` for the DE lane).
+ */
+export async function markDeScanned(keywords: readonly string[], at: number): Promise<void> {
+  if (keywords.length === 0) return;
+  const db = getDb();
+  await db`UPDATE appstore_keywords SET last_de_scanned_at = ${at} WHERE keyword IN ${db(keywords)}`;
 }
 
 // ===========================================================================

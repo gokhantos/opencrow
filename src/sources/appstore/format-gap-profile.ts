@@ -37,6 +37,13 @@ export function formatGapProfile(p: KeywordGapProfile): string {
     `  Incumbent weakness: ${toPercent(p.incumbentWeakness)}`,
     `  Opportunity: ${toPercent(p.opportunity)}`,
     `  Trend: ${p.trend}`,
+    // Batch A budget rescue (2026-07-22) — see keyword-brand.ts's
+    // `isBrandNavigationalScan`: warns the reader that this keyword's
+    // demand/incumbent-weakness numbers above reflect ONE dominant brand
+    // rather than a genuine generic-demand opportunity.
+    ...(p.brandNavigational
+      ? ["  Note: navigational query — demand reflects one brand, not general demand."]
+      : []),
     "",
     incumbents.length > 0
       ? `Top incumbents:\n${incumbents}`

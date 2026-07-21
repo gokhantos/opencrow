@@ -159,6 +159,7 @@ describe("keyword-miner integration — scanned top_apps source", () => {
       // `getScannedAppNames`'s bounded recent-rows window.
       scannedAt: Math.floor(Date.now() / 1000) + 1_000_000,
       lowConfidence: false,
+    brandNavigational: false,
     };
   }
 

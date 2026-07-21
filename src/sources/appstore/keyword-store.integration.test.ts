@@ -24,6 +24,7 @@ import {
   getMinedDeactivationStats,
   backfillMinedDeactivation,
   getTier1ProtectedKeywords,
+  markDeScanned,
   markSeedsExpanded,
   insertAutocompleteHints,
 } from "./keyword-store";
@@ -177,6 +178,19 @@ const TEST_KEYWORDS: readonly string[] = [
   // Throughput wave item 3 (GB hints lane storefront column) fixtures
   "zzz-rotate-gb-seed",
   "zzz-rotate-default-storefront",
+  // Batch A budget rescue (2026-07-22) fixtures
+  ...Array.from({ length: 5 }, (_, i) => `zzz-tier1-ac-cap-${i}`),
+  "zzz-tier1-ac-cap-manual-decoy",
+  "zzz-tier1-ac-cap-seed-decoy",
+  "zzz-tier1-ac-cap-autocomplete",
+  ...Array.from({ length: 5 }, (_, i) => `zzz-de-chunk-limit-${i}`),
+  "zzz-de-cursor-old",
+  "zzz-de-cursor-never",
+  "zzz-de-cursor-stale",
+  "zzz-de-cursor-fresh",
+  "zzz-mark-de-scanned",
+  "zzz-brand-nav-excluded",
+  "zzz-brand-nav-kept",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -197,6 +211,10 @@ async function cleanupTestKeywords(): Promise<void> {
 // unless a test is specifically exercising that cap.
 const TIER1_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
 const UNLIMITED_PER_SWEEP_CAP = 1_000_000;
+// Batch A budget rescue (2026-07-22): a generous cap so pre-existing tests
+// that aren't specifically exercising the autocomplete structural guard
+// aren't incidentally bounded by it.
+const UNLIMITED_TIER1_AUTOCOMPLETE_CAP = 1_000_000;
 
 function makeTopApp(overrides: Partial<TopApp> = {}): TopApp {
   return {
@@ -230,6 +248,7 @@ function makeScan(overrides: Partial<KeywordGapProfile> & { keyword: string }): 
     topApps: [makeTopApp()],
     scannedAt: now,
     lowConfidence: false,
+    brandNavigational: false,
     ...overrides,
   };
 }
@@ -549,6 +568,31 @@ describe("keyword-store", () => {
         const keywords = hidden.rows.map((r) => r.keyword);
         expect(keywords).toContain("zzz-junk-keep-budget-hd-planner");
         expect(keywords).toContain("zzz-legit-buildable-keyword");
+      });
+    });
+
+    // Batch A budget rescue (2026-07-22) — see keyword-brand.ts module doc.
+    describe("brandNavigational exclusion", () => {
+      it("unconditionally excludes a brand-navigational latest scan, even without hideJunk", async () => {
+        const now = Math.floor(Date.now() / 1000);
+        await upsertKeywords([
+          { keyword: "zzz-brand-nav-excluded", genreZone: "zzz-brand-nav-zone", source: "autocomplete" },
+          { keyword: "zzz-brand-nav-kept", genreZone: "zzz-brand-nav-zone", source: "autocomplete" },
+        ]);
+        await insertScan(
+          makeScan({ keyword: "zzz-brand-nav-excluded", scannedAt: now, brandNavigational: true }),
+        );
+        await insertScan(
+          makeScan({ keyword: "zzz-brand-nav-kept", scannedAt: now, brandNavigational: false }),
+        );
+
+        const result = await getTopOpportunities({
+          limit: 50,
+          genreZone: "zzz-brand-nav-zone",
+        });
+        const keywords = result.rows.map((r) => r.keyword);
+        expect(keywords).not.toContain("zzz-brand-nav-excluded");
+        expect(keywords).toContain("zzz-brand-nav-kept");
       });
     });
 
@@ -1495,6 +1539,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 0,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       expect(stale).toContain("zzz-tier1-manual-stale");
@@ -1514,6 +1559,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 0,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       expect(stale).toContain("zzz-tier1-autocomplete-stale");
@@ -1558,6 +1604,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 100_000,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       expect(smallSlice).not.toContain("zzz-tier1-manual-fresh");
@@ -1583,6 +1630,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 0,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       expect(stale).toContain("zzz-tier1-signature-hit");
@@ -1602,6 +1650,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 0,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       expect(noQuota).not.toContain("zzz-tier2-mined-stale");
@@ -1613,6 +1662,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 100_000,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       expect(withQuota).toContain("zzz-tier2-mined-stale");
@@ -1663,6 +1713,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 0,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       expect(tinyBatch).toContain("zzz-tier1-cap-manual-a");
@@ -1690,6 +1741,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 0,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       expect(exhausted).not.toContain("zzz-mine-quota-a");
@@ -1704,6 +1756,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 1,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       const capturedCount = ["zzz-mine-quota-a", "zzz-mine-quota-b", "zzz-mine-quota-c"].filter(
@@ -1736,6 +1789,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 100_000,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: 1,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       const capturedCount = [
@@ -1791,6 +1845,7 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 100_000,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
 
@@ -1820,9 +1875,75 @@ describe("keyword-store", () => {
           mineQuotaRemaining: 0,
           tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
           perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
         }),
       );
       expect(withoutQuota).not.toContain("zzz-hot-lane-mined-decoy");
+    });
+
+    // Batch A budget rescue (2026-07-22) — structural guard: autocomplete no
+    // longer competes UNCAPPED in the guaranteed tier-1 lane the way
+    // manual/seed do.
+    it("tier1AutocompleteCap bounds how many autocomplete keywords tier 1 draws per sweep, even with generous batch room", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const autocompleteKeywords = Array.from(
+        { length: 5 },
+        (_, i) => `zzz-tier1-ac-cap-${i}`,
+      );
+      await upsertKeywords(
+        autocompleteKeywords.map((keyword) => ({
+          keyword,
+          genreZone: "zzz-tier1-ac-cap-zone",
+          source: "autocomplete" as const,
+        })),
+      );
+      // Ancient — reliably stale under every band, so the cap (not
+      // staleness) is what's under test.
+      await markScanned(autocompleteKeywords, now - 100_000_000);
+
+      const capped = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 0,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: 2,
+        }),
+      );
+      const capturedCount = autocompleteKeywords.filter((k) => capped.includes(k)).length;
+      expect(capturedCount).toBeLessThanOrEqual(2);
+    });
+
+    it("the autocomplete cap never crowds out manual/seed keywords — those stay uncapped", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-tier1-ac-cap-manual-decoy", genreZone: "zzz-tier1-ac-cap-zone", source: "manual" },
+        { keyword: "zzz-tier1-ac-cap-seed-decoy", genreZone: "zzz-tier1-ac-cap-zone", source: "seed" },
+        { keyword: "zzz-tier1-ac-cap-autocomplete", genreZone: "zzz-tier1-ac-cap-zone", source: "autocomplete" },
+      ]);
+      await markScanned(
+        [
+          "zzz-tier1-ac-cap-manual-decoy",
+          "zzz-tier1-ac-cap-seed-decoy",
+          "zzz-tier1-ac-cap-autocomplete",
+        ],
+        now - 100_000_000,
+      );
+
+      // Cap of 0 — NO autocomplete keyword may be drawn this sweep, but
+      // manual/seed must still come through untouched.
+      const result = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 0,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: 0,
+        }),
+      );
+      expect(result).toContain("zzz-tier1-ac-cap-manual-decoy");
+      expect(result).toContain("zzz-tier1-ac-cap-seed-decoy");
+      expect(result).not.toContain("zzz-tier1-ac-cap-autocomplete");
     });
   });
 
@@ -1960,12 +2081,81 @@ describe("keyword-store", () => {
       ]);
       await db`UPDATE appstore_keywords SET active = FALSE WHERE keyword = 'zzz-de-lane-inactive'`;
 
-      const protectedKeywords = await getTier1ProtectedKeywords();
+      const protectedKeywords = await getTier1ProtectedKeywords(100_000);
       expect(protectedKeywords).toContain("zzz-de-lane-seed");
       expect(protectedKeywords).toContain("zzz-de-lane-manual");
       expect(protectedKeywords).toContain("zzz-de-lane-autocomplete");
       expect(protectedKeywords).not.toContain("zzz-de-lane-mined-excluded");
       expect(protectedKeywords).not.toContain("zzz-de-lane-inactive");
+    });
+
+    // Batch A budget rescue (2026-07-22): the DE lane's resume cursor.
+    it("respects `limit`, returning only that many keywords", async () => {
+      const keywords = Array.from({ length: 5 }, (_, i) => `zzz-de-chunk-limit-${i}`);
+      await upsertKeywords(
+        keywords.map((keyword) => ({ keyword, genreZone: "zzz-de-chunk-zone", source: "seed" as const })),
+      );
+
+      const chunk = await getTier1ProtectedKeywords(3);
+      expect(chunk.length).toBeLessThanOrEqual(3);
+    });
+
+    it("orders stalest-by-DE-scan first (NULLS FIRST) — never-DE-scanned keywords sort ahead of DE-scanned ones", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-de-cursor-old", genreZone: "zzz-de-cursor-zone", source: "seed" },
+        { keyword: "zzz-de-cursor-never", genreZone: "zzz-de-cursor-zone", source: "seed" },
+      ]);
+      await markDeScanned(["zzz-de-cursor-old"], now - 100_000_000);
+      // zzz-de-cursor-never is left with last_de_scanned_at = NULL.
+
+      const chunk = await getTier1ProtectedKeywords(100_000);
+      const neverIndex = chunk.indexOf("zzz-de-cursor-never");
+      const oldIndex = chunk.indexOf("zzz-de-cursor-old");
+      expect(neverIndex).toBeGreaterThanOrEqual(0);
+      expect(oldIndex).toBeGreaterThanOrEqual(0);
+      expect(neverIndex).toBeLessThan(oldIndex);
+    });
+
+    it("a keyword DE-scanned MORE RECENTLY than another sorts LATER (resume cursor)", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-de-cursor-stale", genreZone: "zzz-de-cursor-zone", source: "seed" },
+        { keyword: "zzz-de-cursor-fresh", genreZone: "zzz-de-cursor-zone", source: "seed" },
+      ]);
+      await markDeScanned(["zzz-de-cursor-stale"], now - 100_000_000);
+      await markDeScanned(["zzz-de-cursor-fresh"], now);
+
+      const chunk = await getTier1ProtectedKeywords(100_000);
+      const staleIndex = chunk.indexOf("zzz-de-cursor-stale");
+      const freshIndex = chunk.indexOf("zzz-de-cursor-fresh");
+      expect(staleIndex).toBeGreaterThanOrEqual(0);
+      expect(freshIndex).toBeGreaterThanOrEqual(0);
+      expect(staleIndex).toBeLessThan(freshIndex);
+    });
+  });
+
+  describe("markDeScanned", () => {
+    it("updates last_de_scanned_at for the given keywords, leaving last_scanned_at untouched", async () => {
+      const db = getDb();
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-mark-de-scanned", genreZone: "zzz-de-cursor-zone", source: "seed" },
+      ]);
+
+      await markDeScanned(["zzz-mark-de-scanned"], now);
+
+      const rows = await db`
+        SELECT last_de_scanned_at, last_scanned_at FROM appstore_keywords
+        WHERE keyword = 'zzz-mark-de-scanned'
+      `;
+      const row = (rows as ReadonlyArray<{ last_de_scanned_at: number | null; last_scanned_at: number | null }>)[0];
+      expect(row?.last_de_scanned_at).toBe(now);
+      expect(row?.last_scanned_at).toBeNull();
+    });
+
+    it("is a no-op for an empty keyword list", async () => {
+      await expect(markDeScanned([], Math.floor(Date.now() / 1000))).resolves.toBeUndefined();
     });
   });
 

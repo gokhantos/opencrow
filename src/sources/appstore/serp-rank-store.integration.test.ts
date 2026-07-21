@@ -43,6 +43,7 @@ function makeScan(overrides: Partial<KeywordGapProfile> & { keyword: string }): 
     topApps: [makeTopApp()],
     scannedAt: now,
     lowConfidence: false,
+    brandNavigational: false,
     ...overrides,
   };
 }

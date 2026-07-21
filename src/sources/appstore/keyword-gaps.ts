@@ -9,11 +9,16 @@ import { createLogger } from "../../logger";
 import { RateLimitError, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
 import { recordVelocityObservationsForScan } from "./app-velocity-store";
 import {
+  shouldDeactivateBrandNavigationalKeyword,
   shouldDeactivateKeyword,
   shouldDeactivateMinedKeyword,
   DEACTIVATION_MIN_SCANS,
 } from "./keyword-deactivation";
-import type { DeactivationCandidate, MinedDeactivationCandidate } from "./keyword-deactivation";
+import type {
+  BrandNavigationalDeactivationCandidate,
+  DeactivationCandidate,
+  MinedDeactivationCandidate,
+} from "./keyword-deactivation";
 import { computePerSweepCap } from "./keyword-tiering";
 import {
   classifyTrend,
@@ -23,6 +28,7 @@ import {
   computeOpportunity,
   winsorizeRatingsPerDayAtP90,
 } from "./keyword-scoring";
+import { isBrandNavigationalScan } from "./keyword-brand";
 import { buildSerpTail } from "./serp-tail";
 import type { SerpTailEntry } from "./serp-tail";
 import { recordAppSightings } from "./app-meta-store";
@@ -38,8 +44,10 @@ import {
   getStaleKeywordsTiered,
   getTier1ProtectedKeywords,
   insertScan,
+  markDeScanned,
   markScanned,
 } from "./keyword-store";
+import { isPassOverBudget } from "../shared/pass-deadline";
 
 const log = createLogger("appstore:keyword-gaps");
 
@@ -75,6 +83,17 @@ export const GIANT_REVIEW_THRESHOLD = 100_000;
 // wall of failures. Detected generically via a counter — no cross-module error
 // type is imported.
 const MAX_CONSECUTIVE_FAILURES = 5;
+
+// Wall-clock budget for one `scanAndRecord` batch (Batch A budget rescue,
+// 2026-07-22, PR #327 consistency — see `pass-deadline.ts`'s module doc for
+// the root cause this guards against: a per-request timeout alone doesn't
+// catch an upstream that's slow-but-technically-up, which can wedge the
+// single-flight sweep tick for far longer than any one lane's expected
+// runtime). 8 minutes comfortably covers the largest configured batch (the
+// DE storefront lane's `deChunkSize`, default 150, at ~1.6s/keyword ≈ 4min)
+// with margin, while still bailing well before it could wedge a sibling
+// lane's tick.
+const MAX_PASS_DURATION_MS = 8 * 60_000;
 
 // ---------------------------------------------------------------------------
 // iTunes Search API response — parsed defensively. A single malformed row
@@ -427,6 +446,12 @@ async function computeGapProfile(input: {
   const avgRating = mean(topApps.map((a) => a.rating));
   const avgAgeDays = mean(topApps.map((a) => a.ageDays));
 
+  // Brand-navigational classification, layer 2 (Batch A budget rescue,
+  // 2026-07-22 — see keyword-brand.ts module doc). `topApps` here is the
+  // scored rank-ordered slice (rank 1 first), matching `isBrandNavigationalScan`'s
+  // expectation.
+  const brandNavigational = isBrandNavigationalScan(topApps);
+
   return {
     keyword,
     store,
@@ -441,6 +466,7 @@ async function computeGapProfile(input: {
     topApps,
     scannedAt,
     lowConfidence,
+    brandNavigational,
     ...(serpTail && serpTail.length > 0 ? { serpTail } : {}),
   };
 }
@@ -476,6 +502,13 @@ async function buildDeactivationCandidate(
   // and must never fire (or fail to fire) based on a DE-lane scan's history
   // (2026-07-21 audit item B fix).
   const history = await getScanHistory(profile.keyword, DEACTIVATION_MIN_SCANS, "app");
+  // Brand-navigational rule input (Batch A budget rescue, 2026-07-22): reuses
+  // this SAME history fetch — no second DB round trip — to check whether the
+  // last DEACTIVATION_MIN_SCANS US-store scans were ALL brand-navigational.
+  // `history` is capped at DEACTIVATION_MIN_SCANS by the LIMIT above, so
+  // `.length >= DEACTIVATION_MIN_SCANS` here is equivalent to `=== DEACTIVATION_MIN_SCANS`.
+  const recentScansAllBrandNavigational =
+    history.length >= DEACTIVATION_MIN_SCANS && history.every((h) => h.brandNavigational);
   return {
     keyword: profile.keyword,
     source: meta.source,
@@ -483,6 +516,7 @@ async function buildDeactivationCandidate(
     demand: profile.demand,
     topApps: profile.topApps,
     topAppReviews: profile.topAppReviews,
+    recentScansAllBrandNavigational,
   };
 }
 
@@ -542,6 +576,14 @@ async function scanAndRecord(
      * separate daily pass, not a US-rescan substitute.
      */
     readonly markCorpusScanned?: boolean;
+    /**
+     * Update `appstore_keywords.last_de_scanned_at` for scanned keywords
+     * (Batch A budget rescue, 2026-07-22 — see `keyword-store.ts`'s
+     * `markDeScanned`). Default false. Only the DE storefront lane sets this
+     * true — it's the resume cursor `getTier1ProtectedKeywords` orders by,
+     * deliberately separate from `markCorpusScanned`'s `last_scanned_at`.
+     */
+    readonly markDeScanned?: boolean;
   },
 ): Promise<{ scanned: number; failed: number; bailed: boolean; rateLimitErrors: number }> {
   const { appstoreVelocity, appstoreJunkDeactivation, appstoreKeywordGap } = loadConfig();
@@ -549,6 +591,7 @@ async function scanAndRecord(
   const country = opts.country;
   const runBookkeeping = opts.runBookkeeping ?? true;
   const markCorpusScanned = opts.markCorpusScanned ?? true;
+  const markDeScannedOpt = opts.markDeScanned ?? false;
   const succeeded: string[] = [];
   const toDeactivate: string[] = [];
   let scanned = 0;
@@ -556,8 +599,22 @@ async function scanAndRecord(
   let rateLimitErrors = 0;
   let consecutiveFailures = 0;
   let bailed = false;
+  const passStartedAt = Date.now();
 
   for (const { keyword, deep } of targets) {
+    // Wall-clock budget guard (Batch A budget rescue, 2026-07-22, PR #327
+    // consistency) — see `MAX_PASS_DURATION_MS`'s doc comment. Checked once
+    // per keyword, same pattern as `charts-intl.ts`'s `runIntlChartsSweep`.
+    if (isPassOverBudget(passStartedAt, MAX_PASS_DURATION_MS)) {
+      bailed = true;
+      log.warn("Keyword scan batch bailing early — exceeded wall-clock budget", {
+        elapsedMs: Date.now() - passStartedAt,
+        scanned,
+        remaining: targets.length - scanned - failed,
+        ...opts.logContext,
+      });
+      break;
+    }
     try {
       let profile: KeywordGapProfile;
       // `rankedSerp` is what velocity recording sees: the FULL deep fetch for
@@ -621,11 +678,14 @@ async function scanAndRecord(
 
       // Junk deactivation: evaluated per-keyword here (needs this scan's
       // fresh profile), applied in ONE bulk UPDATE after the batch — see
-      // below. Two independent rules OR together: the general data-hopeless
-      // rule (any non-protected source, latest-scan demand), and the
-      // mined-pool-specific rule (source: 'mined' only, demand EVER reached
-      // across the whole scan history, exempt on any signature hit — see
-      // `keyword-deactivation.ts`'s `shouldDeactivateMinedKeyword`).
+      // below. THREE independent rules OR together: the general
+      // data-hopeless rule (any non-protected source, latest-scan demand),
+      // the mined-pool-specific rule (source: 'mined' only, demand EVER
+      // reached across the whole scan history, exempt on any signature hit —
+      // see `keyword-deactivation.ts`'s `shouldDeactivateMinedKeyword`), and
+      // the brand-navigational rule (Batch A budget rescue, 2026-07-22: any
+      // non-protected source whose last DEACTIVATION_MIN_SCANS scans were
+      // ALL brand-navigational — see `shouldDeactivateBrandNavigationalKeyword`).
       if (appstoreJunkDeactivation.enabled && runBookkeeping) {
         try {
           const candidate = await buildDeactivationCandidate(profile);
@@ -640,6 +700,14 @@ async function scanAndRecord(
                 hasSignatureHit: stats.hasSignatureHit,
               };
               deactivate = shouldDeactivateMinedKeyword(minedCandidate);
+            }
+            if (!deactivate) {
+              const brandCandidate: BrandNavigationalDeactivationCandidate = {
+                source: candidate.source,
+                scanCount: candidate.scanCount,
+                recentScansAllBrandNavigational: candidate.recentScansAllBrandNavigational,
+              };
+              deactivate = shouldDeactivateBrandNavigationalKeyword(brandCandidate);
             }
             if (deactivate) toDeactivate.push(keyword);
           }
@@ -669,6 +737,10 @@ async function scanAndRecord(
 
   if (succeeded.length > 0 && markCorpusScanned) {
     await markScanned(succeeded, Math.floor(Date.now() / 1000));
+  }
+
+  if (succeeded.length > 0 && markDeScannedOpt) {
+    await markDeScanned(succeeded, Math.floor(Date.now() / 1000));
   }
 
   if (toDeactivate.length > 0) {
@@ -730,6 +802,7 @@ export async function runKeywordSweep(opts: {
     dailyKeywordBudget,
     minedExploration,
     tier1StaleThresholdMs,
+    tier1AutocompleteCap,
     scanIntervalMs,
     deepScanMined,
     sweepRateSafety,
@@ -777,6 +850,7 @@ export async function runKeywordSweep(opts: {
     mineQuotaRemaining,
     tier1StaleThresholdMs,
     perSweepCap,
+    tier1AutocompleteCap,
   });
 
   // Deep-fetch eligibility (serp-rank Stage 1): hot + tier 1 always deep-scan
@@ -794,9 +868,10 @@ export async function runKeywordSweep(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// DE storefront lane (2026-07-21 scan-budget retune) — a daily pass over the
-// human-curated corpus (active seed/manual/autocomplete keywords) against the
-// German App Store, purely for querying/mining. Deliberately bypasses
+// DE storefront lane (2026-07-21 scan-budget retune; CHUNKED as of the
+// 2026-07-22 Batch A budget rescue) — a pass over a CHUNK of the
+// human-curated corpus (active seed/manual/autocomplete keywords) against
+// the German App Store, purely for querying/mining. Deliberately bypasses
 // junk-deactivation, velocity bookkeeping, and `last_scanned_at` updates (see
 // `scanAndRecord`'s `runBookkeeping`/`markCorpusScanned` doc comments) — this
 // data augments the corpus without perturbing the US tier-1/mined cadence or
@@ -804,13 +879,28 @@ export async function runKeywordSweep(opts: {
 // never curated for. The signature screener stays exclusively US (`store =
 // 'app'` — see `signature-hits-store.ts`'s `getScreenerCandidates`), so DE
 // rows are structurally invisible to it regardless.
+//
+// Previously scanned the WHOLE protected pool (~4,175 keywords) in one
+// unbounded pass, ~110 minutes at the live per-keyword rate, wedging every
+// OTHER lane sharing `scraper.ts`'s single-flight sweep tick for that whole
+// window (twice daily, at the old `deStorefrontLane.minIntervalMs` cadence —
+// PR #327's `pass-deadline.ts` fixed the same class of wedge for other
+// lanes, but not this one). Now scans only `getTier1ProtectedKeywords`'s
+// `deChunkSize` stalest-by-DE-scan keywords per call — the staleness
+// ordering itself is the resume cursor (see that function's doc comment), so
+// running this more frequently at a smaller chunk size (see
+// `deStorefrontLane.minIntervalMs`'s new, much shorter default) covers the
+// same ground over a day without ever holding the sweep tick for more than a
+// few minutes.
 // ---------------------------------------------------------------------------
 
 export async function runDeStorefrontSweep(opts: {
   readonly delayMs: number;
+  /** How many protected-pool keywords this pass scans — `appstoreKeywordGap.deStorefrontLane.deChunkSize`. */
+  readonly chunkSize: number;
 }): Promise<{ scanned: number; failed: number; bailed: boolean; rateLimitErrors: number }> {
   const { topN, sweepRateSafety } = loadConfig().appstoreKeywordGap;
-  const keywords = await getTier1ProtectedKeywords();
+  const keywords = await getTier1ProtectedKeywords(opts.chunkSize);
   // DE is one of the deep-fetch lanes (§0.4 of the deep-scrape build plan) —
   // but redundantly re-checks `legacyRateOverride` itself (belt + suspenders,
   // matching `deactivateJunkKeywords`'s own redundant source re-check)
@@ -827,6 +917,7 @@ export async function runDeStorefrontSweep(opts: {
     country: "de",
     runBookkeeping: false,
     markCorpusScanned: false,
+    markDeScanned: true,
     logContext: { lane: "de-storefront" },
   });
 }

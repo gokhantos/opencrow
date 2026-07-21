@@ -10,9 +10,7 @@ import { describe, expect, it, mock, beforeEach } from "bun:test";
 import { RateLimitError } from "../shared/ssrf-safe-fetch";
 
 function hintsPlist(terms: readonly string[]): string {
-  const dicts = terms
-    .map((t) => `<dict><key>term</key><string>${t}</string></dict>`)
-    .join("");
+  const dicts = terms.map((t) => `<dict><key>term</key><string>${t}</string></dict>`).join("");
   return `<plist version="1.0"><array>${dicts}</array></plist>`;
 }
 
@@ -29,6 +27,13 @@ function keywordStoreMockBase() {
     upsertKeywords: async (rows: readonly unknown[]) => rows.length,
     markSeedsExpanded: async () => {},
     insertAutocompleteHints: async () => {},
+    // Batch A budget rescue (2026-07-22): `expandCorpus` now builds an
+    // insert-time brand-segment filter from this pool (see
+    // `keyword-brand.ts`). Empty by default — none of this file's fixture
+    // candidates ("budget planner", "meal prep ideas", ...) contain a brand
+    // separator or match an (empty) brand-segment set, so this default is a
+    // true no-op for every existing test.
+    getScannedAppNames: async () => [] as readonly string[],
   };
 }
 
@@ -110,11 +115,7 @@ describe("expandCorpus", () => {
     // Candidates from every seed's hints are checked against the corpus in
     // one batched `keywordsExist` call.
     expect(keywordsExistCalls.length).toBe(1);
-    expect(keywordsExistCalls[0]).toEqual([
-      "budget planner",
-      "budget bestie",
-      "meal prep ideas",
-    ]);
+    expect(keywordsExistCalls[0]).toEqual(["budget planner", "budget bestie", "meal prep ideas"]);
   });
 
   it("sends the mandatory X-Apple-Store-Front header on every request", async () => {
@@ -211,7 +212,13 @@ describe("expandCorpus", () => {
       delayMs: 0,
     });
 
-    expect(result).toEqual({ added: 0, seedsUsed: 0, attempted: 0, rateLimitErrors: 0 });
+    expect(result).toEqual({
+      added: 0,
+      seedsUsed: 0,
+      attempted: 0,
+      rateLimitErrors: 0,
+      brandFiltered: 0,
+    });
     expect(upsertedRows).toEqual([]);
   });
 
@@ -279,9 +286,27 @@ describe("expandCorpus", () => {
     });
 
     expect(insertedHintRows).toEqual([
-      { seed: "budget", term: "budget planner", rank: 0, seenAt: expect.any(Number), storefront: "us" },
-      { seed: "budget", term: "budget bestie", rank: 1, seenAt: expect.any(Number), storefront: "us" },
-      { seed: "meal prep", term: "meal prep ideas", rank: 0, seenAt: expect.any(Number), storefront: "us" },
+      {
+        seed: "budget",
+        term: "budget planner",
+        rank: 0,
+        seenAt: expect.any(Number),
+        storefront: "us",
+      },
+      {
+        seed: "budget",
+        term: "budget bestie",
+        rank: 1,
+        seenAt: expect.any(Number),
+        storefront: "us",
+      },
+      {
+        seed: "meal prep",
+        term: "meal prep ideas",
+        rank: 0,
+        seenAt: expect.any(Number),
+        storefront: "us",
+      },
     ]);
   });
 
@@ -378,6 +403,100 @@ describe("expandCorpus", () => {
 
       // 2 seeds * (1 bare + 26 letters) = 54 total requests, not 202.
       expect(result.attempted).toBe(54);
+    });
+  });
+
+  // Batch A budget rescue (2026-07-22): insert-time brand-navigational
+  // filter — see keyword-brand.ts module doc, layer 1.
+  describe("brand-navigational filter", () => {
+    it("drops a candidate that itself contains a brand separator, still logs its hint row", async () => {
+      mock.module("../shared/ssrf-safe-fetch", () => ({
+        RateLimitError,
+        ssrfSafeFetch: async (url: string) => {
+          if (url.includes("term=budget")) {
+            // Full "Brand: subtitle"-shaped hint alongside a genuine one.
+            return {
+              ok: true,
+              text: async () => hintsPlist(["duolingo: language lessons", "budget planner"]),
+            };
+          }
+          return { ok: true, text: async () => hintsPlist(["meal prep ideas"]) };
+        },
+      }));
+      mock.module("./keyword-store", () => ({
+        ...keywordStoreMockBase(),
+        upsertKeywords: async (rows: readonly unknown[]) => {
+          upsertedRows = [...upsertedRows, ...rows];
+          return rows.length;
+        },
+        insertAutocompleteHints: async (rows: readonly unknown[]) => {
+          insertedHintRows = [...insertedHintRows, ...rows];
+        },
+      }));
+
+      const { expandCorpus } = await import("./keyword-autocomplete");
+      const result = await expandCorpus({
+        minOpportunity: 0.15,
+        winnerLimit: 15,
+        diverseLimit: 10,
+        perSeed: 8,
+        storefront: "143441-1,29",
+        delayMs: 0,
+      });
+
+      // "duolingo: language lessons" dropped by the brand filter — only the
+      // 2 genuine phrases become new corpus keywords.
+      expect(result.added).toBe(2);
+      expect(result.brandFiltered).toBe(1);
+      expect(upsertedRows.map((r) => (r as { keyword: string }).keyword)).toEqual([
+        "budget planner",
+        "meal prep ideas",
+      ]);
+      // The hint row is still persisted regardless of the brand-filter verdict.
+      expect(insertedHintRows.map((r) => (r as { term: string }).term)).toContain(
+        "duolingo: language lessons",
+      );
+    });
+
+    it("drops a candidate that exactly matches a known brand segment from getScannedAppNames", async () => {
+      mock.module("./keyword-store", () => ({
+        ...keywordStoreMockBase(),
+        upsertKeywords: async (rows: readonly unknown[]) => {
+          upsertedRows = [...upsertedRows, ...rows];
+          return rows.length;
+        },
+        // A recently-scanned SERP result titled "Notion: Notes, Docs, AI"
+        // yields the brand segment "notion" — a bare "budget planner" hint
+        // that happened to normalize to that exact segment would be dropped
+        // too, so use the seed's own bare-word hint set instead: rewire
+        // ssrf-safe-fetch below to return the literal brand name as a hint.
+        getScannedAppNames: async () => ["Notion: Notes, Docs, AI"],
+      }));
+      mock.module("../shared/ssrf-safe-fetch", () => ({
+        RateLimitError,
+        ssrfSafeFetch: async (url: string) => {
+          if (url.includes("term=budget")) {
+            return { ok: true, text: async () => hintsPlist(["notion", "budget planner"]) };
+          }
+          return { ok: true, text: async () => hintsPlist(["meal prep ideas"]) };
+        },
+      }));
+
+      const { expandCorpus } = await import("./keyword-autocomplete");
+      const result = await expandCorpus({
+        minOpportunity: 0.15,
+        winnerLimit: 15,
+        diverseLimit: 10,
+        perSeed: 8,
+        storefront: "143441-1,29",
+        delayMs: 0,
+      });
+
+      expect(result.brandFiltered).toBe(1);
+      expect(upsertedRows.map((r) => (r as { keyword: string }).keyword)).not.toContain("notion");
+      expect(upsertedRows.map((r) => (r as { keyword: string }).keyword)).toContain(
+        "budget planner",
+      );
     });
   });
 });

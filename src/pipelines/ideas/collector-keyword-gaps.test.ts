@@ -23,6 +23,7 @@ function makeScan(overrides: Partial<KeywordScanRow> & { id: number }): KeywordS
     topApps: [],
     buildability: 0,
     lowConfidence: false,
+    brandNavigational: false,
     ...overrides,
   };
 }

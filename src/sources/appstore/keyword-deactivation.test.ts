@@ -6,10 +6,15 @@ import {
   DEACTIVATION_TRACTION_AGE_DAYS_MAX,
   DEACTIVATION_TRACTION_MIN_RATINGS_PER_DAY,
   MINED_DEACTIVATION_MAX_DEMAND_EVER,
+  shouldDeactivateBrandNavigationalKeyword,
   shouldDeactivateKeyword,
   shouldDeactivateMinedKeyword,
 } from "./keyword-deactivation";
-import type { DeactivationCandidate, MinedDeactivationCandidate } from "./keyword-deactivation";
+import type {
+  BrandNavigationalDeactivationCandidate,
+  DeactivationCandidate,
+  MinedDeactivationCandidate,
+} from "./keyword-deactivation";
 import type { TopApp } from "./keyword-types";
 
 function makeTopApp(overrides: Partial<TopApp> = {}): TopApp {
@@ -33,6 +38,7 @@ function candidate(overrides: Partial<DeactivationCandidate> = {}): Deactivation
     demand: 0,
     topApps: [makeTopApp()],
     topAppReviews: 50,
+    recentScansAllBrandNavigational: false,
     ...overrides,
   };
 }
@@ -55,9 +61,7 @@ describe("shouldDeactivateKeyword", () => {
   });
 
   it("NEVER deactivates source 'manual', even when lexically junk", () => {
-    expect(shouldDeactivateKeyword(candidate({ keyword: "free", source: "manual" }))).toBe(
-      false,
-    );
+    expect(shouldDeactivateKeyword(candidate({ keyword: "free", source: "manual" }))).toBe(false);
   });
 
   it("NEVER deactivates source 'seed', even when data-hopeless", () => {
@@ -268,11 +272,62 @@ describe("shouldDeactivateMinedKeyword", () => {
     for (const keyword of knownPositives) {
       it(`${keyword}: mined source, signature hit, even with marginal demand-ever`, () => {
         expect(
-          shouldDeactivateMinedKeyword(
-            minedCandidate({ hasSignatureHit: true, maxDemandEver: 1 }),
-          ),
+          shouldDeactivateMinedKeyword(minedCandidate({ hasSignatureHit: true, maxDemandEver: 1 })),
         ).toBe(false);
       });
     }
+  });
+});
+
+// Batch A budget rescue (2026-07-22) — see keyword-brand.ts module doc,
+// layer 2, and shouldDeactivateBrandNavigationalKeyword's own doc comment.
+describe("shouldDeactivateBrandNavigationalKeyword", () => {
+  function brandCandidate(
+    overrides: Partial<BrandNavigationalDeactivationCandidate> = {},
+  ): BrandNavigationalDeactivationCandidate {
+    return {
+      source: "autocomplete",
+      scanCount: DEACTIVATION_MIN_SCANS,
+      recentScansAllBrandNavigational: true,
+      ...overrides,
+    };
+  }
+
+  it("is true for an autocomplete keyword with enough scans, all recently brand-navigational", () => {
+    expect(shouldDeactivateBrandNavigationalKeyword(brandCandidate())).toBe(true);
+  });
+
+  it("is true for a mined keyword too — not restricted to autocomplete", () => {
+    expect(shouldDeactivateBrandNavigationalKeyword(brandCandidate({ source: "mined" }))).toBe(
+      true,
+    );
+  });
+
+  it("is false for a protected source (seed/manual), regardless of the other fields", () => {
+    for (const source of ["seed", "manual"]) {
+      expect(shouldDeactivateBrandNavigationalKeyword(brandCandidate({ source }))).toBe(false);
+    }
+  });
+
+  it("is false when scanCount is under DEACTIVATION_MIN_SCANS", () => {
+    expect(
+      shouldDeactivateBrandNavigationalKeyword(
+        brandCandidate({ scanCount: DEACTIVATION_MIN_SCANS - 1 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is false when the recent scans were NOT all brand-navigational", () => {
+    expect(
+      shouldDeactivateBrandNavigationalKeyword(
+        brandCandidate({ recentScansAllBrandNavigational: false }),
+      ),
+    ).toBe(false);
+  });
+
+  it("bypasses the general rule's review-count ceiling entirely — it never even looks at reviews", () => {
+    // No `topAppReviews`/`demand` field on this candidate at all — the type
+    // itself proves this rule never needs them, unlike `shouldDeactivateKeyword`.
+    expect(shouldDeactivateBrandNavigationalKeyword(brandCandidate())).toBe(true);
   });
 });

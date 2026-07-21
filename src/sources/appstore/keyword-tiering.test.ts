@@ -1,5 +1,15 @@
 import { describe, expect, it } from "bun:test";
-import { computeMineSlots, computePerSweepCap, isTier1Eligible } from "./keyword-tiering";
+import {
+  computeEffectiveStaleThreshold,
+  computeMineSlots,
+  computePerSweepCap,
+  isTier1Eligible,
+  TIER1_HIGH_OPPORTUNITY,
+  TIER1_MID_MULTIPLIER,
+  TIER1_MID_OPPORTUNITY,
+  TIER1_SLOW_BAND_MIN_SCANS,
+  TIER1_SLOW_MULTIPLIER,
+} from "./keyword-tiering";
 import type { Tier1Input } from "./keyword-tiering";
 
 // Arbitrary for this pure-function test — `isTier1Eligible` no longer reads
@@ -22,16 +32,24 @@ describe("isTier1Eligible", () => {
   }
 
   it("is true for a never-scanned manual keyword", () => {
-    expect(isTier1Eligible(input({ lastScannedAt: null, source: "manual" }), now, STALE_THRESHOLD_MS)).toBe(true);
+    expect(
+      isTier1Eligible(input({ lastScannedAt: null, source: "manual" }), now, STALE_THRESHOLD_MS),
+    ).toBe(true);
   });
 
   it("is true for a never-scanned seed keyword", () => {
-    expect(isTier1Eligible(input({ lastScannedAt: null, source: "seed" }), now, STALE_THRESHOLD_MS)).toBe(true);
+    expect(
+      isTier1Eligible(input({ lastScannedAt: null, source: "seed" }), now, STALE_THRESHOLD_MS),
+    ).toBe(true);
   });
 
   it("is true for a stale keyword with an active signature hit, regardless of source", () => {
     expect(
-      isTier1Eligible(input({ source: "mined", hasActiveSignatureHit: true }), now, STALE_THRESHOLD_MS),
+      isTier1Eligible(
+        input({ source: "mined", hasActiveSignatureHit: true }),
+        now,
+        STALE_THRESHOLD_MS,
+      ),
     ).toBe(true);
   });
 
@@ -41,18 +59,24 @@ describe("isTier1Eligible", () => {
 
   it("is false for a manual/seed keyword scanned within the last 24h", () => {
     const freshAt = now - 60; // 1 minute ago
-    expect(isTier1Eligible(input({ lastScannedAt: freshAt, source: "manual" }), now, STALE_THRESHOLD_MS)).toBe(
-      false,
-    );
+    expect(
+      isTier1Eligible(input({ lastScannedAt: freshAt, source: "manual" }), now, STALE_THRESHOLD_MS),
+    ).toBe(false);
   });
 
   it("is true exactly at the 24h staleness boundary", () => {
-    expect(isTier1Eligible(input({ lastScannedAt: staleAt, source: "seed" }), now, STALE_THRESHOLD_MS)).toBe(true);
+    expect(
+      isTier1Eligible(input({ lastScannedAt: staleAt, source: "seed" }), now, STALE_THRESHOLD_MS),
+    ).toBe(true);
   });
 
   it("is false one second inside the 24h boundary", () => {
     expect(
-      isTier1Eligible(input({ lastScannedAt: staleAt + 1, source: "seed" }), now, STALE_THRESHOLD_MS),
+      isTier1Eligible(
+        input({ lastScannedAt: staleAt + 1, source: "seed" }),
+        now,
+        STALE_THRESHOLD_MS,
+      ),
     ).toBe(false);
   });
 
@@ -71,21 +95,33 @@ describe("isTier1Eligible", () => {
   // unconditionally tier-1-eligible source — real, popularity-ordered user
   // search queries deserve the same daily-guaranteed re-scan.
   it("is true for a never-scanned autocomplete keyword", () => {
-    expect(isTier1Eligible(input({ lastScannedAt: null, source: "autocomplete" }), now, STALE_THRESHOLD_MS)).toBe(
-      true,
-    );
+    expect(
+      isTier1Eligible(
+        input({ lastScannedAt: null, source: "autocomplete" }),
+        now,
+        STALE_THRESHOLD_MS,
+      ),
+    ).toBe(true);
   });
 
   it("is true for a stale autocomplete keyword scanned exactly at the 24h boundary", () => {
     expect(
-      isTier1Eligible(input({ lastScannedAt: staleAt, source: "autocomplete" }), now, STALE_THRESHOLD_MS),
+      isTier1Eligible(
+        input({ lastScannedAt: staleAt, source: "autocomplete" }),
+        now,
+        STALE_THRESHOLD_MS,
+      ),
     ).toBe(true);
   });
 
   it("is false for a fresh autocomplete keyword", () => {
     const freshAt = now - 60;
     expect(
-      isTier1Eligible(input({ lastScannedAt: freshAt, source: "autocomplete" }), now, STALE_THRESHOLD_MS),
+      isTier1Eligible(
+        input({ lastScannedAt: freshAt, source: "autocomplete" }),
+        now,
+        STALE_THRESHOLD_MS,
+      ),
     ).toBe(false);
   });
 
@@ -175,5 +211,63 @@ describe("computeMineSlots", () => {
     expect(computeMineSlots(0, 10_000, 14)).toBe(0);
     expect(computeMineSlots(10_000, 0, 14)).toBe(0);
     expect(computeMineSlots(10_000, 10_000, 0)).toBe(0);
+  });
+});
+
+// Batch A budget rescue (2026-07-22) — promise-tiered rescan cadence. See
+// keyword-tiering.ts module doc and computeEffectiveStaleThreshold's own doc
+// comment for the band definitions.
+describe("computeEffectiveStaleThreshold", () => {
+  const BASE_MS = 6 * 60 * 60 * 1000; // matches the live config default
+
+  it("is 0 (immediately eligible) for a never-scanned keyword, regardless of opportunity", () => {
+    expect(computeEffectiveStaleThreshold(0, 0, BASE_MS)).toBe(0);
+    expect(computeEffectiveStaleThreshold(0.9, 0, BASE_MS)).toBe(0);
+  });
+
+  it("keeps the fast (base) band at/above the high-opportunity threshold", () => {
+    expect(computeEffectiveStaleThreshold(TIER1_HIGH_OPPORTUNITY, 10, BASE_MS)).toBe(BASE_MS);
+    expect(computeEffectiveStaleThreshold(0.9, 10, BASE_MS)).toBe(BASE_MS);
+  });
+
+  it("stays fast even with a very low scan count, once opportunity has already proven itself", () => {
+    expect(computeEffectiveStaleThreshold(TIER1_HIGH_OPPORTUNITY, 1, BASE_MS)).toBe(BASE_MS);
+  });
+
+  it("applies the mid (2x) band for the middle opportunity range", () => {
+    expect(computeEffectiveStaleThreshold(TIER1_MID_OPPORTUNITY, 10, BASE_MS)).toBe(
+      BASE_MS * TIER1_MID_MULTIPLIER,
+    );
+    expect(computeEffectiveStaleThreshold(0.25, 10, BASE_MS)).toBe(BASE_MS * TIER1_MID_MULTIPLIER);
+  });
+
+  it("applies the slow (8x, ~2 days at the live 6h default) band once opportunity is low AND enough scans have accumulated", () => {
+    expect(computeEffectiveStaleThreshold(0.05, TIER1_SLOW_BAND_MIN_SCANS, BASE_MS)).toBe(
+      BASE_MS * TIER1_SLOW_MULTIPLIER,
+    );
+    // Sanity: 8x a 6h base is exactly 2 days.
+    expect(BASE_MS * TIER1_SLOW_MULTIPLIER).toBe(2 * 24 * 60 * 60 * 1000);
+  });
+
+  it("does NOT demote to the slow band below TIER1_SLOW_BAND_MIN_SCANS — falls back to the mid (grace) band instead", () => {
+    expect(computeEffectiveStaleThreshold(0.05, TIER1_SLOW_BAND_MIN_SCANS - 1, BASE_MS)).toBe(
+      BASE_MS * TIER1_MID_MULTIPLIER,
+    );
+  });
+
+  it("is monotonically non-decreasing as opportunity falls, for a fixed well-scanned keyword", () => {
+    const high = computeEffectiveStaleThreshold(0.9, 10, BASE_MS);
+    const mid = computeEffectiveStaleThreshold(0.2, 10, BASE_MS);
+    const low = computeEffectiveStaleThreshold(0.01, 10, BASE_MS);
+    expect(high).toBeLessThanOrEqual(mid);
+    expect(mid).toBeLessThanOrEqual(low);
+  });
+
+  it("scales bands proportionally to a caller-supplied baseMs", () => {
+    const doubleBase = BASE_MS * 2;
+    expect(computeEffectiveStaleThreshold(0.9, 10, doubleBase)).toBe(doubleBase);
+    expect(computeEffectiveStaleThreshold(0.2, 10, doubleBase)).toBe(
+      doubleBase * TIER1_MID_MULTIPLIER,
+    );
   });
 });

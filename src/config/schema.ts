@@ -618,6 +618,22 @@ export const appstoreKeywordGapConfigSchema = z
     // family has proven headroom (see item 4's budget table) and tier 1 is
     // the highest-value slice of the corpus.
     tier1StaleThresholdMs: z.number().int().min(60_000).default(6 * 60 * 60 * 1000),
+    // Batch A budget rescue (2026-07-22): tier 1 no longer applies
+    // `tier1StaleThresholdMs` flat to the whole pool — `keyword-tiering.ts`'s
+    // `computeEffectiveStaleThreshold` bands each keyword's OWN effective
+    // threshold by its own recent opportunity (see that module's doc
+    // comment). Structural guard, coordinated with that banding: this caps
+    // how many `source: 'autocomplete'` keywords the GUARANTEED tier-1 lane
+    // may include per sweep — manual/seed/signature-hit stay uncapped.
+    // Measured 2026-07-21/22: autocomplete had grown to 83% of the tier-1
+    // pool (4,175 keywords), 89% at opportunity < 0.1 — this cap stops a
+    // brand-new (or merely numerous) autocomplete keyword from
+    // unconditionally competing in the daily-guaranteed lane the same way
+    // seed/manual do, protecting the corpus every validated candidate has
+    // ever actually come from. 50 leaves meaningful room within the default
+    // 75-keyword `keywordsPerSweep` batch for hot + guaranteed + autocomplete
+    // all in the same cycle.
+    tier1AutocompleteCap: z.number().int().min(0).max(500).default(50),
     // How many top-ranked gap candidates to surface per scan.
     topN: z.number().int().min(5).max(50).default(20),
     // Weight applied to demand-side signal when scoring a keyword gap.
@@ -859,30 +875,58 @@ export const appstoreKeywordGapConfigSchema = z
         dailyQuota: z.number().int().min(0).max(100_000).default(30_000),
       })
       .default({ dailyQuota: 30_000 }),
-    // ─── DE storefront lane (2026-07-21 scan-budget retune) ────────────────
-    // Daily pass scanning every active seed/manual/autocomplete keyword
-    // (`keyword-store.ts`'s `getTier1ProtectedKeywords`) against the German
-    // App Store, funded by budget freed from the mined-pool tightening
-    // above. Querying/mining data only this iteration — deliberately does
-    // NOT feed junk-deactivation, velocity bookkeeping, or the (US-calibrated)
-    // signature screener; see `keyword-gaps.ts`'s `runDeStorefrontSweep`.
+    // ─── DE storefront lane (2026-07-21 scan-budget retune; CHUNKED as of ──
+    // the 2026-07-22 Batch A budget rescue) ─────────────────────────────────
+    // Scans a CHUNK of the active seed/manual/autocomplete keyword pool
+    // (`keyword-store.ts`'s `getTier1ProtectedKeywords`, stalest-by-DE-scan
+    // first) against the German App Store each pass, funded by budget freed
+    // from the mined-pool tightening above. Querying/mining data only this
+    // iteration — deliberately does NOT feed junk-deactivation, velocity
+    // bookkeeping, or the (US-calibrated) signature screener; see
+    // `keyword-gaps.ts`'s `runDeStorefrontSweep`.
+    //
+    // Previously ONE pass scanned the WHOLE protected pool (~4,175 keywords)
+    // at a 12h cadence — ~110 minutes per pass at the live per-keyword rate,
+    // wedging every OTHER lane sharing `scraper.ts`'s single-flight sweep
+    // tick for that entire window, twice daily (PR #327's `pass-deadline.ts`
+    // fixed the same class of wedge for other lanes but not this one).
+    // Chunked 2026-07-22: `deChunkSize` (default 150) keeps each pass to
+    // ~4min at the live per-keyword rate, and `minIntervalMs` dropped
+    // 12h -> 25min so the SAME approximate daily volume is spread across many
+    // small passes instead of two giant ones — `deChunkSize` keywords every
+    // `minIntervalMs` ≈ 150 * (1440min/day / 25min) ≈ 8,640 scans/day
+    // capacity, enough to walk the whole ~4,175-keyword pool roughly twice a
+    // day (≈ 4,175 / 150 ≈ 28 chunks ≈ 11.7h for one full round-robin) —
+    // same "the pool still completes within ~12h" target the old 12h/whole-
+    // pool cadence aimed for, just without the wedge.
     deStorefrontLane: z
       .object({
         // Master switch. Default ON.
         enabled: z.boolean().default(true),
         // Minimum gap between DE-lane passes — its own cadence, decoupled
-        // from the ~1min scan-sweep timer, since one pass scans the WHOLE
-        // tier-1-protected corpus in one shot. Was default 24h ("a daily
-        // pass"); halved to 12h (2026-07-21 capacity-raise escalation, now
-        // that the search family routes through the armed/paid Webshare
-        // proxy — see `appstoreKeywordGap.useProxy` above) so the German
-        // storefront gets ~2x/day resolution instead of once.
-        minIntervalMs: z.number().int().min(60_000).default(12 * 60 * 60 * 1000),
+        // from the ~1min scan-sweep timer. Was 24h ("a daily pass"), then 12h
+        // (2026-07-21 capacity-raise escalation), each time assuming ONE pass
+        // scans the WHOLE tier-1-protected corpus. Dropped to 25min
+        // (2026-07-22 budget rescue) now that each pass only scans one
+        // `deChunkSize` chunk — see this field group's doc comment for the
+        // daily-volume math.
+        minIntervalMs: z.number().int().min(60_000).default(25 * 60 * 1000),
         // Delay between each keyword's iTunes call within one DE-lane pass —
         // same spirit as `sweepDelayMs`, scoped to this separate pass.
         delayMs: z.number().int().min(100).max(10_000).default(1000),
+        // How many protected-pool keywords ONE DE-lane pass scans (Batch A
+        // budget rescue, 2026-07-22) — see `keyword-store.ts`'s
+        // `getTier1ProtectedKeywords`, ordered stalest-by-DE-scan first, so
+        // this is a resumable chunk, not a hard partition: consecutive
+        // passes naturally continue from wherever the last one left off.
+        deChunkSize: z.number().int().min(1).max(2000).default(150),
       })
-      .default({ enabled: true, minIntervalMs: 12 * 60 * 60 * 1000, delayMs: 1000 }),
+      .default({
+        enabled: true,
+        minIntervalMs: 25 * 60 * 1000,
+        delayMs: 1000,
+        deChunkSize: 150,
+      }),
     // ─── Deep SERP fetch (serp-rank Stage 1, deep-scrape build) ─────────────
     // How many results to request from the iTunes Search API for the hot/
     // tier1/DE lanes (see `keyword-gaps.ts`'s `scanKeywordDeep`) — a strictly
@@ -909,6 +953,7 @@ export const appstoreKeywordGapConfigSchema = z
     useProxy: true,
     keywordsPerSweep: 75,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
+    tier1AutocompleteCap: 50,
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.15,
@@ -937,7 +982,12 @@ export const appstoreKeywordGapConfigSchema = z
     },
     sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
     minedExploration: { dailyQuota: 30_000 },
-    deStorefrontLane: { enabled: true, minIntervalMs: 12 * 60 * 60 * 1000, delayMs: 1000 },
+    deStorefrontLane: {
+      enabled: true,
+      minIntervalMs: 25 * 60 * 1000,
+      delayMs: 1000,
+      deChunkSize: 150,
+    },
     serpDepth: 200,
     deepScanMined: false,
   });

@@ -55,6 +55,7 @@
 // place.
 
 import { createLogger } from "../../logger";
+import { stripBrandPrefix } from "./brand-title-split";
 import { isJunkKeyword } from "./keyword-junk";
 import { getScannedAppNames, keywordsExist, upsertKeywords } from "./keyword-store";
 import type { KeywordSeedRow } from "./keyword-store";
@@ -109,9 +110,6 @@ const STOPWORDS: ReadonlySet<string> = new Set([
   "&",
 ]);
 
-/** Separators that typically split "Brand Name" from a descriptive suffix in App Store titles. */
-const BRAND_SEPARATORS: readonly RegExp[] = [/:/, / - /, / – /, / \| /];
-
 /**
  * App Store category label (as returned by the iTunes/RSS APIs — see
  * `ITUNES_CATEGORIES` in charts.ts) mapped to a `GENRE_ZONES` entry
@@ -153,32 +151,6 @@ const DEFAULT_ZONE = "lifestyle";
 export function mapCategoryToZone(category: string): string {
   const key = category.trim().toLowerCase();
   return CATEGORY_TO_ZONE[key] ?? DEFAULT_ZONE;
-}
-
-/**
- * Strips a leading "Brand Name<sep>" prefix from an App Store title, e.g.
- * `"MyFitnessPal: Calorie Counter"` -> `"Calorie Counter"`. Splits on the
- * EARLIEST occurrence of any of `BRAND_SEPARATORS` — colon, " - ", " – ",
- * " | " — all common "brand: description" title conventions. Returns the
- * original name unchanged if no separator is found, or if the text after
- * the separator is empty (defensive — never returns an empty string when
- * the input wasn't empty).
- */
-function stripBrandPrefix(name: string): string {
-  let earliestIndex = -1;
-  let matchedLength = 0;
-
-  for (const sep of BRAND_SEPARATORS) {
-    const match = sep.exec(name);
-    if (match && (earliestIndex === -1 || match.index < earliestIndex)) {
-      earliestIndex = match.index;
-      matchedLength = match[0].length;
-    }
-  }
-
-  if (earliestIndex === -1) return name;
-  const rest = name.slice(earliestIndex + matchedLength).trim();
-  return rest.length > 0 ? rest : name;
 }
 
 /**

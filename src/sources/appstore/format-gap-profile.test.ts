@@ -35,6 +35,7 @@ const profile: KeywordGapProfile = {
   ],
   scannedAt: 1_720_000_000,
   lowConfidence: false,
+  brandNavigational: false,
 };
 
 describe("formatGapProfile", () => {
@@ -51,5 +52,15 @@ describe("formatGapProfile", () => {
     const empty: KeywordGapProfile = { ...profile, topApps: [] };
     expect(() => formatGapProfile(empty)).not.toThrow();
     expect(formatGapProfile(empty)).toContain("fatty liver diet");
+  });
+
+  // Batch A budget rescue (2026-07-22) — see keyword-brand.ts module doc.
+  it("omits the brand-navigational note when brandNavigational is false", () => {
+    expect(formatGapProfile(profile)).not.toContain("navigational");
+  });
+
+  it("surfaces a brand-navigational note when brandNavigational is true", () => {
+    const brandy: KeywordGapProfile = { ...profile, brandNavigational: true };
+    expect(formatGapProfile(brandy)).toContain("navigational query — demand reflects one brand");
   });
 });

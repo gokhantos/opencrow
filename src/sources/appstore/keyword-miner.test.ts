@@ -108,9 +108,9 @@ describe("extractCandidatesFromApp", () => {
   });
 
   it("returns no candidates for an empty app name", () => {
-    expect(
-      extractCandidatesFromApp({ name: "", artist: "Someone", category: "Finance" }),
-    ).toEqual([]);
+    expect(extractCandidatesFromApp({ name: "", artist: "Someone", category: "Finance" })).toEqual(
+      [],
+    );
   });
 
   it("dedupes n-grams within a single app", () => {
