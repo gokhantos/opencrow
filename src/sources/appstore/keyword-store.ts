@@ -136,6 +136,21 @@ interface OpportunityDbRow extends KeywordScanDbRow {
   readonly peak_opportunity: number | string | null;
 }
 
+/**
+ * Explicit column list for `getScanHistory`/`getLatestScan` — deliberately
+ * EXCLUDES `serp_tail` (migration 044). Those two functions feed the
+ * per-scan momentum/velocity-baseline series (`keyword-gaps.ts`'s
+ * `scanKeyword`/`scanKeywordDeep`) and the dashboard's scan-history chart,
+ * neither of which reads the deep-scan tail — including it would bloat both
+ * hot paths with a column only `serp-rank-store.ts` ever consumes (via its
+ * own explicit query). A frozen constant embedded via `db.unsafe`, matching
+ * `BUILDABILITY_SQL`'s convention — no caller input reaches it.
+ */
+const SCAN_COLUMNS_SQL = `
+  id, keyword, store, scanned_at, competitiveness, demand, incumbent_weakness,
+  opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps, low_confidence
+`;
+
 export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
   const demand = Number(row.demand);
   const topAppReviews = Number(row.top_app_reviews);
@@ -226,6 +241,17 @@ export async function getStaleKeywordsAcrossZones(limit: number): Promise<readon
 }
 
 /**
+ * One `getStaleKeywordsTiered` pick, tagged with the lane it was drawn from
+ * (serp-rank Stage 1, deep-scrape build) — lets the caller (`keyword-gaps.ts`'s
+ * `runKeywordSweep`) decide which keywords deep-scan (hot/tier1, always) vs
+ * stay shallow (mined, unless `appstoreKeywordGap.deepScanMined` opts in).
+ */
+export interface TieredKeyword {
+  readonly keyword: string;
+  readonly lane: "hot" | "tier1" | "mined";
+}
+
+/**
  * Tier-1-guaranteed + mined-quota slice across the whole active corpus,
  * backing the timer-driven keyword-gap sweep's priority re-scan lane (see
  * `keyword-tiering.ts` for the full rationale, updated 2026-07-21's
@@ -237,7 +263,8 @@ export async function getStaleKeywordsAcrossZones(limit: number): Promise<readon
  * (`opts.mineQuotaRemaining`), excluding whatever tier 1 already picked so
  * no keyword is returned twice. `keyword = ANY('{}')` is always FALSE (never
  * NULL) in Postgres, so an empty tier-1 list needs no special-casing in the
- * mined exclusion.
+ * mined exclusion. Each returned entry is tagged with its lane
+ * (`TieredKeyword`) — see that type's doc comment.
  */
 export async function getStaleKeywordsTiered(opts: {
   /** This cycle's overall scan batch size (throttle-adjusted `keywordsPerSweep`). */
@@ -265,7 +292,7 @@ export async function getStaleKeywordsTiered(opts: {
    * exploration".
    */
   readonly perSweepCap: number;
-}): Promise<readonly string[]> {
+}): Promise<readonly TieredKeyword[]> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   const staleThresholdAt = now - Math.floor(opts.tier1StaleThresholdMs / 1000);
@@ -317,9 +344,13 @@ export async function getStaleKeywordsTiered(opts: {
 
   const tier1Keywords = (tier1Rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
   const claimedKeywords = [...hotKeywords, ...tier1Keywords];
+  const claimedTiered: readonly TieredKeyword[] = [
+    ...hotKeywords.map((keyword) => ({ keyword, lane: "hot" as const })),
+    ...tier1Keywords.map((keyword) => ({ keyword, lane: "tier1" as const })),
+  ];
   const remainingBatch = remainingAfterHot - tier1Keywords.length;
   const mineSlots = computeMineSlots(remainingBatch, opts.mineQuotaRemaining, opts.perSweepCap);
-  if (mineSlots <= 0) return claimedKeywords;
+  if (mineSlots <= 0) return claimedTiered;
 
   // Mined exploration — never-scanned first (NULLS FIRST), then
   // oldest-scanned-still-active, capped by whatever's left of this cycle's
@@ -335,8 +366,11 @@ export async function getStaleKeywordsTiered(opts: {
   `;
 
   return [
-    ...claimedKeywords,
-    ...(mineRows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword),
+    ...claimedTiered,
+    ...(mineRows as ReadonlyArray<{ keyword: string }>).map((r) => ({
+      keyword: r.keyword,
+      lane: "mined" as const,
+    })),
   ];
 }
 
@@ -348,15 +382,20 @@ export async function markScanned(keywords: readonly string[], at: number): Prom
 
 export async function insertScan(p: KeywordGapProfile): Promise<void> {
   const db = getDb();
+  // `serp_tail` (migration 044): NULL for a plain (non-deep) scan — only
+  // `scanKeywordDeep` populates `p.serpTail`. Written the same
+  // `JSON.stringify`-into-JSONB way as `top_apps`, which double-encodes it at
+  // the Postgres level by design — see migration 044's doc comment.
   await db`
     INSERT INTO appstore_keyword_scans (
       keyword, store, scanned_at, competitiveness, demand, incumbent_weakness,
       opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps,
-      low_confidence
+      low_confidence, serp_tail
     ) VALUES (
       ${p.keyword}, ${p.store}, ${p.scannedAt}, ${p.competitiveness}, ${p.demand},
       ${p.incumbentWeakness}, ${p.opportunity}, ${p.trend}, ${p.topAppReviews},
-      ${p.avgRating}, ${p.avgAgeDays}, ${JSON.stringify(p.topApps)}, ${p.lowConfidence}
+      ${p.avgRating}, ${p.avgAgeDays}, ${JSON.stringify(p.topApps)}, ${p.lowConfidence},
+      ${p.serpTail ? JSON.stringify(p.serpTail) : null}
     )
   `;
 }
@@ -367,7 +406,7 @@ export async function getLatestScan(
 ): Promise<KeywordScanRow | null> {
   const db = getDb();
   const rows = await db`
-    SELECT DISTINCT ON (keyword, store) *
+    SELECT DISTINCT ON (keyword, store) ${db.unsafe(SCAN_COLUMNS_SQL)}
     FROM appstore_keyword_scans
     WHERE keyword = ${keyword} AND store = ${store}
     ORDER BY keyword, store, scanned_at DESC
@@ -972,7 +1011,7 @@ export async function getScanHistory(
 ): Promise<readonly KeywordScanRow[]> {
   const db = getDb();
   const rows = await db`
-    SELECT * FROM appstore_keyword_scans
+    SELECT ${db.unsafe(SCAN_COLUMNS_SQL)} FROM appstore_keyword_scans
     WHERE keyword = ${keyword} AND store = ${store}
     ORDER BY scanned_at DESC
     LIMIT ${limit}

@@ -770,6 +770,23 @@ export const appstoreKeywordGapConfigSchema = z
         delayMs: z.number().int().min(100).max(10_000).default(1000),
       })
       .default({ enabled: true, minIntervalMs: 24 * 60 * 60 * 1000, delayMs: 1000 }),
+    // ─── Deep SERP fetch (serp-rank Stage 1, deep-scrape build) ─────────────
+    // How many results to request from the iTunes Search API for the hot/
+    // tier1/DE lanes (see `keyword-gaps.ts`'s `scanKeywordDeep`) — a strictly
+    // BIGGER fetch than `topN`, never smaller (`scanKeywordDeep` also treats
+    // any `depth <= topN` as a no-op tail). Scoring is unaffected: every
+    // demand/competitiveness/opportunity computation still reads only the
+    // first `topN` entries (calibration frozen) — the extra depth is
+    // persisted separately as `serp_tail` (migration 044) purely to recover
+    // rank-over-time for apps beyond the scored window. Adds zero extra
+    // requests (same call count, bigger payload per call) — see the build
+    // plan's daily-budget table.
+    serpDepth: z.number().int().min(20).max(200).default(200),
+    // Whether the `source: 'mined'` sweep lane also deep-scans. Default OFF —
+    // the mined pool is the highest-volume, lowest-signal lane (see
+    // `minedExploration`'s doc comment above), so its fetches stay shallow
+    // (topN) unless an operator opts in.
+    deepScanMined: z.boolean().default(false),
   })
   .default({
     enabled: true,
@@ -795,6 +812,8 @@ export const appstoreKeywordGapConfigSchema = z
     sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
     minedExploration: { dailyQuota: 20_000 },
     deStorefrontLane: { enabled: true, minIntervalMs: 24 * 60 * 60 * 1000, delayMs: 1000 },
+    serpDepth: 200,
+    deepScanMined: false,
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 
@@ -835,8 +854,18 @@ export const appstoreVelocityConfigSchema = z
   .object({
     // Master switch. Default ON.
     enabled: z.boolean().default(true),
+    // Deep SERP fetch (serp-rank Stage 1, deep-scrape build): bounds how deep
+    // into a scan's rank-ordered app list (`scanAndRecord`'s `rankedSerp`)
+    // observations are even attempted, independent of
+    // `appstoreKeywordGap.serpDepth` (how deep the FETCH goes) — an operator
+    // can retune how much of the fetched depth actually gets written to
+    // `appstore_app_velocity` without touching the fetch-size knob. Default
+    // 200 matches `serpDepth`'s default, so out of the box this is a no-op
+    // cap; the two are deliberately independent knobs, not derived from one
+    // another.
+    maxRankRecorded: z.number().int().min(1).max(500).default(200),
   })
-  .default({ enabled: true });
+  .default({ enabled: true, maxRankRecorded: 200 });
 export type AppstoreVelocityConfig = z.infer<typeof appstoreVelocityConfigSchema>;
 
 // ─── App Store junk-keyword deactivation ───────────────────────────────────
@@ -862,6 +891,319 @@ export const appstoreJunkDeactivationConfigSchema = z
 export type AppstoreJunkDeactivationConfig = z.infer<
   typeof appstoreJunkDeactivationConfigSchema
 >;
+
+// ─── App Store app-meta registry: Lookup-API enrichment ────────────────────
+// Deep-scrape build Stage 2 (migration 045, `app-meta-store.ts` /
+// `app-enrichment.ts`): drains the "every app id we ever see" registry via
+// batched iTunes Lookup API calls (`app-lookup.ts`) — release date (for
+// newborn classification, mirroring `NEWBORN_AGE_DAYS_MAX` from
+// `app-velocity.ts`), price/rating/developer data, and delist detection.
+// Wired into `scraper.ts`'s `keywordSweepTick` as `runAppEnrichmentIfDue()`
+// (build plan §0.4 slot 7) — NOT a new timer. Default ON: unlike the
+// screener/velocity/junk-deactivation passes (read-only bookkeeping), this
+// DOES make network calls, but the registry it drains is a prerequisite for
+// Stage 3 (charts) and Stage 4 (chart-newborn review enrollment), so it
+// defaults on like the other network lanes (`deStorefrontLane`,
+// `autocompleteExpansion`) added in the same build.
+export const appstoreAppEnrichmentConfigSchema = z
+  .object({
+    // Master switch. Default ON.
+    enabled: z.boolean().default(true),
+    // Minimum gap between enrichment passes — its own cadence, decoupled
+    // from the ~1min scan-sweep timer (build plan §0.4 slot 7: 15 min).
+    minIntervalMs: z.number().int().min(60_000).default(15 * 60 * 1000),
+    // Ids per `/lookup` batch request. Apple's documented ceiling is ~200
+    // (verified empirically) — see `app-lookup.ts`'s `MAX_LOOKUP_BATCH_SIZE`.
+    batchSize: z.number().int().min(1).max(200).default(200),
+    // Batches (HTTP requests) fetched per pass. 0 disables the pass entirely
+    // (build plan §0.4: "0 ⇒ skip") without touching `enabled` — an operator
+    // knob distinct from the master switch. Default 4 batches/pass * 96
+    // passes/day (15 min cadence) ≈ 384 batches/day, matching the build
+    // plan's §6 budget table (~381 steady-state lookup requests/day).
+    maxBatchesPerPass: z.number().int().min(0).max(50).default(4),
+    // How old `enriched_at` must be before a registry row is due for
+    // RE-enrichment (never-enriched rows — `enriched_at IS NULL` — are
+    // always due regardless of this). Most apps only need one-time
+    // enrichment; currently-accelerating newborns bypass this staleness gate
+    // entirely via `acceleratingLimit` below. Default 30 days.
+    staleAfterMs: z.number().int().min(0).default(30 * 24 * 60 * 60 * 1000),
+    // How many currently-accelerating newborns (`app-velocity-store.ts`'s
+    // `getTopAcceleratingNewborns`) are force-included in each pass's
+    // enrichment queue ahead of the staleness-ordered fill, regardless of
+    // their own `enriched_at` age — a fast-moving app's price/rating/developer
+    // data going stale matters more than an ordinary app's.
+    acceleratingLimit: z.number().int().min(0).max(200).default(50),
+    // Consecutive Lookup-API misses (the id absent from a batch's results —
+    // Apple delisted it, or it never existed) before a registry row is
+    // marked `delisted`. Default 1: a single miss is treated as a confident
+    // delist signal, since a genuine transient gap (rate-limit, partial
+    // response) is already handled by `ssrfSafeFetch`'s retry — see
+    // `app-meta-store.ts`'s `recordEnrichmentMiss`.
+    delistMissThreshold: z.number().int().min(1).max(10).default(1),
+    // Rolling-24h cap on Lookup-API HTTP requests (lookup + portfolio
+    // combined), tracked via the `appstore_lookup_requests` ledger — see
+    // `app-meta-store.ts`'s `countLookupRequestsSince`. Matches the build
+    // plan's §6 worst-case cap for this lane (1,200/day).
+    dailyRequestBudget: z.number().int().min(0).max(50_000).default(1_200),
+    // Developer-portfolio sub-pass (build plan §0.1: sightings recorded with
+    // source 'portfolio') — runs as part of the SAME 15-min enrichment pass
+    // (no separate timer), gated to its own cadence via `minIntervalMs`.
+    portfolio: z
+      .object({
+        enabled: z.boolean().default(true),
+        minIntervalMs: z.number().int().min(60_000).default(15 * 60 * 1000),
+        // Developers scanned per pass. Default 2/pass * 96 passes/day ≈ 192
+        // requests/day, close to the build plan's §6 steady-state estimate
+        // (~150/day) for this sub-lane.
+        developerLimit: z.number().int().min(0).max(50).default(2),
+        // Ids requested per portfolio lookup — same ~200 ceiling as batchSize.
+        portfolioLimit: z.number().int().min(1).max(200).default(200),
+        // Minimum gap before a developer's portfolio is re-scanned. Default
+        // 30 days — a developer's app list changes slowly.
+        minRescanIntervalMs: z.number().int().min(0).default(30 * 24 * 60 * 60 * 1000),
+      })
+      .default({
+        enabled: true,
+        minIntervalMs: 15 * 60 * 1000,
+        developerLimit: 2,
+        portfolioLimit: 200,
+        minRescanIntervalMs: 30 * 24 * 60 * 60 * 1000,
+      }),
+    // Lookup-request ledger prune — its own cadence (build plan §0.4 slot 7:
+    // "+ request-log prune"), independent of the enrichment pass cadence.
+    ledgerPrune: z
+      .object({
+        maxAgeMs: z.number().int().min(0).default(7 * 24 * 60 * 60 * 1000),
+        minIntervalMs: z.number().int().min(60_000).default(24 * 60 * 60 * 1000),
+      })
+      .default({ maxAgeMs: 7 * 24 * 60 * 60 * 1000, minIntervalMs: 24 * 60 * 60 * 1000 }),
+  })
+  .default({
+    enabled: true,
+    minIntervalMs: 15 * 60 * 1000,
+    batchSize: 200,
+    maxBatchesPerPass: 4,
+    staleAfterMs: 30 * 24 * 60 * 60 * 1000,
+    acceleratingLimit: 50,
+    delistMissThreshold: 1,
+    dailyRequestBudget: 1_200,
+    portfolio: {
+      enabled: true,
+      minIntervalMs: 15 * 60 * 1000,
+      developerLimit: 2,
+      portfolioLimit: 200,
+      minRescanIntervalMs: 30 * 24 * 60 * 60 * 1000,
+    },
+    ledgerPrune: { maxAgeMs: 7 * 24 * 60 * 60 * 1000, minIntervalMs: 24 * 60 * 60 * 1000 },
+  });
+export type AppstoreAppEnrichmentConfig = z.infer<typeof appstoreAppEnrichmentConfigSchema>;
+
+// ─── App Store review-text harvester ────────────────────────────────────────
+// Deep-scrape build Stage 4 (migration 047, `review-harvest-store.ts` /
+// `review-harvester.ts`): rolling-cohort deep review-feed harvest (up to 10
+// pages/app, `review-rss.ts`) for apps enrolled via three candidate sources
+// (open signature hits, accelerating newborns, chart-sourced newborns).
+// Wired into `scraper.ts`'s `keywordSweepTick` as `runReviewHarvestIfDue()`
+// (build plan §0.4 slot 6) — NOT a new timer (`minIntervalMs` replaces the
+// reviews spec's `tickIntervalMs` per build plan §0.2). Default ON, like the
+// other network lanes added in this build (`deStorefrontLane`,
+// `appstoreAppEnrichment`).
+export const appstoreReviewHarvestConfigSchema = z
+  .object({
+    // Master switch. Default ON.
+    enabled: z.boolean().default(true),
+    // Minimum gap between harvest passes — rides the existing ~1min
+    // scan-sweep timer (no new timer); this just keeps the pass from
+    // re-checking due enrollments on every single tick once one has just
+    // run. Default 60s (effectively "every tick").
+    minIntervalMs: z.number().int().min(1_000).default(60_000),
+    // Apps drained per pass, before throttle scaling (build plan §0.4:
+    // "appsPerTick × multiplier, floor 1" — see `review-harvester.ts`'s
+    // `computeEffectiveAppsPerTick`).
+    appsPerTick: z.number().int().min(0).max(50).default(3),
+    // iTunes storefront the harvester fetches — lowercase cc (build plan
+    // §0.5 convention). Reviews aren't multi-storefront in this build; kept
+    // as a knob (not hardcoded "us") for forward compatibility.
+    storefront: z.string().length(2).default("us"),
+    // Delay between successive page fetches for the SAME app — politeness,
+    // same spirit as `scraper.ts`'s `REQUEST_DELAY_MS`.
+    pageDelayMs: z.number().int().min(0).default(500),
+    // Consecutive harvest passes with zero NEW reviews before an enrollment
+    // is deactivated (see `review-harvest-scheduling.ts`'s
+    // `shouldDeactivateEnrollment`) — an app that's gone quiet stops
+    // burning budget every cadence cycle. Independent of delisting (a
+    // delisted app deactivates immediately regardless of this counter).
+    maxConsecutiveEmptyHarvests: z.number().int().min(1).default(5),
+    // "low-star-only" pre-marks 4/5-star review rows `indexed_at` at write
+    // time (never enters the RAG-indexing unindexed queue — critical
+    // 1-3-star review text is the more actionable signal); "all" indexes
+    // every review, matching the legacy hourly path's implicit behavior.
+    memoryIndexing: z.enum(["all", "low-star-only"]).default("low-star-only"),
+    // Rolling-24h cap on review-feed page fetches (1 page = 1 HTTP
+    // request), tracked via the `appstore_review_harvests` ledger — see
+    // `review-harvest-store.ts`'s `countReviewPagesFetchedSince`. Lowered
+    // from the reviews spec's 12,000 per build plan §0.2 (budget headroom;
+    // a cold-start backfill simply spills its remaining work into day 2,
+    // harmless).
+    dailyRequestBudget: z.number().int().min(0).max(100_000).default(10_000),
+    // Cohort-refresh sub-pass (build plan §0.4 slot 6 inner pass:
+    // "runCohortRefreshIfDue 6h") — re-scans the 3 candidate sources (open
+    // signature hits, accelerating newborns, chart-sourced newborns) and
+    // enrolls/refreshes `appstore_review_harvest_state` rows. Own cadence,
+    // decoupled from the per-tick harvest pass above.
+    cohortRefresh: z
+      .object({
+        enabled: z.boolean().default(true),
+        minIntervalMs: z.number().int().min(60_000).default(6 * 60 * 60 * 1000),
+        signatureHitCap: z.number().int().min(0).max(500).default(100),
+        velocityCap: z.number().int().min(0).max(500).default(50),
+        chartNewbornCap: z.number().int().min(0).max(1000).default(200),
+      })
+      .default({
+        enabled: true,
+        minIntervalMs: 6 * 60 * 60 * 1000,
+        signatureHitCap: 100,
+        velocityCap: 50,
+        chartNewbornCap: 200,
+      }),
+    // Review-harvest ledger prune — its own cadence (build plan §0.4 slot 6
+    // inner pass: "runReviewPruneIfDue 24h"), mirrors
+    // `appstoreAppEnrichment.ledgerPrune`.
+    ledgerPrune: z
+      .object({
+        maxAgeMs: z.number().int().min(0).default(7 * 24 * 60 * 60 * 1000),
+        minIntervalMs: z.number().int().min(60_000).default(24 * 60 * 60 * 1000),
+      })
+      .default({ maxAgeMs: 7 * 24 * 60 * 60 * 1000, minIntervalMs: 24 * 60 * 60 * 1000 }),
+  })
+  .default({
+    enabled: true,
+    minIntervalMs: 60_000,
+    appsPerTick: 3,
+    storefront: "us",
+    pageDelayMs: 500,
+    maxConsecutiveEmptyHarvests: 5,
+    memoryIndexing: "low-star-only",
+    dailyRequestBudget: 10_000,
+    cohortRefresh: {
+      enabled: true,
+      minIntervalMs: 6 * 60 * 60 * 1000,
+      signatureHitCap: 100,
+      velocityCap: 50,
+      chartNewbornCap: 200,
+    },
+    ledgerPrune: { maxAgeMs: 7 * 24 * 60 * 60 * 1000, minIntervalMs: 24 * 60 * 60 * 1000 },
+  });
+export type AppstoreReviewHarvestConfig = z.infer<typeof appstoreReviewHarvestConfigSchema>;
+
+// ─── App Store product-page HTML enrichment ─────────────────────────────────
+// Deep-scrape build Stage 5 (migration 048, `app-pages-store.ts` /
+// `app-pages.ts` / `app-page-parse.ts`): fetches each tracked app's
+// `apps.apple.com` product page (the heaviest per-request lane in this
+// build — ~0.6-1MB HTML per fetch, verified live — hence the most
+// conservative pacing/cadence of any lane) for data no JSON API surfaces:
+// the ratings-star histogram, in-app-purchase price list, and related-apps
+// ("similar" + "more by developer") edges. Wired into `scraper.ts`'s
+// `keywordSweepTick` as `runAppPageEnrichmentIfDue()` (build plan §0.4 slot
+// 8) — NOT a new timer. Default ON, like the other network lanes added in
+// this build (`appstoreAppEnrichment`, `appstoreReviewHarvest`).
+export const appstoreAppPagesConfigSchema = z
+  .object({
+    // Master switch. Default ON.
+    enabled: z.boolean().default(true),
+    // Minimum gap between fetch passes — rides the existing ~1min
+    // scan-sweep timer (no new timer). Build plan §0.4 slot 8: 5 min.
+    minIntervalMs: z.number().int().min(60_000).default(5 * 60 * 1000),
+    // Pages fetched per pass, before throttle scaling (`pagesPerBatch ×
+    // multiplier`, see `scraper.ts`'s `runAppPageEnrichmentIfDue`). Default
+    // 10/pass * ~288 passes/day (5min cadence) ≈ 2,880/day, close to the
+    // build plan's §6 steady-state estimate (~2,600/day) for this lane —
+    // the `dailyPageBudget` ledger below is the real ceiling regardless.
+    pagesPerBatch: z.number().int().min(0).max(50).default(10),
+    // `apps.apple.com` storefront the pass fetches — lowercase cc (build
+    // plan §0.5 convention). Kept as a knob (not hardcoded "us") for
+    // forward compatibility; this build only ever passes "us".
+    storefront: z.string().length(2).default("us"),
+    // Delay between successive page fetches within one pass — deliberately
+    // larger than `appstoreReviewHarvest.pageDelayMs` (different host,
+    // heaviest payload, most conservative pacing per build plan §5).
+    requestDelayMs: z.number().int().min(0).default(1_000),
+    // Rolling-24h cap on product-page HTTP requests, tracked via the
+    // `appstore_app_ratings_history` ledger (see `app-pages-store.ts`'s
+    // `countPageFetchesSince` — that table doubles as this lane's request
+    // ledger, migration 048). Matches the build plan's §6 worst-case cap
+    // (3,000/day) for this lane.
+    dailyPageBudget: z.number().int().min(0).max(50_000).default(3_000),
+    // How old a HOT-tier row's `last_fetched_at` must be before it's due for
+    // re-fetch. Default 24h — a signature-hit-related / accelerating-newborn
+    // app's IAP/rating/related data is worth refreshing daily.
+    hotIntervalMs: z.number().int().min(0).default(24 * 60 * 60 * 1000),
+    // How old a ROLLING-tier row's `last_fetched_at` must be before it's due
+    // for re-fetch. Default 14 days — the general corpus rotation, refreshed
+    // far more slowly than the hot tier given the per-fetch cost.
+    rollingIntervalMs: z.number().int().min(0).default(14 * 24 * 60 * 60 * 1000),
+    // Sync sub-pass (build plan §0.4 slot 8: hot/rolling tier membership,
+    // `app-pages-store.ts`'s `syncTrackedAppPages`) — runs as part of the
+    // SAME tick (no separate timer), gated to its own cadence, mirroring
+    // `appstoreReviewHarvest.cohortRefresh`. Pure DB reads/writes (no
+    // network), so it can run on a faster cadence than the fetch pass
+    // without adding to this lane's request budget.
+    sync: z
+      .object({
+        enabled: z.boolean().default(true),
+        minIntervalMs: z.number().int().min(60_000).default(6 * 60 * 60 * 1000),
+        // Same defaults as `appstoreReviewHarvest.cohortRefresh`'s
+        // `signatureHitCap`/`velocityCap` — the SAME two candidate sources
+        // (`review-harvest-store.ts`'s `getSignatureHitCandidates` /
+        // `getVelocityCandidates`) define the "hot" tier here too.
+        hotSignatureHitCap: z.number().int().min(0).max(500).default(100),
+        hotVelocityCap: z.number().int().min(0).max(500).default(50),
+        // New ROLLING-tier apps enrolled per sync pass, from the app-meta
+        // registry's most-recently-seen ids not yet tracked. Bounds one
+        // sync's enrollment burst — the registry can hold 100k+ rows, and
+        // this lane's per-fetch cost means the tracked pool should grow
+        // gradually, not all at once.
+        rollingAddPerSync: z.number().int().min(0).max(5_000).default(500),
+      })
+      .default({
+        enabled: true,
+        minIntervalMs: 6 * 60 * 60 * 1000,
+        hotSignatureHitCap: 100,
+        hotVelocityCap: 50,
+        rollingAddPerSync: 500,
+      }),
+    // Batch canary (build plan §5): if a fetch pass attempts at least
+    // `minBatchSize` apps and more than `parseFailureThreshold` of them fail
+    // to PARSE (not fetch — a 200 response `app-page-parse.ts` couldn't make
+    // sense of), `app-pages.ts` logs an ALARM — a parse-failure spike across
+    // many different apps in one pass is the signature of Apple changing the
+    // page's JSON shape, not any one app being broken.
+    canary: z
+      .object({
+        minBatchSize: z.number().int().min(1).default(10),
+        parseFailureThreshold: z.number().min(0).max(1).default(0.5),
+      })
+      .default({ minBatchSize: 10, parseFailureThreshold: 0.5 }),
+  })
+  .default({
+    enabled: true,
+    minIntervalMs: 5 * 60 * 1000,
+    pagesPerBatch: 10,
+    storefront: "us",
+    requestDelayMs: 1_000,
+    dailyPageBudget: 3_000,
+    hotIntervalMs: 24 * 60 * 60 * 1000,
+    rollingIntervalMs: 14 * 24 * 60 * 60 * 1000,
+    sync: {
+      enabled: true,
+      minIntervalMs: 6 * 60 * 60 * 1000,
+      hotSignatureHitCap: 100,
+      hotVelocityCap: 50,
+      rollingAddPerSync: 500,
+    },
+    canary: { minBatchSize: 10, parseFailureThreshold: 0.5 },
+  });
+export type AppstoreAppPagesConfig = z.infer<typeof appstoreAppPagesConfigSchema>;
 
 // App Store ranking-sync breadth: how aggressively the scraper's ~hourly
 // ranking tick (scraper.ts `scrape()`) pulls chart data. Feeds the keyword
@@ -890,11 +1232,62 @@ export const appstoreSyncConfigSchema = z
     // limit=100 return HTTP 500 (verified live). 100 is the real ceiling,
     // not just a default.
     globalLimit: z.number().int().min(1).max(100).default(100),
+    // International storefront chart sweep (deep-scrape build Stage 3,
+    // §0.1/§0.3) — reuses the SAME per-category iTunes RSS charts as above
+    // (`charts.ts`'s `buildCategoryRankingUrl`/`ITUNES_CATEGORIES`) but for
+    // non-US storefronts, gated to its own cadence off the ~1min sweep tick
+    // (see `scraper.ts`'s `runIntlChartsIfDue`) — NOT the ~hourly `scrape()`
+    // tick this section otherwise configures. Deliberately has NO `firstSeen`
+    // block (build plan §0.1: the metadata stage's `appstore_app_meta`
+    // registry is the single first-seen registry; intl sightings are
+    // recorded there with source `'chart-intl'`).
+    intlCharts: z
+      .object({
+        // Master switch. Default ON.
+        enabled: z.boolean().default(true),
+        // Lowercase iTunes storefront country codes (build plan §0.5
+        // convention). GB/CA/AU chosen as the initial set — large English-
+        // language storefronts distinct enough from US charts to surface
+        // apps the US-only sweep misses.
+        storefronts: z.array(z.string().length(2)).min(1).default(["gb", "ca", "au"]),
+        // Minimum gap between intl-charts passes — one pass sweeps every
+        // configured storefront's whole category list in one shot (batch
+        // truncated by the shared adaptive throttle), so a slow cadence
+        // (default 12h) keeps this lane's request volume small relative to
+        // the hourly US chart tick — see the build plan's §6 budget table.
+        minIntervalMs: z.number().int().min(60_000).default(12 * 60 * 60 * 1000),
+        // Which iTunes RSS chart list types to fetch per (category,
+        // storefront) pair — same enum/defaults as the US `listTypes` above,
+        // configured independently so an operator can narrow intl breadth
+        // without touching the US lane.
+        listTypes: z
+          .array(appstoreSyncListTypeSchema)
+          .min(1)
+          .default(["top-free", "top-paid", "top-grossing"]),
+        // Delay between each work-item's iTunes call within one intl-charts
+        // pass — same spirit as `appstoreKeywordGap.sweepDelayMs`, scoped to
+        // this separate pass.
+        delayMs: z.number().int().min(100).max(10_000).default(1000),
+      })
+      .default({
+        enabled: true,
+        storefronts: ["gb", "ca", "au"],
+        minIntervalMs: 12 * 60 * 60 * 1000,
+        listTypes: ["top-free", "top-paid", "top-grossing"],
+        delayMs: 1000,
+      }),
   })
   .default({
     perCategoryLimit: 200,
     listTypes: ["top-free", "top-paid", "top-grossing"],
     globalLimit: 100,
+    intlCharts: {
+      enabled: true,
+      storefronts: ["gb", "ca", "au"],
+      minIntervalMs: 12 * 60 * 60 * 1000,
+      listTypes: ["top-free", "top-paid", "top-grossing"],
+      delayMs: 1000,
+    },
   });
 export type AppstoreSyncConfig = z.infer<typeof appstoreSyncConfigSchema>;
 
@@ -2311,6 +2704,15 @@ export const opencrowConfigSchema = z.object({
   // App Store ranking-sync breadth (per-category limit/list-types + global
   // feed limit). See appstoreSyncConfigSchema.
   appstoreSync: appstoreSyncConfigSchema,
+  // App-meta registry Lookup-API enrichment (deep-scrape build Stage 2).
+  // Default ON — see appstoreAppEnrichmentConfigSchema.
+  appstoreAppEnrichment: appstoreAppEnrichmentConfigSchema,
+  // Review-text harvester (deep-scrape build Stage 4). Default ON — see
+  // appstoreReviewHarvestConfigSchema.
+  appstoreReviewHarvest: appstoreReviewHarvestConfigSchema,
+  // Product-page HTML enrichment (deep-scrape build Stage 5). Default ON —
+  // see appstoreAppPagesConfigSchema.
+  appstoreAppPages: appstoreAppPagesConfigSchema,
   // Apple Ads (Search Ads) external-demand connection foundation. Default
   // OFF; see appstoreExternalDemandConfigSchema.
   appstoreExternalDemand: appstoreExternalDemandConfigSchema,

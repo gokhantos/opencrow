@@ -3,6 +3,8 @@
 // any downstream reporting/dashboard code. Keep field names/types in lockstep
 // with the DB schema in `src/store/migrations/037_appstore_keyword_gaps.sql`.
 
+import type { SerpTailEntry } from "./serp-tail";
+
 export type GapTrend = "heating" | "stable" | "cooling" | "new";
 
 export interface TopApp {
@@ -47,4 +49,13 @@ export interface KeywordGapProfile {
    * item C fix) and migration 042.
    */
   readonly lowConfidence: boolean;
+  /**
+   * Deep-SERP-only (migration 044, serp-rank Stage 1): the compact
+   * `{id, rank}` tail of a fetch deeper than `topN` — entries at position
+   * `>= topN`, up to the fetched depth. `undefined` for a plain (non-deep)
+   * scan; the pure builder is `serp-tail.ts`'s `buildSerpTail`. Deliberately
+   * NOT read by `getScanHistory`/`getLatestScan` (see their doc comments) —
+   * only `serp-rank-store.ts` reads this column, via its own explicit query.
+   */
+  readonly serpTail?: readonly SerpTailEntry[];
 }

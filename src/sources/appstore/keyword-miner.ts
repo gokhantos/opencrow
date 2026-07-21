@@ -114,7 +114,7 @@ const BRAND_SEPARATORS: readonly RegExp[] = [/:/, / - /, / – /, / \| /];
 
 /**
  * App Store category label (as returned by the iTunes/RSS APIs — see
- * `ITUNES_CATEGORIES` in scraper.ts) mapped to a `GENRE_ZONES` entry
+ * `ITUNES_CATEGORIES` in charts.ts) mapped to a `GENRE_ZONES` entry
  * (keyword-corpus.ts). Unmapped/unknown categories fall back to
  * `DEFAULT_ZONE`.
  */

@@ -11,6 +11,10 @@ import { describe, expect, it, mock, beforeEach } from "bun:test";
 // keyword-store", ...)` factory below must include all of them, even ones a
 // given test doesn't exercise.
 import { RateLimitError } from "../shared/ssrf-safe-fetch";
+// Real (unmocked) import too — used to build a COMPLETE, schema-derived
+// config for the deep-scan lane-wiring tests below, never a hand-rolled
+// partial object that could silently drift from `src/config/schema.ts`.
+import { opencrowConfigSchema } from "../../config/schema";
 
 /** Every `./keyword-store` export `keyword-gaps.ts` imports, with inert defaults. */
 function keywordStoreMockBase() {
@@ -458,7 +462,10 @@ describe("runKeywordSweep", () => {
         perSweepCap: number;
       }) => {
         staleKeywordsTieredCalls.push(opts);
-        return ["a", "b"];
+        return [
+          { keyword: "a", lane: "tier1" as const },
+          { keyword: "b", lane: "tier1" as const },
+        ];
       },
       insertScan: async (p: unknown) => {
         insertScanCalls.push(p);
@@ -520,7 +527,10 @@ describe("runKeywordSweep", () => {
         perSweepCap: number;
       }) => {
         staleKeywordsTieredCalls.push(opts);
-        return ["a", "b"];
+        return [
+          { keyword: "a", lane: "tier1" as const },
+          { keyword: "b", lane: "tier1" as const },
+        ];
       },
       insertScan: async (p: unknown) => {
         insertScanCalls.push(p);
@@ -618,7 +628,10 @@ describe("runKeywordSweep", () => {
         perSweepCap: number;
       }) => {
         staleKeywordsTieredCalls.push(opts);
-        return ["a", "b", "c", "d", "e", "f", "g"];
+        return ["a", "b", "c", "d", "e", "f", "g"].map((keyword) => ({
+          keyword,
+          lane: "tier1" as const,
+        }));
       },
       insertScan: async (p: unknown) => {
         insertScanCalls.push(p);
@@ -668,7 +681,10 @@ describe("runKeywordSweep", () => {
         perSweepCap: number;
       }) => {
         staleKeywordsTieredCalls.push(opts);
-        return ["a", "b"];
+        return [
+          { keyword: "a", lane: "tier1" as const },
+          { keyword: "b", lane: "tier1" as const },
+        ];
       },
       insertScan: async (p: unknown) => {
         insertScanCalls.push(p);
@@ -713,7 +729,7 @@ describe("scanAndRecord mined-specific deactivation (via runKeywordSweep)", () =
   it("deactivates a mined keyword whose demand never crossed 5 in any scan and has no signature hit", async () => {
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
-      getStaleKeywordsTiered: async () => ["hopeless-mined-term"],
+      getStaleKeywordsTiered: async () => [{ keyword: "hopeless-mined-term", lane: "mined" as const }],
       getKeywordMeta: async () => ({ firstFoundAt: 0, source: "mined" as const }),
       getMinedDeactivationStats: async () => ({
         scanCount: 3,
@@ -735,7 +751,9 @@ describe("scanAndRecord mined-specific deactivation (via runKeywordSweep)", () =
   it("does NOT deactivate a mined keyword with a signature hit, even with low demand", async () => {
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
-      getStaleKeywordsTiered: async () => ["watchlisted-mined-term"],
+      getStaleKeywordsTiered: async () => [
+        { keyword: "watchlisted-mined-term", lane: "mined" as const },
+      ],
       getKeywordMeta: async () => ({ firstFoundAt: 0, source: "mined" as const }),
       getMinedDeactivationStats: async () => ({
         scanCount: 3,
@@ -757,7 +775,7 @@ describe("scanAndRecord mined-specific deactivation (via runKeywordSweep)", () =
   it("does NOT apply the mined-specific rule to a non-mined source, even with the same low-demand stats", async () => {
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
-      getStaleKeywordsTiered: async () => ["seed-term"],
+      getStaleKeywordsTiered: async () => [{ keyword: "seed-term", lane: "tier1" as const }],
       getKeywordMeta: async () => ({ firstFoundAt: 0, source: "seed" as const }),
       // getMinedDeactivationStats must not even matter here — 'seed' is
       // protected outright by shouldDeactivateKeyword, and the mined-specific
@@ -829,5 +847,172 @@ describe("runDeStorefrontSweep", () => {
     // Never runs junk-deactivation or velocity bookkeeping against DE data.
     expect(deactivateCalls).toHaveLength(0);
     expect(velocityCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// serp-rank Stage 1 (deep-scrape build): deep SERP fetch + rank persistence.
+// `scanKeywordDeep` is tested directly with EXPLICIT `topN`/`depth` opts
+// (never relying on `loadConfig()` defaults) so these tests stay correct
+// regardless of the shared bun process's well-known cross-file config-mock
+// leak (other `*.isolated.test.ts` files install their own, unrelated
+// `../../config/loader` stubs at module-load time — see this repo's
+// "Isolated lane mock leak" note; unaffected here since every value this
+// describe block needs is passed explicitly).
+// ---------------------------------------------------------------------------
+
+describe("scanKeywordDeep — calibration guard (serp-rank Stage 1)", () => {
+  const KEYWORD = "budget planner";
+  // 30 fixture entries so a topN=20 fetch and a depth=200 fetch (mock
+  // truncates to the SAME fixture, capped by its own length) diverge in
+  // fetched size but must still produce an IDENTICAL scored profile.
+  const FIXTURE_RESULTS = Array.from({ length: 30 }, (_, i) => ({
+    trackId: i + 1,
+    trackName: `App ${i + 1}`,
+    userRatingCount: 1000 - i * 10,
+    averageUserRating: 4.0,
+    releaseDate: "2020-01-01T00:00:00Z",
+  }));
+
+  let requestedUrl = "";
+
+  beforeEach(() => {
+    requestedUrl = "";
+    // Limit-aware, matching real iTunes behavior (the live endpoint DOES
+    // truncate by `limit=`) — required for the byte-equal comparison test
+    // below to be meaningful rather than trivially true.
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        requestedUrl = url;
+        const match = /limit=(\d+)/.exec(url);
+        const limit = match ? Number(match[1]) : FIXTURE_RESULTS.length;
+        return { ok: true, json: async () => ({ results: FIXTURE_RESULTS.slice(0, limit) }) };
+      },
+    }));
+    mock.module("./keyword-store", () => keywordStoreMockBase());
+  });
+
+  it("fetches at the given depth (not topN) but scores/returns only the top-N slice", async () => {
+    const { scanKeywordDeep } = await import("./keyword-gaps");
+    const { profile, rankedSerp } = await scanKeywordDeep(KEYWORD, { topN: 20, depth: 200 });
+
+    expect(requestedUrl).toContain("limit=200");
+    expect(profile.topApps.length).toBe(20);
+    // Fixture only has 30 entries (< depth 200) — the mock returns all of them.
+    expect(rankedSerp.length).toBe(30);
+    // Beyond-topN entries persist as the compact tail, not in `topApps`.
+    expect(profile.serpTail?.length).toBe(10);
+    expect(profile.serpTail?.[0]).toEqual({ id: "21", rank: 20 });
+  });
+
+  it("under kill-switch depth=topN (20), fetches only 20 and has no tail", async () => {
+    const { scanKeywordDeep } = await import("./keyword-gaps");
+    const { profile, rankedSerp } = await scanKeywordDeep(KEYWORD, { topN: 20, depth: 20 });
+
+    expect(requestedUrl).toContain("limit=20");
+    expect(profile.topApps.length).toBe(20);
+    expect(rankedSerp.length).toBe(20);
+    expect(profile.serpTail).toBeUndefined();
+  });
+
+  it("produces a scoring-identical profile to a plain scanKeyword(topN=20) call on the same live results", async () => {
+    const { scanKeyword, scanKeywordDeep } = await import("./keyword-gaps");
+    const shallow = await scanKeyword(KEYWORD, { topN: 20 });
+    const { profile: deep } = await scanKeywordDeep(KEYWORD, { topN: 20, depth: 200 });
+
+    expect(deep.competitiveness).toBe(shallow.competitiveness);
+    expect(deep.demand).toBe(shallow.demand);
+    expect(deep.incumbentWeakness).toBe(shallow.incumbentWeakness);
+    expect(deep.opportunity).toBe(shallow.opportunity);
+    expect(deep.trend).toBe(shallow.trend);
+    expect(deep.lowConfidence).toBe(shallow.lowConfidence);
+    expect(deep.topApps).toEqual(shallow.topApps);
+  });
+});
+
+describe("runKeywordSweep — deep-scan lane wiring (serp-rank Stage 1)", () => {
+  // A COMPLETE, schema-derived config (`opencrowConfigSchema.parse`, never a
+  // hand-rolled partial object) — every field `runKeywordSweep`/
+  // `scanAndRecord` reads is guaranteed present regardless of schema drift,
+  // and the mock is (re-)installed in `beforeEach` (execution phase) so it
+  // wins over any OTHER file's module-load-time config/loader stub still
+  // active in the shared bun process (see this block's module doc comment).
+  function mockConfig(overrides: {
+    readonly legacyRateOverride?: boolean;
+    readonly deepScanMined?: boolean;
+  }): void {
+    mock.module("../../config/loader", () => ({
+      loadConfig: () =>
+        opencrowConfigSchema.parse({
+          appstoreKeywordGap: {
+            deepScanMined: overrides.deepScanMined ?? false,
+            sweepRateSafety: {
+              legacyRateOverride: overrides.legacyRateOverride ?? false,
+            },
+          },
+        }),
+    }));
+  }
+
+  let fetchedUrls: string[];
+
+  function mockLimitAwareFetch(): void {
+    fetchedUrls = [];
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        fetchedUrls.push(url);
+        return { ok: true, json: async () => sample };
+      },
+    }));
+  }
+
+  beforeEach(() => {
+    mockLimitAwareFetch();
+    mock.module("./app-velocity-store", () => ({
+      recordVelocityObservationsForScan: async () => ({ recorded: 0 }),
+    }));
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async () => [
+        { keyword: "hot-kw", lane: "hot" as const },
+        { keyword: "tier1-kw", lane: "tier1" as const },
+        { keyword: "mined-kw", lane: "mined" as const },
+      ],
+    }));
+  });
+
+  it("deep-scans hot/tier1 lanes (limit=200) but keeps the mined lane shallow (limit=20) by default", async () => {
+    mockConfig({});
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(fetchedUrls.length).toBe(3);
+    expect(fetchedUrls[0]).toContain("limit=200"); // hot
+    expect(fetchedUrls[1]).toContain("limit=200"); // tier1
+    expect(fetchedUrls[2]).toContain("limit=20"); // mined, shallow
+  });
+
+  it("legacyRateOverride forces EVERY lane back to limit=20, even hot/tier1", async () => {
+    mockConfig({ legacyRateOverride: true });
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(fetchedUrls.length).toBe(3);
+    for (const url of fetchedUrls) {
+      expect(url).toContain("limit=20");
+    }
+  });
+
+  it("deepScanMined opts the mined lane into a deep (limit=200) fetch too", async () => {
+    mockConfig({ deepScanMined: true });
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(fetchedUrls.length).toBe(3);
+    for (const url of fetchedUrls) {
+      expect(url).toContain("limit=200");
+    }
   });
 });

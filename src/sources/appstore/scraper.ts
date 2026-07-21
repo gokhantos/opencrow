@@ -1,5 +1,4 @@
 import { loadConfig } from "../../config/loader";
-import type { AppstoreSyncListType } from "../../config/schema";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
 import { runKeywordSweep, runDeStorefrontSweep } from "./keyword-gaps";
@@ -9,6 +8,32 @@ import { mineKeywords } from "./keyword-miner";
 import { backfillMinedDeactivation, countScansSince } from "./keyword-store";
 import { advanceThrottle, computeEffectiveSweepRate, computeErrorRate, INITIAL_THROTTLE_STATE } from "./sweep-throttle";
 import type { ThrottleState } from "./sweep-throttle";
+import {
+  runEnrichmentPass,
+  runPortfolioPass,
+  runRegistryBackfillOnce,
+  runLookupLedgerPrune,
+  computeEffectiveMaxBatches,
+} from "./app-enrichment";
+import { recordAppSightings } from "./app-meta-store";
+import { runIntlChartsSweep } from "./charts-intl";
+import {
+  ITUNES_CATEGORIES,
+  buildCategoryRankingUrl,
+  buildGlobalTopAppsUrl,
+  categoryListTypeTag,
+  dedupeRankingsByListKey,
+  parseTopAppsItunes,
+  parseTopAppsV2,
+} from "./charts";
+import {
+  computeEffectiveAppsPerTick,
+  harvestDueApps,
+  runCohortRefresh,
+  runReviewHarvestLedgerPrune,
+} from "./review-harvester";
+import { buildReviewFeedUrl, parseReviewFeedPage, toAppReviewRow } from "./review-rss";
+import { runAppPageFetchPass, runAppPageSyncPass } from "./app-pages";
 import {
   upsertRankings,
   upsertReviews,
@@ -38,105 +63,6 @@ const KEYWORD_MINING_SCAN_LIMIT = 3000; // ranking rows scanned for keyword cand
 
 const APPSTORE_AGENT_ID = "appstore";
 
-// NOTE: genre 6026 was previously mislabeled "Travel" in this list — verified
-// live against the iTunes RSS feed, 6026 actually returns Developer Tools
-// (e.g. TestFlight). Corrected below; the real Travel genre id is 6003
-// (verified separately, added as a new entry).
-//
-// Every id below was verified live (curl against
-// itunes.apple.com/us/rss/topfreeapplications/.../genre=<id>/json) to return
-// non-empty, correctly-labeled entries before being trusted here.
-const ITUNES_CATEGORIES: ReadonlyArray<{
-  readonly id: number;
-  readonly name: string;
-}> = [
-  { id: 6000, name: "Business" },
-  { id: 6001, name: "Weather" },
-  { id: 6002, name: "Utilities" },
-  { id: 6003, name: "Travel" },
-  { id: 6004, name: "Sports" },
-  { id: 6005, name: "Social Networking" },
-  { id: 6006, name: "Reference" },
-  { id: 6007, name: "Productivity" },
-  { id: 6008, name: "Photo & Video" },
-  { id: 6009, name: "News" },
-  { id: 6010, name: "Navigation" },
-  { id: 6011, name: "Music" },
-  { id: 6012, name: "Lifestyle" },
-  { id: 6013, name: "Health & Fitness" },
-  { id: 6014, name: "Games" },
-  { id: 6015, name: "Finance" },
-  { id: 6016, name: "Entertainment" },
-  { id: 6017, name: "Education" },
-  { id: 6018, name: "Book" },
-  { id: 6020, name: "Medical" },
-  { id: 6023, name: "Food & Drink" },
-  { id: 6024, name: "Shopping" },
-  { id: 6026, name: "Developer Tools" },
-];
-
-// Maps a sync list type to its iTunes RSS URL segment. All three verified
-// live to return distinct, non-empty per-genre rankings.
-const ITUNES_LIST_TYPE_URL_SEGMENT: Record<AppstoreSyncListType, string> = {
-  "top-free": "topfreeapplications",
-  "top-paid": "toppaidapplications",
-  "top-grossing": "topgrossingapplications",
-};
-
-/** Pure URL builder for a per-category (genre) iTunes RSS chart request. */
-export function buildCategoryRankingUrl(
-  genreId: number,
-  listType: AppstoreSyncListType,
-  limit: number,
-): string {
-  const segment = ITUNES_LIST_TYPE_URL_SEGMENT[listType];
-  return `https://itunes.apple.com/us/rss/${segment}/limit=${limit}/genre=${genreId}/json`;
-}
-
-/** The `list_type` tag stored/queried for a given genre + sync list type. */
-export function categoryListTypeTag(genreId: number, listType: AppstoreSyncListType): string {
-  return `${listType}-${genreId}`;
-}
-
-/**
- * Pure URL builder for the GLOBAL (cross-category) top-free/top-paid feed,
- * served by rss.applemarketingtools.com — a different API from the
- * per-category iTunes RSS above. That API hard-errors (HTTP 500) above
- * limit=100 (verified live); callers must clamp `limit` accordingly.
- */
-export function buildGlobalTopAppsUrl(
-  listType: "top-free" | "top-paid",
-  limit: number,
-): string {
-  return `https://rss.applemarketingtools.com/api/v2/us/apps/${listType}/${limit}/apps.json`;
-}
-
-/**
- * Drops duplicate (app id, list_type) pairs, keeping the first occurrence.
- * Cheap defensive dedup for a single scrape cycle's accumulated rankings —
- * an app can legitimately appear in many different list_types (e.g. once per
- * genre/list-type it charts in), but should only be upserted once per
- * distinct list_type per cycle.
- */
-export function dedupeRankingsByListKey(
-  rows: readonly AppRankingRow[],
-): readonly AppRankingRow[] {
-  const seen = new Set<string>();
-  const result: AppRankingRow[] = [];
-  for (const row of rows) {
-    if (!row.id) continue;
-    const key = `${row.id}|${row.list_type}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(row);
-  }
-  return result;
-}
-
-function reviewsUrl(appId: string): string {
-  return `https://itunes.apple.com/us/rss/customerreviews/id=${appId}/sortBy=mostRecent/json`;
-}
-
 export interface AppStoreScraper {
   start(): void;
   stop(): void;
@@ -148,41 +74,6 @@ interface ScrapeResult {
   rankings?: number;
   reviews?: number;
   error?: string;
-}
-
-interface RssAppEntry {
-  readonly id?: {
-    readonly label?: string;
-    readonly attributes?: {
-      readonly "im:id"?: string;
-      readonly "im:bundleId"?: string;
-    };
-  };
-  readonly "im:name"?: { readonly label?: string };
-  readonly "im:artist"?: { readonly label?: string };
-  readonly category?: {
-    readonly attributes?: { readonly label?: string };
-  };
-  readonly "im:image"?: ReadonlyArray<{ readonly label?: string }>;
-  readonly link?:
-    | { readonly attributes?: { readonly href?: string } }
-    | ReadonlyArray<{ readonly attributes?: { readonly href?: string } }>;
-  readonly summary?: { readonly label?: string };
-  readonly "im:price"?: {
-    readonly attributes?: { readonly amount?: string };
-  };
-  readonly "im:releaseDate"?: {
-    readonly attributes?: { readonly label?: string };
-  };
-}
-
-interface RssReviewEntry {
-  readonly id?: { readonly label?: string };
-  readonly author?: { readonly name?: { readonly label?: string } };
-  readonly "im:rating"?: { readonly label?: string };
-  readonly title?: { readonly label?: string };
-  readonly content?: { readonly label?: string };
-  readonly "im:version"?: { readonly label?: string };
 }
 
 function delay(ms: number): Promise<void> {
@@ -206,133 +97,6 @@ async function fetchJson(url: string): Promise<unknown> {
   }
 
   return response.json();
-}
-
-interface RssV2App {
-  readonly id?: string;
-  readonly name?: string;
-  readonly artistName?: string;
-  readonly genres?: ReadonlyArray<{ readonly name?: string }>;
-  readonly artworkUrl100?: string;
-  readonly url?: string;
-}
-
-function parseTopAppsV2(
-  data: unknown,
-  listType: string,
-): readonly AppRankingRow[] {
-  const feed = (data as Record<string, unknown>)?.feed as
-    | Record<string, unknown>
-    | undefined;
-  const results = (feed?.results ?? []) as readonly RssV2App[];
-  const now = Math.floor(Date.now() / 1000);
-
-  return results.map((app, index) => ({
-    id: app.id ?? "",
-    name: app.name ?? "",
-    artist: app.artistName ?? "",
-    category:
-      (app.genres as ReadonlyArray<{ name?: string }> | undefined)?.[0]
-        ?.name ?? "",
-    rank: index + 1,
-    list_type: listType,
-    icon_url: app.artworkUrl100 ?? "",
-    store_url: app.url ?? "",
-    description: "",
-    price: "",
-    bundle_id: "",
-    release_date: "",
-    updated_at: now,
-    indexed_at: null,
-  }));
-}
-
-function itunesLinkHref(
-  link:
-    | { readonly attributes?: { readonly href?: string } }
-    | ReadonlyArray<{ readonly attributes?: { readonly href?: string } }>
-    | undefined,
-): string {
-  if (!link) return "";
-  if (Array.isArray(link)) {
-    return (link as ReadonlyArray<{ attributes?: { href?: string } }>)[0]
-      ?.attributes?.href ?? "";
-  }
-  return (link as { attributes?: { href?: string } }).attributes?.href ?? "";
-}
-
-function parseTopAppsItunes(
-  data: unknown,
-  listType: string,
-): readonly AppRankingRow[] {
-  const feed = (data as Record<string, unknown>)?.feed as
-    | Record<string, unknown>
-    | undefined;
-  if (!feed) return [];
-
-  const rawEntries = feed.entry;
-  if (!rawEntries) return [];
-
-  const entries = (
-    Array.isArray(rawEntries) ? rawEntries : [rawEntries]
-  ) as readonly RssAppEntry[];
-
-  const now = Math.floor(Date.now() / 1000);
-
-  return entries.map((entry, index) => {
-    const appId = entry.id?.attributes?.["im:id"] ?? "";
-    const rawPrice = entry["im:price"]?.attributes?.amount ?? "";
-    const price =
-      rawPrice === "0" || rawPrice === "0.00000" ? "Free" : rawPrice;
-    const images = entry["im:image"] ?? [];
-    const iconUrl = images[images.length - 1]?.label ?? "";
-
-    return {
-      id: appId,
-      name: entry["im:name"]?.label ?? "",
-      artist: entry["im:artist"]?.label ?? "",
-      category: entry.category?.attributes?.label ?? "",
-      rank: index + 1,
-      list_type: listType,
-      icon_url: iconUrl,
-      store_url: itunesLinkHref(entry.link),
-      description: entry.summary?.label ?? "",
-      price,
-      bundle_id: entry.id?.attributes?.["im:bundleId"] ?? "",
-      release_date: entry["im:releaseDate"]?.attributes?.label ?? "",
-      updated_at: now,
-      indexed_at: null,
-    };
-  });
-}
-
-function parseReviews(
-  data: unknown,
-  appId: string,
-  appName: string,
-): readonly AppReviewRow[] {
-  const feed = (data as Record<string, unknown>)?.feed as
-    | Record<string, unknown>
-    | undefined;
-  if (!feed) return [];
-
-  const entries = (feed.entry ?? []) as readonly RssReviewEntry[];
-  const now = Math.floor(Date.now() / 1000);
-
-  return entries
-    .filter((e) => e.id?.label)
-    .map((entry) => ({
-      id: entry.id?.label ?? "",
-      app_id: appId,
-      app_name: appName,
-      author: entry.author?.name?.label ?? "",
-      rating: parseInt(entry["im:rating"]?.label ?? "0", 10),
-      title: entry.title?.label ?? "",
-      content: entry.content?.label ?? "",
-      version: entry["im:version"]?.label ?? "",
-      first_seen_at: now,
-      indexed_at: null,
-    }));
 }
 
 function reviewsToAppReviewsForIndex(
@@ -398,6 +162,12 @@ export function createAppStoreScraper(config?: {
   // doesn't re-scan the whole tier-1-protected corpus on every ~1min sweep
   // tick.
   let lastDeStorefrontRunAt = 0;
+  // Soft cadence gate for the international storefront chart sweep (deep-
+  // scrape build Stage 3 — see `charts-intl.ts`'s `runIntlChartsSweep`):
+  // process-local, same rationale as `lastDeStorefrontRunAt` — gated to its
+  // own `appstoreSync.intlCharts.minIntervalMs` (default 12h) since one pass
+  // sweeps every configured storefront's whole category list in one shot.
+  let lastIntlChartsRunAt = 0;
   // One-shot guard for the mined-pool deactivation backfill (see
   // `keyword-store.ts`'s `backfillMinedDeactivation`) — runs at most ONCE per
   // process lifetime, off the async sweep tick so it never blocks startup. A
@@ -406,6 +176,46 @@ export function createAppStoreScraper(config?: {
   // run only ever touches keywords the first run (or the inline per-scan
   // check) hasn't already caught.
   let minedBackfillDone = false;
+  // Soft cadence gate for the app-meta registry's Lookup-API enrichment pass
+  // (deep-scrape build Stage 2, build plan §0.4 slot 7 — see
+  // `runAppEnrichmentIfDue` below): process-local, same rationale as
+  // `lastDeStorefrontRunAt` — default 15min so its network fan-out (batched
+  // `/lookup` requests) doesn't run on every ~1min sweep tick.
+  let lastEnrichmentRunAt = 0;
+  // Soft cadence gate for the developer-portfolio sub-pass, decoupled from
+  // the enrichment pass's own cadence above (both default 15min but are
+  // independently configurable — see `appstoreAppEnrichment.portfolio`).
+  let lastPortfolioRunAt = 0;
+  // Soft cadence gate for the lookup-request ledger prune (default 24h).
+  let lastLedgerPruneRunAt = 0;
+  // One-shot guard for the app-meta registry's initial backfill (see
+  // `app-meta-store.ts`'s `backfillRegistry`) — same pattern as
+  // `minedBackfillDone`: runs at most once per process lifetime, and a
+  // restart simply re-runs the (idempotent, `WHERE NOT EXISTS`-guarded) seed.
+  let registryBackfillDone = false;
+  // Soft cadence gate for the review-text harvester's main harvest pass
+  // (deep-scrape build Stage 4, build plan §0.4 slot 6 — see
+  // `runReviewHarvestIfDue` below): process-local, same rationale as
+  // `lastEnrichmentRunAt` — default 60s (effectively "every tick"), since
+  // `getDueEnrollments` itself is the real cadence gate per app (daily/weekly
+  // cohort intervals) and this just avoids re-querying it on a sub-60s tick.
+  let lastReviewHarvestRunAt = 0;
+  // Soft cadence gate for the review harvester's cohort-refresh sub-pass,
+  // decoupled from the harvest pass's own cadence above (default 6h — see
+  // `appstoreReviewHarvest.cohortRefresh`).
+  let lastReviewCohortRefreshRunAt = 0;
+  // Soft cadence gate for the review-harvest ledger prune (default 24h).
+  let lastReviewLedgerPruneRunAt = 0;
+  // Soft cadence gate for the app-page HTML lane's fetch pass (deep-scrape
+  // build Stage 5, build plan §0.4 slot 8 — see `runAppPageEnrichmentIfDue`
+  // below): process-local, same rationale as `lastEnrichmentRunAt` — default
+  // 5min so this lane's heaviest-per-request fetches (~0.6-1MB HTML each)
+  // don't run on every ~1min sweep tick.
+  let lastAppPagesFetchRunAt = 0;
+  // Soft cadence gate for the app-page lane's hot/rolling tier-sync sub-pass,
+  // decoupled from the fetch pass's own cadence above (default 6h — see
+  // `appstoreAppPages.sync`). Pure DB reads/writes, no network.
+  let lastAppPagesSyncRunAt = 0;
   // Adaptive-throttle state for the keyword-gap sweep's scan rate (see
   // sweep-throttle.ts) — process-local like `lastScreenerRunAt` above; a
   // restart resets to full rate, which is harmless (the state machine
@@ -429,13 +239,21 @@ export function createAppStoreScraper(config?: {
     }
   }
 
+  // Legacy hourly page-1-only review path, re-based onto the shared
+  // `review-rss.ts` parser (deep-scrape build Stage 4, build plan §0.4
+  // hourly hook 2) — same behavior/pacing as before (still one `fetchJson`
+  // call via `fetchWithTimeout`, no rate-limit-retry added here), just
+  // gaining `review_date`/vote columns on the rows it writes and sharing the
+  // ONE review parser with the deep harvester rather than maintaining its
+  // own copy.
   async function fetchReviewsForApp(
     appId: string,
     appName: string,
   ): Promise<readonly AppReviewRow[]> {
     try {
-      const data = await fetchJson(reviewsUrl(appId));
-      return parseReviews(data, appId, appName);
+      const now = Math.floor(Date.now() / 1000);
+      const data = await fetchJson(buildReviewFeedUrl(appId, 1, "us"));
+      return parseReviewFeedPage(data).map((p) => toAppReviewRow(p, appId, appName, "us", now));
     } catch (err) {
       const msg = getErrorMessage(err);
       log.warn("Failed to fetch reviews", { appId, appName, error: msg });
@@ -591,6 +409,14 @@ export function createAppStoreScraper(config?: {
         paid: paidApps.length,
       });
 
+      // App-meta registry sighting (deep-scrape build Stage 2, §0.1/§0.4):
+      // cheap DB upsert, no network — never allowed to break the scrape.
+      try {
+        await recordAppSightings(overallRankings, "chart");
+      } catch (err) {
+        log.warn("App-meta sighting recording failed (overall rankings)", { error: getErrorMessage(err) });
+      }
+
       // Fetch per-category rankings from iTunes RSS API (richer data) across
       // every configured list type (top-free/top-paid/top-grossing by
       // default) — this is the main breadth lever for the app corpus that
@@ -640,6 +466,12 @@ export function createAppStoreScraper(config?: {
           categories: ITUNES_CATEGORIES.length,
           total: catCount,
         });
+
+        try {
+          await recordAppSightings(categoryRankings, "chart");
+        } catch (err) {
+          log.warn("App-meta sighting recording failed (category rankings)", { error: getErrorMessage(err) });
+        }
       }
 
       // Build list of apps to fetch reviews for:
@@ -685,8 +517,8 @@ export function createAppStoreScraper(config?: {
 
         const reviews = await fetchReviewsForApp(app.id, app.name);
         if (reviews.length > 0) {
-          const count = await upsertReviews(reviews);
-          totalReviews += count;
+          const result = await upsertReviews(reviews);
+          totalReviews += result.upserted;
         }
       }
 
@@ -711,6 +543,12 @@ export function createAppStoreScraper(config?: {
             await upsertRankings(newApps);
             discoveredCount += newApps.length;
             for (const a of newApps) knownIds.add(a.id);
+
+            try {
+              await recordAppSightings(newApps, "discovery");
+            } catch (err) {
+              log.warn("App-meta sighting recording failed (discovery)", { error: getErrorMessage(err) });
+            }
           }
         }
 
@@ -854,6 +692,26 @@ export function createAppStoreScraper(config?: {
       // doc comment. Runs at most once, off this tick so it never blocks
       // scraper startup.
       await runMinedBackfillOnce();
+
+      // International storefront chart sweep (deep-scrape build Stage 3,
+      // build plan §0.4 slot 5) — gated to its own cadence internally, same
+      // pattern as the screener/autocomplete/DE-storefront passes above.
+      await runIntlChartsIfDue();
+
+      // Review-text harvester (deep-scrape build Stage 4, build plan §0.4
+      // slot 6) — gated to its own cadence internally, same pattern as the
+      // screener/autocomplete/DE-storefront/intl-charts passes above.
+      await runReviewHarvestIfDue();
+
+      // App-meta registry Lookup-API enrichment (deep-scrape build Stage 2,
+      // build plan §0.4 slot 7) — gated to its own cadence internally, same
+      // pattern as the screener/autocomplete/DE-storefront passes above.
+      await runAppEnrichmentIfDue();
+
+      // App-page HTML enrichment (deep-scrape build Stage 5, build plan
+      // §0.4 slot 8) — gated to its own cadence internally, same pattern as
+      // every other pass above.
+      await runAppPageEnrichmentIfDue();
     } catch (err) {
       log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
     } finally {
@@ -990,6 +848,62 @@ export function createAppStoreScraper(config?: {
     }
   }
 
+  // Runs the international storefront chart sweep (deep-scrape build
+  // Stage 3 — see `charts-intl.ts`'s `runIntlChartsSweep`), gated to
+  // `appstoreSync.intlCharts.minIntervalMs` (default 12h) and to the SAME
+  // `sweepRateSafety` rails as every other lane on this tick: the hard
+  // kill-switch (`legacyRateOverride`) skips this pass entirely, and any
+  // rate-limit errors it hits feed into the SHARED `sweepThrottleState` —
+  // which ALSO scales this pass's own work-list size (build plan §0.4:
+  // "work-list truncated by multiplier"), so a spike anywhere shrinks this
+  // pass's next run too, not just future runs of the lane that tripped it.
+  // Never allowed to break the sweep tick — a failure is logged and
+  // swallowed, mirroring the other "IfDue" passes.
+  async function runIntlChartsIfDue(): Promise<void> {
+    try {
+      const fullCfg = loadConfig();
+      const cfg = fullCfg.appstoreSync.intlCharts;
+      if (!cfg.enabled) return;
+      if (fullCfg.appstoreKeywordGap.sweepRateSafety.legacyRateOverride) {
+        log.debug("Intl charts lane skipped — legacy rate override active");
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastIntlChartsRunAt < cfg.minIntervalMs) return;
+      lastIntlChartsRunAt = now;
+
+      const adaptiveThrottleEnabled = fullCfg.appstoreKeywordGap.sweepRateSafety.adaptiveThrottleEnabled;
+      const multiplier = adaptiveThrottleEnabled ? sweepThrottleState.multiplier : 1;
+
+      const result = await runIntlChartsSweep({
+        storefronts: cfg.storefronts,
+        listTypes: cfg.listTypes,
+        perCategoryLimit: fullCfg.appstoreSync.perCategoryLimit,
+        delayMs: cfg.delayMs,
+        throttleMultiplier: multiplier,
+      });
+
+      log.info("Intl charts lane complete", {
+        scanned: result.scanned,
+        failed: result.failed,
+        bailed: result.bailed,
+        rateLimitErrors: result.rateLimitErrors,
+        sightingsRecorded: result.sightingsRecorded,
+        storefronts: cfg.storefronts,
+        throttleMultiplier: multiplier,
+      });
+
+      if (adaptiveThrottleEnabled) {
+        const attempted = result.scanned + result.failed;
+        const errorRate = computeErrorRate(result.rateLimitErrors, attempted);
+        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+      }
+    } catch (err) {
+      log.warn("Intl charts lane failed", { error: getErrorMessage(err) });
+    }
+  }
+
   // One-shot backfill of the mined-pool deactivation rule against the
   // EXISTING corpus (see `keyword-store.ts`'s `backfillMinedDeactivation` for
   // why this is a single set-based UPDATE rather than budgeted batches).
@@ -1007,6 +921,284 @@ export function createAppStoreScraper(config?: {
       log.info("Mined-pool deactivation backfill complete", { deactivated });
     } catch (err) {
       log.warn("Mined-pool deactivation backfill failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // Runs the review-text harvester (deep-scrape build Stage 4 — see
+  // `review-harvester.ts`'s `runCohortRefresh`/`harvestDueApps`), plus its
+  // ledger prune, each gated to its OWN cadence — NO new timer (build plan
+  // §0.4): all three ride this ~1min sweep tick, same pattern as
+  // `runAppEnrichmentIfDue` below. Respects the SAME `legacyRateOverride`
+  // kill-switch and SHARED `sweepThrottleState` as every other lane on this
+  // tick — a rate-limit spike in any lane backs off every lane. Never
+  // allowed to break the sweep tick — a failure is logged and swallowed,
+  // mirroring the other "IfDue" passes.
+  async function runReviewHarvestIfDue(): Promise<void> {
+    try {
+      const fullCfg = loadConfig();
+      const cfg = fullCfg.appstoreReviewHarvest;
+      if (!cfg.enabled) return;
+      if (fullCfg.appstoreKeywordGap.sweepRateSafety.legacyRateOverride) {
+        log.debug("Review harvest skipped — legacy rate override active");
+        return;
+      }
+      const adaptiveThrottleEnabled = fullCfg.appstoreKeywordGap.sweepRateSafety.adaptiveThrottleEnabled;
+
+      // Cohort-refresh sub-pass — its own cadence gate, independent of the
+      // harvest pass's `minIntervalMs` below. No network calls of its own
+      // (pure DB read/write), so it isn't throttle-scaled.
+      if (cfg.cohortRefresh.enabled && Date.now() - lastReviewCohortRefreshRunAt >= cfg.cohortRefresh.minIntervalMs) {
+        lastReviewCohortRefreshRunAt = Date.now();
+        try {
+          const refreshResult = await runCohortRefresh({
+            signatureHitCap: cfg.cohortRefresh.signatureHitCap,
+            velocityCap: cfg.cohortRefresh.velocityCap,
+            chartNewbornCap: cfg.cohortRefresh.chartNewbornCap,
+          });
+          log.info("Review-harvest cohort refresh complete", refreshResult);
+        } catch (err) {
+          log.warn("Review-harvest cohort refresh failed", { error: getErrorMessage(err) });
+        }
+      }
+
+      const now = Date.now();
+      if (now - lastReviewHarvestRunAt >= cfg.minIntervalMs) {
+        lastReviewHarvestRunAt = now;
+
+        const multiplier = adaptiveThrottleEnabled ? sweepThrottleState.multiplier : 1;
+        const effectiveAppsPerTick = computeEffectiveAppsPerTick(cfg.appsPerTick, multiplier);
+
+        const result = await harvestDueApps({
+          appsPerTick: effectiveAppsPerTick,
+          storefront: cfg.storefront,
+          pageDelayMs: cfg.pageDelayMs,
+          dailyRequestBudget: cfg.dailyRequestBudget,
+          maxConsecutiveEmptyHarvests: cfg.maxConsecutiveEmptyHarvests,
+          memoryIndexing: cfg.memoryIndexing,
+        });
+
+        if (result.skipped) {
+          log.debug("Review harvest pass skipped this cycle", { effectiveAppsPerTick });
+        } else {
+          log.info("Review harvest pass complete", {
+            appsHarvested: result.appsHarvested,
+            pagesFetched: result.pagesFetched,
+            reviewsFound: result.reviewsFound,
+            newReviews: result.newReviews,
+            deactivated: result.deactivated,
+            attempted: result.attempted,
+            rateLimitErrors: result.rateLimitErrors,
+            bailed: result.bailed,
+            effectiveAppsPerTick,
+          });
+
+          if (adaptiveThrottleEnabled && result.attempted > 0) {
+            const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
+            sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+          }
+        }
+      }
+
+      // Review-harvest ledger prune — its own cadence gate.
+      if (Date.now() - lastReviewLedgerPruneRunAt >= cfg.ledgerPrune.minIntervalMs) {
+        lastReviewLedgerPruneRunAt = Date.now();
+        try {
+          const { pruned } = await runReviewHarvestLedgerPrune(Math.floor(cfg.ledgerPrune.maxAgeMs / 1000));
+          log.debug("Review-harvest ledger pruned", { pruned });
+        } catch (err) {
+          log.warn("Review-harvest ledger prune failed", { error: getErrorMessage(err) });
+        }
+      }
+    } catch (err) {
+      log.warn("Review harvest failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // Runs the app-meta registry's Lookup-API enrichment pass (deep-scrape
+  // build Stage 2 — see `app-enrichment.ts`'s `runEnrichmentPass` and
+  // `app-meta-store.ts`), plus its developer-portfolio sub-pass and
+  // lookup-request ledger prune, each gated to its OWN cadence — NO new
+  // timer (build plan §0.4): all three ride this ~1min sweep tick. Respects
+  // the SAME `legacyRateOverride` kill-switch and SHARED `sweepThrottleState`
+  // as the scan sweep/autocomplete/DE-storefront passes — a rate-limit spike
+  // in any lane backs off every lane. Never allowed to break the sweep tick —
+  // a failure is logged and swallowed, mirroring the other "IfDue" passes.
+  async function runAppEnrichmentIfDue(): Promise<void> {
+    try {
+      const fullCfg = loadConfig();
+      const cfg = fullCfg.appstoreAppEnrichment;
+      if (!cfg.enabled) return;
+      if (fullCfg.appstoreKeywordGap.sweepRateSafety.legacyRateOverride) {
+        log.debug("App enrichment skipped — legacy rate override active");
+        return;
+      }
+      const adaptiveThrottleEnabled = fullCfg.appstoreKeywordGap.sweepRateSafety.adaptiveThrottleEnabled;
+
+      // One-shot registry backfill — see `registryBackfillDone`'s doc comment.
+      if (!registryBackfillDone) {
+        registryBackfillDone = true;
+        try {
+          const { inserted } = await runRegistryBackfillOnce();
+          log.info("App-meta registry backfill complete", { inserted });
+        } catch (err) {
+          log.warn("App-meta registry backfill failed", { error: getErrorMessage(err) });
+        }
+      }
+
+      const now = Date.now();
+      if (now - lastEnrichmentRunAt >= cfg.minIntervalMs) {
+        lastEnrichmentRunAt = now;
+
+        const multiplier = adaptiveThrottleEnabled ? sweepThrottleState.multiplier : 1;
+        const effectiveMaxBatches = computeEffectiveMaxBatches(cfg.maxBatchesPerPass, multiplier);
+
+        const result = await runEnrichmentPass({
+          batchSize: cfg.batchSize,
+          maxBatches: effectiveMaxBatches,
+          staleAfterSeconds: Math.floor(cfg.staleAfterMs / 1000),
+          acceleratingLimit: cfg.acceleratingLimit,
+          dailyRequestBudget: cfg.dailyRequestBudget,
+          delistMissThreshold: cfg.delistMissThreshold,
+        });
+
+        if (result.skipped) {
+          log.debug("App enrichment pass skipped this cycle", { effectiveMaxBatches });
+        } else {
+          log.info("App enrichment pass complete", {
+            enriched: result.enrichedCount,
+            misses: result.missCount,
+            delisted: result.delistedCount,
+            relisted: result.relistedCount,
+            chartNewbornVelocity: result.chartNewbornVelocityCount,
+            attempted: result.attempted,
+            rateLimitErrors: result.rateLimitErrors,
+            bailed: result.bailed,
+            effectiveMaxBatches,
+          });
+
+          if (adaptiveThrottleEnabled && result.attempted > 0) {
+            const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
+            sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+          }
+        }
+      }
+
+      // Developer-portfolio sub-pass — its own cadence gate, independent of
+      // the enrichment pass's `minIntervalMs` above.
+      if (cfg.portfolio.enabled && now - lastPortfolioRunAt >= cfg.portfolio.minIntervalMs) {
+        lastPortfolioRunAt = now;
+        const portfolioResult = await runPortfolioPass({
+          developerLimit: cfg.portfolio.developerLimit,
+          portfolioLimit: cfg.portfolio.portfolioLimit,
+          minIntervalSeconds: Math.floor(cfg.portfolio.minRescanIntervalMs / 1000),
+        });
+        log.info("Developer portfolio pass complete", {
+          developersScanned: portfolioResult.developersScanned,
+          newSightings: portfolioResult.newSightings,
+          attempted: portfolioResult.attempted,
+          rateLimitErrors: portfolioResult.rateLimitErrors,
+          bailed: portfolioResult.bailed,
+        });
+
+        if (adaptiveThrottleEnabled && portfolioResult.attempted > 0) {
+          const errorRate = computeErrorRate(portfolioResult.rateLimitErrors, portfolioResult.attempted);
+          sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+        }
+      }
+
+      // Lookup-request ledger prune — its own cadence gate.
+      if (now - lastLedgerPruneRunAt >= cfg.ledgerPrune.minIntervalMs) {
+        lastLedgerPruneRunAt = now;
+        try {
+          const { pruned } = await runLookupLedgerPrune(Math.floor(cfg.ledgerPrune.maxAgeMs / 1000));
+          log.debug("Lookup-request ledger pruned", { pruned });
+        } catch (err) {
+          log.warn("Lookup-request ledger prune failed", { error: getErrorMessage(err) });
+        }
+      }
+    } catch (err) {
+      log.warn("App enrichment failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // Runs the app-page HTML lane (deep-scrape build Stage 5 — see
+  // `app-pages.ts`'s `runAppPageSyncPass`/`runAppPageFetchPass`), each gated
+  // to its OWN cadence — NO new timer (build plan §0.4): both ride this
+  // ~1min sweep tick, same pattern as `runAppEnrichmentIfDue` above.
+  // Respects the SAME `legacyRateOverride` kill-switch and SHARED
+  // `sweepThrottleState` as every other lane on this tick — a rate-limit
+  // spike in any lane backs off every lane. Never allowed to break the
+  // sweep tick — a failure is logged and swallowed, mirroring the other
+  // "IfDue" passes.
+  async function runAppPageEnrichmentIfDue(): Promise<void> {
+    try {
+      const fullCfg = loadConfig();
+      const cfg = fullCfg.appstoreAppPages;
+      if (!cfg.enabled) return;
+      if (fullCfg.appstoreKeywordGap.sweepRateSafety.legacyRateOverride) {
+        log.debug("App-page enrichment skipped — legacy rate override active");
+        return;
+      }
+      const adaptiveThrottleEnabled = fullCfg.appstoreKeywordGap.sweepRateSafety.adaptiveThrottleEnabled;
+
+      // Tier-sync sub-pass — its own cadence gate, independent of the fetch
+      // pass's `minIntervalMs` below. No network calls of its own (pure DB
+      // read/write), so it isn't throttle-scaled.
+      if (cfg.sync.enabled && Date.now() - lastAppPagesSyncRunAt >= cfg.sync.minIntervalMs) {
+        lastAppPagesSyncRunAt = Date.now();
+        try {
+          const syncResult = await runAppPageSyncPass({
+            hotSignatureHitCap: cfg.sync.hotSignatureHitCap,
+            hotVelocityCap: cfg.sync.hotVelocityCap,
+            rollingAddPerSync: cfg.sync.rollingAddPerSync,
+          });
+          log.info("App-page tier sync complete", syncResult);
+        } catch (err) {
+          log.warn("App-page tier sync failed", { error: getErrorMessage(err) });
+        }
+      }
+
+      const now = Date.now();
+      if (now - lastAppPagesFetchRunAt >= cfg.minIntervalMs) {
+        lastAppPagesFetchRunAt = now;
+
+        const multiplier = adaptiveThrottleEnabled ? sweepThrottleState.multiplier : 1;
+        const effectivePagesPerBatch = Math.max(0, Math.floor(cfg.pagesPerBatch * multiplier));
+
+        const result = await runAppPageFetchPass({
+          pagesPerBatch: effectivePagesPerBatch,
+          storefront: cfg.storefront,
+          requestDelayMs: cfg.requestDelayMs,
+          dailyPageBudget: cfg.dailyPageBudget,
+          hotIntervalSeconds: Math.floor(cfg.hotIntervalMs / 1000),
+          rollingIntervalSeconds: Math.floor(cfg.rollingIntervalMs / 1000),
+          canaryMinBatchSize: cfg.canary.minBatchSize,
+          canaryParseFailureThreshold: cfg.canary.parseFailureThreshold,
+        });
+
+        if (result.skipped) {
+          log.debug("App-page fetch pass skipped this cycle", { effectivePagesPerBatch });
+        } else {
+          log.info("App-page fetch pass complete", {
+            attempted: result.attempted,
+            succeeded: result.succeeded,
+            gone: result.gone,
+            failed: result.failed,
+            parseFailed: result.parseFailed,
+            rateLimitErrors: result.rateLimitErrors,
+            bailed: result.bailed,
+            canaryTripped: result.canaryTripped,
+            effectivePagesPerBatch,
+          });
+
+          if (adaptiveThrottleEnabled && result.attempted > 0) {
+            const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
+            sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+          }
+        }
+      }
+    } catch (err) {
+      log.warn("App-page enrichment failed", { error: getErrorMessage(err) });
     }
   }
 

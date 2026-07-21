@@ -28,6 +28,20 @@ import {
   insertAutocompleteHints,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
+import type { TieredKeyword } from "./keyword-store";
+
+/**
+ * `getStaleKeywordsTiered` now returns lane-tagged rows (serp-rank Stage 1,
+ * deep-scrape build — see `keyword-store.ts`'s `TieredKeyword`). Every test
+ * below predates that change and asserts against plain keyword strings —
+ * this adapter keeps every existing `.toContain`/`.indexOf`/`.filter`
+ * assertion working unchanged by projecting straight back to `string[]`
+ * immediately after the call; lane itself is NOT under test here (that's
+ * covered by the dedicated deep-scan tests in `keyword-gaps.isolated.test.ts`).
+ */
+function keywordsOf(rows: readonly TieredKeyword[]): readonly string[] {
+  return rows.map((r) => r.keyword);
+}
 
 /**
  * Every keyword any test in this file inserts. Centralized so cleanup can
@@ -1440,12 +1454,14 @@ describe("keyword-store", () => {
       await markScanned(["zzz-tier1-manual-stale"], now - 100_000_000);
       // zzz-tier1-seed-never-scanned is left with last_scanned_at = NULL.
 
-      const stale = await getStaleKeywordsTiered({
-        batchLimit: 100_000,
-        mineQuotaRemaining: 0,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const stale = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 0,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       expect(stale).toContain("zzz-tier1-manual-stale");
       expect(stale).toContain("zzz-tier1-seed-never-scanned");
     });
@@ -1457,12 +1473,14 @@ describe("keyword-store", () => {
       ]);
       await markScanned(["zzz-tier1-autocomplete-stale"], now - 100_000_000);
 
-      const stale = await getStaleKeywordsTiered({
-        batchLimit: 100_000,
-        mineQuotaRemaining: 0,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const stale = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 0,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       expect(stale).toContain("zzz-tier1-autocomplete-stale");
     });
 
@@ -1499,12 +1517,14 @@ describe("keyword-store", () => {
       // the exhaustive, DB-independent coverage of the staleness predicate
       // itself — this integration test only confirms the SQL wiring.) A
       // generous `mineQuotaRemaining` lets the mined decoys fill the batch.
-      const smallSlice = await getStaleKeywordsTiered({
-        batchLimit: 5,
-        mineQuotaRemaining: 100_000,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const smallSlice = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 5,
+          mineQuotaRemaining: 100_000,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       expect(smallSlice).not.toContain("zzz-tier1-manual-fresh");
     });
 
@@ -1522,12 +1542,14 @@ describe("keyword-store", () => {
 
       // mineQuotaRemaining: 0 — a signature-hit keyword must reach tier 1
       // regardless of source, NEVER through the mined-exploration path.
-      const stale = await getStaleKeywordsTiered({
-        batchLimit: 100_000,
-        mineQuotaRemaining: 0,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const stale = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 0,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       expect(stale).toContain("zzz-tier1-signature-hit");
     });
 
@@ -1539,21 +1561,25 @@ describe("keyword-store", () => {
       await markScanned(["zzz-tier2-mined-stale"], now - 100_000_000);
 
       // No mined quota at all: a plain mined keyword must NOT appear.
-      const noQuota = await getStaleKeywordsTiered({
-        batchLimit: 100_000,
-        mineQuotaRemaining: 0,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const noQuota = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 0,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       expect(noQuota).not.toContain("zzz-tier2-mined-stale");
 
       // With quota, it becomes reachable via mined exploration.
-      const withQuota = await getStaleKeywordsTiered({
-        batchLimit: 100_000,
-        mineQuotaRemaining: 100_000,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const withQuota = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 100_000,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       expect(withQuota).toContain("zzz-tier2-mined-stale");
     });
 
@@ -1596,12 +1622,14 @@ describe("keyword-store", () => {
       // tier-1's own uncapped-ness. A large batchLimit keeps this test about
       // tier 1's lack of a fraction cap, not a collision with the hot lane's
       // separate, intentional cap.
-      const tinyBatch = await getStaleKeywordsTiered({
-        batchLimit: 100_000,
-        mineQuotaRemaining: 0,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const tinyBatch = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 0,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       expect(tinyBatch).toContain("zzz-tier1-cap-manual-a");
       expect(tinyBatch).toContain("zzz-tier1-cap-manual-b");
       expect(tinyBatch).toContain("zzz-tier1-cap-manual-c");
@@ -1621,24 +1649,28 @@ describe("keyword-store", () => {
 
       // Plenty of batch room (50), but the mined quota is exhausted for the
       // day — none of these mined-only keywords should be drawn.
-      const exhausted = await getStaleKeywordsTiered({
-        batchLimit: 50,
-        mineQuotaRemaining: 0,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const exhausted = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 50,
+          mineQuotaRemaining: 0,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       expect(exhausted).not.toContain("zzz-mine-quota-a");
       expect(exhausted).not.toContain("zzz-mine-quota-b");
       expect(exhausted).not.toContain("zzz-mine-quota-c");
 
       // Quota of exactly 1: at most 1 of the three eligible mined keywords
       // may be drawn.
-      const capped = await getStaleKeywordsTiered({
-        batchLimit: 50,
-        mineQuotaRemaining: 1,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const capped = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 50,
+          mineQuotaRemaining: 1,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       const capturedCount = ["zzz-mine-quota-a", "zzz-mine-quota-b", "zzz-mine-quota-c"].filter(
         (k) => capped.includes(k),
       ).length;
@@ -1663,12 +1695,14 @@ describe("keyword-store", () => {
       // other two ceilings (see `computeMineSlots`'s unit tests in
       // keyword-tiering.test.ts for the pure-math coverage; this integration
       // test confirms the SQL wiring honors the same cap).
-      const capped = await getStaleKeywordsTiered({
-        batchLimit: 100_000,
-        mineQuotaRemaining: 100_000,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: 1,
-      });
+      const capped = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 100_000,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: 1,
+        }),
+      );
       const capturedCount = [
         "zzz-per-sweep-cap-a",
         "zzz-per-sweep-cap-b",
@@ -1716,12 +1750,14 @@ describe("keyword-store", () => {
         VALUES ('zzz-hot-lane-open-hit', ${now}, ${now}, 'active')
       `;
 
-      const result = await getStaleKeywordsTiered({
-        batchLimit: 100_000,
-        mineQuotaRemaining: 100_000,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const result = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 100_000,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
 
       expect(result).toContain("zzz-hot-lane-open-hit");
       expect(result).toContain("zzz-hot-lane-tier1-decoy");
@@ -1743,12 +1779,14 @@ describe("keyword-store", () => {
       // at all, so it must NOT be reachable without mined quota.
       await markScanned(["zzz-hot-lane-mined-decoy"], now - 7 * 60 * 60);
 
-      const withoutQuota = await getStaleKeywordsTiered({
-        batchLimit: 100_000,
-        mineQuotaRemaining: 0,
-        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
-      });
+      const withoutQuota = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 0,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+        }),
+      );
       expect(withoutQuota).not.toContain("zzz-hot-lane-mined-decoy");
     });
   });

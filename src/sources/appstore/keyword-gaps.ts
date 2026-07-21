@@ -23,6 +23,9 @@ import {
   computeOpportunity,
   winsorizeRatingsPerDayAtP90,
 } from "./keyword-scoring";
+import { buildSerpTail } from "./serp-tail";
+import type { SerpTailEntry } from "./serp-tail";
+import { recordAppSightings } from "./app-meta-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 import {
   countMinedScansSince,
@@ -277,6 +280,68 @@ export async function scanKeyword(
   const scannedAt = Math.floor(Date.now() / 1000);
 
   const fetched = await fetchTopApps(keyword, topN, country);
+  return computeGapProfile({ keyword, store, scannedAt, scoringApps: fetched });
+}
+
+/**
+ * Deep-SERP variant of `scanKeyword` (serp-rank Stage 1, deep-scrape build):
+ * fetches `depth` results (default `appstoreKeywordGap.serpDepth`, 200) —
+ * strictly more than `scanKeyword`'s plain `topN` fetch — but scores the
+ * profile from ONLY the first `topN` entries, byte-identical to what
+ * `scanKeyword(keyword, {topN})` would have produced against the same live
+ * results (calibration frozen — see the module's pre-rollout drift check).
+ * The full `rankedSerp` (up to `depth` entries) is returned alongside the
+ * profile so the caller (`scanAndRecord`) can feed it to velocity recording,
+ * which tracks newborns beyond the scored top-N window; `profile.serpTail`
+ * additionally persists the same beyond-topN entries (see `serp-tail.ts`).
+ */
+export async function scanKeywordDeep(
+  keyword: string,
+  opts?: {
+    readonly topN?: number;
+    readonly store?: "app" | "play" | "DE";
+    readonly country?: string;
+    /** Results to request. Defaults to `appstoreKeywordGap.serpDepth` (200). */
+    readonly depth?: number;
+  },
+): Promise<{ readonly profile: KeywordGapProfile; readonly rankedSerp: readonly TopApp[] }> {
+  const topN = opts?.topN ?? DEFAULT_TOP_N;
+  const store = opts?.store ?? "app";
+  const country = opts?.country ?? (store === "DE" ? "de" : "us");
+  const depth = opts?.depth ?? loadConfig().appstoreKeywordGap.serpDepth;
+  const scannedAt = Math.floor(Date.now() / 1000);
+
+  const rankedSerp = await fetchTopApps(keyword, depth, country);
+  const scoringApps = rankedSerp.slice(0, topN);
+  const serpTail = buildSerpTail(rankedSerp, topN);
+  const profile = await computeGapProfile({
+    keyword,
+    store,
+    scannedAt,
+    scoringApps,
+    serpTail,
+  });
+  return { profile, rankedSerp };
+}
+
+/**
+ * Shared scoring core for `scanKeyword`/`scanKeywordDeep`: given an
+ * already-selected, already-sized `scoringApps` list (the exact set the
+ * profile's demand/competitiveness/opportunity are computed from —
+ * `scanKeyword`'s plain `topN` fetch, or `scanKeywordDeep`'s
+ * `rankedSerp.slice(0, topN)`), runs the full velocity-baseline + scoring
+ * pipeline unchanged from the pre-Stage-1 `scanKeyword` body. `serpTail`
+ * (only ever non-empty from `scanKeywordDeep`) is attached to the returned
+ * profile verbatim for `insertScan` to persist.
+ */
+async function computeGapProfile(input: {
+  readonly keyword: string;
+  readonly store: "app" | "play" | "DE";
+  readonly scannedAt: number;
+  readonly scoringApps: readonly TopApp[];
+  readonly serpTail?: readonly SerpTailEntry[];
+}): Promise<KeywordGapProfile> {
+  const { keyword, store, scannedAt, scoringApps: fetched, serpTail } = input;
 
   // Prior scans (this store, newest-first) drive both live velocity and
   // momentum: an old-enough scan is the velocity baseline; the whole series
@@ -371,6 +436,7 @@ export async function scanKeyword(
     topApps,
     scannedAt,
     lowConfidence,
+    ...(serpTail && serpTail.length > 0 ? { serpTail } : {}),
   };
 }
 
@@ -432,8 +498,21 @@ function isRateLimitError(err: unknown): boolean {
   return (err as { code?: unknown } | null)?.code === "RATE_LIMITED";
 }
 
+/** One `scanAndRecord` work item: which keyword, and whether it deep-scans. */
+export interface ScanTarget {
+  readonly keyword: string;
+  /**
+   * True -> `scanKeywordDeep` (fetches `appstoreKeywordGap.serpDepth`, feeds
+   * the FULL ranked SERP to velocity recording). False -> plain `scanKeyword`
+   * (fetches `topN` only, matching the pre-Stage-1 behavior byte-for-byte).
+   * Set by the caller from each keyword's sweep lane — see
+   * `runKeywordSweep`/`runDeStorefrontSweep`/`runScanSlice`.
+   */
+  readonly deep: boolean;
+}
+
 async function scanAndRecord(
-  keywords: readonly string[],
+  targets: readonly ScanTarget[],
   opts: {
     readonly topN: number;
     readonly delayMs: number;
@@ -460,7 +539,7 @@ async function scanAndRecord(
     readonly markCorpusScanned?: boolean;
   },
 ): Promise<{ scanned: number; failed: number; bailed: boolean; rateLimitErrors: number }> {
-  const { appstoreVelocity, appstoreJunkDeactivation } = loadConfig();
+  const { appstoreVelocity, appstoreJunkDeactivation, appstoreKeywordGap } = loadConfig();
   const store = opts.store ?? "app";
   const country = opts.country;
   const runBookkeeping = opts.runBookkeeping ?? true;
@@ -473,19 +552,61 @@ async function scanAndRecord(
   let consecutiveFailures = 0;
   let bailed = false;
 
-  for (const keyword of keywords) {
+  for (const { keyword, deep } of targets) {
     try {
-      const profile = await scanKeyword(keyword, { topN: opts.topN, store, ...(country ? { country } : {}) });
+      let profile: KeywordGapProfile;
+      // `rankedSerp` is what velocity recording sees: the FULL deep fetch for
+      // a deep target (tracks newborns beyond the scored top-N window), or
+      // just `profile.topApps` for a shallow one (unchanged pre-Stage-1
+      // behavior) — see `app-velocity-store.ts`'s `RecordVelocityObservationsInput`.
+      let rankedSerp: readonly TopApp[];
+      if (deep) {
+        const result = await scanKeywordDeep(keyword, {
+          topN: opts.topN,
+          store,
+          depth: appstoreKeywordGap.serpDepth,
+          ...(country ? { country } : {}),
+        });
+        profile = result.profile;
+        rankedSerp = result.rankedSerp;
+      } else {
+        profile = await scanKeyword(keyword, {
+          topN: opts.topN,
+          store,
+          ...(country ? { country } : {}),
+        });
+        rankedSerp = profile.topApps;
+      }
       await insertScan(profile);
       succeeded.push(keyword);
       scanned++;
       consecutiveFailures = 0;
 
+      // App-meta registry sighting (deep-scrape build Stage 2, §0.1/§0.5):
+      // cheap DB upsert, no network — never allowed to break the sweep. Runs
+      // for the DE lane too (§0.4/§0.5): Apple app ids are the SAME global
+      // catalog across storefronts, so a DE-lane sighting is still a genuine
+      // sighting of that id — but `storefront` is ALWAYS recorded as 'us'
+      // regardless of which storefront this particular scan queried, since
+      // "first seen storefront" here tracks provenance for the US-calibrated
+      // registry, not a DE-specific concept (mirrors `buildDeactivationCandidate`
+      // always reading `store: "app"` history). Uses the FULL `rankedSerp`
+      // (not just the scored `topN` slice) so deep-fetch lanes register
+      // every id they saw, not only the top of the field.
+      try {
+        await recordAppSightings(rankedSerp, "serp", { storefront: "us", keyword });
+      } catch (err) {
+        log.warn("App-meta sighting recording failed — skipping", { keyword, error: err });
+      }
+
       // Newborn-velocity time-series: bounded, read-mostly bookkeeping over
       // data this scan already fetched — never allowed to break the sweep.
       if (appstoreVelocity.enabled && runBookkeeping) {
         try {
-          await recordVelocityObservationsForScan(profile);
+          await recordVelocityObservationsForScan(
+            { keyword: profile.keyword, scannedAt: profile.scannedAt, topApps: rankedSerp },
+            { maxRankRecorded: appstoreVelocity.maxRankRecorded },
+          );
         } catch (err) {
           log.warn("Velocity observation recording failed — skipping", { keyword, error: err });
         }
@@ -562,7 +683,10 @@ export async function runScanSlice(opts: {
 }): Promise<{ scanned: number; failed: number }> {
   const { topN } = loadConfig().appstoreKeywordGap;
   const keywords = await getStaleKeywords(opts.genreZone, opts.budget);
-  const { scanned, failed } = await scanAndRecord(keywords, {
+  // Genre-zone slice — outside the hot/tier1/mined lane system entirely, so
+  // it always scans shallow (matches pre-Stage-1 behavior byte-for-byte).
+  const targets = keywords.map((keyword) => ({ keyword, deep: false }));
+  const { scanned, failed } = await scanAndRecord(targets, {
     topN,
     delayMs: opts.delayMs,
     logContext: { genreZone: opts.genreZone },
@@ -594,8 +718,15 @@ export async function runKeywordSweep(opts: {
   /** Remaining mined-exploration quota for the rolling 24h window AFTER this sweep. */
   mineQuotaRemaining: number;
 }> {
-  const { topN, dailyKeywordBudget, minedExploration, tier1StaleThresholdMs, scanIntervalMs } =
-    loadConfig().appstoreKeywordGap;
+  const {
+    topN,
+    dailyKeywordBudget,
+    minedExploration,
+    tier1StaleThresholdMs,
+    scanIntervalMs,
+    deepScanMined,
+    sweepRateSafety,
+  } = loadConfig().appstoreKeywordGap;
 
   const since = Math.floor(Date.now() / 1000) - 86_400;
   const scansLast24h = await countScansSince(since);
@@ -634,13 +765,24 @@ export async function runKeywordSweep(opts: {
   // cycle's batch — hot has its own small fixed cap), then mined exploration
   // fills whatever's left of the batch, capped by both its own daily quota
   // and this sweep's `perSweepCap` slice of it.
-  const keywords = await getStaleKeywordsTiered({
+  const tiered = await getStaleKeywordsTiered({
     batchLimit: opts.limit,
     mineQuotaRemaining,
     tier1StaleThresholdMs,
     perSweepCap,
   });
-  const result = await scanAndRecord(keywords, { topN, delayMs: opts.delayMs });
+
+  // Deep-fetch eligibility (serp-rank Stage 1): hot + tier 1 always deep-scan
+  // (`appstoreKeywordGap.serpDepth`); mined only if `deepScanMined` opts in.
+  // `legacyRateOverride` wins unconditionally — the hard kill-switch forces
+  // EVERY lane back to a plain `topN` fetch, mirroring how it already forces
+  // the legacy batch size/delay in `computeEffectiveSweepRate` (see §0.4 of
+  // the deep-scrape build plan: "Stage 1 forces fetchLimit = topN everywhere").
+  const targets: readonly ScanTarget[] = tiered.map((t) => ({
+    keyword: t.keyword,
+    deep: !sweepRateSafety.legacyRateOverride && (t.lane !== "mined" || deepScanMined),
+  }));
+  const result = await scanAndRecord(targets, { topN, delayMs: opts.delayMs });
   return { ...result, skipped: false, mineQuotaRemaining };
 }
 
@@ -660,9 +802,18 @@ export async function runKeywordSweep(opts: {
 export async function runDeStorefrontSweep(opts: {
   readonly delayMs: number;
 }): Promise<{ scanned: number; failed: number; bailed: boolean; rateLimitErrors: number }> {
-  const { topN } = loadConfig().appstoreKeywordGap;
+  const { topN, sweepRateSafety } = loadConfig().appstoreKeywordGap;
   const keywords = await getTier1ProtectedKeywords();
-  return scanAndRecord(keywords, {
+  // DE is one of the deep-fetch lanes (§0.4 of the deep-scrape build plan) —
+  // but redundantly re-checks `legacyRateOverride` itself (belt + suspenders,
+  // matching `deactivateJunkKeywords`'s own redundant source re-check)
+  // instead of trusting solely that the caller (`runDeStorefrontSweepIfDue`
+  // in scraper.ts) already gates the whole pass on it.
+  const targets: readonly ScanTarget[] = keywords.map((keyword) => ({
+    keyword,
+    deep: !sweepRateSafety.legacyRateOverride,
+  }));
+  return scanAndRecord(targets, {
     topN,
     delayMs: opts.delayMs,
     store: "DE",
