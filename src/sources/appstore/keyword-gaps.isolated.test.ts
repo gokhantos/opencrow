@@ -441,12 +441,15 @@ describe("runKeywordSweep", () => {
   }>;
 
   // Default config values (src/config/schema.ts's appstoreKeywordGapConfigSchema
-  // defaults, 2026-07-21 audit NOW-tier fixes): tier1StaleThresholdMs = 12h,
-  // minedExploration.dailyQuota = 20_000, scanIntervalMs = 60_000 (1 min) ->
-  // perSweepCap = ceil(20_000 * 60_000 / 86_400_000) = 14.
-  const DEFAULT_TIER1_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
-  const DEFAULT_MINE_DAILY_QUOTA = 20_000;
-  const DEFAULT_PER_SWEEP_CAP = 14;
+  // defaults). 2026-07-21 audit NOW-tier fixes set tier1StaleThresholdMs =
+  // 12h, minedExploration.dailyQuota = 20_000. The 2026-07-21 capacity-raise
+  // escalation (post PR #328, Webshare proxy now paid/armed) halved
+  // tier1StaleThresholdMs again to 6h and raised dailyQuota to 30_000.
+  // scanIntervalMs = 60_000 (1 min) -> perSweepCap =
+  // ceil(30_000 * 60_000 / 86_400_000) = 21.
+  const DEFAULT_TIER1_STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
+  const DEFAULT_MINE_DAILY_QUOTA = 30_000;
+  const DEFAULT_PER_SWEEP_CAP = 21;
 
   beforeEach(() => {
     insertScanCalls = [];
@@ -571,8 +574,8 @@ describe("runKeywordSweep", () => {
         staleKeywordsTieredCalls.push(opts);
         return [];
       },
-      // Default config's minedExploration.dailyQuota is 20_000.
-      countMinedScansSince: async () => 19_990,
+      // Default config's minedExploration.dailyQuota is 30_000.
+      countMinedScansSince: async () => 29_990,
     }));
 
     const { runKeywordSweep } = await import("./keyword-gaps");

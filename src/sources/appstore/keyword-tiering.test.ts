@@ -4,7 +4,7 @@ import type { Tier1Input } from "./keyword-tiering";
 
 // Arbitrary for this pure-function test — `isTier1Eligible` no longer reads
 // a module constant (staleness threshold is config-driven in production, see
-// `tier1StaleThresholdMs` in src/config/schema.ts, default 12h); any fixed
+// `tier1StaleThresholdMs` in src/config/schema.ts, default 6h); any fixed
 // value exercises the boundary logic identically.
 const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000;
 
