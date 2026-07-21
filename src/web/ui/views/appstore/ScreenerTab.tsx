@@ -24,18 +24,80 @@ import {
   SIGNATURE_SUMMARY,
   STATUS_BADGE_COLOR_MAP,
   STATUS_FILTER_TABS,
+  whatsNewCount,
   type SignatureHit,
   type SignatureHitStatus,
   type StatusFilter,
+  type WhatsNewDigest,
 } from "./screener-format";
 
 const LIST_PATH = "/api/appstore/signature-hits?limit=300";
+const WHATS_NEW_PATH = "/api/appstore/whats-new?days=7";
 const POLL_INTERVAL_MS = 30_000;
+// Slower poll for the "new this week" strip — it summarizes a 7-day window,
+// so it doesn't need the same freshness as the live hit list above.
+const WHATS_NEW_POLL_INTERVAL_MS = 120_000;
 
 /** Response shape of `GET /appstore/signature-hits`. */
 interface SignatureHitsResponse {
   readonly success: boolean;
   readonly data: readonly SignatureHit[];
+}
+
+/** Response shape of `GET /appstore/whats-new`. */
+interface WhatsNewResponse {
+  readonly success: boolean;
+  readonly data: WhatsNewDigest;
+}
+
+// ─── "New this week" strip (Batch F4) ────────────────────────────────────────
+
+function WhatsNewStrip() {
+  const { data } = usePolledFetch<WhatsNewResponse>(WHATS_NEW_PATH, {
+    intervalMs: WHATS_NEW_POLL_INTERVAL_MS,
+  });
+  const digest = data?.success ? data.data : undefined;
+  const count = whatsNewCount(digest);
+
+  if (!digest || count === 0) return null;
+
+  const hitNames = digest.newSignatureHits.slice(0, 6).map((h) => h.keyword);
+  const crossingNames = digest.newCrossings.slice(0, 6).map((c) => c.keyword);
+
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-accent/30 bg-accent-subtle px-3 py-2">
+      <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-accent">
+        <span>New this week</span>
+        <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded font-mono text-xs font-semibold bg-accent text-white">
+          {count}
+        </span>
+      </div>
+      <div className="flex flex-col gap-0.5 text-xs text-muted">
+        {hitNames.length > 0 && (
+          <span>
+            <span className="text-foreground font-medium">
+              {digest.newSignatureHits.length} signature hit
+              {digest.newSignatureHits.length === 1 ? "" : "s"}
+            </span>
+            {": "}
+            {hitNames.join(", ")}
+            {digest.newSignatureHits.length > hitNames.length ? ", …" : ""}
+          </span>
+        )}
+        {crossingNames.length > 0 && (
+          <span>
+            <span className="text-foreground font-medium">
+              {digest.newCrossings.length} first-time crossing
+              {digest.newCrossings.length === 1 ? "" : "s"}
+            </span>
+            {": "}
+            {crossingNames.join(", ")}
+            {digest.newCrossings.length > crossingNames.length ? ", …" : ""}
+          </span>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /** Response shape of `PATCH /appstore/signature-hits/:keyword`. */
@@ -173,6 +235,8 @@ export default function ScreenerTab() {
         </div>
         <p className="text-xs text-muted">{SIGNATURE_SUMMARY}</p>
       </div>
+
+      <WhatsNewStrip />
 
       <FilterTabs
         tabs={tabs}

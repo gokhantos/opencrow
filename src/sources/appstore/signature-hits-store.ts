@@ -261,6 +261,30 @@ export async function getSignatureHits(
 }
 
 /**
+ * Batch F4 (alert digest): signature hits that are either still `'new'` (not
+ * yet triaged) OR were first detected at/after `sinceEpochSeconds` — backs
+ * `gap-alerts.ts`'s "what's new" digest. A single OR condition rather than
+ * two separate queries: a hit that's still `'new'` is always worth surfacing
+ * regardless of when it first appeared (an operator who hasn't triaged it
+ * yet should still see it), while `first_detected_at >= sinceEpochSeconds`
+ * catches hits that were triaged (moved to `'active'`/`'dismissed'`) since
+ * the last alert run but are still fresh enough to mention.
+ */
+export async function getSignatureHitsSince(
+  sinceEpochSeconds: number,
+  limit: number = 200,
+): Promise<readonly SignatureHit[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT * FROM appstore_signature_hits
+    WHERE status = 'new' OR first_detected_at >= ${sinceEpochSeconds}
+    ORDER BY first_detected_at DESC
+    LIMIT ${limit}
+  `;
+  return (rows as SignatureHitRow[]).map(rowToSignatureHit);
+}
+
+/**
  * Sets a hit's triage status — backs the `PATCH /appstore/signature-hits/:keyword`
  * route. `'new'` is intentionally excluded: it is an insert-time default only,
  * never a caller-driven transition (a hit only ever moves forward from `new`

@@ -33,6 +33,7 @@ import type { GapTrend } from "../../sources/appstore/keyword-types";
 import {
   getDownweightedKeywords,
   getExcludedKeywords,
+  getPipelineKilledWeights,
   getStarredKeywords,
 } from "../../sources/appstore/keyword-verdict-store";
 import type { CollectorContext } from "./collectors";
@@ -82,6 +83,14 @@ export interface SelectGapSeedsOptions {
   readonly limit: number;
   /** Minimum opportunity score (0..1) a scan must clear to become a seed. */
   readonly minOpportunity: number;
+  /**
+   * Strength of the pipeline-outcome kill downweight (Batch F, F5 leg 4) —
+   * see {@link selectGapSeeds}'s `killedWeights` parameter. Threaded from
+   * `appstoreKeywordGap.outcomeAttribution.killDownweightStrength`; defaults
+   * to {@link DEFAULT_KILL_DOWNWEIGHT_STRENGTH} when omitted (e.g. a direct
+   * unit-test call).
+   */
+  readonly killDownweightStrength?: number;
 }
 
 export interface ZeroVolumeVetoOptions {
@@ -153,6 +162,16 @@ export interface CollectKeywordGapsOptions extends SelectGapSeedsOptions {
 const DOWNWEIGHT_SORT_FACTOR = 0.5;
 
 /**
+ * Default strength of the pipeline-outcome kill downweight (Batch F, F5 leg
+ * 4) applied in {@link selectGapSeeds} when the caller doesn't supply
+ * `opts.killDownweightStrength` — e.g. a direct unit-test call. Matches the
+ * `appstoreKeywordGap.outcomeAttribution.killDownweightStrength` config
+ * default (`schema.ts`) so the two never drift silently out of sync in the
+ * common case.
+ */
+const DEFAULT_KILL_DOWNWEIGHT_STRENGTH = 0.35;
+
+/**
  * Pure seed selection: drop scans below `minOpportunity`, drop scans whose
  * `keyword` is already consumed, sort by (downweight-adjusted) opportunity
  * DESC, cap at `limit`, and map to {@link GapSeed}. Never mutates `scans`.
@@ -163,21 +182,38 @@ const DOWNWEIGHT_SORT_FACTOR = 0.5;
  * on every run. Consumption still decays over time via the ledger's half-life,
  * so a keyword becomes eligible again once it's no longer freshly consumed.
  *
- * `downweightedKeywords` (Batch F, F5 leg 2/3) only affects SORT ORDER, never
- * filtering — a keyword's own `opportunity` field on the returned
- * {@link GapSeed} is always the real measured value, never discounted.
+ * `downweightedKeywords` (Batch F, F5 leg 2/3 — a screener soft-dismissal
+ * flag) and `killedWeights` (Batch F, F5 leg 4 — the decayed, accumulated
+ * `killed_count` a keyword's exposed pipeline runs earned; see
+ * `keyword-verdict-store.ts`'s `getPipelineKilledWeights`) both ONLY affect
+ * SORT ORDER, never filtering — a keyword's own `opportunity` field on the
+ * returned {@link GapSeed} is always the real measured value, never
+ * discounted. The two downweights COMPOSE (a keyword can be both screener-
+ * dismissed AND carry an outcome kill signal) via simple multiplication;
+ * `killedWeights` uses a graduated `1 / (1 + killedCount * strength)` curve
+ * (rather than `downweightedKeywords`'s flat halving) since it is a continuous
+ * magnitude, not a boolean flag — a keyword killed across many exposed runs
+ * sinks further than one killed once.
  */
 export function selectGapSeeds(
   scans: readonly KeywordScanRow[],
   consumedKeywords: ReadonlySet<string>,
   opts: SelectGapSeedsOptions,
   downweightedKeywords: ReadonlySet<string> = new Set(),
+  killedWeights: ReadonlyMap<string, number> = new Map(),
 ): readonly GapSeed[] {
   const limit = Number.isFinite(opts.limit) ? Math.max(0, Math.floor(opts.limit)) : 0;
   if (limit === 0) return [];
 
-  const sortRank = (s: KeywordScanRow): number =>
-    downweightedKeywords.has(s.keyword) ? s.opportunity * DOWNWEIGHT_SORT_FACTOR : s.opportunity;
+  const killStrength = opts.killDownweightStrength ?? DEFAULT_KILL_DOWNWEIGHT_STRENGTH;
+  const sortRank = (s: KeywordScanRow): number => {
+    let rank = downweightedKeywords.has(s.keyword) ? s.opportunity * DOWNWEIGHT_SORT_FACTOR : s.opportunity;
+    const killed = killedWeights.get(s.keyword);
+    if (killed !== undefined && killed > 0) {
+      rank = rank / (1 + killed * killStrength);
+    }
+    return rank;
+  };
 
   return scans
     .filter((s) => s.opportunity >= opts.minOpportunity)
@@ -233,26 +269,36 @@ interface VerdictSignals {
   readonly excluded: ReadonlySet<string>;
   readonly downweighted: ReadonlySet<string>;
   readonly starred: readonly string[];
+  /** Batch F, F5 leg 4 — see `getPipelineKilledWeights`. */
+  readonly killedWeights: ReadonlyMap<string, number>;
 }
 
-const NO_VERDICT_SIGNALS: VerdictSignals = { excluded: new Set(), downweighted: new Set(), starred: [] };
+const NO_VERDICT_SIGNALS: VerdictSignals = {
+  excluded: new Set(),
+  downweighted: new Set(),
+  starred: [],
+  killedWeights: new Map(),
+};
 
 /**
- * Load the three keyword-verdict signals `collectKeywordGaps` consumes
- * (Batch F, F5 legs 2/3) — HARD-exclude (human dismissed/killed), SOFT-
- * downweight (pipeline dismissed), and the starred watchlist (auto-pulled as
- * priority seeds). Isolated in its own try/catch so a `appstore_keyword_verdicts`
- * failure degrades to "no verdict signal" (today's pre-F5 behavior) rather
- * than losing auto-selected seeds entirely.
+ * Load the FOUR keyword-verdict signals `collectKeywordGaps` consumes (Batch
+ * F, F5 legs 2/3/4) — HARD-exclude (human dismissed/killed), SOFT-downweight
+ * (pipeline dismissed), the starred watchlist (auto-pulled as priority
+ * seeds), and the pipeline-outcome kill WEIGHTS (F5 leg 4 — a graduated,
+ * decayed downweight distinct from the boolean screener-dismissal flag).
+ * Isolated in its own try/catch so a `appstore_keyword_verdicts` failure
+ * degrades to "no verdict signal" (today's pre-F5 behavior) rather than
+ * losing auto-selected seeds entirely.
  */
 async function loadVerdictSignals(starredLimit: number): Promise<VerdictSignals> {
   try {
-    const [excluded, downweighted, starred] = await Promise.all([
+    const [excluded, downweighted, starred, killedWeights] = await Promise.all([
       getExcludedKeywords(),
       getDownweightedKeywords(),
       getStarredKeywords(starredLimit),
+      getPipelineKilledWeights(),
     ]);
-    return { excluded, downweighted, starred };
+    return { excluded, downweighted, starred, killedWeights };
   } catch (err) {
     log.warn("Keyword-verdict signal load failed; proceeding with no verdict signal", { err });
     return NO_VERDICT_SIGNALS;
@@ -295,12 +341,15 @@ const DEFAULT_ZERO_VOLUME_FRESHNESS_DAYS = 45;
  * opportunity-ranked sort and the consumed-keyword dedup (an explicit request
  * this run, not a stale reseed).
  *
- * Verdict-aware (Batch F, F5 legs 2/3 — `keyword-verdict-store.ts`): the
+ * Verdict-aware (Batch F, F5 legs 2/3/4 — `keyword-verdict-store.ts`): the
  * server-side STARRED watchlist is auto-pulled as additional priority seeds
  * (merged with `opts.seedKeywords`); a HUMAN `dismissed`/`killed` verdict
  * HARD-excludes a keyword from the auto-selected pool; a PIPELINE (screener)
  * `dismissed` verdict only SOFT-downweights its sort rank (see
- * `DOWNWEIGHT_SORT_FACTOR`) — it stays eligible.
+ * `DOWNWEIGHT_SORT_FACTOR`) — it stays eligible; a keyword's accumulated
+ * pipeline-outcome `killed_count` (F5 leg 4 — see
+ * `getPipelineKilledWeights`) applies a further graduated SOFT downweight,
+ * also never a hard exclude.
  */
 export async function collectKeywordGaps(
   ctx: CollectorContext,
@@ -345,8 +394,13 @@ export async function collectKeywordGaps(
           (s) => !priorityKeywords.has(s.keyword) && !verdicts.excluded.has(s.keyword),
         ),
         consumedKeywords,
-        { limit: remaining, minOpportunity: opts.minOpportunity },
+        {
+          limit: remaining,
+          minOpportunity: opts.minOpportunity,
+          killDownweightStrength: opts.killDownweightStrength,
+        },
         verdicts.downweighted,
+        verdicts.killedWeights,
       );
     }
 

@@ -19,7 +19,9 @@ import { act } from "react";
 // ideas" button POSTs to `/api/pipelines/mobile-app-ideas/run`.
 interface MockApiResponse {
   readonly success: boolean;
-  readonly data?: readonly unknown[];
+  readonly data?:
+    | readonly unknown[]
+    | { readonly newSignatureHits: readonly unknown[]; readonly newCrossings: readonly unknown[] };
   readonly meta?: { readonly total: number; readonly limit: number; readonly offset: number };
   readonly message?: string;
   readonly runId?: string;
@@ -34,6 +36,12 @@ function defaultApiFetchImpl(path: string, _opts?: unknown): Promise<MockApiResp
   }
   if (path.startsWith("/api/appstore/signature-hits")) {
     return Promise.resolve({ success: true, data: [] });
+  }
+  if (path.startsWith("/api/appstore/whats-new")) {
+    return Promise.resolve({
+      success: true,
+      data: { newSignatureHits: [], newCrossings: [] },
+    });
   }
   if (path.startsWith("/api/pipelines/")) {
     return Promise.resolve({ success: true, message: "Pipeline started", runId: "run-abc123" });
@@ -112,8 +120,12 @@ test("clicking the generate-ideas button POSTs to the mobile-app-ideas pipeline"
     await Promise.resolve();
   });
 
+  // Body is always sent (JSON.stringify({}) when the watchlist is empty) —
+  // KeywordResearch.tsx POSTs the starred watchlist as `seedKeywords` (Batch
+  // F, F3) even when it's empty.
   expect(mockApiFetch).toHaveBeenCalledWith("/api/pipelines/mobile-app-ideas/run", {
     method: "POST",
+    body: "{}",
   });
   unmount();
 });

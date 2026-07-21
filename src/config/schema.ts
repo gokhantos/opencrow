@@ -1058,6 +1058,68 @@ export const appstoreKeywordGapConfigSchema = z
         maxChunksPerRun: 1_000,
         minIntervalMs: 6 * 60 * 60 * 1000,
       }),
+    // ─── Run-aggregate outcome attribution (Batch F, F5 leg 4) ─────────────
+    // When a run reaches a terminal gold/reprobe idea verdict,
+    // `keyword-outcome-feedback.ts` attributes the run's AGGREGATE verdict
+    // back to every gap-seed keyword the run was exposed to (see
+    // `collector-keyword-gaps.ts`'s module doc on why this is run-aggregate,
+    // not per-idea). Default ON: bounded, in-process Postgres bookkeeping,
+    // no extra network calls — same "safe by default" reasoning as
+    // `appstoreVelocity`/`appstoreSignatureScreener` above. The materialized
+    // `killed_count` this produces is consumed by `collectKeywordGaps` as a
+    // SOFT downweight only (see `killDownweightStrength` below) — never a
+    // hard exclude.
+    outcomeAttribution: z
+      .object({
+        enabled: z.boolean().default(true),
+        // Per-run signed credit magnitude for a validated / killed aggregate
+        // verdict, before temporal decay — mirrors
+        // `pipelines.ideas.smart.graphFeedback`'s validatedWeight/killedWeight
+        // shape (same buildSeedOutcomeEvents builder, reused unchanged).
+        validatedWeight: z.number().default(1),
+        killedWeight: z.number().default(-1),
+        // Half-life (days) for `applyTemporalDecay` when materializing
+        // validated_count/killed_count from the immutable event log — an old
+        // kill signal fades so a keyword isn't downweighted forever.
+        weightHalfLifeDays: z.number().min(0).default(45),
+        // Clamp on the net per-run signed weight attributed to EVERY exposed
+        // keyword (mirrors graphFeedback.maxSeedWeight) — bounds how much a
+        // single run's outcome can move any one keyword.
+        maxSeedWeight: z.number().min(0).default(5),
+        // Strength of the graduated SOFT downweight `collectKeywordGaps`
+        // applies from a keyword's decayed `killed_count`: sort rank is
+        // divided by `1 + killedCount * killDownweightStrength`. Higher =
+        // repeatedly-killed keywords sink further, never excluded outright.
+        killDownweightStrength: z.number().min(0).default(0.35),
+      })
+      .default({
+        enabled: true,
+        validatedWeight: 1,
+        killedWeight: -1,
+        weightHalfLifeDays: 45,
+        maxSeedWeight: 5,
+        killDownweightStrength: 0.35,
+      }),
+    // ─── New-hit / first-crossing alert digest (Batch F4) ───────────────────
+    // Daily, off the keyword-sweep tick (see `scraper.ts`'s
+    // `runGapAlertsIfDue`): batches new signature-screener hits + first-ever
+    // opportunity-threshold crossings (`gap-alerts.ts`) into ONE digest
+    // message, enqueued into the existing cron delivery queue (never a
+    // separate Telegram bot instance in the scraper process — see that
+    // module's doc comment on the 409/duplicate-poller risk this avoids).
+    // Default OFF: unlike the bookkeeping-only knobs above, this actually
+    // sends a message to the operator's primary Telegram chat, so it should
+    // be an explicit opt-in.
+    alerts: z
+      .object({
+        enabled: z.boolean().default(false),
+        // Minimum gap between alert runs — this scans the WHOLE corpus
+        // (cheap, index-friendly SQL), so this cap exists purely to keep the
+        // digest at a sane cadence ("what's new this week"-ish) rather than
+        // firing on every sweep tick. Default 24h.
+        minRunIntervalMs: z.number().int().min(60_000).default(24 * 60 * 60 * 1000),
+      })
+      .default({ enabled: false, minRunIntervalMs: 24 * 60 * 60 * 1000 }),
   })
   .default({
     enabled: true,
@@ -1127,6 +1189,15 @@ export const appstoreKeywordGapConfigSchema = z
       maxChunksPerRun: 1_000,
       minIntervalMs: 6 * 60 * 60 * 1000,
     },
+    outcomeAttribution: {
+      enabled: true,
+      validatedWeight: 1,
+      killedWeight: -1,
+      weightHalfLifeDays: 45,
+      maxSeedWeight: 5,
+      killDownweightStrength: 0.35,
+    },
+    alerts: { enabled: false, minRunIntervalMs: 24 * 60 * 60 * 1000 },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 

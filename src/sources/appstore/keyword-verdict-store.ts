@@ -163,6 +163,31 @@ export async function getDownweightedKeywords(): Promise<ReadonlySet<string>> {
 }
 
 /**
+ * SOFT-downweight WEIGHTS for `collectKeywordGaps` (Batch F, F5 leg 4): every
+ * keyword with an accumulated pipeline-sourced `killed_count > 0` (migration
+ * 055 — written by `keyword-outcome-feedback.ts`'s
+ * `recomputeKeywordOutcomeCounts` when a run reaches a terminal gold/reprobe
+ * verdict), keyed by keyword. Distinct from {@link getDownweightedKeywords}
+ * (a boolean screener-dismissal flag): this is a graduated, decayed magnitude
+ * — a keyword whose exposed runs were repeatedly killed sinks further than
+ * one killed once. Never a hard exclude (only human `dismissed`/`killed`
+ * verdicts hard-exclude — see {@link getExcludedKeywords}).
+ */
+export async function getPipelineKilledWeights(): Promise<ReadonlyMap<string, number>> {
+  const db = getDb();
+  const rows = await db`
+    SELECT keyword, killed_count FROM appstore_keyword_verdicts
+    WHERE source = 'pipeline' AND killed_count > 0
+  `;
+  return new Map(
+    (rows as ReadonlyArray<{ keyword: string; killed_count: number | string }>).map((r) => [
+      r.keyword,
+      Number(r.killed_count),
+    ]),
+  );
+}
+
+/**
  * All verdict rows for a batch of keywords — backs UI verdict badges (one
  * keyword may carry both a human AND a pipeline verdict). Returns a map from
  * keyword to its verdict rows (0, 1, or 2 entries per keyword).

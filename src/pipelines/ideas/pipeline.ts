@@ -41,6 +41,7 @@ import {
 } from "./outcome-memory";
 import { fetchGraphReasoningDirective } from "./graph-reasoning";
 import { recordSeedExposure } from "./graph-outcome-feedback";
+import { recordKeywordSeedExposure } from "./keyword-outcome-feedback";
 import { assignHoldoutArm, resolveHoldoutGuidance } from "./holdout";
 import {
   graphPathsToLessons,
@@ -487,6 +488,7 @@ export async function runIdeasPipeline(
     // cannot dominate the signal set; `minOpportunity` is the config seed
     // threshold. Graceful — the collector swallows its own DB errors and
     // returns [].
+    const keywordOutcomeCfg = keywordGapCfg.outcomeAttribution;
     const keywordGaps: readonly GapSeed[] = keywordGapCfg.enabled
       ? await collectKeywordGaps(collectorCtx, {
           limit: keywordGapCfg.seedLimit,
@@ -498,6 +500,7 @@ export async function runIdeasPipeline(
           zeroVolumeFreshnessDays: keywordGapCfg.zeroVolumeFreshnessDays,
           minBuildability: keywordGapCfg.pipelineMinBuildability,
           seedKeywords: config.seedKeywords,
+          killDownweightStrength: keywordOutcomeCfg.killDownweightStrength,
         })
       : [];
     if (keywordGaps.length > 0) {
@@ -505,6 +508,19 @@ export async function runIdeasPipeline(
         runId,
         count: keywordGaps.length,
       });
+    }
+
+    // Batch F, F5 leg 4: record WHICH gap-seed keywords fed this run so the
+    // write-back below can attribute the run's aggregate verdict back to
+    // them. Gated + best-effort (recordKeywordSeedExposure swallows its own
+    // errors); OFF → no Postgres write. Mirrors the graph-feedback exposure
+    // recording above — see keyword-outcome-feedback.ts's module doc for why
+    // this is run-aggregate, not per-idea.
+    if (keywordOutcomeCfg.enabled && keywordGaps.length > 0) {
+      await recordKeywordSeedExposure(
+        runId,
+        keywordGaps.map((s) => s.keyword),
+      );
     }
 
     // B7 — merge selected IDs from each collector's result into a single map.
@@ -1173,6 +1189,19 @@ export async function runIdeasPipeline(
                       queryTimeoutMs: sigeConfig.neo4j.queryTimeoutMs,
                     }
                   : null,
+            },
+            // App Store keyword-gap outcome attribution (Batch F, F5 leg 4).
+            // enabled:false → no Postgres writes. Independent of graphFeedback
+            // above — this attributes the SAME run-aggregate gold/reprobe
+            // verdict back to the gap-seed KEYWORDS this run was exposed to
+            // (loaded from appstore_keyword_seed_exposure, migration 055),
+            // not Neo4j :Entity seeds.
+            keywordOutcomeAttribution: {
+              enabled: keywordOutcomeCfg.enabled,
+              validatedWeight: keywordOutcomeCfg.validatedWeight,
+              killedWeight: keywordOutcomeCfg.killedWeight,
+              weightHalfLifeDays: keywordOutcomeCfg.weightHalfLifeDays,
+              maxSeedWeight: keywordOutcomeCfg.maxSeedWeight,
             },
           });
         }

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { createLogger } from "../../logger";
+import { loadConfigWithOverrides } from "../../config/loader";
 import {
   getTopOpportunities,
   getScanHistory,
@@ -23,6 +24,7 @@ import {
   getStarredKeywords,
   upsertKeywordVerdict,
 } from "../../sources/appstore/keyword-verdict-store";
+import { getWhatsNewDigest } from "../../sources/appstore/gap-alerts";
 import { getDb } from "../../store/db";
 import type { CoreClient } from "../core-client";
 
@@ -70,6 +72,13 @@ const scanHistoryQuerySchema = z.object({
 const watchlistKeywordParamSchema = z.string().trim().min(1).max(200);
 const watchlistListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(200),
+});
+
+// "New this week" strip (Batch F4) — bounds the lookback window an operator
+// can request via `?days=`. Default (undefined) falls back to
+// `getWhatsNewDigest`'s own `WHATS_NEW_LOOKBACK_MS` (7 days).
+const whatsNewQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(90).optional(),
 });
 
 const STORES = ["app", "play", "DE"] as const;
@@ -294,6 +303,31 @@ export function createAppStoreRoutes(
     }
     const deleted = await deleteKeywordVerdict(parsedKeyword.data, "human");
     return c.json({ success: true, data: { deleted } });
+  });
+
+  // "New this week" strip (Batch F4) — same digest shape `runGapAlerts`
+  // sends, but computed read-only against a rolling lookback window (NOT the
+  // cron alert watermark — see `gap-alerts.ts`'s module doc on why a GET
+  // must never advance that state).
+  app.get("/appstore/whats-new", async (c) => {
+    const parsed = whatsNewQuerySchema.safeParse({ days: c.req.query("days") ?? undefined });
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+    const config = await loadConfigWithOverrides();
+    const digest = await getWhatsNewDigest({
+      opportunityThreshold: config.appstoreKeywordGap.opportunityThresholdForSeed,
+      lookbackMs: parsed.data.days !== undefined ? parsed.data.days * 24 * 60 * 60 * 1000 : undefined,
+    });
+    return c.json({
+      success: true,
+      data: digest,
+      meta: {
+        signatureHits: digest.newSignatureHits.length,
+        crossings: digest.newCrossings.length,
+      },
+    });
   });
 
   // Deep-SERP rank tracking (serp-rank Stage 1, deep-scrape build) — reads
