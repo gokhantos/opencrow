@@ -424,12 +424,21 @@ describe("appstoreKeywordGap config", () => {
     expect(g.corpusDiscovery.enabled).toBe(true);
     expect(g.corpusDiscovery.maxMinedPerCycle).toBe(100);
     expect(g.autocompleteExpansion.enabled).toBe(true);
-    expect(g.autocompleteExpansion.minIntervalMs).toBe(900_000);
-    expect(g.autocompleteExpansion.winnerLimit).toBe(15);
-    expect(g.autocompleteExpansion.diverseLimit).toBe(10);
+    // Throughput wave (2026-07-21, item 3): breadth raised 25 -> 60 total
+    // seeds/pass, cadence slowed 15min -> 1h to compensate — see
+    // src/config/schema.ts's budget-table comment on
+    // appstoreAppEnrichmentConfigSchema.
+    expect(g.autocompleteExpansion.minIntervalMs).toBe(3_600_000);
+    expect(g.autocompleteExpansion.winnerLimit).toBe(36);
+    expect(g.autocompleteExpansion.diverseLimit).toBe(24);
     expect(g.autocompleteExpansion.perSeed).toBe(8);
     expect(g.autocompleteExpansion.delayMs).toBe(1000);
     expect(g.autocompleteExpansion.storefront).toBe("143441-1,29");
+    expect(g.autocompleteExpansion.useProxy).toBe(false);
+    expect(g.autocompleteExpansion.gbLane.enabled).toBe(true);
+    expect(g.autocompleteExpansion.gbLane.storefront).toBe("143444-1,29");
+    expect(g.autocompleteExpansion.gbLane.winnerLimit).toBe(15);
+    expect(g.autocompleteExpansion.gbLane.diverseLimit).toBe(10);
     expect(g.sweepRateSafety.adaptiveThrottleEnabled).toBe(true);
     expect(g.sweepRateSafety.legacyRateOverride).toBe(false);
     // serp-rank Stage 1 (deep-scrape build).
@@ -454,7 +463,7 @@ describe("appstoreKeywordGap config", () => {
     expect(cfg.appstoreKeywordGap.autocompleteExpansion.winnerLimit).toBe(5);
     expect(cfg.appstoreKeywordGap.autocompleteExpansion.storefront).toBe("143441-1,17");
     // Untouched sibling fields keep their defaults.
-    expect(cfg.appstoreKeywordGap.autocompleteExpansion.diverseLimit).toBe(10);
+    expect(cfg.appstoreKeywordGap.autocompleteExpansion.diverseLimit).toBe(24);
   });
 
   test("can be disabled via config", () => {
@@ -585,7 +594,7 @@ describe("appstoreSync config", () => {
 // ── appstoreReviewHarvest config (deep-scrape build Stage 4) ───────────────
 
 describe("appstoreReviewHarvest config", () => {
-  test("defaults: enabled, 60s minIntervalMs, budget 10,000, low-star-only indexing", () => {
+  test("defaults: enabled, 60s minIntervalMs, budget 15,000, low-star-only indexing", () => {
     const cfg = opencrowConfigSchema.parse({});
     const rh = cfg.appstoreReviewHarvest;
     expect(rh.enabled).toBe(true);
@@ -595,8 +604,12 @@ describe("appstoreReviewHarvest config", () => {
     expect(rh.pageDelayMs).toBe(500);
     expect(rh.maxConsecutiveEmptyHarvests).toBe(5);
     expect(rh.memoryIndexing).toBe("low-star-only");
-    // Lowered from the reviews spec's 12,000 per build plan §0.2.
-    expect(rh.dailyRequestBudget).toBe(10_000);
+    // Throughput wave (2026-07-21, item 4): raised 10,000 -> 15,000 — this
+    // lane runs at its cap in practice, so raising it directly unlocks more
+    // review coverage. See the budget-table comment on
+    // appstoreAppEnrichmentConfigSchema.
+    expect(rh.dailyRequestBudget).toBe(15_000);
+    expect(rh.useProxy).toBe(false);
   });
 
   test("has NO tickIntervalMs — replaced by minIntervalMs (build plan §0.2/§0.4: no new timer)", () => {

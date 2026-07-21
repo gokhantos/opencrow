@@ -121,6 +121,8 @@ export async function runEnrichmentPass(opts: {
   readonly acceleratingLimit: number;
   readonly dailyRequestBudget: number;
   readonly delistMissThreshold: number;
+  /** Throughput wave item 1: route `/lookup` batch requests through the Webshare proxy. Default false. */
+  readonly useProxy?: boolean;
 }): Promise<EnrichmentPassResult> {
   if (opts.maxBatches <= 0) return SKIPPED_RESULT;
 
@@ -178,7 +180,7 @@ export async function runEnrichmentPass(opts: {
 
     let results: readonly LookupApp[];
     try {
-      results = await fetchLookupBatch(batch);
+      results = await fetchLookupBatch(batch, opts.useProxy ?? false);
       await recordLookupRequest("lookup", batch.length, true, now);
       consecutiveFailures = 0;
     } catch (err) {
@@ -282,6 +284,8 @@ export async function runPortfolioPass(opts: {
   readonly developerLimit: number;
   readonly portfolioLimit: number;
   readonly minIntervalSeconds: number;
+  /** Throughput wave item 1: route portfolio `/lookup` requests through the Webshare proxy. Default false. */
+  readonly useProxy?: boolean;
 }): Promise<PortfolioPassResult> {
   if (opts.developerLimit <= 0) return EMPTY_PORTFOLIO_RESULT;
 
@@ -310,7 +314,7 @@ export async function runPortfolioPass(opts: {
     attempted++;
     const now = Math.floor(Date.now() / 1000);
     try {
-      const portfolio = await fetchArtistPortfolio(artistId, opts.portfolioLimit);
+      const portfolio = await fetchArtistPortfolio(artistId, opts.portfolioLimit, opts.useProxy ?? false);
       await recordLookupRequest("portfolio", 1, true, now);
 
       const sightings = portfolio.filter((p) => p.id).map((p) => ({ id: p.id, name: p.name }));

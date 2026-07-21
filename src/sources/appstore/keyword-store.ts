@@ -891,6 +891,13 @@ export interface AutocompleteHintRow {
   /** 0-based position in Apple's popularity-ordered response for this seed/query. */
   readonly rank: number;
   readonly seenAt: number;
+  /**
+   * Apple storefront this hint was observed in, lowercase cc (throughput
+   * wave item 3, migration 049) — `"us"` (the pre-migration/default lane)
+   * or `"gb"` (the new GB hints lane). Optional on input; defaults to
+   * `"us"` so every pre-item-3 caller is unaffected.
+   */
+  readonly storefront?: string;
 }
 
 /**
@@ -898,15 +905,17 @@ export interface AutocompleteHintRow {
  * returned (2026-07-21 audit item D fix, migration 043) — the one giant-free
  * demand signal in the whole system, previously discarded entirely at write
  * time (`HintCandidate.rank` was computed but never persisted — see
- * keyword-autocomplete.ts's `expandCorpus`).
+ * keyword-autocomplete.ts's `expandCorpus`). `storefront` (migration 049,
+ * throughput wave item 3) distinguishes which market a hint was observed in
+ * — a hint's popularity ranking is inherently per-storefront.
  */
 export async function insertAutocompleteHints(rows: readonly AutocompleteHintRow[]): Promise<void> {
   if (rows.length === 0) return;
   const db = getDb();
   for (const row of rows) {
     await db`
-      INSERT INTO appstore_autocomplete_hints (seed, term, rank, seen_at)
-      VALUES (${row.seed}, ${row.term}, ${row.rank}, ${row.seenAt})
+      INSERT INTO appstore_autocomplete_hints (seed, term, rank, seen_at, storefront)
+      VALUES (${row.seed}, ${row.term}, ${row.rank}, ${row.seenAt}, ${row.storefront ?? "us"})
     `;
   }
 }

@@ -14,6 +14,12 @@
  *                     when rate-limit retries are exhausted. Detect via
  *                     `err instanceof RateLimitError` or `err.code === "RATE_LIMITED"`.
  *
+ * Proxy (throughput wave, item 1): `SsrfSafeFetchOptions.useProxy` opts a
+ * single call into the Webshare rotating proxy (see `appstore-proxy.ts`, a
+ * sibling module this one consumes). Default false for every caller across
+ * every source; App Store lanes each carry their own config flag. SSRF
+ * validation of the TARGET url is unaffected either way.
+ *
  * Design rationale:
  *   Agent-supplied URL fetching goes through the SDK-native WebFetch tool, which
  *   performs its own DNS-resolving validation. Scrapers, by contrast, work with
@@ -28,6 +34,7 @@
 
 import { getErrorMessage } from "../../lib/error-serialization";
 import { retryAsync } from "../../infra/retry";
+import { getAppstoreProxyUrl } from "./appstore-proxy";
 import { fetchWithTimeout } from "./fetch-with-timeout";
 import { RateLimitError, isRateLimitStatus, parseRetryAfterMs } from "./rate-limit-error";
 
@@ -208,6 +215,20 @@ export interface SsrfSafeFetchOptions {
   readonly maxDelayMs?: number;
   /** Stop retrying once cumulative backoff wait would exceed this. Default 20_000. */
   readonly maxTotalWaitMs?: number;
+  /**
+   * Opt in to routing this fetch through the Webshare rotating proxy
+   * (throughput wave, item 1 — see `appstore-proxy.ts`). Default `false`
+   * (direct fetch) — every existing caller across every source (HN, Reddit,
+   * GitHub, news, ...) is unaffected. Callers set this from their OWN
+   * lane's config flag (e.g. `appstoreAppPages.useProxy`), never hardcoded,
+   * so an operator can flip proxy usage per-lane without a code change.
+   * Gracefully falls back to a direct fetch when the proxy is unconfigured
+   * (`getAppstoreProxyUrl()` resolves to `undefined`) even if this is
+   * `true` — never throws for a missing/incomplete proxy configuration.
+   * The TARGET url is still validated for SSRF regardless of this flag —
+   * routing through a proxy never bypasses `validateUrl`.
+   */
+  readonly useProxy?: boolean;
 }
 
 async function fetchOnce(
@@ -216,6 +237,7 @@ async function fetchOnce(
   timeoutMs: number,
 ): Promise<Response> {
   try {
+    const proxy = opts.useProxy ? await getAppstoreProxyUrl() : undefined;
     return await fetchWithTimeout(
       url,
       {
@@ -223,6 +245,7 @@ async function fetchOnce(
         headers: opts.headers,
         redirect: "manual",
         signal: opts.signal,
+        ...(proxy ? { proxy } : {}),
       },
       timeoutMs,
     );

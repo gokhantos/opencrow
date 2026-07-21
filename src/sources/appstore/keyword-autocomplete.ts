@@ -219,6 +219,7 @@ function isRateLimitError(err: unknown): boolean {
 async function fetchHintsForSeed(
   term: string,
   storefront: string,
+  useProxy: boolean,
 ): Promise<readonly string[]> {
   const url = `${HINTS_BASE_URL}?clientApplication=Software&term=${encodeURIComponent(term)}`;
   const res = await ssrfSafeFetch(url, {
@@ -228,6 +229,7 @@ async function fetchHintsForSeed(
     },
     retryOnRateLimit: true,
     timeoutMs: HINTS_FETCH_TIMEOUT_MS,
+    useProxy,
   });
 
   if (!res.ok) {
@@ -261,8 +263,25 @@ export interface ExpandCorpusOptions {
   readonly perSeed: number;
   /** Apple `X-Apple-Store-Front` header value — see module doc. MANDATORY. */
   readonly storefront: string;
+  /**
+   * Lowercase iTunes storefront country code this pass targets (throughput
+   * wave item 3) — tags every persisted `appstore_autocomplete_hints` row
+   * (migration 049's `storefront` column). Kept separate from the raw
+   * `storefront` HEADER value above (which carries an opaque
+   * `"<id>-<lang>,<cap>"` format, not a plain cc) so callers don't need to
+   * parse the header string back into a market code. Defaults to `"us"`
+   * for backward compatibility with pre-item-3 callers.
+   */
+  readonly market?: string;
   /** Delay between each seed's hint request within this pass. */
   readonly delayMs: number;
+  /**
+   * Throughput wave item 1: route this pass's hint fetches through the
+   * Webshare proxy when true. Default false (direct fetch) — see
+   * `appstoreKeywordGap.autocompleteExpansion.useProxy` /
+   * `...gbLane.useProxy` in src/config/schema.ts.
+   */
+  readonly useProxy?: boolean;
   /**
    * Prefix fan-out (2026-07-21 audit item D fix): for each seed, ALSO
    * queries `"<seed> <letter>"` for up to this many single letters (a..z, in
@@ -326,6 +345,8 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
 
   const maxPrefixesPerSeed = Math.max(0, opts.maxPrefixesPerSeed ?? 0);
   const nowSeconds = Math.floor(Date.now() / 1000);
+  const market = opts.market ?? "us";
+  const useProxy = opts.useProxy ?? false;
 
   const candidates: HintCandidate[] = [];
   const hintRows: AutocompleteHintRow[] = [];
@@ -346,7 +367,7 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
       attempted++;
       let terms: readonly string[] = [];
       try {
-        terms = await fetchHintsForSeed(query, opts.storefront);
+        terms = await fetchHintsForSeed(query, opts.storefront, useProxy);
       } catch (err) {
         if (isRateLimitError(err)) rateLimitErrors++;
         log.warn("Autocomplete hints fetch failed — skipping seed", {
@@ -357,7 +378,7 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
 
       const queryCandidates = buildCandidatesFromHints(terms, seed.genreZone, opts.perSeed);
       for (const c of queryCandidates) {
-        hintRows.push({ seed: query, term: c.keyword, rank: c.rank, seenAt: nowSeconds });
+        hintRows.push({ seed: query, term: c.keyword, rank: c.rank, seenAt: nowSeconds, storefront: market });
         if (seen.has(c.keyword)) continue;
         seen.add(c.keyword);
         candidates.push(c);

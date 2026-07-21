@@ -118,6 +118,8 @@ export async function runIntlChartsSweep(opts: {
   readonly perCategoryLimit: number;
   readonly delayMs: number;
   readonly throttleMultiplier: number;
+  /** Throughput wave item 1: route intl-chart fetches through the Webshare proxy. Default false. */
+  readonly useProxy?: boolean;
 }): Promise<IntlChartsSweepResult> {
   const fullWorkList = buildWorkList(opts.storefronts, opts.listTypes);
   const effectiveLength = Math.max(0, Math.floor(fullWorkList.length * opts.throttleMultiplier));
@@ -156,7 +158,7 @@ export async function runIntlChartsSweep(opts: {
       // `fetchTopApps` — on exhausted retries `ssrfSafeFetch` throws
       // `RateLimitError`, handled generically by the consecutive-failure
       // bail below.
-      const res = await ssrfSafeFetch(url, { retryOnRateLimit: true });
+      const res = await ssrfSafeFetch(url, { retryOnRateLimit: true, useProxy: opts.useProxy ?? false });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status} for ${url}`);
       }

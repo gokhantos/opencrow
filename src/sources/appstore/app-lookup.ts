@@ -148,8 +148,12 @@ function toLookupApp(raw: LookupSoftwareResult): LookupApp {
   };
 }
 
-async function fetchAndParse(url: string, logLabel: string): Promise<readonly LookupApp[]> {
-  const res = await ssrfSafeFetch(url, { retryOnRateLimit: true });
+async function fetchAndParse(
+  url: string,
+  logLabel: string,
+  useProxy: boolean = false,
+): Promise<readonly LookupApp[]> {
+  const res = await ssrfSafeFetch(url, { retryOnRateLimit: true, useProxy });
   if (!res.ok) {
     throw new Error(`iTunes lookup failed (${logLabel}): HTTP ${res.status}`);
   }
@@ -179,9 +183,12 @@ async function fetchAndParse(url: string, logLabel: string): Promise<readonly Lo
  * `ssrfSafeFetch`'s `retryOnRateLimit`) on exhausted rate-limit retries, and
  * a plain `Error` on a non-ok, non-rate-limited HTTP response.
  */
-export async function fetchLookupBatch(ids: readonly string[]): Promise<readonly LookupApp[]> {
+export async function fetchLookupBatch(
+  ids: readonly string[],
+  useProxy: boolean = false,
+): Promise<readonly LookupApp[]> {
   if (ids.length === 0) return [];
-  return fetchAndParse(buildLookupUrl(ids), `batch of ${ids.length}`);
+  return fetchAndParse(buildLookupUrl(ids), `batch of ${ids.length}`, useProxy);
 }
 
 /**
@@ -193,6 +200,7 @@ export async function fetchLookupBatch(ids: readonly string[]): Promise<readonly
 export async function fetchArtistPortfolio(
   artistId: string,
   limit: number = MAX_LOOKUP_BATCH_SIZE,
+  useProxy: boolean = false,
 ): Promise<readonly LookupApp[]> {
-  return fetchAndParse(buildPortfolioUrl(artistId, limit), `portfolio artistId=${artistId}`);
+  return fetchAndParse(buildPortfolioUrl(artistId, limit), `portfolio artistId=${artistId}`, useProxy);
 }
