@@ -5,6 +5,7 @@ import { runKeywordSweep, runDeStorefrontSweep } from "./keyword-gaps";
 import { runScreener } from "./keyword-screener";
 import { expandCorpus } from "./keyword-autocomplete";
 import { mineKeywords } from "./keyword-miner";
+import { mineReviewKeywords } from "./keyword-review-miner";
 import { backfillMinedDeactivation, countScansSince, pruneKeywordScans } from "./keyword-store";
 import { advanceThrottle, computeEffectiveSweepRate, computeErrorRate, INITIAL_THROTTLE_STATE } from "./sweep-throttle";
 import type { ThrottleOutcome, ThrottleState } from "./sweep-throttle";
@@ -234,6 +235,11 @@ export function createAppStoreScraper(config?: {
   let lastReviewCohortRefreshRunAt = 0;
   // Soft cadence gate for the review-harvest ledger prune (default 24h).
   let lastReviewLedgerPruneRunAt = 0;
+  // Soft cadence gate for the Batch C4 review-complaint keyword-mining
+  // sub-pass (see `corpusDiscovery.reviewMining` in src/config/schema.ts —
+  // default OFF), decoupled from the harvest pass's own cadence above; rides
+  // the same review-harvest tick, no new timer.
+  let lastReviewMiningRunAt = 0;
   // Soft cadence gate for the app-page HTML lane's fetch pass (deep-scrape
   // build Stage 5, build plan §0.4 slot 8 — see `runAppPageEnrichmentIfDue`
   // below): process-local, same rationale as `lastEnrichmentRunAt` — default
@@ -1234,6 +1240,31 @@ export function createAppStoreScraper(config?: {
           log.info("Review-harvest cohort refresh complete", refreshResult);
         } catch (err) {
           log.warn("Review-harvest cohort refresh failed", { error: getErrorMessage(err) });
+        }
+      }
+
+      // Batch C4 review-complaint keyword-mining sub-pass — its own cadence
+      // gate, independent of both the cohort-refresh and harvest passes
+      // above. Pure DB read/extract over reviews the harvester already
+      // collected (no network calls of its own), so — like cohort-refresh —
+      // it isn't throttle-scaled. Default OFF (opt-in — see
+      // `corpusDiscovery.reviewMining`'s doc comment in config/schema.ts).
+      const reviewMiningCfg = fullCfg.appstoreKeywordGap.corpusDiscovery.reviewMining;
+      if (
+        reviewMiningCfg.enabled &&
+        Date.now() - lastReviewMiningRunAt >= reviewMiningCfg.minIntervalMs
+      ) {
+        lastReviewMiningRunAt = Date.now();
+        try {
+          const sinceSeconds = Math.floor((Date.now() - reviewMiningCfg.lookbackMs) / 1000);
+          const miningResult = await mineReviewKeywords({
+            reviewLimit: reviewMiningCfg.reviewScanLimit,
+            sinceSeconds,
+            maxNew: reviewMiningCfg.maxNewPerCycle,
+          });
+          log.info("Review-complaint keyword mining complete", miningResult);
+        } catch (err) {
+          log.warn("Review-complaint keyword mining failed", { error: getErrorMessage(err) });
         }
       }
 

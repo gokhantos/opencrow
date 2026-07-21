@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildCandidatesFromHints, parseHintTerms } from "./keyword-autocomplete";
+import { buildCandidatesFromHints, buildPrefixFanOutWindow, parseHintTerms } from "./keyword-autocomplete";
 
 // Fixture modeled on the real Apple MZSearchHints plist-XML response body,
 // captured live 2026-07-20/21 WITH the `X-Apple-Store-Front` header (see
@@ -166,5 +166,56 @@ describe("buildCandidatesFromHints", () => {
     const exactly80 = "a".repeat(80);
     const candidates = buildCandidatesFromHints([exactly80], "finance", 10);
     expect(candidates.map((c) => c.keyword)).toEqual([exactly80]);
+  });
+});
+
+// Batch C1 ("prefix fan-out never rotates"): `buildPrefixFanOutWindow`
+// replaces the pre-fix fixed `PREFIX_FAN_OUT_LETTERS.slice(0, count)` with a
+// wraparound window starting at a per-seed cursor — see keyword-autocomplete.ts
+// module doc and `keyword-store.ts`'s `ExpansionSeed.nextPrefixOffset`.
+describe("buildPrefixFanOutWindow", () => {
+  it("starts at offset 0 and returns the leading letters — matches the pre-fix fixed-slice behavior for a never-rotated seed", () => {
+    expect(buildPrefixFanOutWindow(0, 5)).toEqual(["a", "b", "c", "d", "e"]);
+  });
+
+  it("starts mid-alphabet when given a non-zero offset", () => {
+    expect(buildPrefixFanOutWindow(5, 3)).toEqual(["f", "g", "h"]);
+  });
+
+  it("wraps around past 'z' back to 'a'", () => {
+    expect(buildPrefixFanOutWindow(24, 5)).toEqual(["y", "z", "a", "b", "c"]);
+  });
+
+  it("wraps around exactly at the boundary (offset 25, count 1 -> just 'z')", () => {
+    expect(buildPrefixFanOutWindow(25, 1)).toEqual(["z"]);
+  });
+
+  it("returns the full alphabet in order when count is 26, regardless of offset", () => {
+    const window = buildPrefixFanOutWindow(10, 26);
+    expect(window).toHaveLength(26);
+    expect(new Set(window).size).toBe(26); // every letter exactly once
+    expect(window[0]).toBe("k"); // offset 10 -> 'k'
+  });
+
+  it("clamps count above 26 to 26 (never returns more letters than exist)", () => {
+    expect(buildPrefixFanOutWindow(0, 100)).toHaveLength(26);
+  });
+
+  it("returns an empty array for count 0", () => {
+    expect(buildPrefixFanOutWindow(0, 0)).toEqual([]);
+  });
+
+  it("returns an empty array for a negative count", () => {
+    expect(buildPrefixFanOutWindow(0, -5)).toEqual([]);
+  });
+
+  it("normalizes a negative offset via true modulo (never returns undefined letters)", () => {
+    // -1 mod 26 == 25 ('z'), so a window of 2 starting there wraps to ['z', 'a'].
+    expect(buildPrefixFanOutWindow(-1, 2)).toEqual(["z", "a"]);
+  });
+
+  it("normalizes an offset >= 26 by wrapping it back into range", () => {
+    expect(buildPrefixFanOutWindow(26, 2)).toEqual(["a", "b"]);
+    expect(buildPrefixFanOutWindow(27, 2)).toEqual(["b", "c"]);
   });
 });

@@ -32,6 +32,7 @@ import { isBrandNavigationalScan } from "./keyword-brand";
 import { buildSerpTail } from "./serp-tail";
 import type { SerpTailEntry } from "./serp-tail";
 import { recordAppSightings } from "./app-meta-store";
+import { mapCategoryToZone } from "./keyword-miner";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 import {
   countMinedScansSince,
@@ -46,6 +47,7 @@ import {
   insertScan,
   markDeScanned,
   markScanned,
+  setKeywordZone,
 } from "./keyword-store";
 import { isPassOverBudget } from "../shared/pass-deadline";
 
@@ -111,6 +113,10 @@ const ItunesSoftwareResultSchema = z
     currentVersionReleaseDate: z.string().catch(""),
     price: z.coerce.number().catch(0),
     formattedPrice: z.string().catch(""),
+    // Batch C3: the app's real iTunes category — see `TopApp.genre`'s doc
+    // comment (keyword-types.ts). Already present on every iTunes Search API
+    // software result; simply unread before this.
+    primaryGenreName: z.string().catch(""),
   })
   .catch({
     trackId: 0,
@@ -121,6 +127,7 @@ const ItunesSoftwareResultSchema = z
     currentVersionReleaseDate: "",
     price: 0,
     formattedPrice: "",
+    primaryGenreName: "",
   });
 
 const ItunesSearchResponseSchema = z.object({
@@ -195,6 +202,7 @@ export function toTopApp(raw: ItunesSoftwareResult, keyword: string, now: number
     keywordTokens.every((kt) => nameTokens.some((nt) => tokenMatches(kt, nt)));
   const lastUpdatedDays = daysSince(raw.currentVersionReleaseDate, now);
   const formattedPrice = raw.formattedPrice.trim();
+  const genre = raw.primaryGenreName.trim();
 
   return {
     id: String(raw.trackId),
@@ -207,6 +215,7 @@ export function toTopApp(raw: ItunesSoftwareResult, keyword: string, now: number
     ...(lastUpdatedDays !== undefined ? { lastUpdatedDays } : {}),
     price: raw.price,
     ...(formattedPrice.length > 0 ? { formattedPrice } : {}),
+    ...(genre.length > 0 ? { genre } : {}),
   };
 }
 
@@ -483,6 +492,50 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// ---------------------------------------------------------------------------
+// Batch C3 ("fix fictional genre zones") — corpus zone self-healing.
+// autocomplete candidates inherit their SEED's zone at discovery time (which
+// may itself have drifted from reality over many expansion hops) and the
+// mined miner's name-only extraction path (`keyword-miner.ts`'s
+// `scannedNameToAppInput`) has no real category at all, so it stamps every
+// candidate with `DEFAULT_ZONE` ('lifestyle') — live measurement (2026-07-21):
+// 94% of the active corpus sits in that one fake zone. Once a scan actually
+// title-matches real apps, their REAL iTunes category (`TopApp.genre`, from
+// `toTopApp`) is a much better signal than whatever the keyword happened to
+// inherit — this self-heals the corpus over the normal sweep cadence.
+// ---------------------------------------------------------------------------
+
+/** Corpus sources whose `genre_zone` this self-heal may correct — see module doc. */
+const ZONE_HEALABLE_SOURCES: ReadonlySet<string> = new Set(["autocomplete", "mined", "review"]);
+
+/**
+ * The majority `mapCategoryToZone`-mapped zone among `apps`' own `genre`
+ * field (populated by `toTopApp` from the iTunes payload's
+ * `primaryGenreName`). Apps carrying no `genre` (older persisted rows, or a
+ * `TopApp` built outside `toTopApp`) are excluded from the tally. Ties are
+ * broken by first-seen order (stable `Map` insertion order) — deterministic,
+ * and adequate since this only nudges a self-healing correction rather than
+ * gating anything load-bearing. Returns `null` when no app in `apps` carries
+ * a genre (nothing to correct from).
+ */
+export function computeMajorityZone(apps: readonly TopApp[]): string | null {
+  const counts = new Map<string, number>();
+  for (const app of apps) {
+    if (!app.genre) continue;
+    const zone = mapCategoryToZone(app.genre);
+    counts.set(zone, (counts.get(zone) ?? 0) + 1);
+  }
+  let bestZone: string | null = null;
+  let bestCount = 0;
+  for (const [zone, count] of counts) {
+    if (count > bestCount) {
+      bestZone = zone;
+      bestCount = count;
+    }
+  }
+  return bestZone;
+}
+
 /**
  * Builds the `keyword-deactivation.ts` predicate input for `profile`'s
  * keyword: its corpus `source` (via `getKeywordMeta`) and its total scan
@@ -680,10 +733,11 @@ async function scanAndRecord(
       // fresh profile), applied in ONE bulk UPDATE after the batch — see
       // below. THREE independent rules OR together: the general
       // data-hopeless rule (any non-protected source, latest-scan demand),
-      // the mined-pool-specific rule (source: 'mined' only, demand EVER
-      // reached across the whole scan history, exempt on any signature hit —
-      // see `keyword-deactivation.ts`'s `shouldDeactivateMinedKeyword`), and
-      // the brand-navigational rule (Batch A budget rescue, 2026-07-22: any
+      // the mined-pool-specific rule (source: 'mined'/'review' — Batch C4
+      // shares this rule, see keyword-review-miner.ts — demand EVER reached
+      // across the whole scan history, exempt on any signature hit — see
+      // `keyword-deactivation.ts`'s `shouldDeactivateMinedKeyword`), and the
+      // brand-navigational rule (Batch A budget rescue, 2026-07-22: any
       // non-protected source whose last DEACTIVATION_MIN_SCANS scans were
       // ALL brand-navigational — see `shouldDeactivateBrandNavigationalKeyword`).
       if (appstoreJunkDeactivation.enabled && runBookkeeping) {
@@ -691,7 +745,7 @@ async function scanAndRecord(
           const candidate = await buildDeactivationCandidate(profile);
           if (candidate) {
             let deactivate = shouldDeactivateKeyword(candidate);
-            if (!deactivate && candidate.source === "mined") {
+            if (!deactivate && (candidate.source === "mined" || candidate.source === "review")) {
               const stats = await getMinedDeactivationStats(keyword);
               const minedCandidate: MinedDeactivationCandidate = {
                 source: candidate.source,
@@ -713,6 +767,30 @@ async function scanAndRecord(
           }
         } catch (err) {
           log.warn("Junk-deactivation check failed — skipping", { keyword, error: err });
+        }
+      }
+
+      // Corpus zone self-healing (Batch C3 — see module doc above
+      // `computeMajorityZone`). Gated the same as the two bookkeeping blocks
+      // above (`runBookkeeping` — false for the DE lane): a DE-storefront
+      // scan's title-matched apps are a different market's SERP and must
+      // never correct the US-corpus zone, mirroring how DE scans already
+      // skip junk-deactivation/velocity recording. One conditional UPDATE
+      // per scan (`setKeywordZone` — a no-op when the zone already matches).
+      if (runBookkeeping) {
+        try {
+          const matched = profile.topApps.filter((a) => a.titleMatch);
+          if (matched.length > 0) {
+            const meta = await getKeywordMeta(keyword);
+            if (meta && ZONE_HEALABLE_SOURCES.has(meta.source)) {
+              const majorityZone = computeMajorityZone(matched);
+              if (majorityZone) {
+                await setKeywordZone(keyword, majorityZone);
+              }
+            }
+          }
+        } catch (err) {
+          log.warn("Keyword zone self-heal failed — skipping", { keyword, error: err });
         }
       }
     } catch (err) {

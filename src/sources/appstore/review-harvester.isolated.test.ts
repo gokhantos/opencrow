@@ -127,6 +127,13 @@ function storeMockBase() {
     getUnindexedRankings: async () => [],
     getDiscoveredAppIds: async () => new Set<string>(),
     markRankingsIndexed: async () => {},
+    // Batch C4: cross-file isolated-lane defensive addition — see the
+    // identical comment in scraper-sweep-wiring.isolated.test.ts. Since all
+    // *.isolated.test.ts files share ONE bun process, an unmocked
+    // `getRecentComplaintReviews` on THIS file's "./store" mock can leak
+    // into another file's transitive `scraper.ts` -> `keyword-review-miner.ts`
+    // import chain depending on module-cache/registration order.
+    getRecentComplaintReviews: async () => [],
   };
 }
 
