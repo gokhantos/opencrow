@@ -38,6 +38,7 @@ function makeScan(overrides: Partial<KeywordGapProfile> & { keyword: string }): 
     avgAgeDays: 500,
     topApps: [],
     scannedAt: now,
+    lowConfidence: false,
     ...overrides,
   };
 }

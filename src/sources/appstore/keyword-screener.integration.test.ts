@@ -95,6 +95,7 @@ function makeScan(
     avgAgeDays: 400,
     topApps: textbookApps(),
     scannedAt: now,
+    lowConfidence: false,
     ...overrides,
   };
 }

@@ -24,6 +24,8 @@ import {
   getMinedDeactivationStats,
   backfillMinedDeactivation,
   getTier1ProtectedKeywords,
+  markSeedsExpanded,
+  insertAutocompleteHints,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 
@@ -118,6 +120,14 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-mine-quota-a",
   "zzz-mine-quota-b",
   "zzz-mine-quota-c",
+  // perSweepCap fixtures (2026-07-21 audit item A)
+  "zzz-per-sweep-cap-a",
+  "zzz-per-sweep-cap-b",
+  "zzz-per-sweep-cap-c",
+  // Hot lane fixtures (2026-07-21 audit item A)
+  "zzz-hot-lane-open-hit",
+  "zzz-hot-lane-tier1-decoy",
+  "zzz-hot-lane-mined-decoy",
   // Self-supplied mined-exploration "stale competition" decoys for the
   // fresh-manual-keyword exclusion test — see that test's comment (PR #321
   // CI failure) for why these must exist regardless of ambient corpus size.
@@ -141,14 +151,33 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-de-lane-autocomplete",
   "zzz-de-lane-mined-excluded",
   "zzz-de-lane-inactive",
+  // DE storefront quarantine fixtures (2026-07-21 audit item B)
+  "zzz-de-quarantine-keyword",
+  // Seed rotation fixtures (2026-07-21 audit item D)
+  "zzz-rotate-winner-a",
+  "zzz-rotate-winner-b",
+  "zzz-rotate-winner-c",
+  "zzz-rotate-winner-d",
+  "zzz-rotate-diverse-a",
+  "zzz-rotate-diverse-b",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
   const db = getDb();
+  await db`DELETE FROM appstore_seed_expansion_state WHERE keyword IN ${db(TEST_KEYWORDS)}`;
+  await db`DELETE FROM appstore_autocomplete_hints WHERE seed IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_signature_hits WHERE keyword IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_keyword_scans WHERE keyword IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_keywords WHERE keyword IN ${db(TEST_KEYWORDS)}`;
 }
+
+// Shared defaults for `getStaleKeywordsTiered` call sites below — matches
+// the production config defaults (12h tier-1 staleness; a large perSweepCap
+// so pre-existing tests that pass a big `mineQuotaRemaining` aren't
+// incidentally re-capped by the per-sweep slice, unless a test is
+// specifically exercising that cap).
+const TIER1_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
+const UNLIMITED_PER_SWEEP_CAP = 1_000_000;
 
 function makeTopApp(overrides: Partial<TopApp> = {}): TopApp {
   return {
@@ -181,6 +210,7 @@ function makeScan(overrides: Partial<KeywordGapProfile> & { keyword: string }): 
     avgAgeDays: 500,
     topApps: [makeTopApp()],
     scannedAt: now,
+    lowConfidence: false,
     ...overrides,
   };
 }
@@ -804,7 +834,7 @@ describe("keyword-store", () => {
     );
     await insertScan(makeScan({ keyword: "zzz-gap-history", opportunity: 0.3, scannedAt: base }));
 
-    const history = await getScanHistory("zzz-gap-history", 2);
+    const history = await getScanHistory("zzz-gap-history", 2, "app");
     expect(history).toHaveLength(2);
     expect(history[0]?.scannedAt).toBe(base);
     expect(history[1]?.scannedAt).toBe(base - 100);
@@ -880,6 +910,66 @@ describe("keyword-store", () => {
       expect(highs).toHaveLength(1);
       expect(highs[0]?.genreZone).toBe("finance");
       expect(winners.some((w) => w.keyword === "zzz-winner-low")).toBe(false);
+    });
+  });
+
+  // 2026-07-21 audit item B: the DE storefront lane (querying/mining data
+  // only) must never leak into the US-scoped miner input, US scan-history
+  // depth, or autocomplete winner-seed selection — regardless of how
+  // high-opportunity or recent a DE row is.
+  describe("DE storefront lane quarantine (2026-07-21 audit item B)", () => {
+    const GERMAN_APP_NAME = "Zzz Deutsche Bahn Navigator";
+
+    it("keeps a DE-store scan's app names out of the miner, its history out of the US series, and its opportunity out of winner-seed selection", async () => {
+      const farFuture = Math.floor(Date.now() / 1000) + 2_000_000;
+      await upsertKeywords([
+        { keyword: "zzz-de-quarantine-keyword", genreZone: "finance", source: "seed" },
+      ]);
+
+      // A US-store scan for the same keyword, comfortably below any winner
+      // threshold and with an ordinary (non-German) app name — this is what
+      // getScanHistory('app', ...) / getWinnerKeywords should actually see.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-de-quarantine-keyword",
+          store: "app",
+          opportunity: 0.1,
+          scannedAt: farFuture - 100,
+          topApps: [makeTopApp({ id: "zzz-de-quarantine-us-app", name: "Zzz Ordinary US App" })],
+        }),
+      );
+
+      // A DE-store scan for the SAME keyword: high opportunity (clears any
+      // winner threshold) and a distinctly German app name — the exact leak
+      // the audit flagged as worst (German SERP app names entering the US
+      // keyword miner daily; a high-opportunity DE row silently qualifying
+      // as an autocomplete seed).
+      await insertScan(
+        makeScan({
+          keyword: "zzz-de-quarantine-keyword",
+          store: "DE",
+          opportunity: 0.95,
+          scannedAt: farFuture,
+          topApps: [makeTopApp({ id: "zzz-de-quarantine-de-app", name: GERMAN_APP_NAME })],
+        }),
+      );
+
+      // (a) The miner never sees the German app name.
+      const scannedNames = await getScannedAppNames(100_000);
+      expect(scannedNames).not.toContain(GERMAN_APP_NAME);
+
+      // (b) getScanHistory('app', ...) is exactly the US scan — unaffected
+      // by the DE row's presence (not starved of a slot by it, and doesn't
+      // return the DE row's content).
+      const usHistory = await getScanHistory("zzz-de-quarantine-keyword", 10, "app");
+      expect(usHistory).toHaveLength(1);
+      expect(usHistory[0]?.store).toBe("app");
+      expect(usHistory[0]?.topApps.some((a) => a.name === GERMAN_APP_NAME)).toBe(false);
+
+      // (c) getWinnerKeywords never surfaces the DE-only high-opportunity
+      // scan as an autocomplete seed, despite it clearing minOpportunity.
+      const winners = await getWinnerKeywords(0.5, 100_000);
+      expect(winners.some((w) => w.keyword === "zzz-de-quarantine-keyword")).toBe(false);
     });
   });
 
@@ -965,6 +1055,179 @@ describe("keyword-store", () => {
       // No duplicates, even though a large diverse sample could otherwise
       // re-select the winner keyword.
       expect(new Set(keywords).size).toBe(keywords.length);
+    });
+  });
+
+  // 2026-07-21 audit item D: seed rotation state (appstore_seed_expansion_state,
+  // migration 043) + autocomplete rank-hint persistence
+  // (appstore_autocomplete_hints, migration 043).
+  describe("seed rotation & autocomplete hints (2026-07-21 audit item D)", () => {
+    it("getWinnerKeywords rotates: marking a top-opportunity winner expanded drops it behind a not-yet-expanded lower (but still qualifying) winner", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-rotate-winner-a", genreZone: "zzz-rotate-zone", source: "seed" },
+        { keyword: "zzz-rotate-winner-b", genreZone: "zzz-rotate-zone", source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-rotate-winner-a", opportunity: 0.9, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-rotate-winner-b", opportunity: 0.5, scannedAt: now }),
+      );
+
+      // Before any expansion: both never-expanded (NULLS FIRST tie), so
+      // opportunity DESC decides — "a" (0.9) ranks ahead of "b" (0.5).
+      const before = await getWinnerKeywords(0.4, 100_000);
+      const beforeKeywords = before.map((w) => w.keyword);
+      expect(beforeKeywords.indexOf("zzz-rotate-winner-a")).toBeLessThan(
+        beforeKeywords.indexOf("zzz-rotate-winner-b"),
+      );
+
+      // Mark "a" (the higher-opportunity one) as just-expanded.
+      await markSeedsExpanded(["zzz-rotate-winner-a"], now);
+
+      // After: "b" (never expanded, NULLS FIRST) now ranks ahead of "a"
+      // (has a last_expanded_at), even though "a" still has higher raw
+      // opportunity — proves rotation, not just opportunity, drives order.
+      const after = await getWinnerKeywords(0.4, 100_000);
+      const afterKeywords = after.map((w) => w.keyword);
+      expect(afterKeywords.indexOf("zzz-rotate-winner-b")).toBeLessThan(
+        afterKeywords.indexOf("zzz-rotate-winner-a"),
+      );
+    });
+
+    it("getExpansionSeeds: two successive passes over the same qualifying pool select different seeds after markSeedsExpanded", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-rotate-winner-a", genreZone: "zzz-rotate-zone", source: "seed" },
+        { keyword: "zzz-rotate-winner-b", genreZone: "zzz-rotate-zone", source: "seed" },
+        { keyword: "zzz-rotate-winner-c", genreZone: "zzz-rotate-zone", source: "seed" },
+        { keyword: "zzz-rotate-winner-d", genreZone: "zzz-rotate-zone", source: "seed" },
+      ]);
+      // 4 qualifying winners, distinct opportunity. `winnerLimit: 100_000`
+      // (rather than a small number like 2) deliberately avoids competing
+      // for a truncated slice against this shared, live-scraped dev DB's
+      // real winner pool — filtering the (untruncated) result down to just
+      // these 4 keywords by prefix and checking their RELATIVE order is
+      // robust regardless of how many real keywords interleave around them
+      // (same pattern as the getWinnerKeywords/getDiverseZoneSample
+      // rotation tests above).
+      await insertScan(makeScan({ keyword: "zzz-rotate-winner-a", opportunity: 0.9, scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-rotate-winner-b", opportunity: 0.8, scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-rotate-winner-c", opportunity: 0.7, scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-rotate-winner-d", opportunity: 0.6, scannedAt: now }));
+
+      const pass1 = await getExpansionSeeds({
+        minOpportunity: 0.4,
+        winnerLimit: 100_000,
+        diverseLimit: 0,
+      });
+      const pass1Keywords = pass1
+        .map((s) => s.keyword)
+        .filter((k) => k.startsWith("zzz-rotate-winner-"));
+      // Never-expanded (NULL tie): opportunity DESC decides among these 4.
+      expect(pass1Keywords).toEqual([
+        "zzz-rotate-winner-a",
+        "zzz-rotate-winner-b",
+        "zzz-rotate-winner-c",
+        "zzz-rotate-winner-d",
+      ]);
+
+      // Simulate expandCorpus having just used the top 2 as seeds.
+      await markSeedsExpanded(["zzz-rotate-winner-a", "zzz-rotate-winner-b"], now);
+
+      const pass2 = await getExpansionSeeds({
+        minOpportunity: 0.4,
+        winnerLimit: 100_000,
+        diverseLimit: 0,
+      });
+      const pass2Keywords = pass2
+        .map((s) => s.keyword)
+        .filter((k) => k.startsWith("zzz-rotate-winner-"));
+      // "c"/"d" (still never-expanded) now precede "a"/"b" (just-expanded),
+      // even though "a"/"b" still have strictly higher raw opportunity —
+      // rotation, not opportunity, decides once expansion state differs.
+      expect(pass2Keywords).toEqual([
+        "zzz-rotate-winner-c",
+        "zzz-rotate-winner-d",
+        "zzz-rotate-winner-a",
+        "zzz-rotate-winner-b",
+      ]);
+    });
+
+    it("getDiverseZoneSample rotates: marking a keyword expanded drops it behind a not-yet-expanded zone-mate", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-rotate-diverse-a", genreZone: "zzz-rotate-diverse-zone", source: "seed" },
+        { keyword: "zzz-rotate-diverse-b", genreZone: "zzz-rotate-diverse-zone", source: "seed" },
+      ]);
+      // Same last_scanned_at so the secondary tiebreak can't decide —
+      // isolates the assertion to the rotation state.
+      await markScanned(["zzz-rotate-diverse-a", "zzz-rotate-diverse-b"], now - 1000);
+
+      const before = await getDiverseZoneSample(100_000);
+      const beforeKeywords = before.map((s) => s.keyword);
+      expect(beforeKeywords.indexOf("zzz-rotate-diverse-a")).toBeLessThan(
+        beforeKeywords.indexOf("zzz-rotate-diverse-b"),
+      );
+
+      await markSeedsExpanded(["zzz-rotate-diverse-a"], now);
+
+      const after = await getDiverseZoneSample(100_000);
+      const afterKeywords = after.map((s) => s.keyword);
+      expect(afterKeywords.indexOf("zzz-rotate-diverse-b")).toBeLessThan(
+        afterKeywords.indexOf("zzz-rotate-diverse-a"),
+      );
+    });
+
+    it("markSeedsExpanded upserts — a later call updates last_expanded_at rather than erroring on conflict", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-rotate-winner-a", genreZone: "zzz-rotate-zone", source: "seed" },
+      ]);
+      await markSeedsExpanded(["zzz-rotate-winner-a"], now - 1000);
+      await markSeedsExpanded(["zzz-rotate-winner-a"], now); // must not throw
+
+      const db = getDb();
+      const rows = await db`
+        SELECT last_expanded_at FROM appstore_seed_expansion_state WHERE keyword = 'zzz-rotate-winner-a'
+      `;
+      expect(Number((rows as ReadonlyArray<{ last_expanded_at: number | string }>)[0]?.last_expanded_at)).toBe(now);
+    });
+
+    it("is a no-op for an empty keyword list", async () => {
+      await expect(markSeedsExpanded([], Math.floor(Date.now() / 1000))).resolves.toBeUndefined();
+    });
+
+    it("insertAutocompleteHints persists rows with correct seed/term/rank/seen_at", async () => {
+      const seenAt = Math.floor(Date.now() / 1000);
+      await insertAutocompleteHints([
+        { seed: "zzz-rotate-winner-a", term: "zzz-rotate-winner-a planner", rank: 0, seenAt },
+        { seed: "zzz-rotate-winner-a", term: "zzz-rotate-winner-a bestie", rank: 1, seenAt },
+      ]);
+
+      const db = getDb();
+      const rows = await db`
+        SELECT seed, term, rank, seen_at FROM appstore_autocomplete_hints
+        WHERE seed = 'zzz-rotate-winner-a'
+        ORDER BY rank ASC
+      `;
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        seed: "zzz-rotate-winner-a",
+        term: "zzz-rotate-winner-a planner",
+        rank: 0,
+      });
+      expect(rows[1]).toMatchObject({
+        seed: "zzz-rotate-winner-a",
+        term: "zzz-rotate-winner-a bestie",
+        rank: 1,
+      });
+      expect(Number((rows[0] as { seen_at: number | string }).seen_at)).toBe(seenAt);
+    });
+
+    it("insertAutocompleteHints is a no-op for an empty row list", async () => {
+      await expect(insertAutocompleteHints([])).resolves.toBeUndefined();
     });
   });
 
@@ -1177,7 +1440,12 @@ describe("keyword-store", () => {
       await markScanned(["zzz-tier1-manual-stale"], now - 100_000_000);
       // zzz-tier1-seed-never-scanned is left with last_scanned_at = NULL.
 
-      const stale = await getStaleKeywordsTiered({ batchLimit: 100_000, mineQuotaRemaining: 0 });
+      const stale = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 0,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+      });
       expect(stale).toContain("zzz-tier1-manual-stale");
       expect(stale).toContain("zzz-tier1-seed-never-scanned");
     });
@@ -1189,7 +1457,12 @@ describe("keyword-store", () => {
       ]);
       await markScanned(["zzz-tier1-autocomplete-stale"], now - 100_000_000);
 
-      const stale = await getStaleKeywordsTiered({ batchLimit: 100_000, mineQuotaRemaining: 0 });
+      const stale = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 0,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+      });
       expect(stale).toContain("zzz-tier1-autocomplete-stale");
     });
 
@@ -1229,6 +1502,8 @@ describe("keyword-store", () => {
       const smallSlice = await getStaleKeywordsTiered({
         batchLimit: 5,
         mineQuotaRemaining: 100_000,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
       });
       expect(smallSlice).not.toContain("zzz-tier1-manual-fresh");
     });
@@ -1247,7 +1522,12 @@ describe("keyword-store", () => {
 
       // mineQuotaRemaining: 0 — a signature-hit keyword must reach tier 1
       // regardless of source, NEVER through the mined-exploration path.
-      const stale = await getStaleKeywordsTiered({ batchLimit: 100_000, mineQuotaRemaining: 0 });
+      const stale = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 0,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+      });
       expect(stale).toContain("zzz-tier1-signature-hit");
     });
 
@@ -1259,13 +1539,20 @@ describe("keyword-store", () => {
       await markScanned(["zzz-tier2-mined-stale"], now - 100_000_000);
 
       // No mined quota at all: a plain mined keyword must NOT appear.
-      const noQuota = await getStaleKeywordsTiered({ batchLimit: 100_000, mineQuotaRemaining: 0 });
+      const noQuota = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 0,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+      });
       expect(noQuota).not.toContain("zzz-tier2-mined-stale");
 
       // With quota, it becomes reachable via mined exploration.
       const withQuota = await getStaleKeywordsTiered({
         batchLimit: 100_000,
         mineQuotaRemaining: 100_000,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
       });
       expect(withQuota).toContain("zzz-tier2-mined-stale");
     });
@@ -1293,15 +1580,28 @@ describe("keyword-store", () => {
         now - 100_000_000,
       );
 
-      // Under the OLD 30%-fraction cap, a batch this size would floor to
+      // Under the OLD 30%-fraction cap, a batch of 50 would floor to
       // tier1Cap = floor(50 * 0.3) = 15 — comfortably tight enough that the
       // OLD code would drop these 3 the moment more than ~12 other stale/
-      // never-scanned tier-1-eligible keywords existed live (a real
-      // possibility, unlike a batch of literally 3). The retune removed
-      // that cap entirely: all 3 must now fit regardless of how many other
-      // tier-1-eligible keywords are also due, with margin over the small,
-      // transient live NULL backlog noted above.
-      const tinyBatch = await getStaleKeywordsTiered({ batchLimit: 50, mineQuotaRemaining: 0 });
+      // never-scanned tier-1-eligible keywords existed live. The retune
+      // removed that cap entirely: all 3 must now fit regardless of how many
+      // other tier-1-eligible keywords are also due. `batchLimit` bumped
+      // from 50 to a generous value (2026-07-21 audit item A hot-lane
+      // addition): the hot lane now competes for the SAME batch ahead of
+      // tier 1 and is itself capped at `HOT_LANE_MAX_BATCH` (50) — this
+      // shared, continuously-scraped dev DB has 275+ real signature-hit
+      // keywords stale enough to fill that whole 50-slot hot-lane cap on its
+      // own, which would leave a `batchLimit: 50` test with ZERO room left
+      // for tier 1 purely from live hot-lane competition, unrelated to
+      // tier-1's own uncapped-ness. A large batchLimit keeps this test about
+      // tier 1's lack of a fraction cap, not a collision with the hot lane's
+      // separate, intentional cap.
+      const tinyBatch = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 0,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+      });
       expect(tinyBatch).toContain("zzz-tier1-cap-manual-a");
       expect(tinyBatch).toContain("zzz-tier1-cap-manual-b");
       expect(tinyBatch).toContain("zzz-tier1-cap-manual-c");
@@ -1321,18 +1621,135 @@ describe("keyword-store", () => {
 
       // Plenty of batch room (50), but the mined quota is exhausted for the
       // day — none of these mined-only keywords should be drawn.
-      const exhausted = await getStaleKeywordsTiered({ batchLimit: 50, mineQuotaRemaining: 0 });
+      const exhausted = await getStaleKeywordsTiered({
+        batchLimit: 50,
+        mineQuotaRemaining: 0,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+      });
       expect(exhausted).not.toContain("zzz-mine-quota-a");
       expect(exhausted).not.toContain("zzz-mine-quota-b");
       expect(exhausted).not.toContain("zzz-mine-quota-c");
 
       // Quota of exactly 1: at most 1 of the three eligible mined keywords
       // may be drawn.
-      const capped = await getStaleKeywordsTiered({ batchLimit: 50, mineQuotaRemaining: 1 });
+      const capped = await getStaleKeywordsTiered({
+        batchLimit: 50,
+        mineQuotaRemaining: 1,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+      });
       const capturedCount = ["zzz-mine-quota-a", "zzz-mine-quota-b", "zzz-mine-quota-c"].filter(
         (k) => capped.includes(k),
       ).length;
       expect(capturedCount).toBeLessThanOrEqual(1);
+    });
+
+    it("perSweepCap bounds mined slots even when batchLimit and mineQuotaRemaining are both generous (2026-07-21 audit item A)", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-per-sweep-cap-a", genreZone: "zzz-per-sweep-cap-zone", source: "mined" },
+        { keyword: "zzz-per-sweep-cap-b", genreZone: "zzz-per-sweep-cap-zone", source: "mined" },
+        { keyword: "zzz-per-sweep-cap-c", genreZone: "zzz-per-sweep-cap-zone", source: "mined" },
+      ]);
+      await markScanned(
+        ["zzz-per-sweep-cap-a", "zzz-per-sweep-cap-b", "zzz-per-sweep-cap-c"],
+        now - 100_000_000,
+      );
+
+      // Generous batch room AND generous rolling daily quota — only the tight
+      // perSweepCap (1) should bound how many of these three are drawn this
+      // sweep, proving the per-sweep slice is enforced independently of the
+      // other two ceilings (see `computeMineSlots`'s unit tests in
+      // keyword-tiering.test.ts for the pure-math coverage; this integration
+      // test confirms the SQL wiring honors the same cap).
+      const capped = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 100_000,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: 1,
+      });
+      const capturedCount = [
+        "zzz-per-sweep-cap-a",
+        "zzz-per-sweep-cap-b",
+        "zzz-per-sweep-cap-c",
+      ].filter((k) => capped.includes(k)).length;
+      expect(capturedCount).toBeLessThanOrEqual(1);
+    });
+
+    it("hot lane (open signature hit, stale >6h) preempts plain tier-1/mined slots in output ordering (2026-07-21 audit item A)", async () => {
+      const db = getDb();
+      const now = Math.floor(Date.now() / 1000);
+
+      // Hot-lane fixture: `source: "mined"` (NOT tier-1-eligible by source
+      // alone) with an active signature hit, stale well past the hot lane's
+      // 6h threshold. Ancient (not just-past-6h) is deliberate: this shared,
+      // continuously-scraped dev DB has 275+ REAL signature-hit keywords
+      // already stale by >6h at any given moment (live-measured 2026-07-21),
+      // comfortably filling the hot lane's own LIMIT-50 cap on their own — a
+      // fixture merely "7h stale" reliably loses that race to real, staler
+      // competitors. An ancient timestamp reliably wins the `ORDER BY
+      // last_scanned_at ASC` race against them instead (same "ancient beats
+      // a large LIMIT" idiom used elsewhere in this file for tier 1/mined —
+      // see the `getStaleKeywordsAcrossZones` test above). Being ancient
+      // also independently clears tier 1's OWN signature-hit threshold, but
+      // that doesn't undermine this test: the point being proved is
+      // PREEMPTION (hot lane claims it before tier 1 gets a chance — tier
+      // 1's query explicitly excludes already hot-claimed keywords), not
+      // staleness-window exclusivity (see the dedicated "does NOT reach the
+      // hot lane merely by being stale" test below for that).
+      await upsertKeywords([
+        { keyword: "zzz-hot-lane-open-hit", genreZone: "zzz-hot-lane-zone", source: "mined" },
+        { keyword: "zzz-hot-lane-tier1-decoy", genreZone: "zzz-hot-lane-zone", source: "manual" },
+        { keyword: "zzz-hot-lane-mined-decoy", genreZone: "zzz-hot-lane-zone", source: "mined" },
+      ]);
+      await markScanned(["zzz-hot-lane-open-hit"], now - 100_000_000);
+      // Ancient — comfortably tier-1-eligible (manual source) and comfortably
+      // eligible for the mined-exploration quota, so both decoys reliably
+      // appear in a generous-batch pull alongside the hot fixture.
+      await markScanned(
+        ["zzz-hot-lane-tier1-decoy", "zzz-hot-lane-mined-decoy"],
+        now - 100_000_000,
+      );
+      await db`
+        INSERT INTO appstore_signature_hits (keyword, first_detected_at, last_seen_at, status)
+        VALUES ('zzz-hot-lane-open-hit', ${now}, ${now}, 'active')
+      `;
+
+      const result = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 100_000,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+      });
+
+      expect(result).toContain("zzz-hot-lane-open-hit");
+      expect(result).toContain("zzz-hot-lane-tier1-decoy");
+      expect(result).toContain("zzz-hot-lane-mined-decoy");
+
+      const hotIndex = result.indexOf("zzz-hot-lane-open-hit");
+      const tier1Index = result.indexOf("zzz-hot-lane-tier1-decoy");
+      const minedIndex = result.indexOf("zzz-hot-lane-mined-decoy");
+      expect(hotIndex).toBeLessThan(tier1Index);
+      expect(hotIndex).toBeLessThan(minedIndex);
+    });
+
+    it("does NOT reach the hot lane merely by being stale — an active signature hit is required", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-hot-lane-mined-decoy", genreZone: "zzz-hot-lane-zone", source: "mined" },
+      ]);
+      // 7h stale — past the hot lane's threshold — but no signature_hits row
+      // at all, so it must NOT be reachable without mined quota.
+      await markScanned(["zzz-hot-lane-mined-decoy"], now - 7 * 60 * 60);
+
+      const withoutQuota = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 0,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+      });
+      expect(withoutQuota).not.toContain("zzz-hot-lane-mined-decoy");
     });
   });
 

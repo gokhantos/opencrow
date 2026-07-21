@@ -197,8 +197,11 @@ export function createAppStoreRoutes(
       return c.json({ success: false, error: message }, 400);
     }
 
+    // Dashboard scan history is always the US storefront (2026-07-21 audit
+    // item B fix — `getScanHistory` now requires an explicit store so a
+    // DE-lane row can never silently starve/contaminate this view).
     const [history, meta] = await Promise.all([
-      getScanHistory(keyword, parsed.data.limit),
+      getScanHistory(keyword, parsed.data.limit, "app"),
       getKeywordMeta(keyword),
     ]);
     return c.json({

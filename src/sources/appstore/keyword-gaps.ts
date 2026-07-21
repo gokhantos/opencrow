@@ -14,12 +14,14 @@ import {
   DEACTIVATION_MIN_SCANS,
 } from "./keyword-deactivation";
 import type { DeactivationCandidate, MinedDeactivationCandidate } from "./keyword-deactivation";
+import { computePerSweepCap } from "./keyword-tiering";
 import {
   classifyTrend,
   computeCompetitiveness,
   computeDemand,
   computeIncumbentWeakness,
   computeOpportunity,
+  winsorizeRatingsPerDayAtP90,
 } from "./keyword-scoring";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 import {
@@ -52,6 +54,18 @@ const HISTORY_LIMIT = 24;
 // such a short window annualizes to a wildly noisy ratings/day. We instead pick
 // the newest prior scan at least this old; below this we fall back to lifetime.
 const MIN_VELOCITY_WINDOW_DAYS = 0.5;
+// Floor for `enrichWithVelocity`'s flap-robust cap (2026-07-21 audit item C
+// fix) — see that function's doc comment. Applies even to an app with a
+// near-zero lifetime rate, so a genuinely fast-emerging newcomer still gets
+// SOME velocity headroom rather than being capped to near-zero by its own
+// (still-small) lifetime average.
+const MIN_VELOCITY_CAP_PER_DAY = 50;
+// Non-matched apps with at least this many lifetime reviews are excluded
+// from the demand/incumbent-weakness "relevant" set entirely (2026-07-21
+// audit item C fix) — see `scanKeyword`'s doc comment. A mega-app with
+// hundreds of thousands of reviews unrelated to the search phrase must never
+// be allowed to set a keyword's demand via sheer review mass.
+export const GIANT_REVIEW_THRESHOLD = 100_000;
 // Consecutive `scanKeyword` throws that trip the sweep's early-bail guard. The
 // scan runs every minute; if the upstream (iTunes / rate-limit backoff) is
 // wedged, bail the rest of the batch instead of burning the whole slice into a
@@ -97,12 +111,42 @@ export type ItunesSoftwareResult = z.infer<typeof ItunesSoftwareResultSchema>;
 // Mapping
 // ---------------------------------------------------------------------------
 
+// Splits on ANY run of non-alphanumeric characters (whitespace AND
+// punctuation — commas, colons, hyphens, ampersands, parens, apostrophes,
+// en/em dashes, etc.), lowercased. Shared by both the keyword and the app
+// name (see `toTopApp`) so `titleMatch` compares like-for-like tokens
+// (2026-07-21 audit item C fix — the prior whitespace-only split on the
+// keyword, combined with a raw `String.includes` check against the
+// UN-tokenized name, matched any substring at any position regardless of
+// word boundaries: "hat" inside "ChatGPT", "face" inside "Facebook", "tub"
+// inside "YouTube" — none of which are real matches).
 function tokenize(text: string): readonly string[] {
   return text
     .toLowerCase()
     .trim()
-    .split(/\s+/)
+    .split(/[^a-z0-9]+/)
     .filter((t) => t.length > 0);
+}
+
+// A keyword token counts as matched against a name token only if the two are
+// EQUAL, or the keyword token is a genuine word-boundary PREFIX of the name
+// token (starting at position 0) within a small inflection allowance —
+// covers plurals/simple suffixes ("widget" matching "widgets", diff 1 char)
+// without reopening the old substring-anywhere hole: "face" must NOT match
+// "facebook" (the unmatched remainder "book" is far longer than a
+// plural/inflection suffix), even though "face" IS a structural prefix of
+// "facebook". `MIN_PREFIX_MATCH_LEN` additionally keeps very short keyword
+// tokens (< 4 chars) from ever prefix-matching at all — "hat"/"tub" fail
+// this length gate before the prefix check even runs (and wouldn't pass it
+// anyway, since neither is a structural prefix of "chatgpt"/"youtube").
+const MIN_PREFIX_MATCH_LEN = 4;
+const MAX_INFLECTION_SUFFIX_CHARS = 2;
+
+function tokenMatches(keywordToken: string, nameToken: string): boolean {
+  if (keywordToken === nameToken) return true;
+  if (keywordToken.length < MIN_PREFIX_MATCH_LEN) return false;
+  if (!nameToken.startsWith(keywordToken)) return false;
+  return nameToken.length - keywordToken.length <= MAX_INFLECTION_SUFFIX_CHARS;
 }
 
 /** Days between `releaseDate` and `now`, clamped to a minimum of 1. */
@@ -123,8 +167,10 @@ function daysSince(date: string, now: number): number | undefined {
 export function toTopApp(raw: ItunesSoftwareResult, keyword: string, now: number): TopApp {
   const ageDays = computeAgeDays(raw.releaseDate, now);
   const keywordTokens = tokenize(keyword);
-  const nameTokens = raw.trackName.toLowerCase();
-  const titleMatch = keywordTokens.length > 0 && keywordTokens.every((t) => nameTokens.includes(t));
+  const nameTokens = tokenize(raw.trackName);
+  const titleMatch =
+    keywordTokens.length > 0 &&
+    keywordTokens.every((kt) => nameTokens.some((nt) => tokenMatches(kt, nt)));
   const lastUpdatedDays = daysSince(raw.currentVersionReleaseDate, now);
   const formattedPrice = raw.formattedPrice.trim();
 
@@ -203,7 +249,15 @@ function enrichWithVelocity(
   return apps.map((a) => {
     const prev = baselineReviews.get(a.id);
     if (prev === undefined) return a;
-    const recentVelocity = Math.max(0, a.reviews - prev) / daysBetweenScans;
+    const rawVelocity = Math.max(0, a.reviews - prev) / daysBetweenScans;
+    // Cap (2026-07-21 audit item C fix): bounds a single flapped/corrected
+    // review-count reading from minting an implausible demand spike — see
+    // `scanKeyword`'s "flap-robust velocity baseline" doc comment. A cap
+    // relative to the app's OWN lifetime rate (10x headroom for genuine
+    // heating) with an absolute floor (so a near-zero-lifetime-rate app
+    // isn't capped to near-zero).
+    const cap = Math.max(10 * a.ratingsPerDay, MIN_VELOCITY_CAP_PER_DAY);
+    const recentVelocity = Math.min(rawVelocity, cap);
     return { ...a, recentVelocity };
   });
 }
@@ -226,33 +280,69 @@ export async function scanKeyword(
 
   // Prior scans (this store, newest-first) drive both live velocity and
   // momentum: an old-enough scan is the velocity baseline; the whole series
-  // feeds trend. Scoping by `store` keeps the DE lane's history (a distinct
-  // storefront's review counts/ratings) from being diffed against US scans.
-  const history = (await getScanHistory(keyword, HISTORY_LIMIT)).filter((h) => h.store === store);
+  // feeds trend. `getScanHistory`'s `store` param filters IN the SQL itself
+  // (2026-07-21 audit item B fix — was a TS-side `.filter` after a plain
+  // `LIMIT HISTORY_LIMIT`, which silently starved a store's history depth
+  // below `HISTORY_LIMIT` whenever another store's rows were interleaved in
+  // the most recent `HISTORY_LIMIT` scans) — keeps the DE lane's history (a
+  // distinct storefront's review counts/ratings) from being diffed against
+  // US scans.
+  const history = await getScanHistory(keyword, HISTORY_LIMIT, store);
 
-  // Velocity baseline: the NEWEST prior scan at least MIN_VELOCITY_WINDOW_DAYS
-  // old. The immediately-previous scan is only ~48 min old under the live
-  // cadence — too fresh to diff — so we look further back to a scan carrying a
-  // meaningful review delta. Only when no prior scan is yet that old (genuinely
-  // early days for this keyword) do we fall back to the lifetime average.
-  const baseline = history.find(
+  // Velocity baseline: per-app MAX reviews across the TWO newest prior scans
+  // at least MIN_VELOCITY_WINDOW_DAYS old (2026-07-21 audit item C fix,
+  // "flap-robust velocity baseline") — not just the single newest. Survives
+  // an Apple review-count flap (a transient drop then a near-full recovery):
+  // diffing only against the single newest eligible scan can land on the
+  // dip and read the recovery back up to the pre-flap level as a phantom
+  // spike; taking the max across the two newest anchors the baseline at the
+  // higher (real) prior level instead. `daysBetweenScans` still uses the
+  // single newest eligible scan's timestamp (the closest-in-time anchor),
+  // only the REVIEW COUNT baseline is maxed across two. Falls back to the
+  // lifetime average (see `enrichWithVelocity`'s early return) when no prior
+  // scan is yet that old.
+  const eligibleBaselines = history.filter(
     (h) => (scannedAt - h.scannedAt) / 86_400 >= MIN_VELOCITY_WINDOW_DAYS,
   );
-  const baselineReviews = new Map<string, number>(
-    (baseline?.topApps ?? []).map((a) => [a.id, a.reviews]),
-  );
-  const daysBetweenScans = baseline ? (scannedAt - baseline.scannedAt) / 86_400 : 0;
+  const newestEligibleBaselines = eligibleBaselines.slice(0, 2);
+  const baselineReviews = new Map<string, number>();
+  for (const h of newestEligibleBaselines) {
+    for (const a of h.topApps) {
+      const prevMax = baselineReviews.get(a.id);
+      if (prevMax === undefined || a.reviews > prevMax) {
+        baselineReviews.set(a.id, a.reviews);
+      }
+    }
+  }
+  const newestBaseline = newestEligibleBaselines[0];
+  const daysBetweenScans = newestBaseline ? (scannedAt - newestBaseline.scannedAt) / 86_400 : 0;
 
   const topApps = enrichWithVelocity(fetched, baselineReviews, daysBetweenScans);
 
-  // Demand + weakness are about the apps actually serving this phrase: restrict
-  // to title-matched incumbents, falling back to the whole field only when
-  // nothing matches. Competitiveness stays over the whole ranked field — that
-  // is the crowd a new entrant ranks against.
+  // Demand + weakness are about the apps actually serving this phrase.
+  // 2026-07-21 audit item C fix ("fix fabricated demand"): NEVER fall back
+  // to the raw, unfiltered SERP when nothing title-matches — that let
+  // review-mass giants unrelated to the keyword set demand (e.g. WhatsApp
+  // scored demand 498 on "credit score widget"). When zero apps
+  // title-match, compute demand/weakness only over the NON-matched apps
+  // that are also NOT giants (< GIANT_REVIEW_THRESHOLD reviews); if none
+  // qualify (an all-giant field), the relevant set is empty and demand is 0.
+  // Either way the scan is flagged `lowConfidence` — no title-matched
+  // incumbent means we don't actually know who serves this phrase.
+  // Competitiveness stays over the whole ranked field regardless — that is
+  // the crowd a new entrant ranks against, giants included.
   const matched = topApps.filter((a) => a.titleMatch);
-  const relevant = matched.length > 0 ? matched : topApps;
+  const lowConfidence = matched.length === 0;
+  const relevant =
+    matched.length > 0 ? matched : topApps.filter((a) => a.reviews < GIANT_REVIEW_THRESHOLD);
 
-  const demand = computeDemand(relevant);
+  // Winsorize per-app ratingsPerDay at the relevant set's own p90 before it
+  // enters demand — bounds a single outlier app's lifetime review mass from
+  // dominating the mean. Scoped to the demand computation only (does not
+  // affect `topApps`/`incumbentWeakness`, and is NOT persisted back onto the
+  // stored `topApps` payload — see `winsorizeRatingsPerDayAtP90`'s doc
+  // comment for why median was tried and rejected).
+  const demand = computeDemand(winsorizeRatingsPerDayAtP90(relevant));
   const competitiveness = computeCompetitiveness(topApps);
   const incumbentWeakness = computeIncumbentWeakness(relevant);
 
@@ -280,6 +370,7 @@ export async function scanKeyword(
     avgAgeDays,
     topApps,
     scannedAt,
+    lowConfidence,
   };
 }
 
@@ -309,7 +400,11 @@ async function buildDeactivationCandidate(
 ): Promise<DeactivationCandidate | null> {
   const meta = await getKeywordMeta(profile.keyword);
   if (!meta) return null;
-  const history = await getScanHistory(profile.keyword, DEACTIVATION_MIN_SCANS);
+  // ALWAYS the US storefront, regardless of which store this particular scan
+  // was — junk-deactivation is a US-corpus concept (see keyword-deactivation.ts)
+  // and must never fire (or fail to fire) based on a DE-lane scan's history
+  // (2026-07-21 audit item B fix).
+  const history = await getScanHistory(profile.keyword, DEACTIVATION_MIN_SCANS, "app");
   return {
     keyword: profile.keyword,
     source: meta.source,
@@ -496,8 +591,11 @@ export async function runKeywordSweep(opts: {
   skipped: boolean;
   bailed: boolean;
   rateLimitErrors: number;
+  /** Remaining mined-exploration quota for the rolling 24h window AFTER this sweep. */
+  mineQuotaRemaining: number;
 }> {
-  const { topN, dailyKeywordBudget, minedExploration } = loadConfig().appstoreKeywordGap;
+  const { topN, dailyKeywordBudget, minedExploration, tier1StaleThresholdMs, scanIntervalMs } =
+    loadConfig().appstoreKeywordGap;
 
   const since = Math.floor(Date.now() / 1000) - 86_400;
   const scansLast24h = await countScansSince(since);
@@ -506,7 +604,14 @@ export async function runKeywordSweep(opts: {
       scansLast24h,
       dailyKeywordBudget,
     });
-    return { scanned: 0, failed: 0, skipped: true, bailed: false, rateLimitErrors: 0 };
+    return {
+      scanned: 0,
+      failed: 0,
+      skipped: true,
+      bailed: false,
+      rateLimitErrors: 0,
+      mineQuotaRemaining: minedExploration.dailyQuota,
+    };
   }
 
   // Mined exploration's OWN rolling-24h quota, tracked independently of the
@@ -515,13 +620,28 @@ export async function runKeywordSweep(opts: {
   const minedScansLast24h = await countMinedScansSince(since);
   const mineQuotaRemaining = Math.max(0, minedExploration.dailyQuota - minedScansLast24h);
 
-  // Priority re-scan lane (see keyword-tiering.ts): ALL due
-  // seed/manual/autocomplete/signature-hit keywords fill first (uncapped),
-  // then mined exploration fills whatever's left of the batch, capped by its
-  // own daily quota.
-  const keywords = await getStaleKeywordsTiered({ batchLimit: opts.limit, mineQuotaRemaining });
+  // Per-sweep slice of the mined quota (2026-07-21 audit NOW-tier fix, item
+  // A): without this, `getStaleKeywordsTiered`'s greedy fill lets a single
+  // LIGHT sweep (small hot+tier1 lanes) spend the WHOLE day's remaining
+  // mined quota in one cycle, starving every later sweep of the day of any
+  // mined slots at all. Spreads the quota evenly across the ~86_400_000 /
+  // scanIntervalMs sweeps expected per day instead.
+  const perSweepCap = computePerSweepCap(minedExploration.dailyQuota, scanIntervalMs);
+
+  // Priority re-scan lanes (see keyword-tiering.ts): the hot lane (open
+  // signature hits, stale >6h) and tier 1 (ALL due seed/manual/autocomplete/
+  // signature-hit keywords) fill first (both effectively uncapped by this
+  // cycle's batch — hot has its own small fixed cap), then mined exploration
+  // fills whatever's left of the batch, capped by both its own daily quota
+  // and this sweep's `perSweepCap` slice of it.
+  const keywords = await getStaleKeywordsTiered({
+    batchLimit: opts.limit,
+    mineQuotaRemaining,
+    tier1StaleThresholdMs,
+    perSweepCap,
+  });
   const result = await scanAndRecord(keywords, { topN, delayMs: opts.delayMs });
-  return { ...result, skipped: false };
+  return { ...result, skipped: false, mineQuotaRemaining };
 }
 
 // ---------------------------------------------------------------------------

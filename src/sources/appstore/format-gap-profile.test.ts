@@ -34,6 +34,7 @@ const profile: KeywordGapProfile = {
     },
   ],
   scannedAt: 1_720_000_000,
+  lowConfidence: false,
 };
 
 describe("formatGapProfile", () => {

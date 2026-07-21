@@ -21,19 +21,35 @@ const SEEDS = [
   { keyword: "meal prep", genreZone: "health" },
 ];
 
+/** Every `./keyword-store` export `keyword-autocomplete.ts` imports, with inert defaults. */
+function keywordStoreMockBase() {
+  return {
+    getExpansionSeeds: async () => SEEDS,
+    keywordsExist: async () => new Set<string>(),
+    upsertKeywords: async (rows: readonly unknown[]) => rows.length,
+    markSeedsExpanded: async () => {},
+    insertAutocompleteHints: async () => {},
+  };
+}
+
 describe("expandCorpus", () => {
   let upsertedRows: unknown[];
   let keywordsExistCalls: Array<readonly string[]>;
   let fetchedUrls: string[];
   let fetchedHeaders: Array<Record<string, string> | undefined>;
+  let markSeedsExpandedCalls: Array<readonly string[]>;
+  let insertedHintRows: unknown[];
 
   beforeEach(() => {
     upsertedRows = [];
     keywordsExistCalls = [];
     fetchedUrls = [];
     fetchedHeaders = [];
+    markSeedsExpandedCalls = [];
+    insertedHintRows = [];
 
     mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
       getExpansionSeeds: async () => SEEDS,
       keywordsExist: async (keywords: readonly string[]) => {
         keywordsExistCalls.push(keywords);
@@ -42,6 +58,12 @@ describe("expandCorpus", () => {
       upsertKeywords: async (rows: readonly unknown[]) => {
         upsertedRows = [...upsertedRows, ...rows];
         return rows.length;
+      },
+      markSeedsExpanded: async (keywords: readonly string[]) => {
+        markSeedsExpandedCalls.push(keywords);
+      },
+      insertAutocompleteHints: async (rows: readonly unknown[]) => {
+        insertedHintRows = [...insertedHintRows, ...rows];
       },
     }));
 
@@ -115,7 +137,7 @@ describe("expandCorpus", () => {
 
   it("excludes candidates already present in the corpus", async () => {
     mock.module("./keyword-store", () => ({
-      getExpansionSeeds: async () => SEEDS,
+      ...keywordStoreMockBase(),
       keywordsExist: async () => new Set(["budget planner"]),
       upsertKeywords: async (rows: readonly unknown[]) => {
         upsertedRows = [...upsertedRows, ...rows];
@@ -171,8 +193,8 @@ describe("expandCorpus", () => {
 
   it("returns an empty result without any DB writes when there are no seeds", async () => {
     mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
       getExpansionSeeds: async () => [],
-      keywordsExist: async () => new Set<string>(),
       upsertKeywords: async (rows: readonly unknown[]) => {
         upsertedRows = [...upsertedRows, ...rows];
         return rows.length;
@@ -216,5 +238,118 @@ describe("expandCorpus", () => {
 
     expect(result.added).toBe(1);
     expect(result.rateLimitErrors).toBe(0);
+  });
+
+  // 2026-07-21 audit item D fix: seed rotation.
+  it("marks every drawn seed as expanded, regardless of fetch outcome", async () => {
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143441-1,29",
+      delayMs: 0,
+    });
+
+    expect(markSeedsExpandedCalls.length).toBe(1);
+    expect(markSeedsExpandedCalls[0]).toEqual(["budget", "meal prep"]);
+  });
+
+  // 2026-07-21 audit item D fix: rank hints persisted.
+  it("persists a (seed, term, rank, seenAt) row for every candidate, not just the ones that become new keywords", async () => {
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      // "budget planner" already exists — it must still get a hint row even
+      // though it won't be upserted as a new corpus keyword.
+      keywordsExist: async () => new Set(["budget planner"]),
+      insertAutocompleteHints: async (rows: readonly unknown[]) => {
+        insertedHintRows = [...insertedHintRows, ...rows];
+      },
+    }));
+
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143441-1,29",
+      delayMs: 0,
+    });
+
+    expect(insertedHintRows).toEqual([
+      { seed: "budget", term: "budget planner", rank: 0, seenAt: expect.any(Number) },
+      { seed: "budget", term: "budget bestie", rank: 1, seenAt: expect.any(Number) },
+      { seed: "meal prep", term: "meal prep ideas", rank: 0, seenAt: expect.any(Number) },
+    ]);
+  });
+
+  // 2026-07-21 audit item D fix: prefix fan-out.
+  describe("prefix fan-out", () => {
+    it("bounds the extra requests per seed to maxPrefixesPerSeed", async () => {
+      const { expandCorpus } = await import("./keyword-autocomplete");
+      const result = await expandCorpus({
+        minOpportunity: 0.15,
+        winnerLimit: 15,
+        diverseLimit: 10,
+        perSeed: 8,
+        storefront: "143441-1,29",
+        delayMs: 0,
+        maxPrefixesPerSeed: 3,
+      });
+
+      // 2 seeds * (1 bare + 3 prefix) = 8 total requests.
+      expect(result.attempted).toBe(8);
+      expect(fetchedUrls.length).toBe(8);
+    });
+
+    it("issues zero extra requests when maxPrefixesPerSeed is omitted (default 0 — unchanged pre-fix behavior)", async () => {
+      const { expandCorpus } = await import("./keyword-autocomplete");
+      const result = await expandCorpus({
+        minOpportunity: 0.15,
+        winnerLimit: 15,
+        diverseLimit: 10,
+        perSeed: 8,
+        storefront: "143441-1,29",
+        delayMs: 0,
+      });
+
+      expect(result.attempted).toBe(2);
+    });
+
+    it("queries the expected letter-suffixed URLs, in order, up to the cap", async () => {
+      const { expandCorpus } = await import("./keyword-autocomplete");
+      await expandCorpus({
+        minOpportunity: 0.15,
+        winnerLimit: 15,
+        diverseLimit: 10,
+        perSeed: 8,
+        storefront: "143441-1,29",
+        delayMs: 0,
+        maxPrefixesPerSeed: 2,
+      });
+
+      // First seed "budget": bare seed + "budget a" + "budget b".
+      expect(fetchedUrls[0]).toContain(`term=${encodeURIComponent("budget")}`);
+      expect(fetchedUrls[1]).toContain(`term=${encodeURIComponent("budget a")}`);
+      expect(fetchedUrls[2]).toContain(`term=${encodeURIComponent("budget b")}`);
+    });
+
+    it("caps at 26 even if a caller passes a larger maxPrefixesPerSeed", async () => {
+      const { expandCorpus } = await import("./keyword-autocomplete");
+      const result = await expandCorpus({
+        minOpportunity: 0.15,
+        winnerLimit: 15,
+        diverseLimit: 10,
+        perSeed: 8,
+        storefront: "143441-1,29",
+        delayMs: 0,
+        maxPrefixesPerSeed: 100,
+      });
+
+      // 2 seeds * (1 bare + 26 letters) = 54 total requests, not 202.
+      expect(result.attempted).toBe(54);
+    });
   });
 });

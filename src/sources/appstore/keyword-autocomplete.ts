@@ -27,8 +27,14 @@ import { getErrorMessage } from "../../lib/error-serialization";
 import { createLogger } from "../../logger";
 import { RateLimitError, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
 import { isJunkKeyword } from "./keyword-junk";
-import { getExpansionSeeds, keywordsExist, upsertKeywords } from "./keyword-store";
-import type { KeywordSeedRow } from "./keyword-store";
+import {
+  getExpansionSeeds,
+  insertAutocompleteHints,
+  keywordsExist,
+  markSeedsExpanded,
+  upsertKeywords,
+} from "./keyword-store";
+import type { AutocompleteHintRow, KeywordSeedRow } from "./keyword-store";
 
 const log = createLogger("appstore:keyword-autocomplete");
 
@@ -39,6 +45,12 @@ const HINTS_BASE_URL = "https://search.itunes.apple.com/WebObjects/MZSearchHints
 // full search, and a wedged hint request shouldn't stall an expansion pass
 // that fans out over many seeds.
 const HINTS_FETCH_TIMEOUT_MS = 10_000;
+
+// Prefix fan-out (2026-07-21 audit item D fix): the 26 single-letter query
+// suffixes tried per seed, in order, up to `maxPrefixesPerSeed` — see
+// `ExpandCorpusOptions` doc comment and `appstoreKeywordGap
+// .autocompleteExpansion.prefixFanOut` in src/config/schema.ts.
+const PREFIX_FAN_OUT_LETTERS: readonly string[] = "abcdefghijklmnopqrstuvwxyz".split("");
 
 // ---------------------------------------------------------------------------
 // Plist parsing
@@ -251,15 +263,30 @@ export interface ExpandCorpusOptions {
   readonly storefront: string;
   /** Delay between each seed's hint request within this pass. */
   readonly delayMs: number;
+  /**
+   * Prefix fan-out (2026-07-21 audit item D fix): for each seed, ALSO
+   * queries `"<seed> <letter>"` for up to this many single letters (a..z, in
+   * order) — Apple's search-suggest returns different, more specific
+   * completions per prefix, closer to how real users actually type. Each
+   * fan-out query counts toward `attempted`/`rateLimitErrors` and respects
+   * the same `delayMs` pacing as the bare seed. Optional; defaults to 0
+   * (bare-seed-only, the pre-fix behavior) so existing callers/tests are
+   * unaffected.
+   */
+  readonly maxPrefixesPerSeed?: number;
 }
 
 export interface ExpandCorpusResult {
   /** Count of NEW corpus keywords upserted with `source: "autocomplete"`. */
   readonly added: number;
   readonly seedsUsed: number;
-  /** Seeds actually fetched (== seedsUsed unless a future short-circuit is added). */
+  /**
+   * Total hint-fetch REQUESTS made this pass — the bare seed plus any
+   * prefix-fan-out queries (2026-07-21 audit item D fix), so this can now
+   * exceed `seedsUsed` when `maxPrefixesPerSeed > 0`.
+   */
   readonly attempted: number;
-  /** Count of seeds whose hint fetch hit an exhausted rate-limit retry. */
+  /** Count of requests whose hint fetch hit an exhausted rate-limit retry. */
   readonly rateLimitErrors: number;
 }
 
@@ -273,9 +300,14 @@ const EMPTY_RESULT: ExpandCorpusResult = {
 /**
  * Expands the keyword corpus from Apple search-suggest hints, seeded from a
  * mix of current high-opportunity "winners" and zone-diverse picks (see
- * `keyword-store.ts`'s `getExpansionSeeds`). For each seed, fetches hints,
- * extracts up to `perSeed` good (junk-filtered) candidates in Apple's
- * popularity order, and upserts the genuinely new ones with
+ * `keyword-store.ts`'s `getExpansionSeeds`, now seed-rotated — 2026-07-21
+ * audit item D fix). For each seed, fetches the bare-seed hints plus up to
+ * `maxPrefixesPerSeed` single-letter prefix-fan-out queries, extracts up to
+ * `perSeed` good (junk-filtered) candidates per query in Apple's popularity
+ * order, persists every (seed, term, rank) hint to `appstore_autocomplete_
+ * hints` (migration 043 — previously discarded rank entirely), marks every
+ * seed drawn this pass as expanded (rotates it to the back of next pass's
+ * selection order), and upserts the genuinely new terms with
  * `source: "autocomplete"` inheriting the seed's `genreZone`.
  *
  * Never throws: a single seed's fetch failure is logged and treated as zero
@@ -292,32 +324,61 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
   });
   if (seeds.length === 0) return EMPTY_RESULT;
 
+  const maxPrefixesPerSeed = Math.max(0, opts.maxPrefixesPerSeed ?? 0);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
   const candidates: HintCandidate[] = [];
+  const hintRows: AutocompleteHintRow[] = [];
   const seen = new Set<string>();
   let attempted = 0;
   let rateLimitErrors = 0;
 
   for (const seed of seeds) {
-    attempted++;
-    let terms: readonly string[] = [];
-    try {
-      terms = await fetchHintsForSeed(seed.keyword, opts.storefront);
-    } catch (err) {
-      if (isRateLimitError(err)) rateLimitErrors++;
-      log.warn("Autocomplete hints fetch failed — skipping seed", {
-        keyword: seed.keyword,
-        error: getErrorMessage(err),
-      });
-    }
+    // Prefix fan-out (2026-07-21 audit item D fix): the bare seed, plus up
+    // to `maxPrefixesPerSeed` single-letter-suffixed queries — see
+    // `ExpandCorpusOptions` doc comment.
+    const queries = [
+      seed.keyword,
+      ...PREFIX_FAN_OUT_LETTERS.slice(0, maxPrefixesPerSeed).map((l) => `${seed.keyword} ${l}`),
+    ];
 
-    for (const candidate of buildCandidatesFromHints(terms, seed.genreZone, opts.perSeed)) {
-      if (seen.has(candidate.keyword)) continue;
-      seen.add(candidate.keyword);
-      candidates.push(candidate);
-    }
+    for (const query of queries) {
+      attempted++;
+      let terms: readonly string[] = [];
+      try {
+        terms = await fetchHintsForSeed(query, opts.storefront);
+      } catch (err) {
+        if (isRateLimitError(err)) rateLimitErrors++;
+        log.warn("Autocomplete hints fetch failed — skipping seed", {
+          keyword: query,
+          error: getErrorMessage(err),
+        });
+      }
 
-    if (opts.delayMs > 0) await delay(opts.delayMs);
+      const queryCandidates = buildCandidatesFromHints(terms, seed.genreZone, opts.perSeed);
+      for (const c of queryCandidates) {
+        hintRows.push({ seed: query, term: c.keyword, rank: c.rank, seenAt: nowSeconds });
+        if (seen.has(c.keyword)) continue;
+        seen.add(c.keyword);
+        candidates.push(c);
+      }
+
+      if (opts.delayMs > 0) await delay(opts.delayMs);
+    }
   }
+
+  // Seed rotation (2026-07-21 audit item D fix): every seed drawn this pass
+  // rotates to the back of `getWinnerKeywords`/`getDiverseZoneSample`'s
+  // selection order for the NEXT pass, regardless of whether its fetch(es)
+  // succeeded or yielded candidates — see `markSeedsExpanded`'s doc comment.
+  await markSeedsExpanded(
+    seeds.map((s) => s.keyword),
+    nowSeconds,
+  );
+  // Rank hints (2026-07-21 audit item D fix): persisted regardless of
+  // whether a term ends up being a genuinely NEW corpus keyword below — the
+  // rank signal itself is the point, not just the term.
+  if (hintRows.length > 0) await insertAutocompleteHints(hintRows);
 
   if (candidates.length === 0) {
     log.info("Autocomplete corpus expansion", { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors });

@@ -1,6 +1,11 @@
 import { getDb } from "../../store/db";
 import { JUNK_KEYWORDS } from "./keyword-junk";
-import { TIER1_ELIGIBLE_SOURCES, TIER1_STALE_THRESHOLD_MS } from "./keyword-tiering";
+import {
+  computeMineSlots,
+  HOT_LANE_MAX_BATCH,
+  HOT_LANE_STALE_THRESHOLD_MS,
+  TIER1_ELIGIBLE_SOURCES,
+} from "./keyword-tiering";
 import {
   DEACTIVATION_MIN_SCANS,
   MINED_DEACTIVATION_MAX_DEMAND_EVER,
@@ -69,6 +74,11 @@ export interface KeywordScanRow {
    * formula either way.
    */
   readonly buildability: number;
+  /**
+   * True iff zero apps in this scan's SERP title-matched the keyword — see
+   * `KeywordGapProfile.lowConfidence` (keyword-types.ts) and migration 042.
+   */
+  readonly lowConfidence: boolean;
 }
 
 /**
@@ -115,6 +125,8 @@ interface KeywordScanDbRow {
    * computing it in TS via `computeBuildability` in that case.
    */
   readonly buildability?: number | string | null;
+  /** Migration 042. Absent/null on any pre-migration row — treated as `false`. */
+  readonly low_confidence?: boolean | null;
 }
 
 /** Raw column shape returned by `getTopOpportunities`'s scan+corpus join. */
@@ -147,6 +159,7 @@ export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
     avgAgeDays: Number(row.avg_age_days),
     topApps: parseJson<readonly TopApp[]>(row.top_apps, []),
     buildability,
+    lowConfidence: row.low_confidence === true,
   };
 }
 
@@ -234,24 +247,62 @@ export async function getStaleKeywordsTiered(opts: {
    * `minedExploration.dailyQuota` minus `countMinedScansSince`'s count for
    * the same window — computed by the caller, `runKeywordSweep`). Once this
    * hits 0, no more mined keywords are drawn for the rest of the day — the
-   * batch returns tier 1 only, even if `batchLimit` has slots left over.
+   * batch returns hot + tier 1 only, even if `batchLimit` has slots left over.
    */
   readonly mineQuotaRemaining: number;
+  /**
+   * Tier 1's staleness window in ms (`appstoreKeywordGap.tier1StaleThresholdMs`
+   * config, default 12h — see keyword-tiering.ts module doc). Computed by the
+   * caller so this module stays config-free, matching `mineQuotaRemaining`.
+   */
+  readonly tier1StaleThresholdMs: number;
+  /**
+   * This sweep's slice of the mined daily quota
+   * (`ceil(dailyQuota * scanIntervalMs / 86_400_000)`, computed by the
+   * caller — `runKeywordSweep`). Prevents a single sweep from greedily
+   * spending the WHOLE day's mined quota in one cycle when hot/tier 1 are
+   * light that cycle — see keyword-tiering.ts module doc, "Mined
+   * exploration".
+   */
+  readonly perSweepCap: number;
 }): Promise<readonly string[]> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
-  const staleThresholdAt = now - Math.floor(TIER1_STALE_THRESHOLD_MS / 1000);
+  const staleThresholdAt = now - Math.floor(opts.tier1StaleThresholdMs / 1000);
+  const hotStaleThresholdAt = now - Math.floor(HOT_LANE_STALE_THRESHOLD_MS / 1000);
 
-  // Tier 1 — UNCAPPED (see keyword-tiering.ts doc comment): every stale
-  // eligible-source or signature-hit keyword competes for this cycle's
-  // batch, stalest-first, up to the WHOLE batch if needed. Self-limiting in
-  // practice — see module doc comment.
-  const tier1Rows =
+  // Hot lane — open signature-hit watchlist entries, stale by the SHORTER
+  // hot-lane threshold, pulled ahead of tier 1 so they never lose a slot to
+  // a merely-stale tier-1 keyword (see keyword-tiering.ts module doc).
+  // Capped (unlike tier 1) since an unbounded watchlist could otherwise
+  // crowd out everything else.
+  const hotRows =
     opts.batchLimit > 0
+      ? await db`
+          SELECT k.keyword FROM appstore_keywords k
+          JOIN appstore_signature_hits h ON h.keyword = k.keyword
+          WHERE k.active = TRUE
+            AND h.status IN ('new', 'active')
+            AND (k.last_scanned_at IS NULL OR k.last_scanned_at < ${hotStaleThresholdAt})
+          ORDER BY k.last_scanned_at ASC NULLS FIRST
+          LIMIT ${Math.min(HOT_LANE_MAX_BATCH, opts.batchLimit)}
+        `
+      : [];
+  const hotKeywords = (hotRows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
+
+  // Tier 1 — UNCAPPED (see keyword-tiering.ts module doc): every stale
+  // eligible-source or signature-hit keyword not already claimed by the hot
+  // lane competes for the rest of this cycle's batch, stalest-first, up to
+  // the WHOLE remaining batch if needed. Self-limiting in practice — see
+  // module doc comment.
+  const remainingAfterHot = opts.batchLimit - hotKeywords.length;
+  const tier1Rows =
+    remainingAfterHot > 0
       ? await db`
           SELECT k.keyword FROM appstore_keywords k
           WHERE k.active = TRUE
             AND (k.last_scanned_at IS NULL OR k.last_scanned_at < ${staleThresholdAt})
+            AND NOT (k.keyword = ANY(${db.array(hotKeywords, "text")}))
             AND (
               k.source IN ${db([...TIER1_ELIGIBLE_SOURCES])}
               OR EXISTS (
@@ -260,29 +311,31 @@ export async function getStaleKeywordsTiered(opts: {
               )
             )
           ORDER BY k.last_scanned_at ASC NULLS FIRST
-          LIMIT ${opts.batchLimit}
+          LIMIT ${remainingAfterHot}
         `
       : [];
 
   const tier1Keywords = (tier1Rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
-  const remainingBatch = opts.batchLimit - tier1Keywords.length;
-  const mineSlots = Math.max(0, Math.min(remainingBatch, opts.mineQuotaRemaining));
-  if (mineSlots <= 0) return tier1Keywords;
+  const claimedKeywords = [...hotKeywords, ...tier1Keywords];
+  const remainingBatch = remainingAfterHot - tier1Keywords.length;
+  const mineSlots = computeMineSlots(remainingBatch, opts.mineQuotaRemaining, opts.perSweepCap);
+  if (mineSlots <= 0) return claimedKeywords;
 
   // Mined exploration — never-scanned first (NULLS FIRST), then
-  // oldest-scanned-still-active, capped by whatever's left of BOTH this
-  // cycle's batch and the rolling daily mined quota.
+  // oldest-scanned-still-active, capped by whatever's left of this cycle's
+  // batch, the rolling daily mined quota, AND this sweep's per-sweep slice
+  // of that quota (`perSweepCap`).
   const mineRows = await db`
     SELECT keyword FROM appstore_keywords
     WHERE active = TRUE
       AND source = 'mined'
-      AND NOT (keyword = ANY(${db.array(tier1Keywords, "text")}))
+      AND NOT (keyword = ANY(${db.array(claimedKeywords, "text")}))
     ORDER BY last_scanned_at ASC NULLS FIRST
     LIMIT ${mineSlots}
   `;
 
   return [
-    ...tier1Keywords,
+    ...claimedKeywords,
     ...(mineRows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword),
   ];
 }
@@ -298,11 +351,12 @@ export async function insertScan(p: KeywordGapProfile): Promise<void> {
   await db`
     INSERT INTO appstore_keyword_scans (
       keyword, store, scanned_at, competitiveness, demand, incumbent_weakness,
-      opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps
+      opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps,
+      low_confidence
     ) VALUES (
       ${p.keyword}, ${p.store}, ${p.scannedAt}, ${p.competitiveness}, ${p.demand},
       ${p.incumbentWeakness}, ${p.opportunity}, ${p.trend}, ${p.topAppReviews},
-      ${p.avgRating}, ${p.avgAgeDays}, ${JSON.stringify(p.topApps)}
+      ${p.avgRating}, ${p.avgAgeDays}, ${JSON.stringify(p.topApps)}, ${p.lowConfidence}
     )
   `;
 }
@@ -652,6 +706,18 @@ export async function countMinedScansSince(epochSeconds: number): Promise<number
  * (shouldn't happen in practice) is silently excluded rather than surfaced
  * with an unusable null zone.
  */
+/**
+ * High-opportunity "winner" keywords, seed-rotated (2026-07-21 audit item D
+ * fix): among ALL qualifying winners (`opportunity >= minOpportunity`), the
+ * least-recently-used-as-an-expansion-seed surfaces first (`e.last_expanded_at
+ * ASC NULLS FIRST`, via `appstore_seed_expansion_state` — see
+ * `markSeedsExpanded`), with `opportunity DESC` only as a tiebreak. Without
+ * this, the same top-N-by-opportunity keywords are re-selected as seeds on
+ * EVERY pass (opportunity rarely changes pass-to-pass) — this is exactly the
+ * "same ~25 seeds re-fetched every pass" flatlining the audit measured live.
+ * Store-scoped to 'app' (2026-07-21 audit item B fix) — see module doc.
+ */
+
 export async function getWinnerKeywords(
   minOpportunity: number,
   limit: number,
@@ -665,8 +731,9 @@ export async function getWinnerKeywords(
       ORDER BY keyword, store, scanned_at DESC
     ) s
     JOIN appstore_keywords k ON k.keyword = s.keyword
-    WHERE s.opportunity >= ${minOpportunity}
-    ORDER BY s.opportunity DESC
+    LEFT JOIN appstore_seed_expansion_state e ON e.keyword = s.keyword
+    WHERE s.store = 'app' AND s.opportunity >= ${minOpportunity}
+    ORDER BY e.last_expanded_at ASC NULLS FIRST, s.opportunity DESC
     LIMIT ${limit}
   `;
   return (rows as ReadonlyArray<{ keyword: string; genre_zone: string }>).map((r) => ({
@@ -687,6 +754,15 @@ export async function getWinnerKeywords(
  * which keeps under-covered zones from starving (anti rich-get-richer
  * monoculture).
  */
+/**
+ * Zone-diverse expansion-seed picks, seed-rotated (2026-07-21 audit item D
+ * fix): PRIMARY order key is `e.last_expanded_at ASC NULLS FIRST` (seed
+ * rotation state, via `appstore_seed_expansion_state` — see
+ * `markSeedsExpanded`), not `last_scanned_at` (a different concern — SERP
+ * scan cadence). `last_scanned_at` remains a secondary tiebreak among
+ * equally-never-expanded keywords in a zone.
+ */
+
 export async function getDiverseZoneSample(
   limit: number,
 ): Promise<readonly { keyword: string; genreZone: string }[]> {
@@ -695,14 +771,15 @@ export async function getDiverseZoneSample(
   const rows = await db`
     WITH ranked AS (
       SELECT
-        keyword,
-        genre_zone,
+        k.keyword,
+        k.genre_zone,
         ROW_NUMBER() OVER (
-          PARTITION BY genre_zone
-          ORDER BY last_scanned_at ASC NULLS FIRST, keyword ASC
+          PARTITION BY k.genre_zone
+          ORDER BY e.last_expanded_at ASC NULLS FIRST, k.last_scanned_at ASC NULLS FIRST, k.keyword ASC
         ) AS rn
-      FROM appstore_keywords
-      WHERE active = TRUE
+      FROM appstore_keywords k
+      LEFT JOIN appstore_seed_expansion_state e ON e.keyword = k.keyword
+      WHERE k.active = TRUE
     )
     SELECT keyword, genre_zone
     FROM ranked
@@ -743,6 +820,56 @@ export async function getExpansionSeeds(opts: {
     combined.push(pick);
   }
   return combined;
+}
+
+
+/**
+ * Marks `keywords` as having just been used as autocomplete expansion seeds
+ * (2026-07-21 audit item D fix) — upserts `last_expanded_at = at` into
+ * `appstore_seed_expansion_state` for each. Called once per expansion pass
+ * for EVERY seed drawn that pass (regardless of whether its hint fetch
+ * succeeded or yielded any candidates), so a permanently-failing seed still
+ * rotates away next pass instead of being retried forever. See
+ * `getWinnerKeywords`/`getDiverseZoneSample`'s doc comments for how this
+ * state is consumed.
+ */
+export async function markSeedsExpanded(keywords: readonly string[], at: number): Promise<void> {
+  if (keywords.length === 0) return;
+  const db = getDb();
+  for (const keyword of keywords) {
+    await db`
+      INSERT INTO appstore_seed_expansion_state (keyword, last_expanded_at)
+      VALUES (${keyword}, ${at})
+      ON CONFLICT (keyword) DO UPDATE SET last_expanded_at = EXCLUDED.last_expanded_at
+    `;
+  }
+}
+
+export interface AutocompleteHintRow {
+  /** The exact query string sent to Apple's search-suggest endpoint — the bare seed, or a prefix-fan-out query built from it. */
+  readonly seed: string;
+  readonly term: string;
+  /** 0-based position in Apple's popularity-ordered response for this seed/query. */
+  readonly rank: number;
+  readonly seenAt: number;
+}
+
+/**
+ * Append-only log of every (seed, term, rank) hint Apple's search-suggest
+ * returned (2026-07-21 audit item D fix, migration 043) — the one giant-free
+ * demand signal in the whole system, previously discarded entirely at write
+ * time (`HintCandidate.rank` was computed but never persisted — see
+ * keyword-autocomplete.ts's `expandCorpus`).
+ */
+export async function insertAutocompleteHints(rows: readonly AutocompleteHintRow[]): Promise<void> {
+  if (rows.length === 0) return;
+  const db = getDb();
+  for (const row of rows) {
+    await db`
+      INSERT INTO appstore_autocomplete_hints (seed, term, rank, seen_at)
+      VALUES (${row.seed}, ${row.term}, ${row.rank}, ${row.seenAt})
+    `;
+  }
 }
 
 /**
@@ -817,7 +944,8 @@ export async function getScannedAppNames(
     WITH recent AS (
       SELECT scanned_at, top_apps
       FROM appstore_keyword_scans
-      WHERE top_apps IS NOT NULL
+      WHERE store = 'app'
+        AND top_apps IS NOT NULL
         AND top_apps::text <> 'null'
         AND top_apps::text LIKE '"[%'
       ORDER BY scanned_at DESC
@@ -840,11 +968,12 @@ export async function getScannedAppNames(
 export async function getScanHistory(
   keyword: string,
   limit: number,
+  store: "app" | "play" | "DE",
 ): Promise<readonly KeywordScanRow[]> {
   const db = getDb();
   const rows = await db`
     SELECT * FROM appstore_keyword_scans
-    WHERE keyword = ${keyword}
+    WHERE keyword = ${keyword} AND store = ${store}
     ORDER BY scanned_at DESC
     LIMIT ${limit}
   `;

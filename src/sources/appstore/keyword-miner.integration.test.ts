@@ -158,6 +158,7 @@ describe("keyword-miner integration — scanned top_apps source", () => {
       // history already lives in this shared DB — guarantees it's within
       // `getScannedAppNames`'s bounded recent-rows window.
       scannedAt: Math.floor(Date.now() / 1000) + 1_000_000,
+      lowConfidence: false,
     };
   }
 

@@ -585,6 +585,15 @@ export const appstoreKeywordGapConfigSchema = z
     // Real-world latency varies — `sweepRateSafety` below backs the rate off
     // automatically if Apple starts throttling.
     keywordsPerSweep: z.number().int().min(1).max(500).default(75),
+    // Priority re-scan lane staleness window (see keyword-tiering.ts): a
+    // keyword last scanned longer ago than this (or never scanned) is stale
+    // enough to qualify for tier 1. Lifted out of a hardcoded constant
+    // (`TIER1_STALE_THRESHOLD_MS` in keyword-tiering.ts, was 24h) into config
+    // as part of the 2026-07-21 audit's NOW-tier fixes — halved to a 12h
+    // default so tier 1's ~829 protected + 306 signature-hit keywords get
+    // ~daily trend/velocity resolution at roughly double the old cadence,
+    // and so an operator can retune it without a code change.
+    tier1StaleThresholdMs: z.number().int().min(60_000).default(12 * 60 * 60 * 1000),
     // How many top-ranked gap candidates to surface per scan.
     topN: z.number().int().min(5).max(50).default(20),
     // Weight applied to demand-side signal when scoring a keyword gap.
@@ -663,6 +672,23 @@ export const appstoreKeywordGapConfigSchema = z
         // the US storefront verified live 2026-07-20/21. The header itself
         // is MANDATORY — see the field doc above.
         storefront: z.string().min(1).default("143441-1,29"),
+        // Prefix fan-out (2026-07-21 audit NOW-tier fix, item D): besides the
+        // bare seed, also queries `"<seed> <letter>"` for up to
+        // `maxPrefixesPerSeed` single letters (a..z, in order) — Apple's
+        // search-suggest returns DIFFERENT, more specific completions per
+        // prefix (e.g. "budget a..." surfaces "budget app", "budget b..."
+        // surfaces "budget bestie"), which is how real users actually type.
+        // Config-driven cap keeps the added request volume per seed bounded;
+        // 0 disables fan-out entirely (bare-seed-only, the pre-fix
+        // behavior). Scaled by the same shared throttle multiplier as
+        // `winnerLimit`/`diverseLimit` — see scraper.ts's
+        // `runAutocompleteExpansionIfDue`.
+        prefixFanOut: z
+          .object({
+            enabled: z.boolean().default(true),
+            maxPrefixesPerSeed: z.number().int().min(0).max(26).default(5),
+          })
+          .default({ enabled: true, maxPrefixesPerSeed: 5 }),
       })
       .default({
         enabled: true,
@@ -672,6 +698,7 @@ export const appstoreKeywordGapConfigSchema = z
         perSeed: 8,
         delayMs: 1000,
         storefront: "143441-1,29",
+        prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
       }),
     // Safety rails for the higher sweep rate above — see `sweep-throttle.ts`.
     // Apple's tolerance for request volume is the real constraint here, not
@@ -712,12 +739,17 @@ export const appstoreKeywordGapConfigSchema = z
     minedExploration: z
       .object({
         // Rolling-24h cap on `source: 'mined'` scans, tracked independently
-        // of `dailyKeywordBudget` via `countMinedScansSince`. ~5,000/day is a
-        // small fraction of the prior ~35k/day mined spend — enough to keep
-        // exploring for brand-new apps/terms without dominating the budget.
-        dailyQuota: z.number().int().min(0).max(100_000).default(5_000),
+        // of `dailyKeywordBudget` via `countMinedScansSince`. Raised
+        // 5,000 -> 20,000 (2026-07-21 audit NOW-tier fix): live traffic on
+        // 2026-07-20 held 36.7k/day (36,013 mined + 666 seed scans) with
+        // ZERO rate-limit errors, so the whole-corpus scan engine was
+        // starving itself at ~7k/day steady state while sitting on proven
+        // headroom — 20,000 is a conservative slice of that verified-safe
+        // capacity, still well under the old ~35k/day mined spend that
+        // produced zero validated candidates.
+        dailyQuota: z.number().int().min(0).max(100_000).default(20_000),
       })
-      .default({ dailyQuota: 5_000 }),
+      .default({ dailyQuota: 20_000 }),
     // ─── DE storefront lane (2026-07-21 scan-budget retune) ────────────────
     // Daily pass scanning every active seed/manual/autocomplete keyword
     // (`keyword-store.ts`'s `getTier1ProtectedKeywords`) against the German
@@ -745,6 +777,7 @@ export const appstoreKeywordGapConfigSchema = z
     sweepDelayMs: 1000,
     dailyKeywordBudget: 60_000,
     keywordsPerSweep: 75,
+    tier1StaleThresholdMs: 12 * 60 * 60 * 1000,
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.15,
@@ -757,9 +790,10 @@ export const appstoreKeywordGapConfigSchema = z
       perSeed: 8,
       delayMs: 1000,
       storefront: "143441-1,29",
+      prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
     },
     sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
-    minedExploration: { dailyQuota: 5_000 },
+    minedExploration: { dailyQuota: 20_000 },
     deStorefrontLane: { enabled: true, minIntervalMs: 24 * 60 * 60 * 1000, delayMs: 1000 },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;

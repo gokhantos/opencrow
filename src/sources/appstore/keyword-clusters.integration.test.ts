@@ -92,6 +92,7 @@ function makeScan(seed: Seed, now: number): KeywordGapProfile {
     avgAgeDays: 500,
     topApps: [makeTopApp()],
     scannedAt: now,
+    lowConfidence: false,
   };
 }
 
