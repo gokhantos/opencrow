@@ -338,20 +338,62 @@ export function createAppStoreRoutes(
 
   app.get("/appstore/stats", async (c) => {
     const db = getDb();
-    const rows = await db`
-      SELECT
-        (SELECT count(*) FROM appstore_apps) as total_apps,
-        (SELECT count(*) FROM appstore_reviews) as total_reviews,
-        (SELECT count(DISTINCT category) FROM appstore_apps) as total_categories,
-        (SELECT max(updated_at) FROM appstore_apps) as last_updated_at
-    `;
-    const stats = rows[0] ?? {
+    // Lane-health heartbeat (B2): "when did each keyword-pipeline lane last
+    // produce anything?", computed from cheap MAX() aggregates over existing
+    // columns — so the dashboard can surface e.g. "last corpus growth: 3d
+    // ago" and a silently-dead discovery lane becomes visible even after a
+    // guardian restart wipes scraper.ts's in-process flatline counters.
+    const [rows, scanByStore, growthBySource] = await Promise.all([
+      db`
+        SELECT
+          (SELECT count(*) FROM appstore_apps) as total_apps,
+          (SELECT count(*) FROM appstore_reviews) as total_reviews,
+          (SELECT count(DISTINCT category) FROM appstore_apps) as total_categories,
+          (SELECT max(updated_at) FROM appstore_apps) as last_updated_at,
+          (SELECT max(seen_at) FROM appstore_autocomplete_hints) as last_hint_seen_at
+      `,
+      db`
+        SELECT store, max(scanned_at) as last_scanned_at
+        FROM appstore_keyword_scans
+        GROUP BY store
+      `,
+      db`
+        SELECT source, max(created_at) as last_created_at
+        FROM appstore_keywords
+        GROUP BY source
+      `,
+    ]);
+
+    const base = (rows as ReadonlyArray<Record<string, unknown>>)[0] ?? {
       total_apps: 0,
       total_reviews: 0,
       total_categories: 0,
       last_updated_at: null,
+      last_hint_seen_at: null,
     };
-    return c.json({ success: true, data: stats });
+
+    const toNum = (v: unknown): number | null =>
+      v === null || v === undefined ? null : Number(v);
+
+    return c.json({
+      success: true,
+      data: {
+        ...base,
+        laneHealth: {
+          // Autocomplete/GB hint discovery — the lane the 2026-07-18 header
+          // change silently killed. Freshness of the newest hint row.
+          lastHintSeenAt: toNum((base as { last_hint_seen_at?: unknown }).last_hint_seen_at),
+          // SERP scan freshness per store ('app' / 'DE' / 'play').
+          scansByStore: (scanByStore as ReadonlyArray<{ store: string; last_scanned_at: unknown }>).map(
+            (r) => ({ store: r.store, lastScannedAt: toNum(r.last_scanned_at) }),
+          ),
+          // "last corpus growth" per keyword source (seed/autocomplete/mined/…).
+          corpusGrowthBySource: (
+            growthBySource as ReadonlyArray<{ source: string; last_created_at: unknown }>
+          ).map((r) => ({ source: r.source, lastCreatedAt: toNum(r.last_created_at) })),
+        },
+      },
+    });
   });
 
   app.post("/appstore/scrape-now", async (c) => {

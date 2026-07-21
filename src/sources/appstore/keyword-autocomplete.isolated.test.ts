@@ -106,6 +106,8 @@ describe("expandCorpus", () => {
     expect(result.seedsUsed).toBe(2);
     expect(result.attempted).toBe(2);
     expect(result.rateLimitErrors).toBe(0);
+    // B2 flatline signal: raw terms summed pre-filter (2 for budget, 1 for meal).
+    expect(result.rawTermCount).toBe(3);
 
     expect(upsertedRows).toEqual([
       { keyword: "budget planner", genreZone: "finance", source: "autocomplete" },
@@ -218,6 +220,7 @@ describe("expandCorpus", () => {
       attempted: 0,
       rateLimitErrors: 0,
       brandFiltered: 0,
+      rawTermCount: 0,
     });
     expect(upsertedRows).toEqual([]);
   });

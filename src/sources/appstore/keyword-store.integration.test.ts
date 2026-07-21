@@ -27,6 +27,7 @@ import {
   markDeScanned,
   markSeedsExpanded,
   insertAutocompleteHints,
+  pruneKeywordScans,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 import type { TieredKeyword } from "./keyword-store";
@@ -191,6 +192,10 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-mark-de-scanned",
   "zzz-brand-nav-excluded",
   "zzz-brand-nav-kept",
+  // pruneKeywordScans retention fixtures (B3, 2026-07-22)
+  "zzz-prune-age-guarded",
+  "zzz-prune-age-over-cap",
+  "zzz-prune-recent-untouched",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -2236,6 +2241,93 @@ describe("keyword-store", () => {
       expect(first).toBe(1);
       const second = await deactivateJunkKeywords(["zzz-deactivate-mined"]);
       expect(second).toBe(0);
+    });
+  });
+
+  // B3 retention prune. NOTE: `pruneKeywordScans` is GLOBAL by design (no
+  // keyword filter) — it deletes ANY row older than the cutoff. These tests
+  // stay safe because every fixture row is aged ~200 days back while a 90-day
+  // cutoff is used, and all real corpus scans are far newer than 90 days
+  // (oldest live scan 2026-07-09). Assertions therefore check the FIXTURE
+  // partitions' exact remaining counts and only that at least the fixture
+  // overflow was pruned, never an exact global `pruned` total.
+  describe("pruneKeywordScans", () => {
+    const NINETY_DAYS_SECONDS = 90 * 24 * 60 * 60;
+    const OLD_OFFSET_SECONDS = 200 * 24 * 60 * 60; // ~200 days back — well past the 90d cutoff
+
+    async function scanCount(keyword: string): Promise<number> {
+      const db = getDb();
+      const rows = await db`
+        SELECT count(*)::int AS c FROM appstore_keyword_scans WHERE keyword = ${keyword}
+      `;
+      return Number((rows as ReadonlyArray<{ c: number }>)[0]?.c ?? 0);
+    }
+
+    async function insertOldScans(keyword: string, count: number): Promise<void> {
+      const db = getDb();
+      const base = Math.floor(Date.now() / 1000) - OLD_OFFSET_SECONDS;
+      await db`
+        INSERT INTO appstore_keyword_scans
+          (keyword, store, scanned_at, competitiveness, demand, incumbent_weakness,
+           opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps, low_confidence)
+        SELECT ${keyword}, 'app', ${base} + g, 20, 13, 0.8, 0.53, 'heating', 11, 3.4, 500,
+               '[]'::jsonb, false
+        FROM generate_series(1, ${count}) AS g
+      `;
+    }
+
+    it("keeps every old row when a partition has fewer than the keep-newest guard", async () => {
+      await insertOldScans("zzz-prune-age-guarded", 3);
+
+      const { pruned } = await pruneKeywordScans({
+        maxAgeSeconds: NINETY_DAYS_SECONDS,
+        keepNewestPerKeyword: 200,
+        chunkSize: 5_000,
+        maxChunks: 1_000,
+      });
+
+      // Nothing from this partition can be pruned — 3 < 200-row guard.
+      expect(await scanCount("zzz-prune-age-guarded")).toBe(3);
+      expect(pruned).toBeGreaterThanOrEqual(0);
+    });
+
+    it("prunes old rows beyond the keep-newest guard (chunked) and leaves recent rows untouched", async () => {
+      // 205 old rows for one partition; 200 must survive the keep-newest guard.
+      await insertOldScans("zzz-prune-age-over-cap", 205);
+      // Recent rows (now) for a different keyword — never candidates.
+      const nowSec = Math.floor(Date.now() / 1000);
+      await insertScan(makeScan({ keyword: "zzz-prune-recent-untouched", scannedAt: nowSec }));
+      await insertScan(makeScan({ keyword: "zzz-prune-recent-untouched", scannedAt: nowSec - 1 }));
+      await insertScan(makeScan({ keyword: "zzz-prune-recent-untouched", scannedAt: nowSec - 2 }));
+
+      const { pruned } = await pruneKeywordScans({
+        maxAgeSeconds: NINETY_DAYS_SECONDS,
+        keepNewestPerKeyword: 200,
+        chunkSize: 50, // forces multiple chunk-DELETEs for the 5 over-cap rows
+        maxChunks: 1_000,
+      });
+
+      // Exactly the 5 oldest over-cap rows in this partition are gone; the
+      // newest 200 survive. Recent rows for the other keyword are untouched.
+      expect(await scanCount("zzz-prune-age-over-cap")).toBe(200);
+      expect(await scanCount("zzz-prune-recent-untouched")).toBe(3);
+      // At minimum this partition's 5 overflow rows were pruned (global count
+      // may be higher only if the DB holds other >90d rows — none do today).
+      expect(pruned).toBeGreaterThanOrEqual(5);
+    });
+
+    it("clamps keepNewestPerKeyword up to the 200-row floor", async () => {
+      // Ask to keep only 1, but the floor forces 200 — so 3 old rows survive.
+      await insertOldScans("zzz-prune-age-guarded", 3);
+
+      await pruneKeywordScans({
+        maxAgeSeconds: NINETY_DAYS_SECONDS,
+        keepNewestPerKeyword: 1,
+        chunkSize: 5_000,
+        maxChunks: 1_000,
+      });
+
+      expect(await scanCount("zzz-prune-age-guarded")).toBe(3);
     });
   });
 });

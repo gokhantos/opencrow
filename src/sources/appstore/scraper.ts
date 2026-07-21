@@ -5,9 +5,9 @@ import { runKeywordSweep, runDeStorefrontSweep } from "./keyword-gaps";
 import { runScreener } from "./keyword-screener";
 import { expandCorpus } from "./keyword-autocomplete";
 import { mineKeywords } from "./keyword-miner";
-import { backfillMinedDeactivation, countScansSince } from "./keyword-store";
+import { backfillMinedDeactivation, countScansSince, pruneKeywordScans } from "./keyword-store";
 import { advanceThrottle, computeEffectiveSweepRate, computeErrorRate, INITIAL_THROTTLE_STATE } from "./sweep-throttle";
-import type { ThrottleState } from "./sweep-throttle";
+import type { ThrottleOutcome, ThrottleState } from "./sweep-throttle";
 import {
   runEnrichmentPass,
   runPortfolioPass,
@@ -62,6 +62,14 @@ const REQUEST_DELAY_MS = 2_000; // 2 seconds between API calls
 const TOP_APPS_PER_LIST = 5; // fetch reviews for top N from each list/category
 const DISCOVERY_LOOKUPS_PER_CYCLE = 3; // discover related apps for N random seeds per cycle
 const KEYWORD_MINING_SCAN_LIMIT = 3000; // ranking rows scanned for keyword candidates per cycle
+
+// B2 flatline detector: escalate to log.error once a discovery/scan lane has
+// returned nothing across this many CONSECUTIVE non-empty passes (attempted>0
+// but zero raw output). Tuned to survive a couple of genuinely-empty passes
+// without alerting, while catching a silent endpoint/header break within a
+// few passes (the 2026-07-18 header change killed discovery for days — see
+// keyword-autocomplete.ts's module doc).
+const FLATLINE_STREAK_THRESHOLD = 3;
 
 const APPSTORE_AGENT_ID = "appstore";
 
@@ -244,6 +252,38 @@ export function createAppStoreScraper(config?: {
   // corpus-scan cadence, so a rate-limit spike from either source trips this
   // one throttle and backs off both.
   let sweepThrottleState: ThrottleState = INITIAL_THROTTLE_STATE;
+  // Per-tick throttle accumulator (B1): every Apple-endpoint lane on a
+  // keyword-sweep tick adds its (rateLimitErrors, attempted) here instead of
+  // advancing the shared throttle itself; `keywordSweepTick` then folds the
+  // summed totals into `sweepThrottleState` via ONE `advanceThrottle` call at
+  // the end of the tick. This (a) weights the error rate by real request
+  // volume — a single low-volume lane's one-off 429 can no longer halve the
+  // rate for the main SERP sweep — and (b) makes one "sweep" equal one TICK,
+  // so `THROTTLE_HOLD_SWEEPS` (5) again means ~5 ticks of recovery hold rather
+  // than being burned through by ~10 per-lane advances inside a single tick.
+  // Reset at the top of each tick; safe as closure-level state because the
+  // `keywordSweepRunning` single-flight guard means only one tick runs at a
+  // time. Tradeoff (documented, acceptable): lanes read the throttle
+  // multiplier as it stood at the START of the tick, so intra-tick shrinkage
+  // for later lanes is gone.
+  let tickThrottle: ThrottleOutcome = { rateLimitErrors: 0, attempted: 0 };
+  function accumulateThrottle(rateLimitErrors: number, attempted: number): void {
+    tickThrottle = {
+      rateLimitErrors: tickThrottle.rateLimitErrors + rateLimitErrors,
+      attempted: tickThrottle.attempted + attempted,
+    };
+  }
+  // Cross-pass flatline counters (B2): process-local, reset on guardian
+  // restart — B3's DB-backed heartbeat (GET /api/appstore/stats) is the
+  // durable backstop. A pass that succeeds but returns nothing looks
+  // identical to a healthy idle one, so per-lane consecutive-zero streaks
+  // escalate to log.error once a lane has gone silently dead for
+  // `FLATLINE_STREAK_THRESHOLD` consecutive non-empty passes.
+  let autocompleteZeroStreak = 0;
+  let gbHintsZeroStreak = 0;
+  let serpSweepZeroStreak = 0;
+  // Soft cadence gate for the keyword-scans retention prune (B3, default 6h).
+  let lastScansPruneRunAt = 0;
 
   async function fetchTopApps(
     url: string,
@@ -640,6 +680,9 @@ export function createAppStoreScraper(config?: {
 
     keywordSweepRunning = true;
     try {
+      // B1: fresh per-tick throttle accumulator — every Apple-endpoint lane
+      // below adds into this; the single end-of-tick advance folds it in.
+      tickThrottle = { rateLimitErrors: 0, attempted: 0 };
       const cfg = loadConfig().appstoreKeywordGap;
       if (!cfg.enabled) {
         log.debug("Keyword-gap sweep skipped — feature disabled");
@@ -667,31 +710,32 @@ export function createAppStoreScraper(config?: {
           mineQuotaRemaining: result.mineQuotaRemaining,
         });
 
-        // Adaptive throttle: only tracked when NOT under the hard kill-switch
-        // — legacyRateOverride means the operator wants a fixed, known-safe
-        // rate with no automation second-guessing it.
-        if (cfg.sweepRateSafety.adaptiveThrottleEnabled && !cfg.sweepRateSafety.legacyRateOverride) {
-          const attempted = result.scanned + result.failed;
-          const errorRate = computeErrorRate(result.rateLimitErrors, attempted);
-          const wasThrottled = sweepThrottleState.throttled;
-          sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+        // Adaptive throttle (B1): accumulate this sweep's outcome into the
+        // per-tick accumulator rather than advancing the shared throttle here.
+        // The single end-of-tick advance (below) folds every lane's totals in
+        // at once. Accumulated unconditionally — the end-of-tick advance is
+        // what's gated on adaptiveThrottleEnabled/legacyRateOverride.
+        const sweepAttempted = result.scanned + result.failed;
+        accumulateThrottle(result.rateLimitErrors, sweepAttempted);
 
-          if (!wasThrottled && sweepThrottleState.throttled) {
-            log.warn("Keyword-gap sweep adaptive throttle TRIPPED — halving effective rate", {
-              errorRate,
-              attempted,
-              rateLimitErrors: result.rateLimitErrors,
-              newMultiplier: sweepThrottleState.multiplier,
-            });
-          } else if (wasThrottled && !sweepThrottleState.throttled) {
-            log.info("Keyword-gap sweep adaptive throttle fully recovered", {
-              multiplier: sweepThrottleState.multiplier,
-            });
-          } else if (wasThrottled) {
-            log.debug("Keyword-gap sweep adaptive throttle still active", {
-              multiplier: sweepThrottleState.multiplier,
-              sweepsSinceChange: sweepThrottleState.sweepsSinceChange,
-            });
+        // Flatline detector (B2): a non-empty sweep (batch>0) that inserted
+        // ZERO scans looks identical to a healthy idle one at info level —
+        // escalate once it stays dead across consecutive passes. Counter is
+        // process-local; B3's DB heartbeat is the durable backstop.
+        if (sweepAttempted > 0) {
+          if (result.scanned === 0) {
+            serpSweepZeroStreak++;
+            if (serpSweepZeroStreak >= FLATLINE_STREAK_THRESHOLD) {
+              log.error("keyword SERP sweep flatlined", {
+                consecutivePasses: serpSweepZeroStreak,
+                attempted: sweepAttempted,
+                failed: result.failed,
+                rateLimitErrors: result.rateLimitErrors,
+                hint: "zero scans inserted across consecutive non-empty sweeps — the iTunes Search fetch/parse path may be broken",
+              });
+            }
+          } else {
+            serpSweepZeroStreak = 0;
           }
         }
       }
@@ -747,6 +791,50 @@ export function createAppStoreScraper(config?: {
       // §0.4 slot 8) — gated to its own cadence internally, same pattern as
       // every other pass above.
       await runAppPageEnrichmentIfDue();
+
+      // Keyword-scans retention prune (B3) — DB-only (no Apple requests, so
+      // it feeds nothing into the throttle), gated to its own ~6h cadence,
+      // same log-and-swallow pattern as the ledger prunes above.
+      await runScansRetentionIfDue();
+
+      // B1: single end-of-tick throttle advance — fold every lane's
+      // accumulated (rateLimitErrors, attempted) into the shared throttle
+      // ONCE. This weights the error rate by real request volume and makes
+      // one "sweep" = one tick (restoring the ~5-min recovery hold that
+      // THROTTLE_HOLD_SWEEPS assumes). Gated exactly as the old per-lane
+      // blocks were: only under adaptive throttling, and never under the hard
+      // kill-switch (a fixed, known-safe rate with no automation).
+      if (cfg.sweepRateSafety.adaptiveThrottleEnabled && !cfg.sweepRateSafety.legacyRateOverride) {
+        const wasThrottled = sweepThrottleState.throttled;
+        const prevMultiplier = sweepThrottleState.multiplier;
+        sweepThrottleState = advanceThrottle(sweepThrottleState, tickThrottle);
+        const errorRate = computeErrorRate(tickThrottle.rateLimitErrors, tickThrottle.attempted);
+
+        if (!wasThrottled && sweepThrottleState.throttled) {
+          log.warn("Keyword sweep adaptive throttle TRIPPED — halving effective rate", {
+            errorRate,
+            attempted: tickThrottle.attempted,
+            rateLimitErrors: tickThrottle.rateLimitErrors,
+            newMultiplier: sweepThrottleState.multiplier,
+          });
+        } else if (wasThrottled && !sweepThrottleState.throttled) {
+          log.info("Keyword sweep adaptive throttle fully recovered", {
+            multiplier: sweepThrottleState.multiplier,
+          });
+        } else if (sweepThrottleState.multiplier !== prevMultiplier) {
+          log.info("Keyword sweep adaptive throttle stepped", {
+            multiplier: sweepThrottleState.multiplier,
+            previousMultiplier: prevMultiplier,
+            errorRate,
+            attempted: tickThrottle.attempted,
+          });
+        } else if (wasThrottled) {
+          log.debug("Keyword sweep adaptive throttle still active", {
+            multiplier: sweepThrottleState.multiplier,
+            sweepsSinceChange: sweepThrottleState.sweepsSinceChange,
+          });
+        }
+      }
     } catch (err) {
       log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
     } finally {
@@ -810,23 +898,34 @@ export function createAppStoreScraper(config?: {
         added: result.added,
         seedsUsed: result.seedsUsed,
         attempted: result.attempted,
+        rawTermCount: result.rawTermCount,
         rateLimitErrors: result.rateLimitErrors,
         throttleMultiplier: multiplier,
         maxPrefixesPerSeed,
       });
 
-      if (cfg.sweepRateSafety.adaptiveThrottleEnabled && result.attempted > 0) {
-        const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
-        const wasThrottled = sweepThrottleState.throttled;
-        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+      // B1: fold this lane's outcome into the per-tick accumulator (the
+      // single end-of-tick advance applies it).
+      accumulateThrottle(result.rateLimitErrors, result.attempted);
 
-        if (!wasThrottled && sweepThrottleState.throttled) {
-          log.warn("Autocomplete expansion tripped the shared sweep throttle", {
-            errorRate,
-            attempted: result.attempted,
-            rateLimitErrors: result.rateLimitErrors,
-            newMultiplier: sweepThrottleState.multiplier,
-          });
+      // B2 flatline: a pass that fetched (attempted>0) but Apple returned
+      // ZERO raw suggestions (rawTermCount===0, pre-junk-filter) means the
+      // endpoint/header likely broke — an all-junk pass would still show
+      // rawTermCount>0. Escalate after consecutive dead passes.
+      if (result.attempted > 0) {
+        if (result.rawTermCount === 0) {
+          autocompleteZeroStreak++;
+          if (autocompleteZeroStreak >= FLATLINE_STREAK_THRESHOLD) {
+            log.error("autocomplete lane flatlined", {
+              lane: "us",
+              consecutivePasses: autocompleteZeroStreak,
+              attempted: result.attempted,
+              rateLimitErrors: result.rateLimitErrors,
+              hint: "Apple returned zero raw suggestions across consecutive passes — likely an endpoint/header change (see keyword-autocomplete.ts's 2026-07-18 incident)",
+            });
+          }
+        } else {
+          autocompleteZeroStreak = 0;
         }
       }
     } catch (err) {
@@ -883,23 +982,31 @@ export function createAppStoreScraper(config?: {
         added: result.added,
         seedsUsed: result.seedsUsed,
         attempted: result.attempted,
+        rawTermCount: result.rawTermCount,
         rateLimitErrors: result.rateLimitErrors,
         throttleMultiplier: multiplier,
         maxPrefixesPerSeed,
       });
 
-      if (cfg.sweepRateSafety.adaptiveThrottleEnabled && result.attempted > 0) {
-        const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
-        const wasThrottled = sweepThrottleState.throttled;
-        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+      // B1: fold into the per-tick accumulator (see the US lane above).
+      accumulateThrottle(result.rateLimitErrors, result.attempted);
 
-        if (!wasThrottled && sweepThrottleState.throttled) {
-          log.warn("GB hints lane tripped the shared sweep throttle", {
-            errorRate,
-            attempted: result.attempted,
-            rateLimitErrors: result.rateLimitErrors,
-            newMultiplier: sweepThrottleState.multiplier,
-          });
+      // B2 flatline: same rawTermCount===0 heartbeat as the US lane, tracked
+      // on its own GB streak counter.
+      if (result.attempted > 0) {
+        if (result.rawTermCount === 0) {
+          gbHintsZeroStreak++;
+          if (gbHintsZeroStreak >= FLATLINE_STREAK_THRESHOLD) {
+            log.error("autocomplete lane flatlined", {
+              lane: "gb",
+              consecutivePasses: gbHintsZeroStreak,
+              attempted: result.attempted,
+              rateLimitErrors: result.rateLimitErrors,
+              hint: "Apple returned zero raw suggestions across consecutive passes — likely an endpoint/header change (see keyword-autocomplete.ts's 2026-07-18 incident)",
+            });
+          }
+        } else {
+          gbHintsZeroStreak = 0;
         }
       }
     } catch (err) {
@@ -959,11 +1066,8 @@ export function createAppStoreScraper(config?: {
         bailed: result.bailed,
       });
 
-      const adaptiveThrottleEnabled = fullCfg.appstoreKeywordGap.sweepRateSafety.adaptiveThrottleEnabled;
-      if (adaptiveThrottleEnabled && result.attempted > 0) {
-        const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
-        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
-      }
+      // B1: fold into the per-tick accumulator (single end-of-tick advance).
+      accumulateThrottle(result.rateLimitErrors, result.attempted);
     } catch (err) {
       log.warn("Newborn re-observation failed", { error: getErrorMessage(err) });
     }
@@ -1015,11 +1119,8 @@ export function createAppStoreScraper(config?: {
         rateLimitErrors: result.rateLimitErrors,
       });
 
-      if (cfg.sweepRateSafety.adaptiveThrottleEnabled) {
-        const attempted = result.scanned + result.failed;
-        const errorRate = computeErrorRate(result.rateLimitErrors, attempted);
-        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
-      }
+      // B1: fold into the per-tick accumulator (single end-of-tick advance).
+      accumulateThrottle(result.rateLimitErrors, result.scanned + result.failed);
     } catch (err) {
       log.warn("DE storefront lane failed", { error: getErrorMessage(err) });
     }
@@ -1072,11 +1173,8 @@ export function createAppStoreScraper(config?: {
         throttleMultiplier: multiplier,
       });
 
-      if (adaptiveThrottleEnabled) {
-        const attempted = result.scanned + result.failed;
-        const errorRate = computeErrorRate(result.rateLimitErrors, attempted);
-        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
-      }
+      // B1: fold into the per-tick accumulator (single end-of-tick advance).
+      accumulateThrottle(result.rateLimitErrors, result.scanned + result.failed);
     } catch (err) {
       log.warn("Intl charts lane failed", { error: getErrorMessage(err) });
     }
@@ -1171,10 +1269,8 @@ export function createAppStoreScraper(config?: {
             effectiveAppsPerTick,
           });
 
-          if (adaptiveThrottleEnabled && result.attempted > 0) {
-            const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
-            sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
-          }
+          // B1: fold into the per-tick accumulator (single end-of-tick advance).
+          accumulateThrottle(result.rateLimitErrors, result.attempted);
         }
       }
 
@@ -1256,10 +1352,8 @@ export function createAppStoreScraper(config?: {
             effectiveMaxBatches,
           });
 
-          if (adaptiveThrottleEnabled && result.attempted > 0) {
-            const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
-            sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
-          }
+          // B1: fold into the per-tick accumulator (single end-of-tick advance).
+          accumulateThrottle(result.rateLimitErrors, result.attempted);
         }
       }
 
@@ -1281,10 +1375,8 @@ export function createAppStoreScraper(config?: {
           bailed: portfolioResult.bailed,
         });
 
-        if (adaptiveThrottleEnabled && portfolioResult.attempted > 0) {
-          const errorRate = computeErrorRate(portfolioResult.rateLimitErrors, portfolioResult.attempted);
-          sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
-        }
+        // B1: fold into the per-tick accumulator (single end-of-tick advance).
+        accumulateThrottle(portfolioResult.rateLimitErrors, portfolioResult.attempted);
       }
 
       // Lookup-request ledger prune — its own cadence gate.
@@ -1373,14 +1465,41 @@ export function createAppStoreScraper(config?: {
             effectivePagesPerBatch,
           });
 
-          if (adaptiveThrottleEnabled && result.attempted > 0) {
-            const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
-            sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
-          }
+          // B1: fold into the per-tick accumulator (single end-of-tick advance).
+          accumulateThrottle(result.rateLimitErrors, result.attempted);
         }
       }
     } catch (err) {
       log.warn("App-page enrichment failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // Runs the keyword-scans retention prune (B3 — see `keyword-store.ts`'s
+  // `pruneKeywordScans`): an AGE-ONLY, chunked DELETE of
+  // `appstore_keyword_scans` rows older than `scansRetention.maxAgeMs`, with a
+  // keep-newest-N-per-(keyword,store) guard so the dashboard's scan-history
+  // (up to limit=200) is never truncated. Gated to its own ~6h cadence and
+  // to its `enabled` flag; DB-only (no Apple requests, so it feeds nothing
+  // into the shared throttle). Never allowed to break the sweep tick — a
+  // failure is logged and swallowed, mirroring the ledger prunes.
+  async function runScansRetentionIfDue(): Promise<void> {
+    try {
+      const cfg = loadConfig().appstoreKeywordGap.scansRetention;
+      if (!cfg.enabled) return;
+
+      const now = Date.now();
+      if (now - lastScansPruneRunAt < cfg.minIntervalMs) return;
+      lastScansPruneRunAt = now;
+
+      const { pruned } = await pruneKeywordScans({
+        maxAgeSeconds: Math.floor(cfg.maxAgeMs / 1000),
+        keepNewestPerKeyword: cfg.keepNewestPerKeyword,
+        chunkSize: cfg.chunkSize,
+        maxChunks: cfg.maxChunksPerRun,
+      });
+      log.info("Keyword-scans retention prune complete", { pruned });
+    } catch (err) {
+      log.warn("Keyword-scans retention prune failed", { error: getErrorMessage(err) });
     }
   }
 
