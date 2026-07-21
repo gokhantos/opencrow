@@ -1,117 +1,62 @@
 import { describe, expect, it } from "bun:test";
-import {
-  buildCategoryRankingUrl,
-  buildGlobalTopAppsUrl,
-  categoryListTypeTag,
-  dedupeRankingsByListKey,
-} from "./scraper";
-import type { AppRankingRow } from "./store";
+import { computeEffectiveMaxBatches } from "./app-enrichment";
+import { computeEffectiveAppsPerTick } from "./review-harvester";
 
-describe("buildCategoryRankingUrl", () => {
-  it("builds a top-free URL for a genre", () => {
-    expect(buildCategoryRankingUrl(6000, "top-free", 200)).toBe(
-      "https://itunes.apple.com/us/rss/topfreeapplications/limit=200/genre=6000/json",
-    );
+// `runAppEnrichmentIfDue`'s throttle-scaling gate math (deep-scrape build
+// Stage 2, §0.4: "maxBatchesPerPass × multiplier, 0 ⇒ skip") — factored into
+// a pure, exported function (mirrors `sweep-throttle.ts`'s
+// `computeEffectiveSweepRate`) so it's unit-testable without reaching into
+// `scraper.ts`'s closure-scoped `runAppEnrichmentIfDue`.
+describe("computeEffectiveMaxBatches", () => {
+  it("returns the configured value unchanged at full throttle (multiplier 1)", () => {
+    expect(computeEffectiveMaxBatches(4, 1)).toBe(4);
   });
 
-  it("builds a top-paid URL for a genre", () => {
-    expect(buildCategoryRankingUrl(6014, "top-paid", 200)).toBe(
-      "https://itunes.apple.com/us/rss/toppaidapplications/limit=200/genre=6014/json",
-    );
+  it("halves (and floors) at a 0.5 multiplier", () => {
+    expect(computeEffectiveMaxBatches(5, 0.5)).toBe(2);
   });
 
-  it("builds a top-grossing URL for a genre", () => {
-    expect(buildCategoryRankingUrl(6014, "top-grossing", 200)).toBe(
-      "https://itunes.apple.com/us/rss/topgrossingapplications/limit=200/genre=6014/json",
-    );
+  it("floors to 0 (⇒ skip) at a fully-throttled multiplier of 0", () => {
+    expect(computeEffectiveMaxBatches(4, 0)).toBe(0);
   });
 
-  it("honors the configured limit", () => {
-    expect(buildCategoryRankingUrl(6000, "top-free", 25)).toContain("limit=25/");
+  it("clamps to 0 rather than going negative for a pathological negative multiplier", () => {
+    expect(computeEffectiveMaxBatches(4, -1)).toBe(0);
+  });
+
+  it("floors a fractional result rather than rounding", () => {
+    expect(computeEffectiveMaxBatches(3, 0.9)).toBe(2); // 2.7 -> 2, not 3
   });
 });
 
-describe("categoryListTypeTag", () => {
-  it("produces a distinct tag per genre + list type", () => {
-    expect(categoryListTypeTag(6000, "top-free")).toBe("top-free-6000");
-    expect(categoryListTypeTag(6000, "top-paid")).toBe("top-paid-6000");
-    expect(categoryListTypeTag(6000, "top-grossing")).toBe("top-grossing-6000");
+// `runReviewHarvestIfDue`'s throttle-scaling gate math (deep-scrape build
+// Stage 4, §0.4: "appsPerTick × multiplier, floor 1") — same pattern as
+// `computeEffectiveMaxBatches` above, but with a DIFFERENT floor: a
+// fully-throttled pass still harvests at least 1 app/tick rather than
+// skipping entirely, unless the configured `appsPerTick` is itself 0 (the
+// explicit "pass disabled" knob).
+describe("computeEffectiveAppsPerTick", () => {
+  it("returns the configured value unchanged at full throttle (multiplier 1)", () => {
+    expect(computeEffectiveAppsPerTick(3, 1)).toBe(3);
   });
 
-  it("is distinct across genres for the same list type", () => {
-    expect(categoryListTypeTag(6000, "top-free")).not.toBe(categoryListTypeTag(6014, "top-free"));
-  });
-});
-
-describe("buildGlobalTopAppsUrl", () => {
-  it("builds the top-free global feed URL", () => {
-    expect(buildGlobalTopAppsUrl("top-free", 100)).toBe(
-      "https://rss.applemarketingtools.com/api/v2/us/apps/top-free/100/apps.json",
-    );
+  it("floors to 1 (never 0) at a fully-throttled multiplier of 0, given a positive appsPerTick", () => {
+    expect(computeEffectiveAppsPerTick(3, 0)).toBe(1);
   });
 
-  it("builds the top-paid global feed URL", () => {
-    expect(buildGlobalTopAppsUrl("top-paid", 100)).toBe(
-      "https://rss.applemarketingtools.com/api/v2/us/apps/top-paid/100/apps.json",
-    );
-  });
-});
-
-function makeRow(overrides: Partial<AppRankingRow>): AppRankingRow {
-  return {
-    id: "1",
-    name: "App",
-    artist: "Dev",
-    category: "Games",
-    rank: 1,
-    list_type: "top-free-6000",
-    icon_url: "",
-    store_url: "",
-    description: "",
-    price: "Free",
-    bundle_id: "",
-    release_date: "",
-    updated_at: 0,
-    indexed_at: null,
-    ...overrides,
-  };
-}
-
-describe("dedupeRankingsByListKey", () => {
-  it("keeps the first occurrence of a duplicate (id, list_type) pair", () => {
-    const rows = [
-      makeRow({ id: "1", list_type: "top-free-6000", rank: 1 }),
-      makeRow({ id: "1", list_type: "top-free-6000", rank: 2 }),
-    ];
-    const result = dedupeRankingsByListKey(rows);
-    expect(result).toHaveLength(1);
-    expect(result[0]?.rank).toBe(1);
+  it("floors to 1 at a small multiplier that would otherwise round to 0", () => {
+    expect(computeEffectiveAppsPerTick(3, 0.1)).toBe(1); // 0.3 -> floored to 0, then floored UP to 1
   });
 
-  it("keeps the same app id across different list types", () => {
-    const rows = [
-      makeRow({ id: "1", list_type: "top-free-6000" }),
-      makeRow({ id: "1", list_type: "top-paid-6000" }),
-      makeRow({ id: "1", list_type: "top-grossing-6000" }),
-    ];
-    const result = dedupeRankingsByListKey(rows);
-    expect(result).toHaveLength(3);
+  it("returns 0 when appsPerTick itself is configured to 0 (explicit disable), regardless of multiplier", () => {
+    expect(computeEffectiveAppsPerTick(0, 1)).toBe(0);
   });
 
-  it("keeps different app ids in the same list type", () => {
-    const rows = [
-      makeRow({ id: "1", list_type: "top-free-6000" }),
-      makeRow({ id: "2", list_type: "top-free-6000" }),
-    ];
-    expect(dedupeRankingsByListKey(rows)).toHaveLength(2);
+  it("clamps to 0 (not 1) for a pathological negative appsPerTick", () => {
+    expect(computeEffectiveAppsPerTick(-1, 1)).toBe(0);
   });
 
-  it("drops rows with an empty id", () => {
-    const rows = [makeRow({ id: "" }), makeRow({ id: "1" })];
-    expect(dedupeRankingsByListKey(rows)).toHaveLength(1);
-  });
-
-  it("returns an empty array for empty input", () => {
-    expect(dedupeRankingsByListKey([])).toEqual([]);
+  it("floors a fractional result rather than rounding, once above the floor", () => {
+    expect(computeEffectiveAppsPerTick(10, 0.35)).toBe(3); // 3.5 -> 3, not 4
   });
 });

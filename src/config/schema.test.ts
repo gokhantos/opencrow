@@ -432,6 +432,10 @@ describe("appstoreKeywordGap config", () => {
     expect(g.autocompleteExpansion.storefront).toBe("143441-1,29");
     expect(g.sweepRateSafety.adaptiveThrottleEnabled).toBe(true);
     expect(g.sweepRateSafety.legacyRateOverride).toBe(false);
+    // serp-rank Stage 1 (deep-scrape build).
+    expect(g.serpDepth).toBe(200);
+    expect(g.deepScanMined).toBe(false);
+    expect(cfg.appstoreVelocity.maxRankRecorded).toBe(200);
   });
 
   test("is tunable via config", () => {
@@ -511,6 +515,160 @@ describe("appstoreSync config", () => {
     expect(() =>
       opencrowConfigSchema.parse({
         appstoreSync: { listTypes: [] },
+      }),
+    ).toThrow();
+  });
+
+  // ── intlCharts (deep-scrape build Stage 3) ───────────────────────────────
+  describe("intlCharts", () => {
+    test("defaults to enabled, gb/ca/au, 12h cadence", () => {
+      const cfg = opencrowConfigSchema.parse({});
+      const ic = cfg.appstoreSync.intlCharts;
+      expect(ic.enabled).toBe(true);
+      expect(ic.storefronts).toEqual(["gb", "ca", "au"]);
+      expect(ic.minIntervalMs).toBe(12 * 60 * 60 * 1000);
+      expect(ic.listTypes).toEqual(["top-free", "top-paid", "top-grossing"]);
+      expect(ic.delayMs).toBe(1000);
+    });
+
+    test("is tunable via config", () => {
+      const cfg = opencrowConfigSchema.parse({
+        appstoreSync: {
+          intlCharts: {
+            enabled: false,
+            storefronts: ["de", "fr"],
+            minIntervalMs: 3_600_000,
+            listTypes: ["top-free"],
+            delayMs: 500,
+          },
+        },
+      });
+      const ic = cfg.appstoreSync.intlCharts;
+      expect(ic.enabled).toBe(false);
+      expect(ic.storefronts).toEqual(["de", "fr"]);
+      expect(ic.minIntervalMs).toBe(3_600_000);
+      expect(ic.listTypes).toEqual(["top-free"]);
+      expect(ic.delayMs).toBe(500);
+    });
+
+    test("has NO firstSeen block (build plan §0.1 — the metadata registry owns first-seen)", () => {
+      const cfg = opencrowConfigSchema.parse({});
+      expect((cfg.appstoreSync.intlCharts as Record<string, unknown>).firstSeen).toBeUndefined();
+    });
+
+    test("rejects a storefront code that isn't 2 characters", () => {
+      expect(() =>
+        opencrowConfigSchema.parse({
+          appstoreSync: { intlCharts: { storefronts: ["usa"] } },
+        }),
+      ).toThrow();
+    });
+
+    test("rejects an empty storefronts array", () => {
+      expect(() =>
+        opencrowConfigSchema.parse({
+          appstoreSync: { intlCharts: { storefronts: [] } },
+        }),
+      ).toThrow();
+    });
+
+    test("rejects an unknown list type", () => {
+      expect(() =>
+        opencrowConfigSchema.parse({
+          appstoreSync: { intlCharts: { listTypes: ["bogus"] } },
+        }),
+      ).toThrow();
+    });
+  });
+});
+
+// ── appstoreReviewHarvest config (deep-scrape build Stage 4) ───────────────
+
+describe("appstoreReviewHarvest config", () => {
+  test("defaults: enabled, 60s minIntervalMs, budget 10,000, low-star-only indexing", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    const rh = cfg.appstoreReviewHarvest;
+    expect(rh.enabled).toBe(true);
+    expect(rh.minIntervalMs).toBe(60_000);
+    expect(rh.appsPerTick).toBe(3);
+    expect(rh.storefront).toBe("us");
+    expect(rh.pageDelayMs).toBe(500);
+    expect(rh.maxConsecutiveEmptyHarvests).toBe(5);
+    expect(rh.memoryIndexing).toBe("low-star-only");
+    // Lowered from the reviews spec's 12,000 per build plan §0.2.
+    expect(rh.dailyRequestBudget).toBe(10_000);
+  });
+
+  test("has NO tickIntervalMs — replaced by minIntervalMs (build plan §0.2/§0.4: no new timer)", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    expect((cfg.appstoreReviewHarvest as Record<string, unknown>).tickIntervalMs).toBeUndefined();
+  });
+
+  test("cohortRefresh defaults: enabled, 6h cadence, candidate caps", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    const cr = cfg.appstoreReviewHarvest.cohortRefresh;
+    expect(cr.enabled).toBe(true);
+    expect(cr.minIntervalMs).toBe(6 * 60 * 60 * 1000);
+    expect(cr.signatureHitCap).toBe(100);
+    expect(cr.velocityCap).toBe(50);
+    expect(cr.chartNewbornCap).toBe(200);
+  });
+
+  test("ledgerPrune defaults: 7d max age, 24h cadence", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    const lp = cfg.appstoreReviewHarvest.ledgerPrune;
+    expect(lp.maxAgeMs).toBe(7 * 24 * 60 * 60 * 1000);
+    expect(lp.minIntervalMs).toBe(24 * 60 * 60 * 1000);
+  });
+
+  test("is tunable via config", () => {
+    const cfg = opencrowConfigSchema.parse({
+      appstoreReviewHarvest: {
+        enabled: false,
+        minIntervalMs: 30_000,
+        appsPerTick: 10,
+        storefront: "gb",
+        pageDelayMs: 200,
+        maxConsecutiveEmptyHarvests: 3,
+        memoryIndexing: "all",
+        dailyRequestBudget: 5_000,
+        cohortRefresh: { signatureHitCap: 20 },
+        ledgerPrune: { maxAgeMs: 3600_000 },
+      },
+    });
+    const rh = cfg.appstoreReviewHarvest;
+    expect(rh.enabled).toBe(false);
+    expect(rh.minIntervalMs).toBe(30_000);
+    expect(rh.appsPerTick).toBe(10);
+    expect(rh.storefront).toBe("gb");
+    expect(rh.pageDelayMs).toBe(200);
+    expect(rh.maxConsecutiveEmptyHarvests).toBe(3);
+    expect(rh.memoryIndexing).toBe("all");
+    expect(rh.dailyRequestBudget).toBe(5_000);
+    expect(rh.cohortRefresh.signatureHitCap).toBe(20);
+    expect(rh.ledgerPrune.maxAgeMs).toBe(3600_000);
+  });
+
+  test("rejects a storefront code that isn't 2 characters", () => {
+    expect(() =>
+      opencrowConfigSchema.parse({
+        appstoreReviewHarvest: { storefront: "usa" },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects an unknown memoryIndexing value", () => {
+    expect(() =>
+      opencrowConfigSchema.parse({
+        appstoreReviewHarvest: { memoryIndexing: "bogus" },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects a negative appsPerTick", () => {
+    expect(() =>
+      opencrowConfigSchema.parse({
+        appstoreReviewHarvest: { appsPerTick: -1 },
       }),
     ).toThrow();
   });

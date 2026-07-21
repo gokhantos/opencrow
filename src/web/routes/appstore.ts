@@ -17,6 +17,7 @@ import {
   getDiscoveredApps,
   getLowRatedReviews,
 } from "../../sources/appstore/store";
+import { getRankSeriesFromScans, getRankClimbers } from "../../sources/appstore/serp-rank-store";
 import { getDb } from "../../store/db";
 import type { CoreClient } from "../core-client";
 
@@ -47,6 +48,21 @@ const opportunitiesQuerySchema = z.object({
 
 const scanHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(30),
+});
+
+const STORES = ["app", "play", "DE"] as const;
+
+const rankSeriesQuerySchema = z.object({
+  keyword: z.string().min(1),
+  appId: z.string().min(1),
+  store: z.enum(STORES).default("app"),
+  limit: z.coerce.number().int().min(1).max(200).default(60),
+});
+
+const rankClimbersQuerySchema = z.object({
+  keyword: z.string().min(1),
+  store: z.enum(STORES).default("app"),
+  limit: z.coerce.number().int().min(1).max(200).default(20),
 });
 
 // Member-level filters shared by both cluster endpoints — identical semantics
@@ -214,6 +230,49 @@ export function createAppStoreRoutes(
           source: meta?.source ?? null,
         },
       },
+    });
+  });
+
+  // Deep-SERP rank tracking (serp-rank Stage 1, deep-scrape build) — reads
+  // `appstore_keyword_scans.top_apps`/`serp_tail` via `serp-rank-store.ts`.
+  app.get("/appstore/rank-series", async (c) => {
+    const parsed = rankSeriesQuerySchema.safeParse({
+      keyword: c.req.query("keyword") ?? undefined,
+      appId: c.req.query("appId") ?? undefined,
+      store: c.req.query("store") ?? undefined,
+      limit: c.req.query("limit") ?? undefined,
+    });
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+
+    const { keyword, appId, store, limit } = parsed.data;
+    const series = await getRankSeriesFromScans(keyword, store, appId, limit);
+    return c.json({
+      success: true,
+      data: series,
+      meta: { keyword, appId, store, count: series.length },
+    });
+  });
+
+  app.get("/appstore/rank-climbers", async (c) => {
+    const parsed = rankClimbersQuerySchema.safeParse({
+      keyword: c.req.query("keyword") ?? undefined,
+      store: c.req.query("store") ?? undefined,
+      limit: c.req.query("limit") ?? undefined,
+    });
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+
+    const { keyword, store, limit } = parsed.data;
+    const climbers = await getRankClimbers(keyword, store, limit);
+    return c.json({
+      success: true,
+      data: climbers,
+      meta: { keyword, store, count: climbers.length },
     });
   });
 

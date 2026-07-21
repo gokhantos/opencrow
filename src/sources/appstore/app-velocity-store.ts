@@ -24,6 +24,13 @@ export interface AppVelocityObservation {
   readonly rating: number;
   readonly firstSeenKeyword: string;
   readonly name: string;
+  /**
+   * 0-based SERP position at the scan that produced this observation
+   * (migration 044, serp-rank Stage 1), or `null` for an observation with no
+   * SERP position of its own — e.g. a legacy pre-migration row, or a future
+   * chart-sourced synthetic observation (Stage 2's `"chart-first-seen"`).
+   */
+  readonly rank: number | null;
 }
 
 /** Raw column shape returned by `SELECT * FROM appstore_app_velocity`. */
@@ -34,6 +41,8 @@ interface AppVelocityRow {
   readonly rating: number | string;
   readonly first_seen_keyword: string;
   readonly name: string;
+  /** Migration 044. Absent/null on any pre-migration row. */
+  readonly rank?: number | string | null;
 }
 
 function rowToObservation(row: AppVelocityRow): AppVelocityObservation {
@@ -44,6 +53,7 @@ function rowToObservation(row: AppVelocityRow): AppVelocityObservation {
     rating: Number(row.rating),
     firstSeenKeyword: row.first_seen_keyword,
     name: row.name,
+    rank: row.rank === null || row.rank === undefined ? null : Number(row.rank),
   };
 }
 
@@ -64,6 +74,12 @@ export interface InsertObservationInput {
   readonly rating: number;
   readonly keyword: string;
   readonly name: string;
+  /**
+   * 0-based SERP position at the triggering scan (migration 044). Optional —
+   * omit (or pass `null`) when there is no SERP position (e.g. a future
+   * chart-sourced synthetic observation), which persists as SQL NULL.
+   */
+  readonly rank?: number | null;
 }
 
 /**
@@ -81,10 +97,10 @@ export async function insertObservation(input: InsertObservationInput): Promise<
 
   const db = getDb();
   await db`
-    INSERT INTO appstore_app_velocity (app_id, observed_at, reviews, rating, first_seen_keyword, name)
+    INSERT INTO appstore_app_velocity (app_id, observed_at, reviews, rating, first_seen_keyword, name, rank)
     VALUES (
       ${input.appId}, ${input.observedAt}, ${input.reviews}, ${input.rating},
-      ${input.keyword}, ${input.name}
+      ${input.keyword}, ${input.name}, ${input.rank ?? null}
     )
     ON CONFLICT (app_id, observed_at) DO NOTHING
   `;
@@ -94,23 +110,43 @@ export async function insertObservation(input: InsertObservationInput): Promise<
 export interface RecordVelocityObservationsInput {
   readonly keyword: string;
   readonly scannedAt: number; // epoch seconds
+  /**
+   * The scan's SERP-ordered app list — index 0 = SERP position #1. Callers
+   * that only ever have a scored top-N slice (the pre-Stage-1 default) still
+   * satisfy this: rank is simply capped at that slice's length. Deep-scan
+   * callers pass the FULL ranked fetch (`scanKeywordDeep`'s `rankedSerp`, up
+   * to `serpDepth`), not just the scored `topApps` — see `keyword-gaps.ts`'s
+   * `scanAndRecord`.
+   */
   readonly topApps: readonly TopApp[];
 }
 
 /**
  * Hooked into the SERP-scan persist path (see `keyword-gaps.ts`
  * `scanAndRecord`): for every app in `topApps` younger than
- * `NEWBORN_AGE_DAYS_MAX` (see `isNewborn`), records one bucketed observation.
- * Apps with no `id` are skipped (nothing to key the row on). Never throws for
- * a single app — an insert failure propagates only for genuine DB errors,
- * which the caller already wraps in a try/catch alongside its own logging.
+ * `NEWBORN_AGE_DAYS_MAX` (see `isNewborn`), records one bucketed observation
+ * tagged with its 0-based array index as `rank`. Apps with no `id` are
+ * skipped (nothing to key the row on). `opts.maxRankRecorded`
+ * (`appstoreVelocity.maxRankRecorded` config, read by the caller) bounds how
+ * deep into `topApps` observations are even attempted — since `topApps` is
+ * rank-ordered by construction, once the cap is reached every remaining
+ * entry is deeper still, so the loop stops rather than continuing to check
+ * each one. Omitting `maxRankRecorded` records the whole array (matches the
+ * pre-Stage-1 behavior for shallow, already-bounded `topApps` inputs). Never
+ * throws for a single app — an insert failure propagates only for genuine DB
+ * errors, which the caller already wraps in a try/catch alongside its own
+ * logging.
  */
 export async function recordVelocityObservationsForScan(
   input: RecordVelocityObservationsInput,
+  opts?: { readonly maxRankRecorded?: number },
 ): Promise<{ readonly recorded: number }> {
+  const maxRankRecorded = opts?.maxRankRecorded;
   let recorded = 0;
-  for (const app of input.topApps) {
-    if (!app.id || !isNewborn(app.ageDays)) continue;
+  for (let rank = 0; rank < input.topApps.length; rank++) {
+    if (maxRankRecorded !== undefined && rank >= maxRankRecorded) break;
+    const app = input.topApps[rank];
+    if (!app || !app.id || !isNewborn(app.ageDays)) continue;
     const inserted = await insertObservation({
       appId: app.id,
       observedAt: input.scannedAt,
@@ -118,6 +154,7 @@ export async function recordVelocityObservationsForScan(
       rating: app.rating,
       keyword: input.keyword,
       name: app.name,
+      rank,
     });
     if (inserted) recorded++;
   }
