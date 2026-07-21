@@ -79,6 +79,24 @@ export function computeDemand(apps: readonly TopApp[]): number {
   return baseline + VELOCITY_WEIGHT * velocity;
 }
 
+
+/**
+ * Bounds a single outlier app's lifetime review mass from dominating the
+ * demand mean: any app's `ratingsPerDay` above `apps`' own p90 is clamped
+ * down to that p90 before averaging (2026-07-21 audit item C fix — the
+ * unfiltered mean a single mega-app's raw lifetime rate could dominate).
+ * Explicitly NOT a switch to the median — validated against the backtest
+ * that a median swap flattens the signal enough to kill the "block shorts"
+ * winner-keyword result. Pure; does not mutate `apps`.
+ */
+export function winsorizeRatingsPerDayAtP90(apps: readonly TopApp[]): readonly TopApp[] {
+  if (apps.length <= 1) return apps;
+  const sorted = apps.map((a) => a.ratingsPerDay).sort((a, b) => a - b);
+  const p90Index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.9 * sorted.length) - 1));
+  const p90 = sorted[p90Index] as number;
+  return apps.map((a) => (a.ratingsPerDay > p90 ? { ...a, ratingsPerDay: p90 } : a));
+}
+
 export function computeCompetitiveness(apps: readonly TopApp[]): number {
   if (apps.length === 0) return 0;
   const mean = apps.reduce((s, a) => s + appStrength(a), 0) / apps.length;

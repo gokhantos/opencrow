@@ -92,34 +92,38 @@ describe("scanKeyword velocity baseline", () => {
   it("activates recentVelocity from a baseline at least the min window old", async () => {
     const now = Math.floor(Date.now() / 1000);
     mockHistory([
-      { store: "app", scannedAt: now - 86_400, demand: 500, topApps: [{ id: MATCHED_ID, reviews: 4000 }] },
+      { store: "app", scannedAt: now - 86_400, demand: 500, topApps: [{ id: MATCHED_ID, reviews: 4970 }] },
     ]);
     const { scanKeyword } = await import("./keyword-gaps");
     const p = await scanKeyword(KEYWORD);
     const matched = p.topApps.find((a) => a.id === MATCHED_ID);
-    // (5000 - 4000) reviews over ~1 day ≈ 1000/day — a REAL velocity, not the
-    // tiny lifetime average (5000 / ~2400-day age ≈ 2/day).
-    expect(matched?.recentVelocity).toBeCloseTo(1000, 0);
-    // demand = lifetime baseline (~2/day) + velocity momentum (~1000/day): the
-    // momentum dominates here, so demand tracks the velocity closely but is not
-    // exactly it.
-    expect(p.demand).toBeGreaterThan(990);
-    expect(p.demand).toBeLessThan(1010);
+    // (5000 - 4970) reviews over ~1 day = 30/day — a REAL velocity, not the
+    // tiny lifetime average (5000 / ~2400-day age ≈ 2/day), and comfortably
+    // under the flap-robustness cap (max(10x lifetime rpd, 50/day) ≈ 50/day
+    // for this fixture — see the dedicated cap test below) so this test
+    // isolates baseline ACTIVATION from capping.
+    expect(matched?.recentVelocity).toBeCloseTo(30, 0);
+    // demand = lifetime baseline (~2/day) + velocity momentum (~30/day): the
+    // momentum dominates here, so demand tracks the velocity closely but is
+    // not exactly it.
+    expect(p.demand).toBeGreaterThan(28);
+    expect(p.demand).toBeLessThan(36);
   });
 
   it("skips a too-fresh scan and diffs against the older baseline when both exist", async () => {
     const now = Math.floor(Date.now() / 1000);
     mockHistory([
-      // ~10 min old — too fresh to be a baseline (would give a noisy 100/day).
-      { store: "app", scannedAt: now - 600, demand: 900, topApps: [{ id: MATCHED_ID, reviews: 4900 }] },
+      // ~10 min old — too fresh to be a baseline (would give a noisy, huge
+      // implied rate if wrongly used).
+      { store: "app", scannedAt: now - 600, demand: 900, topApps: [{ id: MATCHED_ID, reviews: 4990 }] },
       // ~1 day old — the baseline actually used.
-      { store: "app", scannedAt: now - 86_400, demand: 500, topApps: [{ id: MATCHED_ID, reviews: 4000 }] },
+      { store: "app", scannedAt: now - 86_400, demand: 500, topApps: [{ id: MATCHED_ID, reviews: 4970 }] },
     ]);
     const { scanKeyword } = await import("./keyword-gaps");
     const p = await scanKeyword(KEYWORD);
     const matched = p.topApps.find((a) => a.id === MATCHED_ID);
-    // Diffed against 4000 (≈1000/day), not the 4900 fresh point (≈100/day).
-    expect(matched?.recentVelocity).toBeGreaterThan(500);
+    // Diffed against 4970 (30/day), not the 4990 fresh point.
+    expect(matched?.recentVelocity).toBeCloseTo(30, 0);
   });
 
   it("falls back to lifetime when the only prior scan is too fresh", async () => {
@@ -133,6 +137,93 @@ describe("scanKeyword velocity baseline", () => {
     expect(matched?.recentVelocity).toBeUndefined();
     // Lifetime ratingsPerDay = 5000 / ~2400-day age ≈ 2/day.
     expect(p.demand).toBeLessThan(50);
+  });
+
+  // 2026-07-21 audit item C fix: flap-robust velocity baseline + cap.
+  it("caps recentVelocity at max(10x lifetime ratingsPerDay, 50/day) instead of an implausible raw spike", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockHistory([
+      { store: "app", scannedAt: now - 86_400, demand: 500, topApps: [{ id: MATCHED_ID, reviews: 4000 }] },
+    ]);
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword(KEYWORD);
+    const matched = p.topApps.find((a) => a.id === MATCHED_ID);
+    // Raw would be (5000-4000)/1 day = 1000/day; lifetime ratingsPerDay for
+    // this fixture is ~2/day (5000 reviews / ~2400-day age), so the cap is
+    // max(10*2, 50) = 50/day — well under the raw 1000/day.
+    expect(matched?.recentVelocity).toBeCloseTo(50, 0);
+    expect(matched?.recentVelocity).toBeLessThan(1000);
+  });
+
+  it("takes the max across the two newest eligible baselines, surviving a drop-then-recover flap", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    mockHistory([
+      // ~1 day old — the newest eligible baseline, but a transient DOWNWARD
+      // flap (a glitched/corrected review-count reading).
+      { store: "app", scannedAt: now - 86_400, demand: 500, topApps: [{ id: MATCHED_ID, reviews: 4000 }] },
+      // ~2 days old — the second-newest eligible baseline, at the REAL
+      // (pre-flap) level. Taking the max of the two anchors the baseline
+      // here instead of at the flapped dip.
+      { store: "app", scannedAt: now - 172_800, demand: 480, topApps: [{ id: MATCHED_ID, reviews: 4970 }] },
+    ]);
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword(KEYWORD);
+    const matched = p.topApps.find((a) => a.id === MATCHED_ID);
+    // (5000 - max(4000, 4970)) / 1 day = 30/day — NOT (5000-4000)/1 day =
+    // 1000/day, which diffing against only the single newest (flapped)
+    // baseline would have produced (and which would then have been capped
+    // to 50/day, masking the bug rather than exposing it — 30 is
+    // distinguishable from both the uncapped 1000 and the capped 50).
+    expect(matched?.recentVelocity).toBeCloseTo(30, 0);
+  });
+
+  // Literal audit reproduction: "a flap sequence (reviews N, then N−37k,
+  // then back to ~N) produces velocity ≈ 0, not a phantom spike."
+  it("a flap sequence (N, then N-37k, then back to ~N) produces velocity ≈ 0, not a phantom spike", async () => {
+    const N = 42_000;
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async () => ({
+        ok: true,
+        json: async () => ({
+          results: [
+            {
+              trackId: 100,
+              trackName: "Budget Planner",
+              userRatingCount: N, // "now" — back to ~N
+              averageUserRating: 4.0,
+              releaseDate: "2020-01-01T00:00:00Z",
+              currentVersionReleaseDate: "2026-06-01T00:00:00Z",
+              price: 0,
+              formattedPrice: "Free",
+            },
+          ],
+        }),
+      }),
+    }));
+    const now = Math.floor(Date.now() / 1000);
+    mockHistory([
+      // ~1 day old — the newest eligible baseline, at the flapped dip (N-37k).
+      {
+        store: "app",
+        scannedAt: now - 86_400,
+        demand: 500,
+        topApps: [{ id: MATCHED_ID, reviews: N - 37_000 }],
+      },
+      // ~2 days old — the second-newest eligible baseline, at ~N (pre-flap).
+      {
+        store: "app",
+        scannedAt: now - 172_800,
+        demand: 480,
+        topApps: [{ id: MATCHED_ID, reviews: N }],
+      },
+    ]);
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword(KEYWORD);
+    const matched = p.topApps.find((a) => a.id === MATCHED_ID);
+    // max(N-37k, N) = N; N (now) - N (baseline) = 0 — no phantom spike from
+    // diffing against the single-newest (dipped) reading.
+    expect(matched?.recentVelocity).toBeCloseTo(0, 0);
   });
 });
 
@@ -168,6 +259,104 @@ describe("scanKeyword", () => {
     const p = await scanKeyword("fatty liver diet", { store: "DE" });
     expect(p.store).toBe("DE");
     expect(requestedUrl).toContain("country=de");
+  });
+});
+
+// 2026-07-21 audit item C fix: kill the zero-title-match whole-SERP demand
+// fallback. When nothing title-matches, demand must come ONLY from
+// non-matched, non-giant (< GIANT_REVIEW_THRESHOLD reviews) apps — never
+// from the raw unfiltered SERP average, which let review-mass giants
+// unrelated to the keyword set demand via sheer volume.
+describe("zero-match giant-exclusion fallback (2026-07-21 audit item C fix)", () => {
+  beforeEach(() => {
+    mock.module("./keyword-store", () => keywordStoreMockBase());
+  });
+
+  it("a WhatsApp-class giant, non-title-matched, scores demand ≈ 0 on a 'credit score widget'-shaped SERP (not 498 via the old raw-SERP fallback)", async () => {
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async () => ({
+        ok: true,
+        json: async () => ({
+          results: [
+            {
+              trackId: 1,
+              trackName: "WhatsApp Messenger",
+              userRatingCount: 500_000,
+              averageUserRating: 4.5,
+              releaseDate: "2014-01-01T00:00:00Z",
+            },
+          ],
+        }),
+      }),
+    }));
+
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword("credit score widget");
+
+    expect(p.topApps.every((a) => !a.titleMatch)).toBe(true);
+    expect(p.lowConfidence).toBe(true);
+    expect(p.demand).toBe(0);
+  });
+
+  it("a DE giant-contaminated, zero-title-match SERP scores demand ≈ 0 (not the audit's measured ~140 raw-SERP-fallback average)", async () => {
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async () => ({
+        ok: true,
+        json: async () => ({
+          results: [
+            {
+              trackId: 1,
+              trackName: "Stromrechner Deutschland",
+              userRatingCount: 250_000,
+              averageUserRating: 4.2,
+              releaseDate: "2015-01-01T00:00:00Z",
+            },
+            {
+              trackId: 2,
+              trackName: "Energie Sparen Pro",
+              userRatingCount: 180_000,
+              averageUserRating: 4.0,
+              releaseDate: "2016-01-01T00:00:00Z",
+            },
+          ],
+        }),
+      }),
+    }));
+
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword("time of use electricity", { store: "DE" });
+
+    expect(p.topApps.every((a) => !a.titleMatch)).toBe(true);
+    expect(p.lowConfidence).toBe(true);
+    expect(p.demand).toBe(0);
+  });
+
+  it("falls back to non-matched, non-giant apps when zero apps title-match — still flagged low-confidence, but demand is not forced to 0", async () => {
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async () => ({
+        ok: true,
+        json: async () => ({
+          results: [
+            {
+              trackId: 1,
+              trackName: "Totally Unrelated App",
+              userRatingCount: 5_000, // well under GIANT_REVIEW_THRESHOLD
+              averageUserRating: 4.0,
+              releaseDate: "2020-01-01T00:00:00Z",
+            },
+          ],
+        }),
+      }),
+    }));
+
+    const { scanKeyword } = await import("./keyword-gaps");
+    const p = await scanKeyword("some niche keyword phrase");
+
+    expect(p.lowConfidence).toBe(true);
+    expect(p.demand).toBeGreaterThan(0);
   });
 });
 
@@ -240,7 +429,20 @@ describe("runScanSlice", () => {
 describe("runKeywordSweep", () => {
   let insertScanCalls: unknown[];
   let markScannedCalls: Array<{ keywords: readonly string[]; at: number }>;
-  let staleKeywordsTieredCalls: Array<{ batchLimit: number; mineQuotaRemaining: number }>;
+  let staleKeywordsTieredCalls: Array<{
+    batchLimit: number;
+    mineQuotaRemaining: number;
+    tier1StaleThresholdMs: number;
+    perSweepCap: number;
+  }>;
+
+  // Default config values (src/config/schema.ts's appstoreKeywordGapConfigSchema
+  // defaults, 2026-07-21 audit NOW-tier fixes): tier1StaleThresholdMs = 12h,
+  // minedExploration.dailyQuota = 20_000, scanIntervalMs = 60_000 (1 min) ->
+  // perSweepCap = ceil(20_000 * 60_000 / 86_400_000) = 14.
+  const DEFAULT_TIER1_STALE_THRESHOLD_MS = 12 * 60 * 60 * 1000;
+  const DEFAULT_MINE_DAILY_QUOTA = 20_000;
+  const DEFAULT_PER_SWEEP_CAP = 14;
 
   beforeEach(() => {
     insertScanCalls = [];
@@ -249,7 +451,12 @@ describe("runKeywordSweep", () => {
 
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
-      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+      getStaleKeywordsTiered: async (opts: {
+        batchLimit: number;
+        mineQuotaRemaining: number;
+        tier1StaleThresholdMs: number;
+        perSweepCap: number;
+      }) => {
         staleKeywordsTieredCalls.push(opts);
         return ["a", "b"];
       },
@@ -282,8 +489,22 @@ describe("runKeywordSweep", () => {
     const { runKeywordSweep } = await import("./keyword-gaps");
     const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
 
-    expect(result).toEqual({ scanned: 1, failed: 1, skipped: false, bailed: false, rateLimitErrors: 0 });
-    expect(staleKeywordsTieredCalls).toEqual([{ batchLimit: 25, mineQuotaRemaining: 5_000 }]);
+    expect(result).toEqual({
+      scanned: 1,
+      failed: 1,
+      skipped: false,
+      bailed: false,
+      rateLimitErrors: 0,
+      mineQuotaRemaining: DEFAULT_MINE_DAILY_QUOTA,
+    });
+    expect(staleKeywordsTieredCalls).toEqual([
+      {
+        batchLimit: 25,
+        mineQuotaRemaining: DEFAULT_MINE_DAILY_QUOTA,
+        tier1StaleThresholdMs: DEFAULT_TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: DEFAULT_PER_SWEEP_CAP,
+      },
+    ]);
     expect(insertScanCalls.length).toBe(1);
     expect(markScannedCalls.length).toBe(1);
     expect(markScannedCalls[0]?.keywords).toEqual(["a"]);
@@ -292,7 +513,12 @@ describe("runKeywordSweep", () => {
   it("skips the sweep without scanning anything when the rolling 24h budget is reached", async () => {
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
-      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+      getStaleKeywordsTiered: async (opts: {
+        batchLimit: number;
+        mineQuotaRemaining: number;
+        tier1StaleThresholdMs: number;
+        perSweepCap: number;
+      }) => {
         staleKeywordsTieredCalls.push(opts);
         return ["a", "b"];
       },
@@ -310,7 +536,14 @@ describe("runKeywordSweep", () => {
     const { runKeywordSweep } = await import("./keyword-gaps");
     const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
 
-    expect(result).toEqual({ scanned: 0, failed: 0, skipped: true, bailed: false, rateLimitErrors: 0 });
+    expect(result).toEqual({
+      scanned: 0,
+      failed: 0,
+      skipped: true,
+      bailed: false,
+      rateLimitErrors: 0,
+      mineQuotaRemaining: DEFAULT_MINE_DAILY_QUOTA,
+    });
     expect(staleKeywordsTieredCalls.length).toBe(0);
     expect(insertScanCalls.length).toBe(0);
     expect(markScannedCalls.length).toBe(0);
@@ -319,24 +552,41 @@ describe("runKeywordSweep", () => {
   it("subtracts countMinedScansSince from the mined daily quota when computing mineQuotaRemaining", async () => {
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
-      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+      getStaleKeywordsTiered: async (opts: {
+        batchLimit: number;
+        mineQuotaRemaining: number;
+        tier1StaleThresholdMs: number;
+        perSweepCap: number;
+      }) => {
         staleKeywordsTieredCalls.push(opts);
         return [];
       },
-      // Default config's minedExploration.dailyQuota is 5_000.
-      countMinedScansSince: async () => 4_990,
+      // Default config's minedExploration.dailyQuota is 20_000.
+      countMinedScansSince: async () => 19_990,
     }));
 
     const { runKeywordSweep } = await import("./keyword-gaps");
     await runKeywordSweep({ limit: 25, delayMs: 0 });
 
-    expect(staleKeywordsTieredCalls).toEqual([{ batchLimit: 25, mineQuotaRemaining: 10 }]);
+    expect(staleKeywordsTieredCalls).toEqual([
+      {
+        batchLimit: 25,
+        mineQuotaRemaining: 10,
+        tier1StaleThresholdMs: DEFAULT_TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: DEFAULT_PER_SWEEP_CAP,
+      },
+    ]);
   });
 
   it("floors mineQuotaRemaining at 0 rather than going negative when mined scans exceed the quota", async () => {
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
-      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+      getStaleKeywordsTiered: async (opts: {
+        batchLimit: number;
+        mineQuotaRemaining: number;
+        tier1StaleThresholdMs: number;
+        perSweepCap: number;
+      }) => {
         staleKeywordsTieredCalls.push(opts);
         return [];
       },
@@ -346,7 +596,14 @@ describe("runKeywordSweep", () => {
     const { runKeywordSweep } = await import("./keyword-gaps");
     await runKeywordSweep({ limit: 25, delayMs: 0 });
 
-    expect(staleKeywordsTieredCalls).toEqual([{ batchLimit: 25, mineQuotaRemaining: 0 }]);
+    expect(staleKeywordsTieredCalls).toEqual([
+      {
+        batchLimit: 25,
+        mineQuotaRemaining: 0,
+        tier1StaleThresholdMs: DEFAULT_TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: DEFAULT_PER_SWEEP_CAP,
+      },
+    ]);
   });
 
   it("bails early after too many consecutive scan failures instead of burning the whole slice", async () => {
@@ -354,7 +611,12 @@ describe("runKeywordSweep", () => {
     // consecutive failure rather than attempting all seven.
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
-      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+      getStaleKeywordsTiered: async (opts: {
+        batchLimit: number;
+        mineQuotaRemaining: number;
+        tier1StaleThresholdMs: number;
+        perSweepCap: number;
+      }) => {
         staleKeywordsTieredCalls.push(opts);
         return ["a", "b", "c", "d", "e", "f", "g"];
       },
@@ -379,7 +641,14 @@ describe("runKeywordSweep", () => {
     const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
 
     // Stopped at the 5-consecutive-failure threshold: 5 attempted, 2 untouched.
-    expect(result).toEqual({ scanned: 0, failed: 5, skipped: false, bailed: true, rateLimitErrors: 0 });
+    expect(result).toEqual({
+      scanned: 0,
+      failed: 5,
+      skipped: false,
+      bailed: true,
+      rateLimitErrors: 0,
+      mineQuotaRemaining: DEFAULT_MINE_DAILY_QUOTA,
+    });
     expect(fetchCalls).toBe(5);
     expect(insertScanCalls.length).toBe(0);
     expect(markScannedCalls.length).toBe(0);
@@ -392,7 +661,12 @@ describe("runKeywordSweep", () => {
     // real class (see `isRateLimitError`'s doc comment in keyword-gaps.ts).
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
-      getStaleKeywordsTiered: async (opts: { batchLimit: number; mineQuotaRemaining: number }) => {
+      getStaleKeywordsTiered: async (opts: {
+        batchLimit: number;
+        mineQuotaRemaining: number;
+        tier1StaleThresholdMs: number;
+        perSweepCap: number;
+      }) => {
         staleKeywordsTieredCalls.push(opts);
         return ["a", "b"];
       },

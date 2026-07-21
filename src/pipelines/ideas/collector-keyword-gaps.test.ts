@@ -22,6 +22,7 @@ function makeScan(overrides: Partial<KeywordScanRow> & { id: number }): KeywordS
     avgAgeDays: 0,
     topApps: [],
     buildability: 0,
+    lowConfidence: false,
     ...overrides,
   };
 }

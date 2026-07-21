@@ -802,6 +802,7 @@ export function createAppStoreScraper(config?: {
           rateLimitErrors: result.rateLimitErrors,
           effectiveKeywordsPerSweep: keywordsPerSweep,
           effectiveDelayMs: delayMs,
+          mineQuotaRemaining: result.mineQuotaRemaining,
         });
 
         // Adaptive throttle: only tracked when NOT under the hard kill-switch
@@ -894,6 +895,11 @@ export function createAppStoreScraper(config?: {
         : 1;
       const winnerLimit = Math.max(0, Math.floor(ac.winnerLimit * multiplier));
       const diverseLimit = Math.max(0, Math.floor(ac.diverseLimit * multiplier));
+      // Prefix fan-out (2026-07-21 audit item D fix) — scaled by the SAME
+      // throttle multiplier as winnerLimit/diverseLimit, same rationale.
+      const maxPrefixesPerSeed = ac.prefixFanOut.enabled
+        ? Math.max(0, Math.floor(ac.prefixFanOut.maxPrefixesPerSeed * multiplier))
+        : 0;
 
       const result = await expandCorpus({
         minOpportunity: cfg.opportunityThresholdForSeed,
@@ -902,13 +908,16 @@ export function createAppStoreScraper(config?: {
         perSeed: ac.perSeed,
         storefront: ac.storefront,
         delayMs: ac.delayMs,
+        maxPrefixesPerSeed,
       });
 
       log.info("Autocomplete expansion tick", {
         added: result.added,
         seedsUsed: result.seedsUsed,
+        attempted: result.attempted,
         rateLimitErrors: result.rateLimitErrors,
         throttleMultiplier: multiplier,
+        maxPrefixesPerSeed,
       });
 
       if (cfg.sweepRateSafety.adaptiveThrottleEnabled && result.attempted > 0) {

@@ -39,4 +39,12 @@ export interface KeywordGapProfile {
   readonly avgAgeDays: number; // mean age (raw, audit)
   readonly topApps: readonly TopApp[];
   readonly scannedAt: number; // epoch seconds
+  /**
+   * True iff zero apps in this scan's SERP title-matched the keyword — demand
+   * / incumbent-weakness were computed over a giant-excluded non-matched
+   * fallback (or 0/NULL if every non-matched app was a giant), never a
+   * title-matched field. See `scanKeyword`'s module doc (2026-07-21 audit
+   * item C fix) and migration 042.
+   */
+  readonly lowConfidence: boolean;
 }
