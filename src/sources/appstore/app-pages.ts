@@ -137,6 +137,8 @@ export async function runAppPageFetchPass(opts: {
   readonly rollingIntervalSeconds: number;
   readonly canaryMinBatchSize: number;
   readonly canaryParseFailureThreshold: number;
+  /** Throughput wave item 1: route product-page HTML fetches through the Webshare proxy. Default false; the caller (scraper.ts) defaults this ON for this lane via config. */
+  readonly useProxy?: boolean;
 }): Promise<AppPageFetchPassResult> {
   if (opts.pagesPerBatch <= 0) return SKIPPED_RESULT;
 
@@ -186,6 +188,7 @@ export async function runAppPageFetchPass(opts: {
       res = await ssrfSafeFetch(url, {
         retryOnRateLimit: true,
         headers: { "User-Agent": USER_AGENT, Accept: "text/html" },
+        useProxy: opts.useProxy ?? false,
       });
     } catch (err) {
       if (isRateLimitError(err)) rateLimitErrors++;

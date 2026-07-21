@@ -199,6 +199,7 @@ export async function fetchTopApps(
   keyword: string,
   topN: number,
   country: string = "us",
+  useProxy: boolean = false,
 ): Promise<readonly TopApp[]> {
   const url = `https://itunes.apple.com/search?term=${encodeURIComponent(keyword)}&entity=software&limit=${topN}&country=${encodeURIComponent(country)}`;
 
@@ -206,7 +207,7 @@ export async function fetchTopApps(
   // scanner must honor iTunes 429/503 instead of hammering. On exhausted
   // retries ssrfSafeFetch throws RateLimitError — the sweep's consecutive-throw
   // bail already handles repeated throws generically (no type import needed).
-  const res = await ssrfSafeFetch(url, { retryOnRateLimit: true });
+  const res = await ssrfSafeFetch(url, { retryOnRateLimit: true, useProxy });
   if (!res.ok) {
     throw new Error(`iTunes search failed for "${keyword}": HTTP ${res.status}`);
   }
@@ -272,6 +273,8 @@ export async function scanKeyword(
     readonly store?: "app" | "play" | "DE";
     /** iTunes `country` query param. Defaults from `store`: "DE" -> "de", else "us". */
     readonly country?: string;
+    /** Throughput wave item 1: route this fetch through the Webshare proxy. Default false. */
+    readonly useProxy?: boolean;
   },
 ): Promise<KeywordGapProfile> {
   const topN = opts?.topN ?? DEFAULT_TOP_N;
@@ -279,7 +282,7 @@ export async function scanKeyword(
   const country = opts?.country ?? (store === "DE" ? "de" : "us");
   const scannedAt = Math.floor(Date.now() / 1000);
 
-  const fetched = await fetchTopApps(keyword, topN, country);
+  const fetched = await fetchTopApps(keyword, topN, country, opts?.useProxy ?? false);
   return computeGapProfile({ keyword, store, scannedAt, scoringApps: fetched });
 }
 
@@ -303,6 +306,8 @@ export async function scanKeywordDeep(
     readonly country?: string;
     /** Results to request. Defaults to `appstoreKeywordGap.serpDepth` (200). */
     readonly depth?: number;
+    /** Throughput wave item 1: route this fetch through the Webshare proxy. Default false. */
+    readonly useProxy?: boolean;
   },
 ): Promise<{ readonly profile: KeywordGapProfile; readonly rankedSerp: readonly TopApp[] }> {
   const topN = opts?.topN ?? DEFAULT_TOP_N;
@@ -311,7 +316,7 @@ export async function scanKeywordDeep(
   const depth = opts?.depth ?? loadConfig().appstoreKeywordGap.serpDepth;
   const scannedAt = Math.floor(Date.now() / 1000);
 
-  const rankedSerp = await fetchTopApps(keyword, depth, country);
+  const rankedSerp = await fetchTopApps(keyword, depth, country, opts?.useProxy ?? false);
   const scoringApps = rankedSerp.slice(0, topN);
   const serpTail = buildSerpTail(rankedSerp, topN);
   const profile = await computeGapProfile({
@@ -565,6 +570,7 @@ async function scanAndRecord(
           topN: opts.topN,
           store,
           depth: appstoreKeywordGap.serpDepth,
+          useProxy: appstoreKeywordGap.useProxy,
           ...(country ? { country } : {}),
         });
         profile = result.profile;
@@ -573,6 +579,7 @@ async function scanAndRecord(
         profile = await scanKeyword(keyword, {
           topN: opts.topN,
           store,
+          useProxy: appstoreKeywordGap.useProxy,
           ...(country ? { country } : {}),
         });
         rankedSerp = profile.topApps;

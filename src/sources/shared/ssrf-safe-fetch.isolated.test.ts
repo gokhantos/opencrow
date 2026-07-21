@@ -16,7 +16,19 @@ mock.module("./fetch-with-timeout", () => ({
   fetchWithTimeout: mockFetchWithTimeout,
 }));
 
-// Import AFTER mock.module so the mock is already in place.
+// Proxy-seam mock (throughput wave item 1): `ssrfSafeFetch`'s `useProxy`
+// option resolves through `appstore-proxy.ts`'s `getAppstoreProxyUrl` —
+// mocked here so this file's proxy tests are fully deterministic and never
+// touch the real DB/env/secrets machinery (no real proxy calls in CI).
+// Defaults to "unconfigured" (undefined); individual tests override via
+// `mockGetAppstoreProxyUrl.mockImplementationOnce(...)`.
+const mockGetAppstoreProxyUrl = mock(async (): Promise<string | undefined> => undefined);
+
+mock.module("./appstore-proxy", () => ({
+  getAppstoreProxyUrl: mockGetAppstoreProxyUrl,
+}));
+
+// Import AFTER mock.module so the mocks are already in place.
 const { ssrfSafeFetch, RateLimitError } = await import("./ssrf-safe-fetch");
 
 function makeResponse(
@@ -29,6 +41,8 @@ function makeResponse(
 
 beforeEach(() => {
   mockFetchWithTimeout.mockReset();
+  mockGetAppstoreProxyUrl.mockReset();
+  mockGetAppstoreProxyUrl.mockImplementation(async () => undefined);
 });
 
 describe("ssrfSafeFetch", () => {
@@ -269,5 +283,71 @@ describe("ssrfSafeFetch rate-limit retry", () => {
       ssrfSafeFetch("https://example.com/bounce", FAST_RETRY_OPTS),
     ).rejects.toThrow("SSRF blocked");
     expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Proxy seam (throughput wave, item 1). `useProxy` is per-call opt-in; the
+// resolved URL is sourced from the mocked `getAppstoreProxyUrl` above — no
+// real DB/env/secrets access and no real proxy connection anywhere here.
+// ---------------------------------------------------------------------------
+describe("ssrfSafeFetch proxy (useProxy)", () => {
+  it("does NOT consult the proxy resolver at all when useProxy is unset (default false)", async () => {
+    mockFetchWithTimeout.mockImplementationOnce(async () => makeResponse(200));
+    await ssrfSafeFetch("https://example.com/");
+    expect(mockGetAppstoreProxyUrl).not.toHaveBeenCalled();
+    const opts = mockFetchWithTimeout.mock.calls[0]?.[1] as RequestInit & { proxy?: string };
+    expect(opts.proxy).toBeUndefined();
+  });
+
+  it("does NOT consult the proxy resolver when useProxy is explicitly false", async () => {
+    mockFetchWithTimeout.mockImplementationOnce(async () => makeResponse(200));
+    await ssrfSafeFetch("https://example.com/", { useProxy: false });
+    expect(mockGetAppstoreProxyUrl).not.toHaveBeenCalled();
+  });
+
+  it("passes the resolved proxy URL through to fetchWithTimeout when useProxy is true and a proxy is configured", async () => {
+    mockGetAppstoreProxyUrl.mockImplementationOnce(async () => "http://u:p@proxy.example.com:80");
+    mockFetchWithTimeout.mockImplementationOnce(async () => makeResponse(200));
+
+    await ssrfSafeFetch("https://example.com/", { useProxy: true });
+
+    expect(mockGetAppstoreProxyUrl).toHaveBeenCalledTimes(1);
+    const opts = mockFetchWithTimeout.mock.calls[0]?.[1] as RequestInit & { proxy?: string };
+    expect(opts.proxy).toBe("http://u:p@proxy.example.com:80");
+  });
+
+  it("gracefully falls back to a direct fetch (no `proxy` field) when useProxy is true but the proxy is unconfigured", async () => {
+    // mockGetAppstoreProxyUrl already defaults to resolving undefined (see beforeEach).
+    mockFetchWithTimeout.mockImplementationOnce(async () => makeResponse(200));
+
+    const res = await ssrfSafeFetch("https://example.com/", { useProxy: true });
+
+    expect(res.status).toBe(200);
+    expect(mockGetAppstoreProxyUrl).toHaveBeenCalledTimes(1);
+    const opts = mockFetchWithTimeout.mock.calls[0]?.[1] as RequestInit & { proxy?: string };
+    expect(opts.proxy).toBeUndefined();
+  });
+
+  it("still applies SSRF validation to the TARGET url regardless of useProxy", async () => {
+    mockGetAppstoreProxyUrl.mockImplementationOnce(async () => "http://u:p@proxy.example.com:80");
+    await expect(
+      ssrfSafeFetch("http://169.254.169.254/latest/meta-data/", { useProxy: true }),
+    ).rejects.toThrow("SSRF blocked");
+    expect(mockFetchWithTimeout).not.toHaveBeenCalled();
+  });
+
+  it("re-resolves (consults the resolver again) on every hop, including a redirect follow", async () => {
+    mockGetAppstoreProxyUrl.mockImplementation(async () => "http://u:p@proxy.example.com:80");
+    mockFetchWithTimeout
+      .mockImplementationOnce(async () => makeResponse(302, { location: "https://cdn.example.com/page" }))
+      .mockImplementationOnce(async () => makeResponse(200, {}, "content"));
+
+    const res = await ssrfSafeFetch("https://example.com/redirect", { useProxy: true });
+
+    expect(res.status).toBe(200);
+    expect(mockGetAppstoreProxyUrl).toHaveBeenCalledTimes(2);
+    const secondOpts = mockFetchWithTimeout.mock.calls[1]?.[1] as RequestInit & { proxy?: string };
+    expect(secondOpts.proxy).toBe("http://u:p@proxy.example.com:80");
   });
 });

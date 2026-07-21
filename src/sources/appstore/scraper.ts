@@ -34,6 +34,7 @@ import {
 } from "./review-harvester";
 import { buildReviewFeedUrl, parseReviewFeedPage, toAppReviewRow } from "./review-rss";
 import { runAppPageFetchPass, runAppPageSyncPass } from "./app-pages";
+import { runNewbornReobservationPass } from "./newborn-reobservation";
 import {
   upsertRankings,
   upsertReviews,
@@ -50,6 +51,7 @@ import {
 
 import { getErrorMessage } from "../../lib/error-serialization";
 import { loadScraperIntervalMs } from "../scraper-config";
+import { getAppstoreProxyUrl } from "../shared/appstore-proxy";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
 
 const log = createLogger("appstore-scraper");
@@ -80,7 +82,8 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchJson(url: string): Promise<unknown> {
+async function fetchJson(url: string, useProxy: boolean = false): Promise<unknown> {
+  const proxy = useProxy ? await getAppstoreProxyUrl() : undefined;
   const response = await fetchWithTimeout(
     url,
     {
@@ -88,6 +91,7 @@ async function fetchJson(url: string): Promise<unknown> {
         "User-Agent": "OpenCrow/1.0 (App Store Scraper)",
         Accept: "application/json",
       },
+      ...(proxy ? { proxy } : {}),
     },
     REQUEST_TIMEOUT_MS,
   );
@@ -155,6 +159,22 @@ export function createAppStoreScraper(config?: {
   // `autocompleteExpansion.minIntervalMs` (default 15min) so its network
   // fan-out (one request per seed) doesn't run on every ~1min sweep tick.
   let lastAutocompleteRunAt = 0;
+  // Soft cadence gate for the GB hints lane (throughput wave item 3 — see
+  // `keyword-autocomplete.ts`'s `expandCorpus` called a second time with
+  // `storefront`/`market` swapped to GB), independent of
+  // `lastAutocompleteRunAt` above: the two lanes have their own
+  // `autocompleteExpansion.gbLane.minIntervalMs` cadence, same rationale as
+  // every other lane pair in this file (e.g. `lastDeStorefrontRunAt` vs the
+  // US sweep).
+  let lastGbHintsRunAt = 0;
+  // Soft cadence gate for the newborn re-observation lane (throughput wave
+  // item 2, audit NEXT item F — see `newborn-reobservation.ts`'s
+  // `runNewbornReobservationPass`): process-local, same rationale as
+  // `lastDeStorefrontRunAt` — gated to its own
+  // `appstoreNewbornReobservation.minIntervalMs` (default 24h, "a daily
+  // pass") so it doesn't re-scan the whole tracked-newborn population on
+  // every ~1min sweep tick.
+  let lastNewbornReobservationRunAt = 0;
   // Soft cadence gate for the DE storefront lane (2026-07-21 scan-budget
   // retune — see `keyword-gaps.ts`'s `runDeStorefrontSweep`): process-local,
   // same rationale as `lastAutocompleteRunAt` — gated to its own
@@ -230,7 +250,7 @@ export function createAppStoreScraper(config?: {
     listType: string,
   ): Promise<readonly AppRankingRow[]> {
     try {
-      const data = await fetchJson(url);
+      const data = await fetchJson(url, loadConfig().appstoreSync.useProxy);
       return parseTopAppsV2(data, listType);
     } catch (err) {
       const msg = getErrorMessage(err);
@@ -252,7 +272,7 @@ export function createAppStoreScraper(config?: {
   ): Promise<readonly AppReviewRow[]> {
     try {
       const now = Math.floor(Date.now() / 1000);
-      const data = await fetchJson(buildReviewFeedUrl(appId, 1, "us"));
+      const data = await fetchJson(buildReviewFeedUrl(appId, 1, "us"), loadConfig().appstoreReviewHarvest.useProxy);
       return parseReviewFeedPage(data).map((p) => toAppReviewRow(p, appId, appName, "us", now));
     } catch (err) {
       const msg = getErrorMessage(err);
@@ -283,9 +303,11 @@ export function createAppStoreScraper(config?: {
 
   async function fetchRelatedApps(appId: string): Promise<readonly AppRankingRow[]> {
     try {
+      const useProxy = loadConfig().appstoreSync.useProxy;
       // Step 1: Look up the seed app to get its artistId and genre
       const lookupData = await fetchJson(
         `https://itunes.apple.com/lookup?id=${appId}`,
+        useProxy,
       ) as { results?: readonly Record<string, unknown>[] };
 
       const seedApp = (lookupData.results ?? [])[0];
@@ -300,6 +322,7 @@ export function createAppStoreScraper(config?: {
         await delay(REQUEST_DELAY_MS);
         const artistData = await fetchJson(
           `https://itunes.apple.com/lookup?id=${artistId}&entity=software&limit=25`,
+          useProxy,
         ) as { results?: readonly Record<string, unknown>[] };
 
         const artistResults = (artistData.results ?? [])
@@ -316,6 +339,7 @@ export function createAppStoreScraper(config?: {
         const term = encodeURIComponent(genre);
         const searchData = await fetchJson(
           `https://itunes.apple.com/search?term=${term}&entity=software&limit=25&country=us`,
+          useProxy,
         ) as { results?: readonly Record<string, unknown>[] };
 
         const seenIds = new Set(discovered.map((d) => d.id));
@@ -682,6 +706,17 @@ export function createAppStoreScraper(config?: {
       // slower cadence internally, same pattern as the screener above.
       await runAutocompleteExpansionIfDue();
 
+      // GB hints lane (throughput wave 2026-07-21, item 3) — a second
+      // autocomplete-expansion pass against the GB App Store, gated to its
+      // own cadence internally, same pattern as the US lane above.
+      await runGbHintsLaneIfDue();
+
+      // Newborn re-observation lane (throughput wave 2026-07-21, item 2,
+      // audit NEXT item F) — daily batched-lookup re-observation of every
+      // tracked newborn app, gated to its own cadence internally, same
+      // pattern as every other lane above.
+      await runNewbornReobservationIfDue();
+
       // DE storefront lane (2026-07-21 scan-budget retune) — daily pass over
       // the tier-1-protected corpus against the German App Store, gated to
       // its own cadence internally, same pattern as the screener/autocomplete
@@ -765,8 +800,10 @@ export function createAppStoreScraper(config?: {
         diverseLimit,
         perSeed: ac.perSeed,
         storefront: ac.storefront,
+        market: "us",
         delayMs: ac.delayMs,
         maxPrefixesPerSeed,
+        useProxy: ac.useProxy,
       });
 
       log.info("Autocomplete expansion tick", {
@@ -794,6 +831,141 @@ export function createAppStoreScraper(config?: {
       }
     } catch (err) {
       log.warn("Autocomplete expansion failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // Runs the GB hints lane (throughput wave 2026-07-21, item 3 "hint
+  // breadth"): a SECOND autocomplete-expansion pass against the GB App
+  // Store, writing into the SAME `appstore_autocomplete_hints` table with
+  // `storefront: "gb"` (migration 049). Own cadence
+  // (`autocompleteExpansion.gbLane.minIntervalMs`, default 1h), gated by the
+  // SAME `sweepRateSafety` kill-switch/adaptive-throttle rails as the US
+  // lane above — a rate-limit spike in either market backs off both, since
+  // they hit the same Apple search-suggest endpoint family. Never allowed
+  // to break the sweep tick — a failure is logged and swallowed, mirroring
+  // `runAutocompleteExpansionIfDue`.
+  async function runGbHintsLaneIfDue(): Promise<void> {
+    try {
+      const cfg = loadConfig().appstoreKeywordGap;
+      const gb = cfg.autocompleteExpansion.gbLane;
+      if (!gb.enabled) return;
+      if (cfg.sweepRateSafety.legacyRateOverride) {
+        log.debug("GB hints lane skipped — legacy rate override active");
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastGbHintsRunAt < gb.minIntervalMs) return;
+      lastGbHintsRunAt = now;
+
+      const multiplier = cfg.sweepRateSafety.adaptiveThrottleEnabled
+        ? sweepThrottleState.multiplier
+        : 1;
+      const winnerLimit = Math.max(0, Math.floor(gb.winnerLimit * multiplier));
+      const diverseLimit = Math.max(0, Math.floor(gb.diverseLimit * multiplier));
+      const maxPrefixesPerSeed = gb.prefixFanOut.enabled
+        ? Math.max(0, Math.floor(gb.prefixFanOut.maxPrefixesPerSeed * multiplier))
+        : 0;
+
+      const result = await expandCorpus({
+        minOpportunity: cfg.opportunityThresholdForSeed,
+        winnerLimit,
+        diverseLimit,
+        perSeed: gb.perSeed,
+        storefront: gb.storefront,
+        market: "gb",
+        delayMs: gb.delayMs,
+        maxPrefixesPerSeed,
+        useProxy: gb.useProxy,
+      });
+
+      log.info("GB hints lane tick", {
+        added: result.added,
+        seedsUsed: result.seedsUsed,
+        attempted: result.attempted,
+        rateLimitErrors: result.rateLimitErrors,
+        throttleMultiplier: multiplier,
+        maxPrefixesPerSeed,
+      });
+
+      if (cfg.sweepRateSafety.adaptiveThrottleEnabled && result.attempted > 0) {
+        const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
+        const wasThrottled = sweepThrottleState.throttled;
+        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+
+        if (!wasThrottled && sweepThrottleState.throttled) {
+          log.warn("GB hints lane tripped the shared sweep throttle", {
+            errorRate,
+            attempted: result.attempted,
+            rateLimitErrors: result.rateLimitErrors,
+            newMultiplier: sweepThrottleState.multiplier,
+          });
+        }
+      }
+    } catch (err) {
+      log.warn("GB hints lane failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // Runs the newborn re-observation lane (throughput wave 2026-07-21, item
+  // 2 — audit NEXT item F, see `newborn-reobservation.ts`), gated to
+  // `appstoreNewbornReobservation.minIntervalMs` (default 24h, "a daily
+  // pass over the whole tracked-newborn population") and to the SAME
+  // `sweepRateSafety` kill-switch as every other Apple-endpoint lane on
+  // this tick (this lane hits the `/lookup` endpoint, same family as
+  // `appstoreAppEnrichment` — a legacy-override operator intent to go
+  // fully conservative should suppress this lane too). Rate-limit errors
+  // feed into the SHARED `sweepThrottleState`, same pattern as every other
+  // lane. Never allowed to break the sweep tick — a failure is logged and
+  // swallowed, mirroring the other "IfDue" passes. The pass itself is
+  // internally wall-clock-bounded (`newborn-reobservation.ts`'s
+  // `isPassOverBudget` — MANDATORY, see that module's doc comment for the
+  // PR #327 incident this guards against) so it can never wedge this
+  // shared tick regardless of population size.
+  async function runNewbornReobservationIfDue(): Promise<void> {
+    try {
+      const fullCfg = loadConfig();
+      const cfg = fullCfg.appstoreNewbornReobservation;
+      if (!cfg.enabled) return;
+      if (fullCfg.appstoreKeywordGap.sweepRateSafety.legacyRateOverride) {
+        log.debug("Newborn re-observation skipped — legacy rate override active");
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastNewbornReobservationRunAt < cfg.minIntervalMs) return;
+      lastNewbornReobservationRunAt = now;
+
+      const result = await runNewbornReobservationPass({
+        batchSize: cfg.batchSize,
+        maxAgeDays: cfg.maxAgeDays,
+        delayMs: cfg.delayMs,
+        useProxy: cfg.useProxy,
+      });
+
+      if (result.skipped) {
+        log.debug("Newborn re-observation pass skipped this cycle — batchSize <= 0");
+        return;
+      }
+
+      log.info("Newborn re-observation pass complete", {
+        candidateCount: result.candidateCount,
+        stillNewbornCount: result.stillNewbornCount,
+        observed: result.observed,
+        missing: result.missing,
+        agedOut: result.agedOut,
+        attempted: result.attempted,
+        rateLimitErrors: result.rateLimitErrors,
+        bailed: result.bailed,
+      });
+
+      const adaptiveThrottleEnabled = fullCfg.appstoreKeywordGap.sweepRateSafety.adaptiveThrottleEnabled;
+      if (adaptiveThrottleEnabled && result.attempted > 0) {
+        const errorRate = computeErrorRate(result.rateLimitErrors, result.attempted);
+        sweepThrottleState = advanceThrottle(sweepThrottleState, errorRate);
+      }
+    } catch (err) {
+      log.warn("Newborn re-observation failed", { error: getErrorMessage(err) });
     }
   }
 
@@ -882,6 +1054,7 @@ export function createAppStoreScraper(config?: {
         perCategoryLimit: fullCfg.appstoreSync.perCategoryLimit,
         delayMs: cfg.delayMs,
         throttleMultiplier: multiplier,
+        useProxy: cfg.useProxy,
       });
 
       log.info("Intl charts lane complete", {
@@ -975,6 +1148,7 @@ export function createAppStoreScraper(config?: {
           dailyRequestBudget: cfg.dailyRequestBudget,
           maxConsecutiveEmptyHarvests: cfg.maxConsecutiveEmptyHarvests,
           memoryIndexing: cfg.memoryIndexing,
+          useProxy: cfg.useProxy,
         });
 
         if (result.skipped) {
@@ -1059,6 +1233,7 @@ export function createAppStoreScraper(config?: {
           acceleratingLimit: cfg.acceleratingLimit,
           dailyRequestBudget: cfg.dailyRequestBudget,
           delistMissThreshold: cfg.delistMissThreshold,
+          useProxy: cfg.useProxy,
         });
 
         if (result.skipped) {
@@ -1091,6 +1266,7 @@ export function createAppStoreScraper(config?: {
           developerLimit: cfg.portfolio.developerLimit,
           portfolioLimit: cfg.portfolio.portfolioLimit,
           minIntervalSeconds: Math.floor(cfg.portfolio.minRescanIntervalMs / 1000),
+          useProxy: cfg.useProxy,
         });
         log.info("Developer portfolio pass complete", {
           developersScanned: portfolioResult.developersScanned,
@@ -1174,6 +1350,7 @@ export function createAppStoreScraper(config?: {
           rollingIntervalSeconds: Math.floor(cfg.rollingIntervalMs / 1000),
           canaryMinBatchSize: cfg.canary.minBatchSize,
           canaryParseFailureThreshold: cfg.canary.parseFailureThreshold,
+          useProxy: cfg.useProxy,
         });
 
         if (result.skipped) {

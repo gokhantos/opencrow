@@ -275,3 +275,44 @@ export async function getTopAcceleratingNewborns(opts: {
       observationCount: c.observationCount,
     }));
 }
+
+// ---------------------------------------------------------------------------
+// Newborn re-observation population (throughput wave, item 2 / audit NEXT
+// item F) — see `newborn-reobservation.ts` for the pass that drains this.
+// ---------------------------------------------------------------------------
+
+export interface NewbornVelocityAppRow {
+  readonly appId: string;
+  /** Best-known release date (ISO 8601, from `appstore_app_meta` — null if never enriched). Age filtering happens in the caller (`newborn-reobservation.ts`), not here — see `app-meta-types.ts`'s `ageDaysFromReleaseDate`/`isNewborn`. */
+  readonly releaseDate: string | null;
+}
+
+/**
+ * Every DISTINCT app ever recorded in `appstore_app_velocity` — the whole
+ * newborn-velocity population (currently tens of thousands of apps),
+ * paired with the best-known `release_date` from the app-meta registry
+ * (`appstore_app_meta`, left-joined — `NULL` for an app never enriched).
+ * Deliberately does NOT filter by age itself: this table only ever
+ * contained apps that WERE newborns at some past observation, but many will
+ * have since aged past the newborn threshold, and an app with no
+ * `release_date` yet has genuinely unknown age — the caller
+ * (`newborn-reobservation.ts`) is responsible for both cases (drop the
+ * confidently-aged-out ones, keep the unknown ones since the upcoming
+ * lookup call will resolve their age). A plain `GROUP BY` aggregate over
+ * the whole table — acceptable for a once-daily lane; see migration 049's
+ * doc comment for the index-coverage check performed before this lane was
+ * added.
+ */
+export async function getNewbornVelocityAppIds(): Promise<readonly NewbornVelocityAppRow[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT v.app_id AS app_id, MAX(m.release_date) AS release_date
+    FROM appstore_app_velocity v
+    LEFT JOIN appstore_app_meta m ON m.id = v.app_id
+    GROUP BY v.app_id
+  `;
+  return (rows as ReadonlyArray<{ app_id: string; release_date: string | null }>).map((r) => ({
+    appId: r.app_id,
+    releaseDate: r.release_date,
+  }));
+}

@@ -279,10 +279,38 @@ describe("expandCorpus", () => {
     });
 
     expect(insertedHintRows).toEqual([
-      { seed: "budget", term: "budget planner", rank: 0, seenAt: expect.any(Number) },
-      { seed: "budget", term: "budget bestie", rank: 1, seenAt: expect.any(Number) },
-      { seed: "meal prep", term: "meal prep ideas", rank: 0, seenAt: expect.any(Number) },
+      { seed: "budget", term: "budget planner", rank: 0, seenAt: expect.any(Number), storefront: "us" },
+      { seed: "budget", term: "budget bestie", rank: 1, seenAt: expect.any(Number), storefront: "us" },
+      { seed: "meal prep", term: "meal prep ideas", rank: 0, seenAt: expect.any(Number), storefront: "us" },
     ]);
+  });
+
+  // Throughput wave item 3 ("hint breadth"): `market` tags every hint row
+  // with the storefront being queried (migration 049) — defaults to "us"
+  // (tested above) but a caller running the GB lane passes "gb" explicitly.
+  it("tags hint rows with the caller-supplied `market` (GB hints lane)", async () => {
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      insertAutocompleteHints: async (rows: readonly unknown[]) => {
+        insertedHintRows = [...insertedHintRows, ...rows];
+      },
+    }));
+
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143444-1,29",
+      market: "gb",
+      delayMs: 0,
+    });
+
+    expect(insertedHintRows.length).toBeGreaterThan(0);
+    for (const row of insertedHintRows) {
+      expect((row as { storefront: string }).storefront).toBe("gb");
+    }
   });
 
   // 2026-07-21 audit item D fix: prefix fan-out.

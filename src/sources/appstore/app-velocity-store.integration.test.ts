@@ -3,6 +3,7 @@ import { initDb, getDb } from "../../store/db";
 import {
   getAppVelocitySeries,
   getLatestObservedAt,
+  getNewbornVelocityAppIds,
   getTopAcceleratingNewborns,
   insertObservation,
   recordVelocityObservationsForScan,
@@ -21,11 +22,14 @@ const TEST_APP_IDS: readonly string[] = [
   "zzz-vel-scan-newborn",
   "zzz-vel-scan-established",
   "zzz-vel-scan-no-id",
+  "zzz-vel-pop-no-meta",
+  "zzz-vel-pop-with-meta",
 ];
 
 async function cleanupTestApps(): Promise<void> {
   const db = getDb();
   await db`DELETE FROM appstore_app_velocity WHERE app_id IN ${db(TEST_APP_IDS)}`;
+  await db`DELETE FROM appstore_app_meta WHERE id IN ${db(TEST_APP_IDS)}`;
 }
 
 function makeTopApp(overrides: Partial<TopApp> = {}): TopApp {
@@ -309,6 +313,54 @@ describe("app-velocity-store", () => {
 
       const limited = await getTopAcceleratingNewborns({ limit: 1 });
       expect(limited.length).toBe(1);
+    });
+  });
+
+  // Throughput wave item 2 (audit NEXT item F) — population query drained
+  // by `newborn-reobservation.ts`'s daily pass.
+  describe("getNewbornVelocityAppIds", () => {
+    it("returns every distinct app ever recorded, with release_date null when never enriched", async () => {
+      await insertObservation({
+        appId: "zzz-vel-pop-no-meta",
+        observedAt: 1_000_000,
+        reviews: 10,
+        rating: 4.0,
+        keyword: "zzz kw",
+        name: "No Meta App",
+      });
+
+      const rows = await getNewbornVelocityAppIds();
+      const row = rows.find((r) => r.appId === "zzz-vel-pop-no-meta");
+      expect(row).toBeDefined();
+      expect(row?.releaseDate).toBeNull();
+    });
+
+    it("resolves release_date from the app-meta registry via the LEFT JOIN when the app has been enriched", async () => {
+      await insertObservation({
+        appId: "zzz-vel-pop-with-meta",
+        observedAt: 1_000_000,
+        reviews: 10,
+        rating: 4.0,
+        keyword: "zzz kw",
+        name: "With Meta App",
+      });
+
+      const db = getDb();
+      const now = Math.floor(Date.now() / 1000);
+      await db`
+        INSERT INTO appstore_app_meta (id, name, first_seen_at, first_seen_source, first_seen_storefront, last_seen_at, updated_at, release_date)
+        VALUES ('zzz-vel-pop-with-meta', 'With Meta App', ${now}, 'serp', 'us', ${now}, ${now}, '2026-06-01T00:00:00Z')
+      `;
+
+      const rows = await getNewbornVelocityAppIds();
+      const row = rows.find((r) => r.appId === "zzz-vel-pop-with-meta");
+      expect(row).toBeDefined();
+      expect(row?.releaseDate).toBe("2026-06-01T00:00:00Z");
+    });
+
+    it("does not return an app that was never recorded in appstore_app_velocity", async () => {
+      const rows = await getNewbornVelocityAppIds();
+      expect(rows.map((r) => r.appId)).not.toContain("zzz-vel-never-recorded");
     });
   });
 });

@@ -571,6 +571,18 @@ export const appstoreKeywordGapConfigSchema = z
     // cover the higher sustained rate: ~2,250/hr * 24h ≈ 54,000/day
     // theoretical — see `keywordsPerSweep` below.
     dailyKeywordBudget: z.number().int().min(1).max(100_000).default(60_000),
+    // Throughput wave (2026-07-21), item 1: routes this lane's iTunes
+    // Search API calls (tier1 + mined SERP scan, AND the DE storefront lane
+    // below — both go through `keyword-gaps.ts`'s `fetchTopApps`) through
+    // the Webshare rotating proxy when `getAppstoreProxyUrl()` resolves
+    // (see `appstore-proxy.ts`). Default OFF: this is the highest-volume
+    // lane and the one with an empirically PROVEN safe direct-fetch rate
+    // (see `dailyKeywordBudget`'s history + `minedExploration`'s doc
+    // comment) — no reason to add a proxy hop to traffic that's already
+    // known-safe. Flip on only if this lane starts seeing rate-limit
+    // pressure at the direct-fetch ceiling documented in item 4's budget
+    // table below.
+    useProxy: z.boolean().default(false),
     // How many of the globally stalest active keywords to scan per sweep
     // cycle. Raised from 25 to 75 (~3x) together with the lowered
     // `sweepDelayMs` above to target ~2,250 scans/hour (was ~750/hour): at
@@ -645,21 +657,32 @@ export const appstoreKeywordGapConfigSchema = z
     autocompleteExpansion: z
       .object({
         enabled: z.boolean().default(true),
-        // Minimum gap between expansion passes. Its own cadence — decoupled
-        // from both the ~1min scan-sweep timer and the ~hourly ranking tick
-        // — so its network fan-out (one request per seed) stays bounded and
-        // infrequent relative to the SERP scan sweep it shares an upstream
-        // (Apple) with.
-        minIntervalMs: z.number().int().min(60_000).default(900_000), // 15 min
+        // Minimum gap between expansion passes. Throughput wave (2026-07-21,
+        // item 3 "hint breadth"): widened 15min -> 1h alongside raising
+        // winnerLimit+diverseLimit below (25 -> 60 total seeds/pass, 2.4x) —
+        // a straight cadence-unchanged multiply would have pushed this
+        // lane's daily request volume from ~14.4k/day to ~34.6k/day on its
+        // OWN, before even counting the new `gbLane` below or the SERP-scan/
+        // DE-storefront lanes that share the same Apple search-endpoint
+        // family. Slowing the cadence 4x while widening the seed set 2.4x
+        // nets this lane back down to ~8.6k/day (60 seeds * 6 queries
+        // [1 bare + 5 prefix-fanout] * 24 passes/day) — see item 4's budget
+        // table in `appstoreAppEnrichment`'s doc comment for the full
+        // cross-lane total.
+        minIntervalMs: z.number().int().min(60_000).default(3_600_000), // 1h
         // How many current high-opportunity "winner" keywords seed an
-        // expansion pass — see keyword-store.ts `getWinnerKeywords`.
-        winnerLimit: z.number().int().min(0).max(100).default(15),
+        // expansion pass — see keyword-store.ts `getWinnerKeywords`. Raised
+        // 15 -> 36 (throughput wave item 3), keeping the original ~1.5:1
+        // winner:diverse ratio at the new 60-seed total.
+        winnerLimit: z.number().int().min(0).max(200).default(36),
         // How many additional zone-diverse picks (least-recently-scanned per
         // genre zone) round out the seed set, so expansion isn't purely
         // winner-driven and under-covered zones still get a turn — see
         // `getDiverseZoneSample`. Anti rich-get-richer monoculture, same
-        // rationale as the diversity guard elsewhere in the funnel.
-        diverseLimit: z.number().int().min(0).max(100).default(10),
+        // rationale as the diversity guard elsewhere in the funnel. Raised
+        // 10 -> 24 (throughput wave item 3): winnerLimit(36) + diverseLimit(24)
+        // = 60 total seeds/pass, up from 25.
+        diverseLimit: z.number().int().min(0).max(200).default(24),
         // Upper bound on GOOD (post-`isJunkKeyword`) suggestions kept per
         // seed. Apple returns suggestions in popularity order, so this keeps
         // the top-N most-popular per seed rather than an arbitrary slice.
@@ -682,23 +705,89 @@ export const appstoreKeywordGapConfigSchema = z
         // 0 disables fan-out entirely (bare-seed-only, the pre-fix
         // behavior). Scaled by the same shared throttle multiplier as
         // `winnerLimit`/`diverseLimit` — see scraper.ts's
-        // `runAutocompleteExpansionIfDue`.
+        // `runAutocompleteExpansionIfDue`. Throughput wave item 3: kept ON
+        // ("keep prefix fan-out") at the same cap while breadth was raised.
         prefixFanOut: z
           .object({
             enabled: z.boolean().default(true),
             maxPrefixesPerSeed: z.number().int().min(0).max(26).default(5),
           })
           .default({ enabled: true, maxPrefixesPerSeed: 5 }),
+        // Throughput wave item 1: routes this lane's search-suggest hint
+        // fetches through the Webshare proxy when set. Default OFF — same
+        // "already a proven-safe endpoint family" reasoning as
+        // `appstoreKeywordGap.useProxy` above (this lane shares that budget
+        // envelope — see item 4's table).
+        useProxy: z.boolean().default(false),
+        // Throughput wave item 3 ("hint breadth"): a SECOND autocomplete
+        // pass against the GB storefront, writing into the SAME
+        // `appstore_autocomplete_hints` table (migration 049 adds the
+        // `storefront` column) rather than a parallel table — a hint is
+        // meaningful per-market, and GB's popularity ordering differs from
+        // US's. Reuses the SAME seed pool/rotation as the US lane above
+        // (`getExpansionSeeds`/`markSeedsExpanded` — see
+        // `keyword-autocomplete.ts`'s `expandCorpus`, called a second time
+        // with `storefront` swapped to GB): the rotation state tracks "when
+        // was this keyword last used as an expansion seed" generically, not
+        // per-storefront, so sharing it is a deliberate simplification, not
+        // an oversight. Smaller seed set + own 1h cadence keeps this
+        // lane's volume modest (~3.6k/day: 25 seeds * 6 queries * 24
+        // passes/day) — see item 4's budget table.
+        gbLane: z
+          .object({
+            enabled: z.boolean().default(true),
+            minIntervalMs: z.number().int().min(60_000).default(3_600_000), // 1h
+            winnerLimit: z.number().int().min(0).max(200).default(15),
+            diverseLimit: z.number().int().min(0).max(200).default(10),
+            perSeed: z.number().int().min(1).max(20).default(8),
+            delayMs: z.number().int().min(100).max(10_000).default(1000),
+            // GB storefront id (143444) — same header format as the US
+            // `storefront` field above; the `-1,29` suffix is carried over
+            // unchanged (verified structurally identical across storefronts
+            // for this endpoint — it encodes protocol/client capability,
+            // not language).
+            storefront: z.string().min(1).default("143444-1,29"),
+            prefixFanOut: z
+              .object({
+                enabled: z.boolean().default(true),
+                maxPrefixesPerSeed: z.number().int().min(0).max(26).default(5),
+              })
+              .default({ enabled: true, maxPrefixesPerSeed: 5 }),
+            useProxy: z.boolean().default(false),
+          })
+          .default({
+            enabled: true,
+            minIntervalMs: 3_600_000,
+            winnerLimit: 15,
+            diverseLimit: 10,
+            perSeed: 8,
+            delayMs: 1000,
+            storefront: "143444-1,29",
+            prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
+            useProxy: false,
+          }),
       })
       .default({
         enabled: true,
-        minIntervalMs: 900_000,
-        winnerLimit: 15,
-        diverseLimit: 10,
+        minIntervalMs: 3_600_000,
+        winnerLimit: 36,
+        diverseLimit: 24,
         perSeed: 8,
         delayMs: 1000,
         storefront: "143441-1,29",
         prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
+        useProxy: false,
+        gbLane: {
+          enabled: true,
+          minIntervalMs: 3_600_000,
+          winnerLimit: 15,
+          diverseLimit: 10,
+          perSeed: 8,
+          delayMs: 1000,
+          storefront: "143444-1,29",
+          prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
+          useProxy: false,
+        },
       }),
     // Safety rails for the higher sweep rate above — see `sweep-throttle.ts`.
     // Apple's tolerance for request volume is the real constraint here, not
@@ -793,6 +882,7 @@ export const appstoreKeywordGapConfigSchema = z
     scanIntervalMs: 60_000,
     sweepDelayMs: 1000,
     dailyKeywordBudget: 60_000,
+    useProxy: false,
     keywordsPerSweep: 75,
     tier1StaleThresholdMs: 12 * 60 * 60 * 1000,
     topN: 20,
@@ -801,13 +891,25 @@ export const appstoreKeywordGapConfigSchema = z
     corpusDiscovery: { enabled: true, maxMinedPerCycle: 100 },
     autocompleteExpansion: {
       enabled: true,
-      minIntervalMs: 900_000,
-      winnerLimit: 15,
-      diverseLimit: 10,
+      minIntervalMs: 3_600_000,
+      winnerLimit: 36,
+      diverseLimit: 24,
       perSeed: 8,
       delayMs: 1000,
       storefront: "143441-1,29",
       prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
+      useProxy: false,
+      gbLane: {
+        enabled: true,
+        minIntervalMs: 3_600_000,
+        winnerLimit: 15,
+        diverseLimit: 10,
+        perSeed: 8,
+        delayMs: 1000,
+        storefront: "143444-1,29",
+        prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
+        useProxy: false,
+      },
     },
     sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
     minedExploration: { dailyQuota: 20_000 },
@@ -905,6 +1007,42 @@ export type AppstoreJunkDeactivationConfig = z.infer<
 // Stage 3 (charts) and Stage 4 (chart-newborn review enrollment), so it
 // defaults on like the other network lanes (`deStorefrontLane`,
 // `autocompleteExpansion`) added in the same build.
+// ─── Throughput-wave (2026-07-21) budget table, item 4 ─────────────────────
+// "Raise the deep-scrape lane caps so TOTAL projected requests/day lands
+// ~35k direct (just under proven 36.7k)." That 36.7k figure (2026-07-20 live
+// traffic: 36,013 mined + 666 seed SERP scans, ZERO rate-limit errors — see
+// `minedExploration`'s doc comment below) is specifically an iTunes SEARCH
+// API measurement. The lanes below hit FOUR DIFFERENT Apple endpoint
+// families (search, search-suggest, `/lookup`, review-RSS/HTML), each very
+// plausibly rate-limited independently (different subdomains/paths, no
+// evidence they share a bucket) — so this table applies the 36.7k proof
+// ONLY to the search-endpoint family it was measured against, and raises the
+// OTHER lanes' caps on separate, more conservative grounds (each currently
+// running well under its own configured cap post PR #326/#327's
+// dormant-lanes fix, i.e. real headroom exists even before any proxy).
+//
+//   Search-endpoint family (itunes.apple.com/search + search-suggest),
+//   direct fetch, no proxy — target ~35k, under the proven 36.7k:
+//     SERP scan (tier1 protected, uncapped)      ~1,135/day (dynamic, corpus-sized)
+//     SERP scan (mined, dailyQuota — UNCHANGED)   20,000/day
+//     DE storefront lane (tier1-protected corpus)  ~1,135/day (dynamic)
+//     Autocomplete expansion, US (60 seeds * 6      8,640/day (1h cadence)
+//       queries [1 bare + 5 prefix-fanout] * 24/day)
+//     Autocomplete expansion, GB (25 seeds * 6       3,600/day (1h cadence)
+//       queries * 24/day)
+//     ─────────────────────────────────────────────────────────
+//     TOTAL (search family)                       ~34,510/day  <- ~35k target
+//
+//   Other endpoint families, raised on separate headroom grounds (item 1's
+//   per-lane `useProxy` flags are the pressure valve if any of these starts
+//   rate-limiting at the new cap — flip that lane's flag on, no code change):
+//     Lookup API (`/lookup`) — app-enrichment + portfolio + NEW newborn
+//       re-observation lane (item 2): raised from ~1,200/day to 2,400/day
+//       (enrichment) + ~225/day (newborn re-observation, ~45k apps / 200
+//       ids per batch) ≈ 2,625/day combined.
+//     Review-RSS: raised from 10,000/day to 15,000/day.
+//     App-page HTML (heaviest per-request payload, proxy default ON):
+//       raised from 3,000/day to 5,000/day.
 export const appstoreAppEnrichmentConfigSchema = z
   .object({
     // Master switch. Default ON.
@@ -917,10 +1055,10 @@ export const appstoreAppEnrichmentConfigSchema = z
     batchSize: z.number().int().min(1).max(200).default(200),
     // Batches (HTTP requests) fetched per pass. 0 disables the pass entirely
     // (build plan §0.4: "0 ⇒ skip") without touching `enabled` — an operator
-    // knob distinct from the master switch. Default 4 batches/pass * 96
-    // passes/day (15 min cadence) ≈ 384 batches/day, matching the build
-    // plan's §6 budget table (~381 steady-state lookup requests/day).
-    maxBatchesPerPass: z.number().int().min(0).max(50).default(4),
+    // knob distinct from the master switch. Throughput wave (2026-07-21,
+    // item 4): raised 4 -> 8 batches/pass * 96 passes/day (15 min cadence)
+    // ≈ 768 batches/day (was ~384/day) — see the budget table above.
+    maxBatchesPerPass: z.number().int().min(0).max(50).default(8),
     // How old `enriched_at` must be before a registry row is due for
     // RE-enrichment (never-enriched rows — `enriched_at IS NULL` — are
     // always due regardless of this). Most apps only need one-time
@@ -942,9 +1080,17 @@ export const appstoreAppEnrichmentConfigSchema = z
     delistMissThreshold: z.number().int().min(1).max(10).default(1),
     // Rolling-24h cap on Lookup-API HTTP requests (lookup + portfolio
     // combined), tracked via the `appstore_lookup_requests` ledger — see
-    // `app-meta-store.ts`'s `countLookupRequestsSince`. Matches the build
-    // plan's §6 worst-case cap for this lane (1,200/day).
-    dailyRequestBudget: z.number().int().min(0).max(50_000).default(1_200),
+    // `app-meta-store.ts`'s `countLookupRequestsSince`. Throughput wave
+    // (2026-07-21, item 4): raised 1,200 -> 2,400/day — see the budget
+    // table above (was the build plan's §6 worst-case cap; real usage has
+    // stayed well under it since PR #326/#327 fixed the dormant-lanes bug).
+    dailyRequestBudget: z.number().int().min(0).max(50_000).default(2_400),
+    // Throughput wave item 1: routes `/lookup` batch + portfolio requests
+    // through the Webshare proxy when set. Default OFF — this endpoint has
+    // no proven ceiling data point either way; raised via the cap above on
+    // separate headroom grounds instead (see the budget table). Flip on if
+    // this lane starts rate-limiting at the new cap.
+    useProxy: z.boolean().default(false),
     // Developer-portfolio sub-pass (build plan §0.1: sightings recorded with
     // source 'portfolio') — runs as part of the SAME 15-min enrichment pass
     // (no separate timer), gated to its own cadence via `minIntervalMs`.
@@ -952,10 +1098,9 @@ export const appstoreAppEnrichmentConfigSchema = z
       .object({
         enabled: z.boolean().default(true),
         minIntervalMs: z.number().int().min(60_000).default(15 * 60 * 1000),
-        // Developers scanned per pass. Default 2/pass * 96 passes/day ≈ 192
-        // requests/day, close to the build plan's §6 steady-state estimate
-        // (~150/day) for this sub-lane.
-        developerLimit: z.number().int().min(0).max(50).default(2),
+        // Developers scanned per pass. Throughput wave (2026-07-21, item 4):
+        // raised 2 -> 4/pass * 96 passes/day ≈ 384 requests/day (was ~192/day).
+        developerLimit: z.number().int().min(0).max(50).default(4),
         // Ids requested per portfolio lookup — same ~200 ceiling as batchSize.
         portfolioLimit: z.number().int().min(1).max(200).default(200),
         // Minimum gap before a developer's portfolio is re-scanned. Default
@@ -965,7 +1110,7 @@ export const appstoreAppEnrichmentConfigSchema = z
       .default({
         enabled: true,
         minIntervalMs: 15 * 60 * 1000,
-        developerLimit: 2,
+        developerLimit: 4,
         portfolioLimit: 200,
         minRescanIntervalMs: 30 * 24 * 60 * 60 * 1000,
       }),
@@ -982,21 +1127,86 @@ export const appstoreAppEnrichmentConfigSchema = z
     enabled: true,
     minIntervalMs: 15 * 60 * 1000,
     batchSize: 200,
-    maxBatchesPerPass: 4,
+    maxBatchesPerPass: 8,
     staleAfterMs: 30 * 24 * 60 * 60 * 1000,
     acceleratingLimit: 50,
     delistMissThreshold: 1,
-    dailyRequestBudget: 1_200,
+    dailyRequestBudget: 2_400,
+    useProxy: false,
     portfolio: {
       enabled: true,
       minIntervalMs: 15 * 60 * 1000,
-      developerLimit: 2,
+      developerLimit: 4,
       portfolioLimit: 200,
       minRescanIntervalMs: 30 * 24 * 60 * 60 * 1000,
     },
     ledgerPrune: { maxAgeMs: 7 * 24 * 60 * 60 * 1000, minIntervalMs: 24 * 60 * 60 * 1000 },
   });
 export type AppstoreAppEnrichmentConfig = z.infer<typeof appstoreAppEnrichmentConfigSchema>;
+
+// ─── App Store newborn re-observation lane (throughput wave, item 2) ───────
+// Daily lane: re-observes EVERY app ever recorded in `appstore_app_velocity`
+// (the newborn-velocity population, apps < `maxAgeDays` — see
+// `app-velocity.ts`'s `NEWBORN_AGE_DAYS_MAX` = 540) via the SAME batched
+// `/lookup` client `app-lookup.ts` already provides (`chunkIds`,
+// `fetchLookupBatch` — MAX_LOOKUP_BATCH_SIZE = 200), writing a fresh
+// `appstore_app_velocity` observation per app (`reviews`/`rating` from the
+// lookup result, `rank: null` — a lookup-sourced observation has no SERP
+// position, mirroring `app-enrichment.ts`'s existing `"chart-first-seen"`
+// synthetic-observation hook). This is audit NEXT item F: previously a
+// newborn only got a fresh time-series point when a keyword-gap SERP scan
+// happened to surface it — most newborns went days between accidental
+// sightings, or never got a second observation at all. Default ON — see
+// `newborn-reobservation.ts` for the pass implementation (MANDATORY
+// wall-clock pass-deadline guard per `pass-deadline.ts`'s doc comment: this
+// is exactly the "one slow-but-not-failing lane wedges every other lane on
+// the shared tick" shape that PR #327 fixed for the other deep-scrape
+// lanes — this NEW lane must not reintroduce that failure mode).
+export const appstoreNewbornReobservationConfigSchema = z
+  .object({
+    // Master switch. Default ON.
+    enabled: z.boolean().default(true),
+    // Minimum gap between passes — a genuinely daily lane (the whole
+    // ~45k-app population in one pass, per `batchSize` below), decoupled
+    // from the ~1min scan-sweep timer, mirroring `deStorefrontLane`'s
+    // "one pass sweeps everything, so keep the cadence slow" rationale.
+    minIntervalMs: z.number().int().min(60_000).default(24 * 60 * 60 * 1000),
+    // Ids per `/lookup` batch request — same ~200 ceiling as
+    // `appstoreAppEnrichment.batchSize` (`app-lookup.ts`'s
+    // `MAX_LOOKUP_BATCH_SIZE`). At the default, ~200 ids/request covers the
+    // ~45k-app tracked population in ~225 requests/day.
+    batchSize: z.number().int().min(1).max(200).default(200),
+    // An app older than this (days) is dropped from this pass's population
+    // even if it's still present in `appstore_app_velocity` (a historical
+    // row from when it WAS a newborn) — mirrors `app-velocity.ts`'s
+    // `NEWBORN_AGE_DAYS_MAX`. Kept as an independent config field (not an
+    // import) for the same reason that constant is independent of the
+    // screener's newborn-age bound: these are operationally separate
+    // concerns that should be retunable independently.
+    maxAgeDays: z.number().int().min(1).max(3650).default(540),
+    // Delay between successive `/lookup` batch requests within one pass —
+    // same spirit as `appstoreKeywordGap.sweepDelayMs`, scoped to this
+    // lane. At the default (~225 requests/pass), 225 * (300ms delay +
+    // observed ~200-400ms iTunes latency) ≈ 2-2.5 minutes — comfortably
+    // under the 5-minute wall-clock pass budget below even with headroom
+    // for a slower-than-usual upstream.
+    delayMs: z.number().int().min(0).max(10_000).default(300),
+    // Throughput wave item 1: routes this lane's `/lookup` requests through
+    // the Webshare proxy when set. Default OFF, same endpoint-family
+    // reasoning as `appstoreAppEnrichment.useProxy`.
+    useProxy: z.boolean().default(false),
+  })
+  .default({
+    enabled: true,
+    minIntervalMs: 24 * 60 * 60 * 1000,
+    batchSize: 200,
+    maxAgeDays: 540,
+    delayMs: 300,
+    useProxy: false,
+  });
+export type AppstoreNewbornReobservationConfig = z.infer<
+  typeof appstoreNewbornReobservationConfigSchema
+>;
 
 // ─── App Store review-text harvester ────────────────────────────────────────
 // Deep-scrape build Stage 4 (migration 047, `review-harvest-store.ts` /
@@ -1041,11 +1251,18 @@ export const appstoreReviewHarvestConfigSchema = z
     memoryIndexing: z.enum(["all", "low-star-only"]).default("low-star-only"),
     // Rolling-24h cap on review-feed page fetches (1 page = 1 HTTP
     // request), tracked via the `appstore_review_harvests` ledger — see
-    // `review-harvest-store.ts`'s `countReviewPagesFetchedSince`. Lowered
-    // from the reviews spec's 12,000 per build plan §0.2 (budget headroom;
-    // a cold-start backfill simply spills its remaining work into day 2,
-    // harmless).
-    dailyRequestBudget: z.number().int().min(0).max(100_000).default(10_000),
+    // `review-harvest-store.ts`'s `countReviewPagesFetchedSince`. Throughput
+    // wave (2026-07-21, item 4): raised 10,000 -> 15,000/day — this lane
+    // runs at its cap today (real demand exceeds it), so raising it directly
+    // unlocks more review coverage rather than sitting on unused headroom
+    // like the lookup/app-page lanes — see the budget table on
+    // `appstoreAppEnrichmentConfigSchema`.
+    dailyRequestBudget: z.number().int().min(0).max(100_000).default(15_000),
+    // Throughput wave item 1: routes review-feed page fetches through the
+    // Webshare proxy when set. Default OFF — this endpoint has no proven
+    // ceiling data point either way; raised via the cap above on separate
+    // headroom grounds instead.
+    useProxy: z.boolean().default(false),
     // Cohort-refresh sub-pass (build plan §0.4 slot 6 inner pass:
     // "runCohortRefreshIfDue 6h") — re-scans the 3 candidate sources (open
     // signature hits, accelerating newborns, chart-sourced newborns) and
@@ -1084,7 +1301,8 @@ export const appstoreReviewHarvestConfigSchema = z
     pageDelayMs: 500,
     maxConsecutiveEmptyHarvests: 5,
     memoryIndexing: "low-star-only",
-    dailyRequestBudget: 10_000,
+    dailyRequestBudget: 15_000,
+    useProxy: false,
     cohortRefresh: {
       enabled: true,
       minIntervalMs: 6 * 60 * 60 * 1000,
@@ -1131,9 +1349,22 @@ export const appstoreAppPagesConfigSchema = z
     // Rolling-24h cap on product-page HTTP requests, tracked via the
     // `appstore_app_ratings_history` ledger (see `app-pages-store.ts`'s
     // `countPageFetchesSince` — that table doubles as this lane's request
-    // ledger, migration 048). Matches the build plan's §6 worst-case cap
-    // (3,000/day) for this lane.
-    dailyPageBudget: z.number().int().min(0).max(50_000).default(3_000),
+    // ledger, migration 048). Throughput wave (2026-07-21, item 4): raised
+    // 3,000 -> 5,000/day — see the budget table on
+    // `appstoreAppEnrichmentConfigSchema`. Safe to raise further than the
+    // lookup/review lanes precisely BECAUSE `useProxy` below defaults ON
+    // for this lane (item 1): the heaviest per-request payload (~0.6-1MB
+    // HTML) already routes off this box's direct IP.
+    dailyPageBudget: z.number().int().min(0).max(50_000).default(5_000),
+    // Throughput wave item 1: routes product-page HTML fetches through the
+    // Webshare proxy when set. Default ON (unlike every other App Store
+    // lane) — this is the PRIMARY target lane for the proxy: heaviest
+    // per-request payload, most valuable to spread across rotating IPs, and
+    // the lane this feature was built to protect first. Gracefully falls
+    // back to direct fetch if the proxy is unconfigured (see
+    // `appstore-proxy.ts`) — flipping this to `false` reverts to the
+    // pre-proxy direct-fetch behavior with zero other changes.
+    useProxy: z.boolean().default(true),
     // How old a HOT-tier row's `last_fetched_at` must be before it's due for
     // re-fetch. Default 24h — a signature-hit-related / accelerating-newborn
     // app's IAP/rating/related data is worth refreshing daily.
@@ -1191,7 +1422,8 @@ export const appstoreAppPagesConfigSchema = z
     pagesPerBatch: 10,
     storefront: "us",
     requestDelayMs: 1_000,
-    dailyPageBudget: 3_000,
+    dailyPageBudget: 5_000,
+    useProxy: true,
     hotIntervalMs: 24 * 60 * 60 * 1000,
     rollingIntervalMs: 14 * 24 * 60 * 60 * 1000,
     sync: {
@@ -1232,6 +1464,12 @@ export const appstoreSyncConfigSchema = z
     // limit=100 return HTTP 500 (verified live). 100 is the real ceiling,
     // not just a default.
     globalLimit: z.number().int().min(1).max(100).default(100),
+    // Throughput wave item 1: routes the hourly ranking tick's global +
+    // per-category chart fetches (and discovery/legacy-review lookups —
+    // see `scraper.ts`'s `fetchJson`) through the Webshare proxy when set.
+    // Default OFF — same "no proven ceiling either way, not the primary
+    // proxy target" reasoning as the other non-app-page lanes.
+    useProxy: z.boolean().default(false),
     // International storefront chart sweep (deep-scrape build Stage 3,
     // §0.1/§0.3) — reuses the SAME per-category iTunes RSS charts as above
     // (`charts.ts`'s `buildCategoryRankingUrl`/`ITUNES_CATEGORIES`) but for
@@ -1268,6 +1506,10 @@ export const appstoreSyncConfigSchema = z
         // pass — same spirit as `appstoreKeywordGap.sweepDelayMs`, scoped to
         // this separate pass.
         delayMs: z.number().int().min(100).max(10_000).default(1000),
+        // Throughput wave item 1: routes intl-storefront chart fetches
+        // through the Webshare proxy when set. Default OFF, same reasoning
+        // as the US lane's `useProxy` above.
+        useProxy: z.boolean().default(false),
       })
       .default({
         enabled: true,
@@ -1275,18 +1517,21 @@ export const appstoreSyncConfigSchema = z
         minIntervalMs: 12 * 60 * 60 * 1000,
         listTypes: ["top-free", "top-paid", "top-grossing"],
         delayMs: 1000,
+        useProxy: false,
       }),
   })
   .default({
     perCategoryLimit: 200,
     listTypes: ["top-free", "top-paid", "top-grossing"],
     globalLimit: 100,
+    useProxy: false,
     intlCharts: {
       enabled: true,
       storefronts: ["gb", "ca", "au"],
       minIntervalMs: 12 * 60 * 60 * 1000,
       listTypes: ["top-free", "top-paid", "top-grossing"],
       delayMs: 1000,
+      useProxy: false,
     },
   });
 export type AppstoreSyncConfig = z.infer<typeof appstoreSyncConfigSchema>;
@@ -2707,6 +2952,9 @@ export const opencrowConfigSchema = z.object({
   // App-meta registry Lookup-API enrichment (deep-scrape build Stage 2).
   // Default ON — see appstoreAppEnrichmentConfigSchema.
   appstoreAppEnrichment: appstoreAppEnrichmentConfigSchema,
+  // Newborn re-observation lane (throughput wave item 2, audit NEXT item F).
+  // Default ON — see appstoreNewbornReobservationConfigSchema.
+  appstoreNewbornReobservation: appstoreNewbornReobservationConfigSchema,
   // Review-text harvester (deep-scrape build Stage 4). Default ON — see
   // appstoreReviewHarvestConfigSchema.
   appstoreReviewHarvest: appstoreReviewHarvestConfigSchema,

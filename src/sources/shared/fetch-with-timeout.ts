@@ -7,11 +7,23 @@
  * explicit abort and the timeout will cancel the request.
  *
  * Mirrors the pattern already used by the GitHub trending scraper.
+ *
+ * `opts` additionally accepts a Bun-specific `proxy` string (a full
+ * `http://user:pass@host:port` URL) — not part of the standard `RequestInit`
+ * lib type, but Bun's native `fetch()` reads it directly (verified against
+ * Bun's docs: `fetch(url, { proxy: "http://..." })`). Forwarded straight
+ * through to the underlying `fetch` call via the `...rest` spread below, so
+ * this module stays a dumb pass-through with zero proxy-resolution logic of
+ * its own — see `src/sources/shared/appstore-proxy.ts` for resolution and
+ * `ssrf-safe-fetch.ts`'s `useProxy` option for how callers opt in per-lane.
  */
 
 import { getErrorMessage } from "../../lib/error-serialization";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** `RequestInit` plus Bun's `proxy` fetch extension (see module doc above). */
+export type FetchWithTimeoutInit = RequestInit & { readonly proxy?: string };
 
 /**
  * Combine the timeout signal with an optional caller-provided signal.
@@ -44,7 +56,7 @@ function mergeSignals(
  */
 export async function fetchWithTimeout(
   url: string,
-  opts: RequestInit = {},
+  opts: FetchWithTimeoutInit = {},
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<Response> {
   const { signal: callerSignal, ...rest } = opts;

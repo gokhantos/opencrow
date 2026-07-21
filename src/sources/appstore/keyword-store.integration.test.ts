@@ -174,6 +174,9 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-rotate-winner-d",
   "zzz-rotate-diverse-a",
   "zzz-rotate-diverse-b",
+  // Throughput wave item 3 (GB hints lane storefront column) fixtures
+  "zzz-rotate-gb-seed",
+  "zzz-rotate-default-storefront",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -1242,6 +1245,36 @@ describe("keyword-store", () => {
 
     it("insertAutocompleteHints is a no-op for an empty row list", async () => {
       await expect(insertAutocompleteHints([])).resolves.toBeUndefined();
+    });
+
+    // Throughput wave item 3 ("hint breadth") — migration 049's storefront
+    // column on appstore_autocomplete_hints.
+    it("insertAutocompleteHints persists the caller-supplied storefront (GB hints lane)", async () => {
+      const seenAt = Math.floor(Date.now() / 1000);
+      await insertAutocompleteHints([
+        { seed: "zzz-rotate-gb-seed", term: "zzz-rotate-gb-seed term", rank: 0, seenAt, storefront: "gb" },
+      ]);
+
+      const db = getDb();
+      const rows = await db`
+        SELECT seed, term, storefront FROM appstore_autocomplete_hints
+        WHERE seed = 'zzz-rotate-gb-seed'
+      `;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ seed: "zzz-rotate-gb-seed", storefront: "gb" });
+    });
+
+    it("insertAutocompleteHints defaults storefront to 'us' when omitted (backward compatible)", async () => {
+      const seenAt = Math.floor(Date.now() / 1000);
+      await insertAutocompleteHints([
+        { seed: "zzz-rotate-default-storefront", term: "zzz-rotate-default-storefront term", rank: 0, seenAt },
+      ]);
+
+      const db = getDb();
+      const rows = await db`
+        SELECT storefront FROM appstore_autocomplete_hints WHERE seed = 'zzz-rotate-default-storefront'
+      `;
+      expect(rows[0]).toMatchObject({ storefront: "us" });
     });
   });
 

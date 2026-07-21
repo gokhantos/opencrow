@@ -226,6 +226,8 @@ export async function harvestDueApps(opts: {
   readonly dailyRequestBudget: number;
   readonly maxConsecutiveEmptyHarvests: number;
   readonly memoryIndexing: "all" | "low-star-only";
+  /** Throughput wave item 1: route review-feed page fetches through the Webshare proxy. Default false. */
+  readonly useProxy?: boolean;
 }): Promise<HarvestPassResult> {
   if (opts.appsPerTick <= 0) return SKIPPED_HARVEST_RESULT;
 
@@ -277,7 +279,7 @@ export async function harvestDueApps(opts: {
         const url = buildReviewFeedUrl(enrollment.appId, page, opts.storefront);
         let res: Response;
         try {
-          res = await ssrfSafeFetch(url, { retryOnRateLimit: true });
+          res = await ssrfSafeFetch(url, { retryOnRateLimit: true, useProxy: opts.useProxy ?? false });
         } catch (err) {
           if (isRateLimitError(err)) rateLimitErrors++;
           if (pagesFetched === 0) itemFailed = true;
