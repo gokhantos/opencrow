@@ -22,6 +22,13 @@ function formatTopApp(app: TopApp, i: number): string {
   return `  ${i + 1}. ${safeName} — ${app.reviews.toLocaleString()} reviews, ${app.rating.toFixed(1)}★`;
 }
 
+/** Human-readable rendering of a scan's autocomplete hint evidence (Batch D item D1), or `null` when there's no evidence to show. */
+function formatHintEvidence(hintBestRank: number | null, hintSeedCount: number | null): string | null {
+  if (hintBestRank === null || hintSeedCount === null || hintSeedCount <= 0) return null;
+  const seedNoun = hintSeedCount === 1 ? "seed" : "seeds";
+  return `  Autocomplete hint: observed as a real typed query, rank ${hintBestRank} (${hintSeedCount} ${seedNoun})`;
+}
+
 export function formatGapProfile(p: KeywordGapProfile): string {
   const incumbents = p.topApps.slice(0, MAX_TOP_APPS_SHOWN).map(formatTopApp).join("\n");
 
@@ -29,6 +36,8 @@ export function formatGapProfile(p: KeywordGapProfile): string {
   // influenceable), so sanitize it too — parity with the incumbent names and
   // with buildQuote on the autonomous path — before it enters the prompt.
   const safeKeyword = sanitizeScrapedField(p.keyword, MAX_APP_NAME_LEN);
+
+  const hintLine = formatHintEvidence(p.hintBestRank ?? null, p.hintSeedCount ?? null);
 
   const lines = [
     `Keyword Gap: "${safeKeyword}" (${p.store === "app" ? "App Store (US)" : p.store === "DE" ? "App Store (DE)" : "Google Play"})`,
@@ -43,6 +52,14 @@ export function formatGapProfile(p: KeywordGapProfile): string {
     // rather than a genuine generic-demand opportunity.
     ...(p.brandNavigational
       ? ["  Note: navigational query — demand reflects one brand, not general demand."]
+      : []),
+    ...(hintLine ? [hintLine] : []),
+    // Batch D item D2: caveat when demand/incumbent-weakness came from a
+    // giant-excluded non-matched fallback field rather than a field we
+    // actually know serves this keyword — see `lowConfidence`'s doc comment
+    // (keyword-types.ts).
+    ...(p.lowConfidence
+      ? ["  Caveat: no title-matched incumbent — demand estimated from unrelated non-giant apps."]
       : []),
     "",
     incumbents.length > 0

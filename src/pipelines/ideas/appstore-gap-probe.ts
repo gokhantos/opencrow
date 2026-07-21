@@ -100,10 +100,19 @@ export const appstoreGapProbe: DemandProbe = {
       // Integer-epoch column compared to an epoch int (never NOW()-INTERVAL).
       const cutoff = Math.floor(Date.now() / 1000) - windowSec;
       const { clause, params } = buildKeywordFilter(["keyword"], kws, 2, fuzzy);
+      // Batch D item D3/D2, 2026-07-22: `store = 'app'` keeps a fresher DE
+      // (or future Play) scan from shadowing/outranking the US-calibrated
+      // reading this probe is meant to read (mirrors `getTopOpportunities`'s
+      // own store pin — see keyword-store.ts). `low_confidence = FALSE`
+      // excludes scans whose demand/opportunity came from a
+      // giant-excluded non-matched fallback field rather than a field we
+      // actually know serves this keyword — this probe's evidence feeds an
+      // LLM's demand-grounding stage and must never present a low-confidence
+      // guess as a real supply/demand gap.
       const sql = `
         SELECT DISTINCT ON (keyword) id, keyword, demand, opportunity, top_apps
         FROM appstore_keyword_scans
-        WHERE scanned_at >= $1 AND ${clause}
+        WHERE scanned_at >= $1 AND store = 'app' AND low_confidence = FALSE AND ${clause}
         ORDER BY keyword, scanned_at DESC
       `;
       const rows = (await db.unsafe(sql, [cutoff, ...params])) as Array<Record<string, unknown>>;

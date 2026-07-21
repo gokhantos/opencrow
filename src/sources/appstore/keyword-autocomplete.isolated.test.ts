@@ -307,6 +307,7 @@ describe("expandCorpus", () => {
         rank: 0,
         seenAt: expect.any(Number),
         storefront: "us",
+        kept: true,
       },
       {
         seed: "budget",
@@ -314,6 +315,7 @@ describe("expandCorpus", () => {
         rank: 1,
         seenAt: expect.any(Number),
         storefront: "us",
+        kept: true,
       },
       {
         seed: "meal prep",
@@ -321,7 +323,46 @@ describe("expandCorpus", () => {
         rank: 0,
         seenAt: expect.any(Number),
         storefront: "us",
+        kept: true,
       },
+    ]);
+  });
+
+  // Batch D item D1 (2026-07-22): every PARSED term is logged now, not just
+  // the ones that survive the junk/length/dedup/perSeed-cap filter — `kept`
+  // distinguishes them, so ranks stay gapless for `getHintEvidence`'s
+  // absence reasoning.
+  it("logs a filtered-out (junk) term too, with kept: false, alongside the surviving good terms", async () => {
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        if (url.includes("term=budget")) {
+          // "app" alone is junk (JUNK_KEYWORDS) — filtered out, but must
+          // still be logged.
+          return { ok: true, text: async () => hintsPlist(["app", "budget planner"]) };
+        }
+        return { ok: true, text: async () => hintsPlist([]) };
+      },
+    }));
+
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143441-1,29",
+      delayMs: 0,
+    });
+
+    const budgetRows = (
+      insertedHintRows as Array<{ seed: string; term: string; rank: number; kept: boolean }>
+    )
+      .filter((r) => r.seed === "budget")
+      .map((r) => ({ term: r.term, rank: r.rank, kept: r.kept }));
+    expect(budgetRows).toEqual([
+      { term: "app", rank: 0, kept: false },
+      { term: "budget planner", rank: 1, kept: true },
     ]);
   });
 

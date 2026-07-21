@@ -222,7 +222,14 @@ function setUpMocks(): void {
   mock.module("./keyword-autocomplete", () => ({
     expandCorpus: async () => {
       calls.expandCorpus++;
-      return { added: 0, seedsUsed: 0, attempted: 0, rateLimitErrors: 0 };
+      return {
+        added: 0,
+        seedsUsed: 0,
+        attempted: 0,
+        rateLimitErrors: 0,
+        brandFiltered: 0,
+        rawTermCount: 0,
+      };
     },
   }));
 
@@ -260,6 +267,12 @@ function setUpMocks(): void {
     // `mineKeywords`/pure-helper exports behave with true semantics) itself
     // imports `getScannedAppNames` from "./keyword-store" too.
     getScannedAppNames: async () => [],
+    // Batch D item D1: the autocomplete-hints ledger prune lane
+    // (`runAutocompleteExpansionIfDue`'s trailing prune call) fires on the
+    // very first tick (process-local cadence tracker starts at 0) — must be
+    // present or that call throws (caught/swallowed, but keep it real so the
+    // lane behaves as production does for any suite sharing this process).
+    pruneAutocompleteHints: async () => 0,
   }));
 
   mock.module("./app-enrichment", () => ({

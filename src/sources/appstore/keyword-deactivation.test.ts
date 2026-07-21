@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
+  AUTOCOMPLETE_HINT_DEACTIVATION_MAX_DEMAND_EVER,
   DEACTIVATION_MAX_DEMAND,
   DEACTIVATION_MAX_REVIEWS_CEILING,
   DEACTIVATION_MIN_SCANS,
@@ -7,11 +8,13 @@ import {
   DEACTIVATION_TRACTION_MIN_RATINGS_PER_DAY,
   MINED_DEACTIVATION_MAX_DEMAND_EVER,
   shouldDeactivateBrandNavigationalKeyword,
+  shouldDeactivateForHintAbsence,
   shouldDeactivateKeyword,
   shouldDeactivateMinedKeyword,
 } from "./keyword-deactivation";
 import type {
   BrandNavigationalDeactivationCandidate,
+  AutocompleteHintDeactivationCandidate,
   DeactivationCandidate,
   MinedDeactivationCandidate,
 } from "./keyword-deactivation";
@@ -329,5 +332,70 @@ describe("shouldDeactivateBrandNavigationalKeyword", () => {
     // No `topAppReviews`/`demand` field on this candidate at all — the type
     // itself proves this rule never needs them, unlike `shouldDeactivateKeyword`.
     expect(shouldDeactivateBrandNavigationalKeyword(brandCandidate())).toBe(true);
+  });
+});
+
+// Batch D item D1 (2026-07-22): the autocomplete-specific hint-absence rule.
+describe("shouldDeactivateForHintAbsence", () => {
+  function hintCandidate(
+    overrides: Partial<AutocompleteHintDeactivationCandidate> = {},
+  ): AutocompleteHintDeactivationCandidate {
+    return {
+      source: "autocomplete",
+      scanCount: DEACTIVATION_MIN_SCANS,
+      maxDemandEver: 0,
+      hasSignatureHit: false,
+      hintCovered: true,
+      hintSeedCount: 0,
+      ...overrides,
+    };
+  }
+
+  it("is true for an autocomplete keyword with enough scans, low demand ever, covered, and zero hint re-appearances", () => {
+    expect(shouldDeactivateForHintAbsence(hintCandidate())).toBe(true);
+  });
+
+  it("is false for a non-autocomplete source, even with the same hopeless stats", () => {
+    for (const source of ["seed", "manual", "mined", "pipeline"]) {
+      expect(shouldDeactivateForHintAbsence(hintCandidate({ source }))).toBe(false);
+    }
+  });
+
+  it("is false when scanCount is under DEACTIVATION_MIN_SCANS", () => {
+    expect(
+      shouldDeactivateForHintAbsence(
+        hintCandidate({ scanCount: DEACTIVATION_MIN_SCANS - 1 }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is false once maxDemandEver reaches the threshold", () => {
+    expect(
+      shouldDeactivateForHintAbsence(
+        hintCandidate({ maxDemandEver: AUTOCOMPLETE_HINT_DEACTIVATION_MAX_DEMAND_EVER }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is false when the keyword has ANY signature hit", () => {
+    expect(shouldDeactivateForHintAbsence(hintCandidate({ hasSignatureHit: true }))).toBe(
+      false,
+    );
+  });
+
+  // The critical coverage-conditioning guard: a keyword that was NEVER
+  // re-queried in the window must never be deactivated for "hint absence" —
+  // that absence is a sampling gap, not a confirmed signal (see
+  // `HintEvidence`'s doc comment, keyword-types.ts).
+  it("is false when the keyword was NOT covered (never re-queried), regardless of hintSeedCount", () => {
+    expect(
+      shouldDeactivateForHintAbsence(hintCandidate({ hintCovered: false, hintSeedCount: 0 })),
+    ).toBe(false);
+  });
+
+  it("is false when the keyword WAS covered but still resurfaced as a hint (hintSeedCount > 0)", () => {
+    expect(
+      shouldDeactivateForHintAbsence(hintCandidate({ hintCovered: true, hintSeedCount: 1 })),
+    ).toBe(false);
   });
 });

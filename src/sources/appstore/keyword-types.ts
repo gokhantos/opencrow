@@ -7,6 +7,45 @@ import type { SerpTailEntry } from "./serp-tail";
 
 export type GapTrend = "heating" | "stable" | "cooling" | "new";
 
+/**
+ * A keyword's Apple search-suggest ("autocomplete") hint evidence over a
+ * lookback window (see `keyword-store.ts`'s `getHintEvidence`) — the one
+ * giant-free, typed-demand signal `appstore_autocomplete_hints` (migration
+ * 043) carries. Shared between the (I/O) store layer that computes it and
+ * the (pure) scoring core that consumes it (`keyword-scoring.ts`'s
+ * `computeDemandConfidenceMultiplier`), so the scoring module never needs to
+ * import the DB-backed store.
+ */
+export interface HintEvidence {
+  /**
+   * Best (lowest = most popular) `kept` hint rank observed for this term in
+   * the window, across every seed/storefront — `null` if the term was never
+   * observed as a hint at all in the window. Loosely ordinal only: ranks mix
+   * bare-seed and prefix-fan-out query responses (see `getHintEvidence`'s
+   * doc comment), so treat this as "roughly how prominent", not a precise
+   * position.
+   */
+  readonly bestRank: number | null;
+  /** COUNT(DISTINCT seed) that produced this term as a `kept` hint in the window. 0 if never observed. */
+  readonly seedCount: number;
+  /** COUNT(DISTINCT storefront) that produced this term as a `kept` hint in the window (cross-market corroboration — e.g. US + GB). */
+  readonly storefrontCount: number;
+  /** Most recent `seen_at` among this term's `kept` hint rows in the window, or `null` if never observed. */
+  readonly lastSeenAt: number | null;
+  /**
+   * True iff the keyword itself, or a plausible autocomplete query prefix of
+   * it (a bare-seed or single-letter prefix-fan-out query — see
+   * `keyword-autocomplete.ts`'s `expandCorpus`), was ACTUALLY issued as an
+   * autocomplete query in the window — i.e. whether absence of hint evidence
+   * is a MEANINGFUL zero-volume signal or just "this keyword was never
+   * sampled". Coverage does NOT require the query to have produced this term
+   * as a hint (that's `seedCount > 0`); it only asks whether the query was
+   * ever attempted. NEVER infer "no demand" from `seedCount === 0` alone —
+   * only when `covered` is also true.
+   */
+  readonly covered: boolean;
+}
+
 export interface TopApp {
   readonly id: string;
   readonly name: string;
@@ -77,4 +116,15 @@ export interface KeywordGapProfile {
    * only `serp-rank-store.ts` reads this column, via its own explicit query.
    */
   readonly serpTail?: readonly SerpTailEntry[];
+  /**
+   * Batch D (App Store keyword SIGNAL FIDELITY, migration 052): this scan's
+   * snapshot of the keyword's autocomplete hint evidence at scan time (see
+   * `keyword-store.ts`'s `getHintEvidence`) — `undefined` for a scan taken
+   * before this feature existed, or when the evidence lookup itself failed
+   * (never allowed to break a scan). `null` means "no hint evidence in the
+   * lookback window" (a sampling gap, not confirmed zero volume).
+   */
+  readonly hintBestRank?: number | null;
+  /** Companion to `hintBestRank` — COUNT(DISTINCT seed) backing it. See `HintEvidence.seedCount`. */
+  readonly hintSeedCount?: number | null;
 }

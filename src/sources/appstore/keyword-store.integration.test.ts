@@ -28,6 +28,8 @@ import {
   markSeedsExpanded,
   insertAutocompleteHints,
   pruneKeywordScans,
+  getHintEvidence,
+  pruneAutocompleteHints,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 import type { SeedRotationUpdate, TieredKeyword } from "./keyword-store";
@@ -212,6 +214,19 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-prune-age-guarded",
   "zzz-prune-age-over-cap",
   "zzz-prune-recent-untouched",
+  // Batch D item D1 (getHintEvidence / pruneAutocompleteHints) fixtures —
+  // these are `seed` values in appstore_autocomplete_hints, not corpus
+  // keywords, but cleanupTestKeywords' hints DELETE filters on `seed IN`
+  // this same list.
+  "zzz-hint-seed-a",
+  "zzz-hint-seed-b",
+  "zzz-hint-seed-c",
+  "zzz-hint-coverage-seed",
+  "zzz-hint-stale-seed",
+  "zzz-hint-prune-old",
+  "zzz-hint-prune-new",
+  // Batch D item D3 (DE store-scoping) fixtures
+  "zzz-d3-peak-de-shadow",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -858,6 +873,51 @@ describe("keyword-store", () => {
       expect(steady?.opportunity).toBeCloseTo(0.5, 2);
     });
 
+    // Batch D item D3 (2026-07-22): a fresher `store = 'DE'` row must never
+    // shadow the US latest-scan row or dominate `peakOpportunity` — see
+    // `getTopOpportunities`'s doc comment.
+    it("reads the US store's latest scan and peakOpportunity even when a NEWER, higher-opportunity DE row exists for the same keyword", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-d3-peak-zone";
+      await upsertKeywords([
+        { keyword: "zzz-d3-peak-de-shadow", genreZone: zone, source: "seed" },
+      ]);
+      // Older US scan.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-d3-peak-de-shadow",
+          store: "app",
+          demand: 11,
+          opportunity: 0.3,
+          scannedAt: now - 1000,
+        }),
+      );
+      // NEWER DE scan, deliberately higher opportunity — this must NOT win.
+      await insertScan(
+        makeScan({
+          keyword: "zzz-d3-peak-de-shadow",
+          store: "DE",
+          demand: 999,
+          opportunity: 0.99,
+          scannedAt: now,
+        }),
+      );
+
+      const result = await getTopOpportunities({ limit: 50, genreZone: zone });
+      const row = result.rows.find((r) => r.keyword === "zzz-d3-peak-de-shadow");
+      expect(row).toBeDefined();
+      expect(row?.store).toBe("app");
+      expect(row?.demand).toBeCloseTo(11, 2);
+      expect(row?.opportunity).toBeCloseTo(0.3, 2);
+      // peakOpportunity must ALSO stay US-only — 0.3, not the DE row's 0.99.
+      expect(row?.peakOpportunity).toBeCloseTo(0.3, 2);
+
+      // No separate DE row appears in the leaderboard either — a second
+      // (store, keyword) entry would prove the `s` CTE isn't pinned.
+      const allRowsForKeyword = result.rows.filter((r) => r.keyword === "zzz-d3-peak-de-shadow");
+      expect(allRowsForKeyword).toHaveLength(1);
+    });
+
     it("paginates via limit/offset and reports the whole-corpus total, scoped by genreZone", async () => {
       const now = Math.floor(Date.now() / 1000);
       const zone = "zzz-page-zone";
@@ -1286,8 +1346,8 @@ describe("keyword-store", () => {
     it("insertAutocompleteHints persists rows with correct seed/term/rank/seen_at", async () => {
       const seenAt = Math.floor(Date.now() / 1000);
       await insertAutocompleteHints([
-        { seed: "zzz-rotate-winner-a", term: "zzz-rotate-winner-a planner", rank: 0, seenAt },
-        { seed: "zzz-rotate-winner-a", term: "zzz-rotate-winner-a bestie", rank: 1, seenAt },
+        { seed: "zzz-rotate-winner-a", term: "zzz-rotate-winner-a planner", rank: 0, seenAt, kept: true },
+        { seed: "zzz-rotate-winner-a", term: "zzz-rotate-winner-a bestie", rank: 1, seenAt, kept: true },
       ]);
 
       const db = getDb();
@@ -1319,7 +1379,14 @@ describe("keyword-store", () => {
     it("insertAutocompleteHints persists the caller-supplied storefront (GB hints lane)", async () => {
       const seenAt = Math.floor(Date.now() / 1000);
       await insertAutocompleteHints([
-        { seed: "zzz-rotate-gb-seed", term: "zzz-rotate-gb-seed term", rank: 0, seenAt, storefront: "gb" },
+        {
+          seed: "zzz-rotate-gb-seed",
+          term: "zzz-rotate-gb-seed term",
+          rank: 0,
+          seenAt,
+          storefront: "gb",
+          kept: true,
+        },
       ]);
 
       const db = getDb();
@@ -1334,7 +1401,13 @@ describe("keyword-store", () => {
     it("insertAutocompleteHints defaults storefront to 'us' when omitted (backward compatible)", async () => {
       const seenAt = Math.floor(Date.now() / 1000);
       await insertAutocompleteHints([
-        { seed: "zzz-rotate-default-storefront", term: "zzz-rotate-default-storefront term", rank: 0, seenAt },
+        {
+          seed: "zzz-rotate-default-storefront",
+          term: "zzz-rotate-default-storefront term",
+          rank: 0,
+          seenAt,
+          kept: true,
+        },
       ]);
 
       const db = getDb();
@@ -1342,6 +1415,109 @@ describe("keyword-store", () => {
         SELECT storefront FROM appstore_autocomplete_hints WHERE seed = 'zzz-rotate-default-storefront'
       `;
       expect(rows[0]).toMatchObject({ storefront: "us" });
+    });
+
+    // Batch D item D1 (migration 052): `kept` distinguishes a genuine
+    // expansion candidate from a raw parsed term that was filtered out.
+    it("insertAutocompleteHints persists kept=false for a filtered-out term", async () => {
+      const seenAt = Math.floor(Date.now() / 1000);
+      await insertAutocompleteHints([
+        { seed: "zzz-rotate-winner-a", term: "app", rank: 0, seenAt, kept: false },
+      ]);
+
+      const db = getDb();
+      const rows = await db`
+        SELECT kept FROM appstore_autocomplete_hints
+        WHERE seed = 'zzz-rotate-winner-a' AND term = 'app'
+      `;
+      expect(rows[0]).toMatchObject({ kept: false });
+    });
+  });
+
+  // Batch D item D1 (2026-07-22): reads the previously write-only
+  // `appstore_autocomplete_hints` table as a demand-confidence signal.
+  describe("getHintEvidence", () => {
+    const SEEN_AT = Math.floor(Date.now() / 1000);
+
+    it("aggregates MIN(rank)/COUNT(DISTINCT seed)/COUNT(DISTINCT storefront)/MAX(seen_at) across kept hints only", async () => {
+      await insertAutocompleteHints([
+        { seed: "zzz-hint-seed-a", term: "zzz-hint-evidence-term", rank: 3, seenAt: SEEN_AT - 100, kept: true, storefront: "us" },
+        { seed: "zzz-hint-seed-b", term: "zzz-hint-evidence-term", rank: 1, seenAt: SEEN_AT, kept: true, storefront: "gb" },
+        // A filtered-out (kept=false) row for the SAME term must NOT count
+        // toward presence, even though it has a lower rank.
+        { seed: "zzz-hint-seed-c", term: "zzz-hint-evidence-term", rank: 0, seenAt: SEEN_AT, kept: false, storefront: "us" },
+      ]);
+
+      const evidence = await getHintEvidence(["zzz-hint-evidence-term"]);
+      const e = evidence.get("zzz-hint-evidence-term");
+      expect(e?.bestRank).toBe(1); // the kept=true min, not the kept=false rank 0
+      expect(e?.seedCount).toBe(2);
+      expect(e?.storefrontCount).toBe(2);
+      expect(e?.lastSeenAt).toBe(SEEN_AT);
+      expect(e?.covered).toBe(true); // presence trivially implies coverage
+    });
+
+    it("marks a keyword as covered when a queried PREFIX of it (bare seed) was issued, even with zero hint presence", async () => {
+      await insertAutocompleteHints([
+        // "zzz-hint-coverage-seed" was queried, but never returned this
+        // specific longer phrase as a hint.
+        { seed: "zzz-hint-coverage-seed", term: "zzz-hint-coverage-seed unrelated", rank: 0, seenAt: SEEN_AT, kept: true },
+      ]);
+
+      const evidence = await getHintEvidence(["zzz-hint-coverage-seed extra words"]);
+      const e = evidence.get("zzz-hint-coverage-seed extra words");
+      expect(e?.seedCount).toBe(0);
+      expect(e?.bestRank).toBeNull();
+      expect(e?.covered).toBe(true);
+    });
+
+    it("marks a keyword as NOT covered when neither it nor any prefix of it was ever queried", async () => {
+      const evidence = await getHintEvidence(["zzz-hint-never-queried-anything"]);
+      const e = evidence.get("zzz-hint-never-queried-anything");
+      expect(e?.seedCount).toBe(0);
+      expect(e?.covered).toBe(false);
+    });
+
+    it("excludes hints outside the lookback window", async () => {
+      const old = SEEN_AT - 400 * 86_400; // 400 days ago
+      await insertAutocompleteHints([
+        { seed: "zzz-hint-stale-seed", term: "zzz-hint-stale-term", rank: 0, seenAt: old, kept: true },
+      ]);
+
+      const evidence = await getHintEvidence(["zzz-hint-stale-term"], 30);
+      const e = evidence.get("zzz-hint-stale-term");
+      expect(e?.seedCount).toBe(0);
+      // The seed itself was queried, but 400 days ago — outside a 30d
+      // window, so coverage (like presence) reads as unknown, not confirmed.
+      expect(e?.covered).toBe(false);
+    });
+
+    it("returns an empty map for an empty keyword list", async () => {
+      const evidence = await getHintEvidence([]);
+      expect(evidence.size).toBe(0);
+    });
+  });
+
+  describe("pruneAutocompleteHints", () => {
+    it("deletes rows older than the retention window and keeps newer ones", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const old = now - 200 * 86_400;
+      await insertAutocompleteHints([
+        { seed: "zzz-hint-prune-old", term: "zzz-hint-prune-old-term", rank: 0, seenAt: old, kept: true },
+        { seed: "zzz-hint-prune-new", term: "zzz-hint-prune-new-term", rank: 0, seenAt: now, kept: true },
+      ]);
+
+      const pruned = await pruneAutocompleteHints(90);
+      expect(pruned).toBeGreaterThanOrEqual(1);
+
+      const db = getDb();
+      const remaining = await db`
+        SELECT seed FROM appstore_autocomplete_hints
+        WHERE seed IN ('zzz-hint-prune-old', 'zzz-hint-prune-new')
+      `;
+      const seeds = (remaining as ReadonlyArray<{ seed: string }>).map((r) => r.seed);
+      expect(seeds).not.toContain("zzz-hint-prune-old");
+      expect(seeds).toContain("zzz-hint-prune-new");
     });
   });
 

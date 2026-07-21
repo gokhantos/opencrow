@@ -32,7 +32,10 @@ const BASE = "http://localhost";
 const CLUSTER_A = 970_001;
 const CLUSTER_B = 970_002;
 const CLUSTER_C = 970_003;
-const NONCE_CLUSTER_IDS: readonly number[] = [CLUSTER_A, CLUSTER_B, CLUSTER_C];
+// Batch D item D3 (2026-07-22) DE-store-scoping fixture — kept separate from
+// `SEEDS`/`seedAll()` so it can control its own scan rows' `store`/`scannedAt`.
+const CLUSTER_D = 970_004;
+const NONCE_CLUSTER_IDS: readonly number[] = [CLUSTER_A, CLUSTER_B, CLUSTER_C, CLUSTER_D];
 
 // A cluster id that the live job will never assign — for the "unknown id" test.
 const UNKNOWN_CLUSTER_ID = 979_999;
@@ -239,6 +242,69 @@ describe("keyword clusters serving layer", () => {
     it("returns an empty array for an unknown cluster id", async () => {
       const members = await getClusterMembers({ clusterId: UNKNOWN_CLUSTER_ID, limit: 100 });
       expect(members).toEqual([]);
+    });
+
+    // Batch D item D3 (2026-07-22): this was the BIGGER hole than
+    // `getTopOpportunities` — `getClusterMembers`' `s` CTE had no `store` in
+    // its `DISTINCT ON` at all, so a fresher DE row REPLACED the US member's
+    // row outright rather than merely appearing as an extra one.
+    it("reads the US member's scan values even when a NEWER DE-store scan exists for the same keyword", async () => {
+      const keyword = "zzc-d3-de-shadow";
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([{ keyword, genreZone: "zzc-cluster-zone", source: "seed" }]);
+
+      // Older US scan — this is what getClusterMembers must return.
+      await insertScan({
+        keyword,
+        store: "app",
+        competitiveness: 20,
+        demand: 9,
+        incumbentWeakness: 0.8,
+        opportunity: 0.3,
+        trend: "heating",
+        topAppReviews: 40,
+        avgRating: 3.0,
+        avgAgeDays: 500,
+        topApps: [makeTopApp()],
+        scannedAt: now - 1000,
+        lowConfidence: false,
+      });
+      // NEWER DE scan, deliberately different demand/opportunity — must NOT
+      // replace the US member row.
+      await insertScan({
+        keyword,
+        store: "DE",
+        competitiveness: 20,
+        demand: 999,
+        incumbentWeakness: 0.8,
+        opportunity: 0.99,
+        trend: "heating",
+        topAppReviews: 40,
+        avgRating: 3.0,
+        avgAgeDays: 500,
+        topApps: [makeTopApp()],
+        scannedAt: now,
+        lowConfidence: false,
+      });
+
+      const db = getDb();
+      await db`
+        INSERT INTO appstore_keyword_clusters (keyword, cluster_id, cluster_label, similarity, updated_at)
+        VALUES (${keyword}, ${CLUSTER_D}, ${"zzc-d3-de-shadow"}, ${0.9}, ${now})
+        ON CONFLICT (keyword) DO UPDATE SET
+          cluster_id = EXCLUDED.cluster_id,
+          cluster_label = EXCLUDED.cluster_label,
+          similarity = EXCLUDED.similarity,
+          updated_at = EXCLUDED.updated_at
+      `;
+
+      const members = await getClusterMembers({ clusterId: CLUSTER_D, limit: 100 });
+      expect(members).toHaveLength(1);
+      expect(members[0]?.keyword).toBe(keyword);
+      expect(members[0]?.store).toBe("app");
+      expect(members[0]?.demand).toBeCloseTo(9, 2);
+      expect(members[0]?.opportunity).toBeCloseTo(0.3, 2);
+      expect(members[0]?.peakOpportunity).toBeCloseTo(0.3, 2);
     });
   });
 

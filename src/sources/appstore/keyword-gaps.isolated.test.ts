@@ -68,6 +68,10 @@ function keywordStoreMockBase() {
     // Batch C3 (corpus zone self-healing) — inert no-op default; tests that
     // specifically exercise `setKeywordZone` override this.
     setKeywordZone: async () => false,
+    // Batch D item D1: `computeGapProfile` looks up hint evidence on every
+    // scan — default to "no evidence" (neutral multiplier, never a penalty)
+    // so pre-existing tests that don't exercise this path are unaffected.
+    getHintEvidence: async () => new Map(),
   };
 }
 

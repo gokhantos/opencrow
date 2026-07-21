@@ -197,6 +197,56 @@ export interface HintCandidate {
 const MAX_KEYWORD_LENGTH = 80;
 
 /**
+ * One raw parsed term, classified: `kept` mirrors exactly what
+ * `buildCandidatesFromHints` would have selected as a genuine expansion
+ * candidate (same junk/length/dedup/perSeed-cap predicate — the two are
+ * implemented via the SAME underlying pass, see `classifyHintTerms`, so they
+ * can never drift out of sync). `rank` is the term's 0-based position in the
+ * RAW (pre-filter) `terms` array — this is what makes rank gapless across
+ * the whole persisted hint log (Batch D item D1): every parsed term gets a
+ * row, not just the ones that passed the filter.
+ */
+export interface HintLogEntry {
+  readonly term: string;
+  readonly rank: number;
+  readonly kept: boolean;
+}
+
+/**
+ * Classifies EVERY raw, popularity-ordered hint term Apple returned — unlike
+ * the pre-Batch-D `buildCandidatesFromHints`, this does NOT stop iterating
+ * once `perSeed` good candidates are found; it walks the whole array so
+ * every term gets a logged verdict (Batch D item D1: "log ALL parsed terms
+ * pre-filter with kept=false/true so ranks are gapless"). A term is `kept`
+ * iff it survives normalization/length, is not a duplicate of an
+ * already-kept term THIS call, is not junk (`isJunkKeyword`), AND the
+ * running kept-count is still under `perSeed` at the time it's reached (in
+ * original rank order) — i.e. exactly `buildCandidatesFromHints`' old
+ * predicate, just computed without early-exiting.
+ */
+function classifyHintTerms(terms: readonly string[], perSeed: number): readonly HintLogEntry[] {
+  const seen = new Set<string>();
+  let keptCount = 0;
+  const entries: HintLogEntry[] = [];
+  for (let i = 0; i < terms.length; i++) {
+    const raw = terms[i];
+    if (raw === undefined) continue;
+    const keyword = normalizeSuggestion(raw);
+    const validLength = keyword.length > 0 && keyword.length <= MAX_KEYWORD_LENGTH;
+    const isDuplicate = validLength && seen.has(keyword);
+    const isJunk = validLength && !isDuplicate && isJunkKeyword(keyword);
+    const withinCap = keptCount < perSeed;
+    const kept = validLength && !isDuplicate && !isJunk && withinCap;
+    if (kept) {
+      seen.add(keyword);
+      keptCount++;
+    }
+    entries.push({ term: keyword, rank: i, kept });
+  }
+  return entries;
+}
+
+/**
  * Turns one seed's raw, popularity-ordered hint terms into deduped,
  * junk-filtered candidates carrying the seed's `genreZone` and each term's
  * original rank. Pure, no I/O — corpus/existing-keyword dedup happens in
@@ -204,25 +254,17 @@ const MAX_KEYWORD_LENGTH = 80;
  * post-length-cap) candidates: since Apple's response is already
  * popularity-ordered, this keeps the top-N most-popular real suggestions per
  * seed rather than an arbitrary raw slice that might be mostly junk.
+ * Implemented via `classifyHintTerms` so the candidate set and the FULL
+ * per-term hint log (`expandCorpus`) share the exact same predicate.
  */
 export function buildCandidatesFromHints(
   terms: readonly string[],
   genreZone: string,
   perSeed: number,
 ): readonly HintCandidate[] {
-  const seen = new Set<string>();
-  const candidates: HintCandidate[] = [];
-  for (let i = 0; i < terms.length && candidates.length < perSeed; i++) {
-    const raw = terms[i];
-    if (raw === undefined) continue;
-    const keyword = normalizeSuggestion(raw);
-    if (keyword.length === 0 || keyword.length > MAX_KEYWORD_LENGTH) continue;
-    if (seen.has(keyword)) continue;
-    if (isJunkKeyword(keyword)) continue;
-    seen.add(keyword);
-    candidates.push({ keyword, genreZone, rank: i });
-  }
-  return candidates;
+  return classifyHintTerms(terms, perSeed)
+    .filter((e) => e.kept)
+    .map((e) => ({ keyword: e.term, genreZone, rank: e.rank }));
 }
 
 // ---------------------------------------------------------------------------
@@ -452,18 +494,26 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
       // dead-endpoint (zero-term) one.
       rawTermCount += terms.length;
 
-      const queryCandidates = buildCandidatesFromHints(terms, seed.genreZone, opts.perSeed);
-      for (const c of queryCandidates) {
+      // Batch D item D1: log EVERY parsed term (kept or not), not just the
+      // ones that became candidates — see `classifyHintTerms`'s doc comment
+      // for why this matters (gapless ranks, sound absence reasoning).
+      const entries = classifyHintTerms(terms, opts.perSeed);
+      for (const e of entries) {
         hintRows.push({
           seed: query,
-          term: c.keyword,
-          rank: c.rank,
+          term: e.term,
+          rank: e.rank,
           seenAt: nowSeconds,
           storefront: market,
+          kept: e.kept,
         });
-        if (seen.has(c.keyword)) continue;
-        seen.add(c.keyword);
-        candidates.push(c);
+        if (!e.kept) continue;
+        // Cross-query (bare seed + prefix fan-out) dedup for the CANDIDATE
+        // set feeding corpus expansion below — distinct from
+        // `classifyHintTerms`' own per-query dedup.
+        if (seen.has(e.term)) continue;
+        seen.add(e.term);
+        candidates.push({ keyword: e.term, genreZone: seed.genreZone, rank: e.rank });
       }
 
       if (opts.delayMs > 0) await delay(opts.delayMs);
