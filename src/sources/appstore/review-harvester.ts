@@ -12,6 +12,7 @@
 import { createLogger } from "../../logger";
 import { getErrorMessage } from "../../lib/error-serialization";
 import { RateLimitError, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
+import { isPassOverBudget } from "../shared/pass-deadline";
 import { getAppMeta } from "./app-meta-store";
 import {
   applyMemoryIndexingPolicy,
@@ -43,6 +44,15 @@ const log = createLogger("appstore:review-harvester");
 // later page failed is a partial success, not a failure — see
 // `harvestDueApps`'s doc comment).
 const MAX_CONSECUTIVE_FAILURES = 5;
+
+// Wall-clock budget for one harvest pass — see `pass-deadline.ts`'s doc
+// comment (2026-07-21 incident: a slow-but-not-failing upstream never trips
+// the consecutive-failure bail above, and this pass runs on the shared
+// `keywordSweepTick` single-flight guard, so an unbounded pass here wedges
+// every OTHER lane on that tick too, not just this one). Each app can fetch
+// up to `MAX_REVIEW_PAGES` pages, so the worst case here is already larger
+// per-item than the other lanes' single-request loops.
+const MAX_PASS_DURATION_MS = 5 * 60_000;
 
 /**
  * True iff `err` is (or carries the code of) `RateLimitError` — the dual
@@ -241,8 +251,17 @@ export async function harvestDueApps(opts: {
   let rateLimitErrors = 0;
   let consecutiveFailures = 0;
   let bailed = false;
+  const passStartedAt = Date.now();
 
   for (const enrollment of dueApps) {
+    if (isPassOverBudget(passStartedAt, MAX_PASS_DURATION_MS)) {
+      bailed = true;
+      log.warn("Review harvest pass bailing early — exceeded wall-clock budget", {
+        elapsedMs: Date.now() - passStartedAt,
+        attempted,
+      });
+      break;
+    }
     attempted++;
     const now = Math.floor(Date.now() / 1000);
     let pagesFetched = 0;
