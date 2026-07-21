@@ -14,6 +14,7 @@
 import { createLogger } from "../../logger";
 import { getErrorMessage } from "../../lib/error-serialization";
 import { RateLimitError, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
+import { isPassOverBudget } from "../shared/pass-deadline";
 import { AppPageParseError, buildAppPageUrl, parseAppPage } from "./app-page-parse";
 import {
   countPageFetchesSince,
@@ -30,6 +31,15 @@ const log = createLogger("appstore:app-pages");
 // Mirrors `review-harvester.ts`'s `MAX_CONSECUTIVE_FAILURES` — the same
 // "upstream looks wedged, stop burning the rest of the pass" rationale.
 const MAX_CONSECUTIVE_FAILURES = 5;
+
+// Wall-clock budget for one fetch pass — see `pass-deadline.ts`'s doc
+// comment (2026-07-21 incident: a slow-but-not-failing upstream never trips
+// the consecutive-failure bail above, and this pass runs on the shared
+// `keywordSweepTick` single-flight guard, so an unbounded pass here wedges
+// every OTHER lane on that tick too, not just this one). This lane's
+// per-request payload (~0.6-1MB HTML) is the heaviest of the four, so a
+// stalled/slow upstream here is exactly the failure mode to bound.
+const MAX_PASS_DURATION_MS = 5 * 60_000;
 
 const USER_AGENT = "OpenCrow/1.0 (App Store Scraper)";
 
@@ -156,8 +166,17 @@ export async function runAppPageFetchPass(opts: {
   let rateLimitErrors = 0;
   let consecutiveFailures = 0;
   let bailed = false;
+  const passStartedAt = Date.now();
 
   for (const tracked of due) {
+    if (isPassOverBudget(passStartedAt, MAX_PASS_DURATION_MS)) {
+      bailed = true;
+      log.warn("App-page fetch pass bailing early — exceeded wall-clock budget", {
+        elapsedMs: Date.now() - passStartedAt,
+        attempted,
+      });
+      break;
+    }
     attempted++;
     const now = Math.floor(Date.now() / 1000);
     const url = buildAppPageUrl(tracked.appId, opts.storefront);

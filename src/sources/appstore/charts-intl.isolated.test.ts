@@ -126,6 +126,51 @@ describe("runIntlChartsSweep", () => {
     expect(fetchedUrls).toEqual([]);
   });
 
+  // Regression test for the 2026-07-21 incident: a slow-but-succeeding
+  // upstream (every request returns `ok: true`, so the consecutive-failure
+  // bail never trips) must still be bounded by a wall-clock budget — see
+  // `pass-deadline.ts`'s doc comment. Simulates "slow" by advancing a fake
+  // clock on every fetch rather than sleeping in the test.
+  it("bails once the wall-clock pass budget is exceeded, even when every request succeeds", async () => {
+    const realDateNow = Date.now;
+    let fakeNowMs = realDateNow();
+    // Each simulated request "takes" 20s. The pass budget is 5 minutes
+    // (300_000ms), so it should bail after ~15 requests — well short of the
+    // 75-item work list (3 storefronts x 1 listType x 25 categories) this
+    // test's config produces, proving the loop stopped early rather than
+    // running to completion.
+    const SIMULATED_REQUEST_MS = 20_000;
+
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        fetchedUrls.push(url);
+        fakeNowMs += SIMULATED_REQUEST_MS;
+        return { ok: true, json: async () => feedJson("100") };
+      },
+    }));
+
+    try {
+      Date.now = () => fakeNowMs;
+      const { runIntlChartsSweep } = await import("./charts-intl");
+      const result = await runIntlChartsSweep({
+        storefronts: ["gb", "ca", "au"],
+        listTypes: ["top-free"],
+        perCategoryLimit: 200,
+        delayMs: 0,
+        throttleMultiplier: 1,
+      });
+
+      expect(result.bailed).toBe(true);
+      // Bailed strictly before exhausting the 75-item work list.
+      expect(result.scanned).toBeGreaterThan(0);
+      expect(result.scanned).toBeLessThan(75);
+      expect(fetchedUrls.length).toBe(result.scanned);
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
   it("counts rate-limit errors without bailing when failures aren't consecutive", async () => {
     let call = 0;
     mock.module("../shared/ssrf-safe-fetch", () => ({

@@ -9,6 +9,7 @@
 
 import { createLogger } from "../../logger";
 import { RateLimitError } from "../shared/ssrf-safe-fetch";
+import { isPassOverBudget } from "../shared/pass-deadline";
 import { chunkIds, fetchArtistPortfolio, fetchLookupBatch } from "./app-lookup";
 import type { LookupApp } from "./app-lookup";
 import { ageDaysFromReleaseDate } from "./app-meta-types";
@@ -34,6 +35,13 @@ const log = createLogger("appstore:app-enrichment");
 // "upstream looks wedged, stop burning the rest of the pass" rationale,
 // applied here at the batch (not per-keyword) granularity.
 const MAX_CONSECUTIVE_FAILURES = 5;
+
+// Wall-clock budget for one pass — see `pass-deadline.ts`'s doc comment
+// (2026-07-21 incident: a slow-but-not-failing upstream never trips the
+// consecutive-failure bail above, and this lane's pass runs on the shared
+// `keywordSweepTick` single-flight guard, so an unbounded pass here wedges
+// every OTHER lane on that tick too, not just this one).
+const MAX_PASS_DURATION_MS = 5 * 60_000;
 
 /** Keyword tag for the chart-newborn synthetic velocity observation (build plan §0.1). */
 export const CHART_FIRST_SEEN_KEYWORD = "chart-first-seen";
@@ -152,8 +160,17 @@ export async function runEnrichmentPass(opts: {
   let rateLimitErrors = 0;
   let consecutiveFailures = 0;
   let bailed = false;
+  const passStartedAt = Date.now();
 
   for (const batch of batches) {
+    if (isPassOverBudget(passStartedAt, MAX_PASS_DURATION_MS)) {
+      bailed = true;
+      log.warn("App enrichment pass bailing early — exceeded wall-clock budget", {
+        elapsedMs: Date.now() - passStartedAt,
+        attempted,
+      });
+      break;
+    }
     attempted++;
     const now = Math.floor(Date.now() / 1000);
     const previousMap = await getAppMetaBatch(batch);
@@ -279,8 +296,17 @@ export async function runPortfolioPass(opts: {
   let rateLimitErrors = 0;
   let consecutiveFailures = 0;
   let bailed = false;
+  const passStartedAt = Date.now();
 
   for (const artistId of artistIds) {
+    if (isPassOverBudget(passStartedAt, MAX_PASS_DURATION_MS)) {
+      bailed = true;
+      log.warn("Portfolio pass bailing early — exceeded wall-clock budget", {
+        elapsedMs: Date.now() - passStartedAt,
+        attempted,
+      });
+      break;
+    }
     attempted++;
     const now = Math.floor(Date.now() / 1000);
     try {

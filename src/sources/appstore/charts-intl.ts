@@ -18,6 +18,7 @@ import { getErrorMessage } from "../../lib/error-serialization";
 import { createLogger } from "../../logger";
 import type { AppstoreSyncListType } from "../../config/schema";
 import { RateLimitError, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
+import { isPassOverBudget } from "../shared/pass-deadline";
 import { recordAppSightings } from "./app-meta-store";
 import {
   ITUNES_CATEGORIES,
@@ -35,6 +36,17 @@ const log = createLogger("appstore:charts-intl");
 // rationale, applied here at the (storefront, category, listType) work-item
 // granularity.
 const MAX_CONSECUTIVE_FAILURES = 5;
+
+// Wall-clock budget for one sweep (see `pass-deadline.ts`'s doc comment for
+// the 2026-07-21 incident this guards against): this lane's work list is by
+// far the largest of the four deep-scrape lanes on the shared
+// `keywordSweepTick` (up to storefronts × 23 categories × listTypes — 207
+// items at the schema default), so it's the one most exposed to a
+// slow-but-not-failing upstream running past the consecutive-failure bail
+// above. 5 minutes bounds the worst case from 100+ minutes (207 items × a
+// ~30s per-request `ssrfSafeFetch` timeout) down to something the shared
+// single-flight tick guard can recover from on the NEXT cycle.
+const MAX_PASS_DURATION_MS = 5 * 60_000;
 
 /**
  * True iff `err` is (or carries the code of) `RateLimitError` — the dual
@@ -121,8 +133,18 @@ export async function runIntlChartsSweep(opts: {
   let rateLimitErrors = 0;
   let consecutiveFailures = 0;
   const allRows: AppRankingRow[] = [];
+  const passStartedAt = Date.now();
 
   for (const item of workList) {
+    if (isPassOverBudget(passStartedAt, MAX_PASS_DURATION_MS)) {
+      bailed = true;
+      log.warn("Intl charts sweep bailing early — exceeded wall-clock budget", {
+        elapsedMs: Date.now() - passStartedAt,
+        scanned,
+        remaining: workList.length - scanned - failed,
+      });
+      break;
+    }
     try {
       const url = buildCategoryRankingUrl(
         item.genreId,
