@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { selectGapSeeds } from "./collector-keyword-gaps";
-import type { KeywordScanRow } from "../../sources/appstore/keyword-store";
+import { filterKnownZeroVolume, selectGapSeeds } from "./collector-keyword-gaps";
+import type { KeywordScanRow, OpportunityRow } from "../../sources/appstore/keyword-store";
 
 /**
  * Minimal KeywordScanRow factory — only the fields selectGapSeeds reads
@@ -131,5 +131,117 @@ describe("selectGapSeeds", () => {
       { limit: 0, minOpportunity: 0.4 },
     );
     expect(seeds).toEqual([]);
+  });
+});
+
+/**
+ * Minimal OpportunityRow factory — extends makeScan with the
+ * `firstFoundAt`/`source`/`peakOpportunity`/`asaPopularity`/
+ * `asaPopularityCheckedAt` fields `filterKnownZeroVolume` reads.
+ */
+function makeOpportunity(
+  overrides: Partial<OpportunityRow> & { id: number },
+): OpportunityRow {
+  return {
+    ...makeScan(overrides),
+    firstFoundAt: null,
+    source: null,
+    peakOpportunity: overrides.opportunity ?? 0.5,
+    asaPopularity: null,
+    asaPopularityCheckedAt: null,
+    ...overrides,
+  };
+}
+
+describe("filterKnownZeroVolume", () => {
+  const NOW = 2_000_000;
+  const DAY = 86_400;
+
+  it("drops a keyword with recorded popularity at or under the threshold, within the freshness window", () => {
+    const scans = [
+      makeOpportunity({
+        id: 1,
+        keyword: "dead",
+        asaPopularity: 1,
+        asaPopularityCheckedAt: NOW - 1 * DAY,
+      }),
+      makeOpportunity({
+        id: 2,
+        keyword: "alive",
+        asaPopularity: 4,
+        asaPopularityCheckedAt: NOW - 1 * DAY,
+      }),
+    ];
+
+    const result = filterKnownZeroVolume(scans, {
+      threshold: 1,
+      freshnessDays: 45,
+      nowEpochSeconds: NOW,
+    });
+
+    expect(result.map((r) => r.keyword)).toEqual(["alive"]);
+  });
+
+  it("keeps a keyword never probed (asaPopularity null)", () => {
+    const scans = [makeOpportunity({ id: 1, keyword: "unprobed" })];
+
+    const result = filterKnownZeroVolume(scans, {
+      threshold: 1,
+      freshnessDays: 45,
+      nowEpochSeconds: NOW,
+    });
+
+    expect(result.map((r) => r.keyword)).toEqual(["unprobed"]);
+  });
+
+  it("keeps a known-dead keyword whose reading has aged past the freshness window (stale probe can't permanently blacklist)", () => {
+    const scans = [
+      makeOpportunity({
+        id: 1,
+        keyword: "stale-dead",
+        asaPopularity: 1,
+        asaPopularityCheckedAt: NOW - 46 * DAY,
+      }),
+    ];
+
+    const result = filterKnownZeroVolume(scans, {
+      threshold: 1,
+      freshnessDays: 45,
+      nowEpochSeconds: NOW,
+    });
+
+    expect(result.map((r) => r.keyword)).toEqual(["stale-dead"]);
+  });
+
+  it("keeps a keyword exactly at the freshness boundary (checked_at == floor)", () => {
+    const scans = [
+      makeOpportunity({
+        id: 1,
+        keyword: "boundary",
+        asaPopularity: 1,
+        asaPopularityCheckedAt: NOW - 45 * DAY,
+      }),
+    ];
+
+    // freshnessFloorSec == NOW - 45*DAY; checked_at < floor is stale, so an
+    // exact match at the floor is still "fresh" and the veto applies.
+    const result = filterKnownZeroVolume(scans, {
+      threshold: 1,
+      freshnessDays: 45,
+      nowEpochSeconds: NOW,
+    });
+
+    expect(result.map((r) => r.keyword)).toEqual([]);
+  });
+
+  it("does not mutate the input array", () => {
+    const scans = [
+      makeOpportunity({ id: 1, keyword: "a", asaPopularity: 1, asaPopularityCheckedAt: NOW }),
+    ];
+    const snapshot = scans.map((s) => s.keyword);
+
+    filterKnownZeroVolume(scans, { threshold: 1, freshnessDays: 45, nowEpochSeconds: NOW });
+
+    expect(scans.map((s) => s.keyword)).toEqual(snapshot);
   });
 });

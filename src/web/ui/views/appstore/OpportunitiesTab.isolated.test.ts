@@ -50,6 +50,9 @@ interface MockOpportunityRow {
   readonly source: string | null;
   /** Latest-scan incumbent snapshot — powers the new row-expand incumbents panel. */
   readonly topApps: readonly MockTopApp[];
+  /** ASA popularity manual-import annotation (batch E) — `null` in most fixture rows (never probed). */
+  readonly asaPopularity: number | null;
+  readonly asaPopularityCheckedAt: number | null;
 }
 
 /** Mirrors the component's `SortKey` — every column is sortable server-side. */
@@ -117,6 +120,8 @@ function makeRow(overrides: Partial<MockOpportunityRow> = {}): MockOpportunityRo
     firstFoundAt: NOW - 3 * 86400,
     source: "autocomplete",
     topApps: defaultTopApps(),
+    asaPopularity: null,
+    asaPopularityCheckedAt: null,
     ...overrides,
   };
 }
@@ -397,6 +402,24 @@ test("renders the Buildability column with the number and band badge for each ro
   expect(container.textContent).toContain("⚪");
   const weakBadge = container.querySelector('[aria-label="Buildability band: Weak"]');
   expect(weakBadge).toBeTruthy();
+  unmount();
+});
+
+test("renders an ASA popularity badge for a probed keyword and none for an unprobed one", async () => {
+  rowsToReturn = [
+    makeRow({ id: 1, keyword: "meal planner", asaPopularity: 1, asaPopularityCheckedAt: NOW }),
+    makeRow({ id: 2, keyword: "habit tracker", asaPopularity: null, asaPopularityCheckedAt: null }),
+  ];
+  const { container, unmount } = mount(React.createElement(OpportunitiesTab, {}));
+  await flush();
+
+  // Probed at 1/5 -> badge renders with the score.
+  expect(container.textContent).toContain("ASA 1/5");
+
+  // Never-probed row renders no badge inline (deliberately not "Unverified"
+  // noise on the majority-unprobed corpus) — the keyword itself still shows.
+  expect(container.textContent).toContain("habit tracker");
+  expect(container.textContent).not.toContain("Unverified");
   unmount();
 });
 

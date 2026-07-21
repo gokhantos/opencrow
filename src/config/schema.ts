@@ -649,6 +649,24 @@ export const appstoreKeywordGapConfigSchema = z
     // scores currently top out around ~0.324, so 0.4 never fires — lowered
     // to 0.15 so genuinely strong winners actually seed further discovery.
     opportunityThresholdForSeed: z.number().min(0).max(1).default(0.15),
+    // ASA popularity manual-import veto (2026-07-22, batch E — see
+    // `popularity-store.ts` / `collector-keyword-gaps.ts`'s
+    // `filterKnownZeroVolume`). Apple's ratings-per-day demand proxy has no
+    // ground truth of its own — the 2026-07-20 28-term US ASA sweep (manual,
+    // Playwright-driven; there is no programmatic sweep endpoint) found 27/28
+    // terms at `searchPopularity` 1, contradicting the proxy for most of
+    // them. This is a coverage-tiny, manually-populated signal, so it's a
+    // hard VETO on seed selection, never a scoring multiplier. Default OFF
+    // until enough manually imported rows exist to be worth enforcing.
+    excludeKnownZeroVolume: z.boolean().default(false),
+    // A recorded ASA `searchPopularity` (0..5) at or under this value is
+    // treated as "known dead" for the veto above. 1 is Apple's near-floor
+    // reading — the 2026-07-20 sweep's near-universal result.
+    zeroVolumeThreshold: z.number().int().min(0).max(5).default(1),
+    // A recorded reading older than this many days is treated as stale and
+    // ignored by the veto — search demand drifts, so a probe from months ago
+    // should not permanently blacklist a keyword.
+    zeroVolumeFreshnessDays: z.number().int().min(1).max(365).default(45),
     // SECONDARY corpus-discovery: mines new keyword candidates from App
     // Store data the scraper already fetches (top-chart app names +
     // categories — see keyword-miner.ts). Demoted 2026-07-21 in favor of
@@ -1040,6 +1058,9 @@ export const appstoreKeywordGapConfigSchema = z
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.15,
+    excludeKnownZeroVolume: false,
+    zeroVolumeThreshold: 1,
+    zeroVolumeFreshnessDays: 45,
     corpusDiscovery: {
       enabled: true,
       maxMinedPerCycle: 100,

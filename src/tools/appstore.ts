@@ -17,6 +17,7 @@ import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
 import { scanKeyword } from "../sources/appstore/keyword-gaps";
 import { formatGapProfile } from "../sources/appstore/format-gap-profile";
+import { getLatestPopularity } from "../sources/appstore/popularity-store";
 import { RateLimitError } from "../sources/shared/rate-limit-error";
 import { createMinIntervalGate } from "../sources/shared/min-interval-gate";
 
@@ -354,7 +355,14 @@ export function createAppStoreTools(
         try {
           await analyzeKeywordGapGate();
           const profile = await scanKeyword(keyword);
-          return { output: formatGapProfile(profile), isError: false };
+          // Best-effort — a manually-imported ASA popularity annotation is
+          // never load-bearing for this tool's output; a lookup failure just
+          // means the "unverified" line prints instead.
+          const popularity = await getLatestPopularity(keyword).catch(() => null);
+          const volumeCheck = popularity
+            ? { popularity: popularity.value, checkedAt: popularity.checkedAt }
+            : null;
+          return { output: formatGapProfile(profile, volumeCheck), isError: false };
         } catch (err) {
           if (err instanceof RateLimitError) {
             log.warn("analyze_keyword_gap rate limited", {

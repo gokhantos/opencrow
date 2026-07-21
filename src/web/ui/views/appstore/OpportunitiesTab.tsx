@@ -25,6 +25,7 @@ import {
   PRESETS,
   toDraft,
   trendBadge,
+  volumeCheckBadge,
 } from "./opportunities-format";
 import type {
   FilterState,
@@ -65,6 +66,15 @@ interface OpportunityRow {
   readonly source: string | null;
   /** Latest-scan incumbent snapshot — powers the row-expand incumbents panel. */
   readonly topApps: readonly TopApp[];
+  /**
+   * Latest manually-imported ASA `searchPopularity` reading (0..5,
+   * `appstore_search_popularity` migration 053, `source='asa'` only), or
+   * `null` if this keyword has never been probed. Annotation only — see
+   * `opportunities-format.ts`'s `volumeCheckBadge`.
+   */
+  readonly asaPopularity: number | null;
+  /** Epoch seconds `asaPopularity` was recorded, or `null` if never probed. */
+  readonly asaPopularityCheckedAt: number | null;
 }
 
 interface OpportunitiesMeta {
@@ -169,8 +179,26 @@ const TOTAL_COLUMN_COUNT = COLUMNS.length + 1; // + star column
 
 function renderCell(row: OpportunityRow, key: SortKey): React.ReactNode {
   switch (key) {
-    case "keyword":
-      return <span className="font-medium text-foreground">{row.keyword}</span>;
+    case "keyword": {
+      const badge = volumeCheckBadge(row.asaPopularity);
+      const title =
+        row.asaPopularity === null || row.asaPopularityCheckedAt === null
+          ? "Never manually probed against Apple Search Ads"
+          : `ASA popularity ${row.asaPopularity}/5, probed ${new Date(row.asaPopularityCheckedAt * 1000).toISOString().slice(0, 10)}`;
+      return (
+        <span className="inline-flex items-center gap-1.5">
+          <span className="font-medium text-foreground">{row.keyword}</span>
+          {row.asaPopularity !== null && (
+            <span
+              className={cn("px-1.5 py-0.5 rounded text-xs font-medium whitespace-nowrap", badge.className)}
+              title={title}
+            >
+              {badge.label}
+            </span>
+          )}
+        </span>
+      );
+    }
     case "buildability": {
       const band = buildabilityBand(row.buildability);
       return (

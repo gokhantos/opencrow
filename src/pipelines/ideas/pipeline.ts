@@ -468,6 +468,11 @@ export async function runIdeasPipeline(
       ? await collectKeywordGaps(collectorCtx, {
           limit: 10,
           minOpportunity: keywordGapCfg.opportunityThresholdForSeed,
+          // Batch E: ASA popularity manual-import veto — default OFF (see
+          // config/schema.ts's `excludeKnownZeroVolume` doc comment).
+          excludeKnownZeroVolume: keywordGapCfg.excludeKnownZeroVolume,
+          zeroVolumeThreshold: keywordGapCfg.zeroVolumeThreshold,
+          zeroVolumeFreshnessDays: keywordGapCfg.zeroVolumeFreshnessDays,
         })
       : [];
     if (keywordGaps.length > 0) {

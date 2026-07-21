@@ -33,6 +33,7 @@ import {
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
 import type { SeedRotationUpdate, TieredKeyword } from "./keyword-store";
+import { upsertPopularity } from "./popularity-store";
 
 /**
  * Batch C1+C2 (migration 051): `markSeedsExpanded` now takes per-seed
@@ -227,6 +228,9 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-hint-prune-new",
   // Batch D item D3 (DE store-scoping) fixtures
   "zzz-d3-peak-de-shadow",
+  // ASA popularity LEFT JOIN LATERAL fixtures (batch E)
+  "zzz-asa-pop-probed",
+  "zzz-asa-pop-unprobed",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -234,6 +238,7 @@ async function cleanupTestKeywords(): Promise<void> {
   await db`DELETE FROM appstore_seed_expansion_state WHERE keyword IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_autocomplete_hints WHERE seed IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_signature_hits WHERE keyword IN ${db(TEST_KEYWORDS)}`;
+  await db`DELETE FROM appstore_search_popularity WHERE keyword IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_keyword_scans WHERE keyword IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_keywords WHERE keyword IN ${db(TEST_KEYWORDS)}`;
 }
@@ -723,6 +728,45 @@ describe("keyword-store", () => {
       expect(row).toBeDefined();
       expect(row?.source).toBe("autocomplete");
       expect(typeof row?.firstFoundAt).toBe("number");
+    });
+  });
+
+  describe("getTopOpportunities ASA popularity join", () => {
+    it("surfaces the latest asaPopularity/asaPopularityCheckedAt for a probed keyword", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-asa-pop-probed", genreZone: "health", source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-asa-pop-probed", scannedAt: now }));
+      await upsertPopularity([
+        {
+          keyword: "zzz-asa-pop-probed",
+          source: "asa",
+          value: 1,
+          storefront: "US",
+          checkedAt: now - 3600,
+        },
+      ]);
+
+      const top = await getTopOpportunities({ limit: 50 });
+      const row = top.rows.find((r) => r.keyword === "zzz-asa-pop-probed");
+      expect(row).toBeDefined();
+      expect(row?.asaPopularity).toBe(1);
+      expect(row?.asaPopularityCheckedAt).toBe(now - 3600);
+    });
+
+    it("leaves asaPopularity/asaPopularityCheckedAt null for a never-probed keyword", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-asa-pop-unprobed", genreZone: "health", source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-asa-pop-unprobed", scannedAt: now }));
+
+      const top = await getTopOpportunities({ limit: 50 });
+      const row = top.rows.find((r) => r.keyword === "zzz-asa-pop-unprobed");
+      expect(row).toBeDefined();
+      expect(row?.asaPopularity).toBeNull();
+      expect(row?.asaPopularityCheckedAt).toBeNull();
     });
   });
 

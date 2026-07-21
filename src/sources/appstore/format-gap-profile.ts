@@ -29,7 +29,33 @@ function formatHintEvidence(hintBestRank: number | null, hintSeedCount: number |
   return `  Autocomplete hint: observed as a real typed query, rank ${hintBestRank} (${hintSeedCount} ${seedNoun})`;
 }
 
-export function formatGapProfile(p: KeywordGapProfile): string {
+/**
+ * Manually-probed Apple Search Ads `searchPopularity` reading for this
+ * keyword (`appstore_search_popularity`, migration 053, `source='asa'`) —
+ * see `popularity-store.ts` for why this is a manual-import surface rather
+ * than an API sweep. Passed in by the caller (the `analyze_keyword_gap`
+ * tool), not looked up here, so this formatter stays DB-free/pure/unit-
+ * testable.
+ */
+export interface VolumeCheck {
+  /** Apple's 0..5 `searchPopularity` scale. */
+  readonly popularity: number;
+  /** Epoch seconds the reading was recorded. */
+  readonly checkedAt: number;
+}
+
+function formatVolumeCheckLine(volumeCheck: VolumeCheck | null | undefined): string {
+  if (!volumeCheck) {
+    return "  ASA popularity: unverified (never manually probed)";
+  }
+  const probedDate = new Date(volumeCheck.checkedAt * 1000).toISOString().slice(0, 10);
+  return `  ASA popularity: ${volumeCheck.popularity}/5 (probed ${probedDate})`;
+}
+
+export function formatGapProfile(
+  p: KeywordGapProfile,
+  volumeCheck?: VolumeCheck | null,
+): string {
   const incumbents = p.topApps.slice(0, MAX_TOP_APPS_SHOWN).map(formatTopApp).join("\n");
 
   // The keyword can be seeded from Apple's autocomplete (semi attacker-
@@ -61,6 +87,7 @@ export function formatGapProfile(p: KeywordGapProfile): string {
     ...(p.lowConfidence
       ? ["  Caveat: no title-matched incumbent — demand estimated from unrelated non-giant apps."]
       : []),
+    formatVolumeCheckLine(volumeCheck),
     "",
     incumbents.length > 0
       ? `Top incumbents:\n${incumbents}`

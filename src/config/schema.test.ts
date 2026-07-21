@@ -421,6 +421,10 @@ describe("appstoreKeywordGap config", () => {
     expect(g.keywordsPerSweep).toBe(75);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);
+    // ASA popularity manual-import veto (batch E) — OFF by default.
+    expect(g.excludeKnownZeroVolume).toBe(false);
+    expect(g.zeroVolumeThreshold).toBe(1);
+    expect(g.zeroVolumeFreshnessDays).toBe(45);
     expect(g.corpusDiscovery.enabled).toBe(true);
     expect(g.corpusDiscovery.maxMinedPerCycle).toBe(100);
     expect(g.autocompleteExpansion.enabled).toBe(true);
