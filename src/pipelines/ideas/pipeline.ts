@@ -212,6 +212,29 @@ export function applyMinQualityFloor(
   return kept;
 }
 
+/**
+ * The "no fresh source data — skip synthesis" guard predicate, extracted so
+ * it's independently unit-testable (Batch F, F3 fix). MUST include
+ * `keywordGapCount`: without it, a seeds-only run (the dashboard's "Generate
+ * ideas from these keywords" button — see `PipelineConfig.seedKeywords`)
+ * with empty capabilities/trends/pains would silently discard its collected
+ * keyword-gap seeds and report a 0-idea "success" instead of proceeding to
+ * synthesis.
+ */
+export function hasNoFreshSourceData(counts: {
+  readonly capabilitiesCount: number;
+  readonly trendingCategoriesCount: number;
+  readonly clustersCount: number;
+  readonly keywordGapCount: number;
+}): boolean {
+  return (
+    counts.capabilitiesCount === 0 &&
+    counts.trendingCategoriesCount === 0 &&
+    counts.clustersCount === 0 &&
+    counts.keywordGapCount === 0
+  );
+}
+
 export function mergeSelectedIds(
   into: Map<string, string[]>,
   ids: ReadonlyMap<string, readonly string[]> | Record<string, readonly string[]> | undefined,
@@ -466,13 +489,15 @@ export async function runIdeasPipeline(
     // returns [].
     const keywordGaps: readonly GapSeed[] = keywordGapCfg.enabled
       ? await collectKeywordGaps(collectorCtx, {
-          limit: 10,
+          limit: keywordGapCfg.seedLimit,
           minOpportunity: keywordGapCfg.opportunityThresholdForSeed,
           // Batch E: ASA popularity manual-import veto — default OFF (see
           // config/schema.ts's `excludeKnownZeroVolume` doc comment).
           excludeKnownZeroVolume: keywordGapCfg.excludeKnownZeroVolume,
           zeroVolumeThreshold: keywordGapCfg.zeroVolumeThreshold,
           zeroVolumeFreshnessDays: keywordGapCfg.zeroVolumeFreshnessDays,
+          minBuildability: keywordGapCfg.pipelineMinBuildability,
+          seedKeywords: config.seedKeywords,
         })
       : [];
     if (keywordGaps.length > 0) {
@@ -496,10 +521,15 @@ export async function runIdeasPipeline(
     mergeSelectedIds(mergedSelected, collectorCtx.selected);
 
     // ── Guard: short-circuit if no fresh source data ──────────────────────
+    // See `hasNoFreshSourceData`'s doc comment for why `keywordGaps` must be
+    // part of this check.
     if (
-      capabilities.capabilities.length === 0 &&
-      trends.trendingCategories.length === 0 &&
-      pains.clusters.length === 0
+      hasNoFreshSourceData({
+        capabilitiesCount: capabilities.capabilities.length,
+        trendingCategoriesCount: trends.trendingCategories.length,
+        clustersCount: pains.clusters.length,
+        keywordGapCount: keywordGaps.length,
+      })
     ) {
       const [lcCheck, rvCheck, cpCheck] = await Promise.all([
         findCompletedStep(runId, "landscape"),

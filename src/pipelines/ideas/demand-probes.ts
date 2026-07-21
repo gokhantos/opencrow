@@ -854,9 +854,13 @@ export async function enrichDemand(
   cfg: EnrichDemandConfig = {},
 ): Promise<DemandArtifact> {
   // Base aggregate options; supplyDensity may be refined from ph_products below.
+  // `appstore_gap`'s weight is resolved HERE (not hardcoded in demand.ts's
+  // DEMAND_KIND_WEIGHTS) from the live `appstoreKeywordGap.demandWeight`
+  // config knob — see AggregateDemandOptions.kindWeightOverrides' doc comment.
   const baseAggregateOpts = {
     minMatches: cfg.minMatches,
     supplyDensity: cfg.supplyDensity,
+    kindWeightOverrides: { appstore_gap: loadConfig().appstoreKeywordGap.demandWeight },
   };
 
   // Disabled → explicit absence artifact (no silent neutral).

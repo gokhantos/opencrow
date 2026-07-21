@@ -636,13 +636,12 @@ export const appstoreKeywordGapConfigSchema = z
     tier1AutocompleteCap: z.number().int().min(0).max(500).default(50),
     // How many top-ranked gap candidates to surface per scan.
     topN: z.number().int().min(5).max(50).default(20),
-    // Weight applied to demand-side signal when scoring a keyword gap.
-    // Modest default so demand nudges but does not dominate ranking/difficulty.
-    // RESERVED — not yet applied to demand weighting. DEMAND_KIND_WEIGHTS
-    // .appstore_gap in src/pipelines/ideas/demand.ts is hardcoded to 1.0 and
-    // does not read this field yet. Kept in the schema (rather than removed)
-    // so the config surface is stable once it IS wired in; do not assume it
-    // has any effect until DEMAND_KIND_WEIGHTS reads it.
+    // Weight applied to the `appstore_gap` demand-evidence kind when
+    // aggregating a candidate's demand artifact (see `demand-probes.ts`'s
+    // `enrichDemand`, which resolves this field into `aggregateDemand`'s
+    // `kindWeightOverrides` — `DEMAND_KIND_WEIGHTS.appstore_gap` in
+    // `demand.ts` stays the 1.0 default fallback when this equals 1). Modest
+    // default so demand nudges but does not dominate ranking/difficulty.
     demandWeight: z.number().min(0).max(5).default(1),
     // Minimum opportunity score (0..1) a keyword must clear before it is fed
     // back as a seed into further expansion/generation. Live opportunity
@@ -667,6 +666,20 @@ export const appstoreKeywordGapConfigSchema = z
     // ignored by the veto — search demand drifts, so a probe from months ago
     // should not permanently blacklist a keyword.
     zeroVolumeFreshnessDays: z.number().int().min(1).max(365).default(45),
+    // Minimum `buildability` (0..100, see `computeBuildability`) a keyword's
+    // latest US-storefront scan must clear before `collectKeywordGaps`
+    // (idea-synthesis pipeline consumer) will draw it as a seed. Additive to
+    // the store/low-confidence/junk filters `collectKeywordGaps` always
+    // applies (Batch F, F1) — default 0 (no-op) so this ships without
+    // silently starving the pipeline of seeds; raise once the corpus's real
+    // buildability distribution is understood from the dashboard.
+    pipelineMinBuildability: z.number().int().min(0).max(100).default(0),
+    // Cap on how many top-opportunity scans `collectKeywordGaps` fetches per
+    // pipeline run before ranking/selecting seeds (was a hardcoded `limit: 10`
+    // in `pipeline.ts`'s Step 3b). Lifted into config so an operator can widen
+    // the seed pool without a code change; kept at the prior hardcoded value
+    // as the default so this ships behavior-neutral.
+    seedLimit: z.number().int().min(1).max(100).default(10),
     // SECONDARY corpus-discovery: mines new keyword candidates from App
     // Store data the scraper already fetches (top-chart app names +
     // categories — see keyword-miner.ts). Demoted 2026-07-21 in favor of
@@ -1061,6 +1074,8 @@ export const appstoreKeywordGapConfigSchema = z
     excludeKnownZeroVolume: false,
     zeroVolumeThreshold: 1,
     zeroVolumeFreshnessDays: 45,
+    pipelineMinBuildability: 0,
+    seedLimit: 10,
     corpusDiscovery: {
       enabled: true,
       maxMinedPerCycle: 100,

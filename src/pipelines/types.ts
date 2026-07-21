@@ -32,6 +32,14 @@ export interface PipelineConfig {
    * `model` is ALSO set; otherwise the route's provider (and model) are used.
    */
   readonly provider?: ModelProvider;
+  /**
+   * Explicit App Store keyword picks (the dashboard's "Generate ideas from
+   * these keywords" watchlist — see `KeywordResearch.tsx`) threaded into
+   * `collectKeywordGaps` as a PRIORITY allowlist ahead of the auto-selected
+   * opportunity-ranked seeds. Optional; empty/unset preserves today's
+   * auto-selection-only behavior.
+   */
+  readonly seedKeywords?: readonly string[];
 }
 
 export const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {

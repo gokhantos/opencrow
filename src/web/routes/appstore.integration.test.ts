@@ -52,10 +52,16 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-web-build-filter-low",
 ];
 
+const WATCHLIST_TEST_KEYWORDS: readonly string[] = [
+  "zzz-web-watchlist-star-target",
+  "zzz-web-watchlist-unstar-target",
+];
+
 async function cleanupTestKeywords(): Promise<void> {
   const db = getDb();
   await db`DELETE FROM appstore_keyword_scans WHERE keyword IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_keywords WHERE keyword IN ${db(TEST_KEYWORDS)}`;
+  await db`DELETE FROM appstore_keyword_verdicts WHERE keyword IN ${db(WATCHLIST_TEST_KEYWORDS)}`;
 }
 
 function makeApp() {
@@ -68,6 +74,14 @@ async function json<T>(res: Response): Promise<T> {
 
 function get(app: ReturnType<typeof makeApp>, path: string): Promise<Response> {
   return Promise.resolve(app.fetch(new Request(`${BASE}${path}`)));
+}
+
+function post(app: ReturnType<typeof makeApp>, path: string): Promise<Response> {
+  return Promise.resolve(app.fetch(new Request(`${BASE}${path}`, { method: "POST" })));
+}
+
+function del(app: ReturnType<typeof makeApp>, path: string): Promise<Response> {
+  return Promise.resolve(app.fetch(new Request(`${BASE}${path}`, { method: "DELETE" })));
 }
 
 function makeTopApp(overrides: Partial<TopApp> = {}): TopApp {
@@ -554,6 +568,47 @@ describe("appstore opportunities routes", () => {
       expect(body.data.history).toHaveLength(1);
       expect(body.data.meta.firstFoundAt).toBeNull();
       expect(body.data.meta.source).toBeNull();
+    });
+  });
+
+  // Batch F, F5 leg 1 — server-side watchlist routes.
+  describe("watchlist routes", () => {
+    it("POST /appstore/watchlist/:keyword stars, and GET /appstore/watchlist lists it", async () => {
+      const app = makeApp();
+      const keyword = "zzz-web-watchlist-star-target";
+
+      const postRes = await post(app, `/appstore/watchlist/${encodeURIComponent(keyword)}`);
+      expect(postRes.status).toBe(200);
+      const postBody = await json<{ success: boolean; data: { verdict: string; source: string } }>(
+        postRes,
+      );
+      expect(postBody.data.verdict).toBe("starred");
+      expect(postBody.data.source).toBe("human");
+
+      const listRes = await get(app, "/appstore/watchlist");
+      const listBody = await json<{ success: boolean; data: readonly string[] }>(listRes);
+      expect(listBody.data).toContain(keyword);
+    });
+
+    it("DELETE /appstore/watchlist/:keyword unstars — removed from the GET listing", async () => {
+      const app = makeApp();
+      const keyword = "zzz-web-watchlist-unstar-target";
+
+      await post(app, `/appstore/watchlist/${encodeURIComponent(keyword)}`);
+      const beforeDelete = await json<{ success: boolean; data: readonly string[] }>(
+        await get(app, "/appstore/watchlist"),
+      );
+      expect(beforeDelete.data).toContain(keyword);
+
+      const delRes = await del(app, `/appstore/watchlist/${encodeURIComponent(keyword)}`);
+      expect(delRes.status).toBe(200);
+      const delBody = await json<{ success: boolean; data: { deleted: boolean } }>(delRes);
+      expect(delBody.data.deleted).toBe(true);
+
+      const afterDelete = await json<{ success: boolean; data: readonly string[] }>(
+        await get(app, "/appstore/watchlist"),
+      );
+      expect(afterDelete.data).not.toContain(keyword);
     });
   });
 });

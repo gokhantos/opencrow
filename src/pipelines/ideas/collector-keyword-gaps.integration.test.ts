@@ -2,6 +2,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { getDb, initDb } from "../../store/db";
 import { getLatestScan, insertScan, upsertKeywords } from "../../sources/appstore/keyword-store";
 import type { KeywordGapProfile } from "../../sources/appstore/keyword-types";
+import {
+  deleteKeywordVerdict,
+  upsertKeywordVerdict,
+} from "../../sources/appstore/keyword-verdict-store";
 import { collectKeywordGaps } from "./collector-keyword-gaps";
 import type { CollectorContext } from "./collectors";
 
@@ -16,10 +20,17 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-gapcol-high",
   "zzz-gapcol-mid",
   "zzz-gapcol-low",
+  "zzz-gapcol-de-store",
+  "zzz-gapcol-lowconf",
+  "zzz-gapcol-priority-pick",
+  "zzz-gapcol-starred",
+  "zzz-gapcol-excluded",
+  "zzz-gapcol-downweighted",
 ];
 
 async function cleanup(): Promise<void> {
   const db = getDb();
+  await db`DELETE FROM appstore_keyword_verdicts WHERE keyword IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_keyword_scans WHERE keyword IN ${db(TEST_KEYWORDS)}`;
   await db`DELETE FROM appstore_keywords WHERE keyword IN ${db(TEST_KEYWORDS)}`;
 }
@@ -130,5 +141,105 @@ describe("collectKeywordGaps (integration)", () => {
     const selectedKeywords = ctx.selected.get("appstore_keyword_scans") ?? [];
     expect(selectedKeywords).toContain("zzz-gapcol-mid");
     expect(selectedKeywords).not.toContain("zzz-gapcol-high");
+  });
+
+  // Batch F, F1: collectKeywordGaps hardcodes store:'app' + excludeLowConfidence
+  // on its auto-selected fetch.
+  it("excludes a DE-storefront scan and a low_confidence scan from auto-selected seeds", async () => {
+    await upsertKeywords([
+      { keyword: "zzz-gapcol-de-store", genreZone: "zzz-gapcol", source: "seed" },
+      { keyword: "zzz-gapcol-lowconf", genreZone: "zzz-gapcol", source: "seed" },
+    ]);
+    await insertScan(makeScan({ keyword: "zzz-gapcol-de-store", store: "DE", opportunity: 1.0 }));
+    await insertScan(makeScan({ keyword: "zzz-gapcol-lowconf", lowConfidence: true, opportunity: 1.0 }));
+
+    const ctx = makeCtx();
+    const seeds = await collectKeywordGaps(ctx, { limit: 500, minOpportunity: 0.5 });
+    const keywords = seeds.map((s) => s.keyword);
+
+    expect(keywords).not.toContain("zzz-gapcol-de-store");
+    expect(keywords).not.toContain("zzz-gapcol-lowconf");
+  });
+
+  // Batch F, F3: explicit `seedKeywords` are drawn AHEAD of auto-selection,
+  // bypassing the opportunity threshold.
+  it("draws seedKeywords as priority seeds, bypassing the minOpportunity threshold", async () => {
+    await upsertKeywords([
+      { keyword: "zzz-gapcol-priority-pick", genreZone: "zzz-gapcol", source: "seed" },
+    ]);
+    // Below minOpportunity — would never auto-select, but it's an EXPLICIT pick.
+    await insertScan(makeScan({ keyword: "zzz-gapcol-priority-pick", opportunity: 0.01 }));
+
+    const ctx = makeCtx();
+    const seeds = await collectKeywordGaps(ctx, {
+      limit: 500,
+      minOpportunity: 0.9,
+      seedKeywords: ["zzz-gapcol-priority-pick"],
+    });
+
+    expect(seeds.map((s) => s.keyword)).toContain("zzz-gapcol-priority-pick");
+  });
+
+  // Batch F, F5 leg 3: the server-side starred watchlist is auto-pulled as
+  // priority seeds; a human dismissed/killed verdict hard-excludes; a
+  // pipeline dismissed verdict only soft-downweights (still included).
+  describe("keyword-verdict integration (Batch F, F5)", () => {
+    afterEach(async () => {
+      await deleteKeywordVerdict("zzz-gapcol-starred", "human");
+      await deleteKeywordVerdict("zzz-gapcol-excluded", "human");
+      await deleteKeywordVerdict("zzz-gapcol-downweighted", "pipeline");
+    });
+
+    it("auto-pulls a starred keyword as a priority seed even below minOpportunity", async () => {
+      await upsertKeywords([
+        { keyword: "zzz-gapcol-starred", genreZone: "zzz-gapcol", source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-gapcol-starred", opportunity: 0.01 }));
+      await upsertKeywordVerdict({
+        keyword: "zzz-gapcol-starred",
+        verdict: "starred",
+        source: "human",
+      });
+
+      const ctx = makeCtx();
+      const seeds = await collectKeywordGaps(ctx, { limit: 500, minOpportunity: 0.9 });
+
+      expect(seeds.map((s) => s.keyword)).toContain("zzz-gapcol-starred");
+    });
+
+    it("hard-excludes a human-dismissed keyword from auto-selection", async () => {
+      await upsertKeywords([
+        { keyword: "zzz-gapcol-excluded", genreZone: "zzz-gapcol", source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-gapcol-excluded", opportunity: 1.0 }));
+      await upsertKeywordVerdict({
+        keyword: "zzz-gapcol-excluded",
+        verdict: "dismissed",
+        source: "human",
+      });
+
+      const ctx = makeCtx();
+      const seeds = await collectKeywordGaps(ctx, { limit: 500, minOpportunity: 0.5 });
+
+      expect(seeds.map((s) => s.keyword)).not.toContain("zzz-gapcol-excluded");
+    });
+
+    it("still includes a pipeline-dismissed (soft-downweighted) keyword", async () => {
+      await upsertKeywords([
+        { keyword: "zzz-gapcol-downweighted", genreZone: "zzz-gapcol", source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-gapcol-downweighted", opportunity: 1.0 }));
+      await upsertKeywordVerdict({
+        keyword: "zzz-gapcol-downweighted",
+        verdict: "dismissed",
+        source: "pipeline",
+      });
+
+      const ctx = makeCtx();
+      const seeds = await collectKeywordGaps(ctx, { limit: 500, minOpportunity: 0.5 });
+
+      // Soft downweight — still eligible, unlike the hard-excluded case above.
+      expect(seeds.map((s) => s.keyword)).toContain("zzz-gapcol-downweighted");
+    });
   });
 });

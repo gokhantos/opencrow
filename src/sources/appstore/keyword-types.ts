@@ -46,6 +46,15 @@ export interface HintEvidence {
   readonly covered: boolean;
 }
 
+/**
+ * The three storefront lanes a keyword scan can belong to — "app" (US App
+ * Store, the primary lane), "play" (Google Play), "DE" (the German App Store
+ * lane, migration-added — see `KeywordGapProfile.store`'s doc comment). Used
+ * wherever a caller needs to filter/scope by store rather than accept the
+ * inline `"app" | "play" | "DE"` union repeated across the module.
+ */
+export type KeywordScanStore = "app" | "play" | "DE";
+
 export interface TopApp {
   readonly id: string;
   readonly name: string;

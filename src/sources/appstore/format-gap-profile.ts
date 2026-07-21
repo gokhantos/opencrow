@@ -3,6 +3,7 @@
 // isolation from the network-dependent `scanKeyword` orchestration.
 
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
+import { computeBuildability } from "./keyword-scoring";
 import { sanitizeScrapedField } from "../../sige/untrusted";
 
 const MAX_TOP_APPS_SHOWN = 5;
@@ -65,12 +66,24 @@ export function formatGapProfile(
 
   const hintLine = formatHintEvidence(p.hintBestRank ?? null, p.hintSeedCount ?? null);
 
+  // `buildability` is NOT a stored/persisted KeywordGapProfile field — it is
+  // a read-time-computed score (see `keyword-store.ts`'s `rowToScan` /
+  // `BUILDABILITY_SQL`, which mirror this same formula) — computed here
+  // identically so the agent's on-demand analysis reports the same
+  // "can I win this?" number the dashboard shows.
+  const buildability = computeBuildability({
+    demand: p.demand,
+    topAppReviews: p.topAppReviews,
+    avgRating: p.avgRating,
+  });
+
   const lines = [
     `Keyword Gap: "${safeKeyword}" (${p.store === "app" ? "App Store (US)" : p.store === "DE" ? "App Store (DE)" : "Google Play"})`,
     `  Competitiveness: ${Math.round(p.competitiveness)}/100`,
     `  Demand: ${p.demand.toFixed(1)} ratings/day`,
     `  Incumbent weakness: ${toPercent(p.incumbentWeakness)}`,
     `  Opportunity: ${toPercent(p.opportunity)}`,
+    `  Buildability: ${buildability}/100 (solo-indie "can I win this?" score)`,
     `  Trend: ${p.trend}`,
     // Batch A budget rescue (2026-07-22) — see keyword-brand.ts's
     // `isBrandNavigationalScan`: warns the reader that this keyword's
@@ -88,11 +101,24 @@ export function formatGapProfile(
       ? ["  Caveat: no title-matched incumbent — demand estimated from unrelated non-giant apps."]
       : []),
     formatVolumeCheckLine(volumeCheck),
+  ];
+
+  // Batch F, F2: a louder, all-caps banner in addition to the inline
+  // "Caveat:" line above — the caveat is easy to miss buried in the field
+  // list, so this repeats the warning as its own paragraph.
+  if (p.lowConfidence) {
+    lines.push(
+      "",
+      "LOW CONFIDENCE: no title-matched incumbents — demand/weakness estimated from unrelated apps, not this keyword's real field.",
+    );
+  }
+
+  lines.push(
     "",
     incumbents.length > 0
       ? `Top incumbents:\n${incumbents}`
       : "Top incumbents: none found for this keyword.",
-  ];
+  );
 
   return lines.join("\n");
 }
