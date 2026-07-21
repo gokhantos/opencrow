@@ -52,6 +52,27 @@ const log = createLogger("appstore:keyword-review-miner");
 const DEFAULT_REVIEW_SCAN_LIMIT = 5000;
 
 /**
+ * Upper bound on a single cleaned token's length. Review text is fully
+ * attacker-controlled (anyone can post a review), and the shared
+ * `filterJunkTokens`/`isJunkKeyword` filters have no upper length bound — so
+ * without this, one hostile review containing a single very long no-space
+ * run of letters would pass through as a multi-thousand-character "keyword"
+ * that gets upserted to the corpus and later used as a literal search-suggest
+ * / iTunes query string. 30 comfortably covers real English words/short
+ * phrases while rejecting pathological input.
+ */
+const MAX_REVIEW_TOKEN_LENGTH = 30;
+
+/**
+ * Upper bound on how many cleaned tokens from a single review are turned
+ * into n-grams. Without this, one abnormally long review (however many
+ * tokens survive cleaning) would blow up the per-pass working set (`hits`
+ * array + `appsByNgram` map) in memory. 200 comfortably covers a real review
+ * body.
+ */
+const MAX_REVIEW_TOKENS_PER_REVIEW = 200;
+
+/**
  * A review n-gram counts as NEED-shaped if it contains any of these tokens —
  * direct linguistic markers of an unmet want, independent of how many other
  * apps' reviewers happen to use the same phrase. Deliberately narrow (a few
@@ -138,11 +159,13 @@ export function extractComplaintCandidates(
 
   for (const review of reviews) {
     const normalized = normalizeText(`${review.title} ${review.content}`);
-    const tokens = filterStopwords(filterJunkTokens(tokenize(normalized)));
-    if (tokens.length === 0) continue;
+    const cleanedTokens = filterStopwords(filterJunkTokens(tokenize(normalized)))
+      .filter((t) => t.length <= MAX_REVIEW_TOKEN_LENGTH)
+      .slice(0, MAX_REVIEW_TOKENS_PER_REVIEW);
+    if (cleanedTokens.length === 0) continue;
 
     const seenInReview = new Set<string>();
-    for (const gram of buildComplaintNGrams(tokens)) {
+    for (const gram of buildComplaintNGrams(cleanedTokens)) {
       if (isJunkKeyword(gram)) continue;
       if (seenInReview.has(gram)) continue;
       seenInReview.add(gram);

@@ -99,4 +99,34 @@ describe("extractComplaintCandidates", () => {
     ]);
     expect(candidates.map((c) => c.keyword)).toContain("wish they");
   });
+
+  it("drops an over-long single token (e.g. a 4000-char no-space run) instead of keeping it in a gram", () => {
+    const hostileToken = "x".repeat(4000);
+    const candidates = extractComplaintCandidates([
+      review("app-1", "Feature request", `I wish they added ${hostileToken} support for dark mode`),
+    ]);
+    const keywords = candidates.map((c) => c.keyword);
+    // The hostile token must not survive into any output n-gram...
+    expect(keywords.some((k) => k.includes(hostileToken))).toBe(false);
+    // ...nor any oversized token in general.
+    expect(keywords.every((k) => k.split(" ").every((t) => t.length <= 30))).toBe(true);
+    // The rest of the review's normal anchor-bearing bigram still surfaces —
+    // dropping the hostile token doesn't take the whole review down with it.
+    expect(keywords).toContain("wish they");
+  });
+
+  it("caps n-gram generation to the first MAX_REVIEW_TOKENS_PER_REVIEW cleaned tokens of a review", () => {
+    // Build 500 unique filler tokens, with an anchor+marker pair near the
+    // start (well within the per-review cap) and another anchor+marker pair
+    // well past it, so only the first pair can produce a qualifying n-gram.
+    const tokens = Array.from({ length: 500 }, (_, i) => `filler${i}`);
+    tokens[2] = "want";
+    tokens[3] = "kwstart";
+    tokens[300] = "want";
+    tokens[301] = "kwend";
+    const candidates = extractComplaintCandidates([review("app-1", "no title", tokens.join(" "))]);
+    const keywords = candidates.map((c) => c.keyword);
+    expect(keywords.some((k) => k.includes("kwstart"))).toBe(true);
+    expect(keywords.some((k) => k.includes("kwend"))).toBe(false);
+  });
 });
