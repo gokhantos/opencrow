@@ -227,4 +227,3 @@ export function shouldDeactivateForHintAbsence(
   if (!candidate.hintCovered) return false;
   return candidate.hintSeedCount === 0;
 }
-}

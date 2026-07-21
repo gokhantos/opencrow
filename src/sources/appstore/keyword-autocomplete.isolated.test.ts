@@ -366,6 +366,56 @@ describe("expandCorpus", () => {
     ]);
   });
 
+  // Security hardening (2026-07-22): an over-length term is still logged
+  // (Batch D item D1 logs EVERY parsed term) but must be BOUNDED to the
+  // 80-char cap before it reaches the TEXT column — previously an
+  // over-length term was dropped outright (`continue`) before persistence
+  // existed at all; now that every parsed term gets a row, persisting it
+  // verbatim would let an unbounded upstream string into the DB.
+  it("truncates an over-length hint term to 80 chars before persisting, with kept: false", async () => {
+    const oversized = `budget ${"planner ".repeat(15)}`.trim();
+    expect(oversized.length).toBeGreaterThan(80);
+
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        if (url.includes("term=budget")) {
+          return { ok: true, text: async () => hintsPlist([oversized, "budget planner"]) };
+        }
+        return { ok: true, text: async () => hintsPlist([]) };
+      },
+    }));
+
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143441-1,29",
+      delayMs: 0,
+    });
+
+    const budgetRows = (
+      insertedHintRows as Array<{ seed: string; term: string; rank: number; kept: boolean }>
+    ).filter((r) => r.seed === "budget");
+
+    const oversizedRow = budgetRows.find((r) => r.rank === 0);
+    expect(oversizedRow?.term.length).toBe(80);
+    expect(oversizedRow?.term).toBe(oversized.toLowerCase().slice(0, 80));
+    expect(oversizedRow?.kept).toBe(false);
+
+    const keptRow = budgetRows.find((r) => r.rank === 1);
+    expect(keptRow?.term).toBe("budget planner");
+    expect(keptRow?.kept).toBe(true);
+
+    // The over-length term must never reach the corpus-expansion candidate
+    // set either — unchanged from pre-existing behavior.
+    expect(upsertedRows.map((r) => (r as { keyword: string }).keyword)).not.toContain(
+      oversizedRow?.term,
+    );
+  });
+
   // Throughput wave item 3 ("hint breadth"): `market` tags every hint row
   // with the storefront being queried (migration 049) — defaults to "us"
   // (tested above) but a caller running the GB lane passes "gb" explicitly.

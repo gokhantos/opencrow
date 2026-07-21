@@ -216,6 +216,7 @@ describe("appstoreGapProbe", () => {
       topApps: [],
       scannedAt: NOW,
       lowConfidence: false,
+      brandNavigational: false,
     });
 
     const out = await appstoreGapProbe.probe([DE_STORE_KEYWORD], OPTS);
@@ -243,6 +244,7 @@ describe("appstoreGapProbe", () => {
       topApps: [],
       scannedAt: NOW,
       lowConfidence: true,
+      brandNavigational: false,
     });
 
     const out = await appstoreGapProbe.probe([LOW_CONFIDENCE_KEYWORD], OPTS);

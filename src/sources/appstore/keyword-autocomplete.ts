@@ -223,6 +223,19 @@ export interface HintLogEntry {
  * running kept-count is still under `perSeed` at the time it's reached (in
  * original rank order) — i.e. exactly `buildCandidatesFromHints`' old
  * predicate, just computed without early-exiting.
+ *
+ * `HintLogEntry.term` is capped to `MAX_KEYWORD_LENGTH` before being
+ * returned — every parsed term is logged now (Batch D item D1), including
+ * ones that fail the length check, and `appstore_autocomplete_hints.term`
+ * is an unconstrained TEXT column (migration 043) with no DB-side bound.
+ * Previously an over-length term was simply dropped (`continue`) before
+ * anything was persisted; logging it verbatim now would let an
+ * unbounded, upstream-influenced string reach the column. Truncating here
+ * keeps the rank slot occupied (the gapless-rank goal) while restoring the
+ * length invariant `buildCandidatesFromHints` always enforced for KEPT
+ * candidates. `kept` still reflects the ORIGINAL (pre-truncation) length
+ * check — a term that only fits after truncation is still `kept: false`,
+ * exactly as `buildCandidatesFromHints` would have dropped it.
  */
 function classifyHintTerms(terms: readonly string[], perSeed: number): readonly HintLogEntry[] {
   const seen = new Set<string>();
@@ -241,7 +254,8 @@ function classifyHintTerms(terms: readonly string[], perSeed: number): readonly 
       seen.add(keyword);
       keptCount++;
     }
-    entries.push({ term: keyword, rank: i, kept });
+    const persistedTerm = keyword.slice(0, MAX_KEYWORD_LENGTH);
+    entries.push({ term: persistedTerm, rank: i, kept });
   }
   return entries;
 }

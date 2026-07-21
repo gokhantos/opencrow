@@ -268,6 +268,7 @@ describe("keyword clusters serving layer", () => {
         topApps: [makeTopApp()],
         scannedAt: now - 1000,
         lowConfidence: false,
+        brandNavigational: false,
       });
       // NEWER DE scan, deliberately different demand/opportunity — must NOT
       // replace the US member row.
@@ -285,6 +286,7 @@ describe("keyword clusters serving layer", () => {
         topApps: [makeTopApp()],
         scannedAt: now,
         lowConfidence: false,
+        brandNavigational: false,
       });
 
       const db = getDb();
