@@ -36,7 +36,7 @@ import {
   markSeedsExpanded,
   upsertKeywords,
 } from "./keyword-store";
-import type { AutocompleteHintRow, KeywordSeedRow } from "./keyword-store";
+import type { AutocompleteHintRow, KeywordSeedRow, SeedRotationUpdate } from "./keyword-store";
 
 const log = createLogger("appstore:keyword-autocomplete");
 
@@ -62,6 +62,34 @@ const PREFIX_FAN_OUT_LETTERS: readonly string[] = "abcdefghijklmnopqrstuvwxyz".s
  * already proven sufficient for that module's own brand/artist filtering.
  */
 const BRAND_SEGMENT_APP_NAME_LIMIT = 2000;
+
+/**
+ * Batch C1 fix ("prefix fan-out never rotates"): builds a WRAPAROUND window
+ * of `count` letters starting at `offset` into the 26-letter alphabet,
+ * instead of the pre-fix `PREFIX_FAN_OUT_LETTERS.slice(0, count)` — which
+ * always queried the SAME leading letters ("<seed> a".."<seed> e") on every
+ * pass, forever, leaving ~21/26 of the per-seed suggest space unfetched. The
+ * caller (`expandCorpus`) advances each seed's own `nextPrefixOffset` cursor
+ * (persisted per (keyword, storefront) in `appstore_seed_expansion_state` —
+ * migration 051) by the window's length after each pass, so successive
+ * passes sweep through the whole alphabet over time instead of the same
+ * fixed slice.
+ *
+ * Pure; `offset` is normalized via a true modulo (never negative, even for a
+ * negative or `>= 26` input) and `count` is clamped to `[0, 26]` so a caller
+ * can never request more letters than exist or a negative-length window.
+ */
+export function buildPrefixFanOutWindow(offset: number, count: number): readonly string[] {
+  const alphabetSize = PREFIX_FAN_OUT_LETTERS.length;
+  const clampedCount = Math.max(0, Math.min(count, alphabetSize));
+  const normalizedOffset = ((offset % alphabetSize) + alphabetSize) % alphabetSize;
+  const letters: string[] = [];
+  for (let i = 0; i < clampedCount; i++) {
+    const letter = PREFIX_FAN_OUT_LETTERS[(normalizedOffset + i) % alphabetSize];
+    if (letter !== undefined) letters.push(letter);
+  }
+  return letters;
+}
 
 // ---------------------------------------------------------------------------
 // Plist parsing
@@ -294,14 +322,19 @@ export interface ExpandCorpusOptions {
    */
   readonly useProxy?: boolean;
   /**
-   * Prefix fan-out (2026-07-21 audit item D fix): for each seed, ALSO
-   * queries `"<seed> <letter>"` for up to this many single letters (a..z, in
-   * order) — Apple's search-suggest returns different, more specific
-   * completions per prefix, closer to how real users actually type. Each
-   * fan-out query counts toward `attempted`/`rateLimitErrors` and respects
-   * the same `delayMs` pacing as the bare seed. Optional; defaults to 0
-   * (bare-seed-only, the pre-fix behavior) so existing callers/tests are
-   * unaffected.
+   * Prefix fan-out (2026-07-21 audit item D fix, wraparound-windowed as of
+   * Batch C1): for each seed, ALSO queries `"<seed> <letter>"` for up to
+   * this many single letters — Apple's search-suggest returns different,
+   * more specific completions per prefix, closer to how real users actually
+   * type. As of Batch C1 (migration 051) the letters queried are a
+   * WRAPAROUND WINDOW of this size starting at the seed's own
+   * `nextPrefixOffset` cursor (`buildPrefixFanOutWindow`), not always the
+   * same fixed `a..e`-style leading slice — each pass advances every drawn
+   * seed's cursor by however many letters it queried, so successive passes
+   * sweep the whole 26-letter alphabet over time. Each fan-out query counts
+   * toward `attempted`/`rateLimitErrors` and respects the same `delayMs`
+   * pacing as the bare seed. Optional; defaults to 0 (bare-seed-only, the
+   * pre-fix behavior) so existing callers/tests are unaffected.
    */
   readonly maxPrefixesPerSeed?: number;
 }
@@ -352,13 +385,16 @@ const EMPTY_RESULT: ExpandCorpusResult = {
  * Expands the keyword corpus from Apple search-suggest hints, seeded from a
  * mix of current high-opportunity "winners" and zone-diverse picks (see
  * `keyword-store.ts`'s `getExpansionSeeds`, now seed-rotated — 2026-07-21
- * audit item D fix). For each seed, fetches the bare-seed hints plus up to
- * `maxPrefixesPerSeed` single-letter prefix-fan-out queries, extracts up to
- * `perSeed` good (junk-filtered) candidates per query in Apple's popularity
- * order, persists every (seed, term, rank) hint to `appstore_autocomplete_
- * hints` (migration 043 — previously discarded rank entirely), marks every
- * seed drawn this pass as expanded (rotates it to the back of next pass's
- * selection order), and upserts the genuinely new terms with
+ * audit item D fix — and storefront-scoped, Batch C2). For each seed,
+ * fetches the bare-seed hints plus up to `maxPrefixesPerSeed` prefix-fan-out
+ * queries drawn from a WRAPAROUND WINDOW over the seed's own rotation cursor
+ * (Batch C1 — see `buildPrefixFanOutWindow`), extracts up to `perSeed` good
+ * (junk-filtered) candidates per query in Apple's popularity order, persists
+ * every (seed, term, rank) hint to `appstore_autocomplete_hints` (migration
+ * 043 — previously discarded rank entirely), marks every seed drawn this
+ * pass as expanded (rotates it to the back of next pass's selection order
+ * AND advances its prefix-window cursor — both keyed per (keyword,
+ * `opts.market`), migration 051), and upserts the genuinely new terms with
  * `source: "autocomplete"` inheriting the seed's `genreZone`.
  *
  * Never throws: a single seed's fetch failure is logged and treated as zero
@@ -368,20 +404,22 @@ const EMPTY_RESULT: ExpandCorpusResult = {
  * caller (scraper.ts) can feed them into the shared sweep throttle.
  */
 export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCorpusResult> {
+  const market = opts.market ?? "us";
   const seeds = await getExpansionSeeds({
     minOpportunity: opts.minOpportunity,
     winnerLimit: opts.winnerLimit,
     diverseLimit: opts.diverseLimit,
+    market,
   });
   if (seeds.length === 0) return EMPTY_RESULT;
 
   const maxPrefixesPerSeed = Math.max(0, opts.maxPrefixesPerSeed ?? 0);
   const nowSeconds = Math.floor(Date.now() / 1000);
-  const market = opts.market ?? "us";
   const useProxy = opts.useProxy ?? false;
 
   const candidates: HintCandidate[] = [];
   const hintRows: AutocompleteHintRow[] = [];
+  const seedUpdates: SeedRotationUpdate[] = [];
   const seen = new Set<string>();
   let attempted = 0;
   let rateLimitErrors = 0;
@@ -390,13 +428,12 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
   let rawTermCount = 0;
 
   for (const seed of seeds) {
-    // Prefix fan-out (2026-07-21 audit item D fix): the bare seed, plus up
-    // to `maxPrefixesPerSeed` single-letter-suffixed queries — see
-    // `ExpandCorpusOptions` doc comment.
-    const queries = [
-      seed.keyword,
-      ...PREFIX_FAN_OUT_LETTERS.slice(0, maxPrefixesPerSeed).map((l) => `${seed.keyword} ${l}`),
-    ];
+    // Prefix fan-out (Batch C1 — wraparound window): the bare seed, plus a
+    // window of up to `maxPrefixesPerSeed` letters starting at this seed's
+    // OWN `nextPrefixOffset` cursor — see `ExpandCorpusOptions` doc comment
+    // and `buildPrefixFanOutWindow`.
+    const window = buildPrefixFanOutWindow(seed.nextPrefixOffset, maxPrefixesPerSeed);
+    const queries = [seed.keyword, ...window.map((l) => `${seed.keyword} ${l}`)];
 
     for (const query of queries) {
       attempted++;
@@ -431,16 +468,26 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
 
       if (opts.delayMs > 0) await delay(opts.delayMs);
     }
+
+    // Advance THIS seed's cursor by however many prefix letters were
+    // actually queried this pass (the throttle-effective `window.length`,
+    // not the nominal `maxPrefixesPerSeed` — the two only differ when the
+    // window was clamped, e.g. a caller passing > 26) — wraps at 26 via the
+    // same modulo `buildPrefixFanOutWindow` uses internally.
+    seedUpdates.push({
+      keyword: seed.keyword,
+      storefront: market,
+      nextPrefixOffset: (seed.nextPrefixOffset + window.length) % PREFIX_FAN_OUT_LETTERS.length,
+    });
   }
 
-  // Seed rotation (2026-07-21 audit item D fix): every seed drawn this pass
-  // rotates to the back of `getWinnerKeywords`/`getDiverseZoneSample`'s
-  // selection order for the NEXT pass, regardless of whether its fetch(es)
-  // succeeded or yielded candidates — see `markSeedsExpanded`'s doc comment.
-  await markSeedsExpanded(
-    seeds.map((s) => s.keyword),
-    nowSeconds,
-  );
+  // Seed rotation (2026-07-21 audit item D fix, widened Batch C1+C2): every
+  // seed drawn this pass rotates to the back of
+  // `getWinnerKeywords`/`getDiverseZoneSample`'s selection order for the
+  // NEXT pass AND has its prefix-window cursor advanced, regardless of
+  // whether its fetch(es) succeeded or yielded candidates — see
+  // `markSeedsExpanded`'s doc comment.
+  await markSeedsExpanded(seedUpdates, nowSeconds);
   // Rank hints (2026-07-21 audit item D fix): persisted regardless of
   // whether a term ends up being a genuinely NEW corpus keyword below — the
   // rank signal itself is the point, not just the term.

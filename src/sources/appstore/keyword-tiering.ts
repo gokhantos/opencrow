@@ -84,9 +84,11 @@ export const HOT_LANE_MAX_BATCH = 50;
  * Corpus sources that unconditionally qualify a stale keyword for tier 1.
  * Widened 2026-07-21 (scan-budget retune) to include `autocomplete` — real,
  * popularity-ordered user search queries are exactly the corpus tier 1
- * exists to guarantee daily coverage for, same as seed/manual. `mined` is
- * deliberately excluded: it only reaches tier 1 via an active signature hit
- * (see `hasActiveSignatureHit` below), never by source alone.
+ * exists to guarantee daily coverage for, same as seed/manual. `mined` (and,
+ * as of Batch C4, `review` — see keyword-review-miner.ts, which shares the
+ * mined pool's exploration quota) is deliberately excluded: it only reaches
+ * tier 1 via an active signature hit (see `hasActiveSignatureHit` below),
+ * never by source alone.
  */
 export const TIER1_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   "manual",

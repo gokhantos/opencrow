@@ -41,8 +41,11 @@ export interface KeywordSeedRow {
   // SECONDARY corpus-discovery source: candidates extracted from scraped
   // App Store ranking data (see keyword-miner.ts) — still useful for
   // brand-new apps autocomplete hasn't indexed yet, but demoted to a small
-  // top-up now that autocomplete works.
-  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined";
+  // top-up now that autocomplete works. "review" (Batch C4) is a THIRD,
+  // narrower discovery source: n-grams mined from low-star review text (see
+  // keyword-review-miner.ts) — shares the mined pool's exploration quota and
+  // deactivation rules (never TIER1_ELIGIBLE_SOURCES-eligible on its own).
+  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined" | "review";
 }
 
 export interface KeywordScanRow {
@@ -93,7 +96,7 @@ export interface KeywordScanRow {
  */
 export interface OpportunityRow extends KeywordScanRow {
   readonly firstFoundAt: number | null;
-  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined" | null;
+  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined" | "review" | null;
   /**
    * MAX(opportunity) over this keyword's entire scan history (all stores).
    * Backs the "peak" leaderboard sort — a keyword whose latest scan has
@@ -200,6 +203,23 @@ export function rowToOpportunity(row: OpportunityDbRow): OpportunityRow {
   };
 }
 
+/**
+ * Both callers (`keyword-miner.ts`'s `mineKeywords`, `keyword-autocomplete.ts`'s
+ * `expandCorpus`, and `keyword-review-miner.ts`'s `mineReviewKeywords`) already
+ * filter their candidate lists down to keywords NOT already in the corpus
+ * (via `keywordsExist`) before calling this, so the `ON CONFLICT` branch only
+ * ever fires on a rare insert-race (two passes discovering the same brand-new
+ * keyword between the `keywordsExist` check and this INSERT). Batch C3: that
+ * branch used to unconditionally overwrite `genre_zone` on conflict — which
+ * meant a keyword whose zone had just been self-healed by `setKeywordZone`
+ * (from a scan's REAL title-matched app categories) could be silently
+ * reverted back to its original seed-inherited (often wrong — see
+ * `keyword-miner.ts`'s `DEFAULT_ZONE`) zone the next time a mining/expansion
+ * pass happened to re-discover it. `DO NOTHING` means an existing row's
+ * `genre_zone` (whatever it currently is, corrected or not) is never touched
+ * by this function again — only `setKeywordZone` or a fresh row's own INSERT
+ * ever sets it.
+ */
 export async function upsertKeywords(rows: readonly KeywordSeedRow[]): Promise<number> {
   if (rows.length === 0) return 0;
   const db = getDb();
@@ -209,11 +229,30 @@ export async function upsertKeywords(rows: readonly KeywordSeedRow[]): Promise<n
     await db`
       INSERT INTO appstore_keywords (keyword, genre_zone, source, active, created_at)
       VALUES (${r.keyword}, ${r.genreZone}, ${r.source}, TRUE, ${now})
-      ON CONFLICT (keyword) DO UPDATE SET genre_zone = EXCLUDED.genre_zone
+      ON CONFLICT (keyword) DO NOTHING
     `;
     n++;
   }
   return n;
+}
+
+/**
+ * Batch C3 ("fix fictional genre zones"): conditionally corrects a corpus
+ * keyword's `genre_zone` to `genreZone` — a no-op (zero rows touched) when
+ * the row is already at that zone, so the caller (`keyword-gaps.ts`'s
+ * `scanAndRecord`) can call this unconditionally after every scan without
+ * needing a prior read. Never touches `source`/`active`/`created_at`.
+ * Returns true iff a row was actually changed.
+ */
+export async function setKeywordZone(keyword: string, genreZone: string): Promise<boolean> {
+  const db = getDb();
+  const rows = await db`
+    UPDATE appstore_keywords
+    SET genre_zone = ${genreZone}
+    WHERE keyword = ${keyword} AND genre_zone <> ${genreZone}
+    RETURNING keyword
+  `;
+  return (rows as ReadonlyArray<{ keyword: string }>).length > 0;
 }
 
 export async function getStaleKeywords(
@@ -567,11 +606,14 @@ export async function getStaleKeywordsTiered(opts: {
   // Mined exploration — never-scanned first (NULLS FIRST), then
   // oldest-scanned-still-active, capped by whatever's left of this cycle's
   // batch, the rolling daily mined quota, AND this sweep's per-sweep slice
-  // of that quota (`perSweepCap`).
+  // of that quota (`perSweepCap`). `source IN ('mined', 'review')` (Batch
+  // C4): the review-complaint miner (keyword-review-miner.ts) is a narrower
+  // discovery source that shares this same exploration lane/quota rather
+  // than getting its own — see that module's doc comment.
   const mineRows = await db`
     SELECT keyword FROM appstore_keywords
     WHERE active = TRUE
-      AND source = 'mined'
+      AND source IN ('mined', 'review')
       AND NOT (keyword = ANY(${db.array(claimedKeywords, "text")}))
     ORDER BY last_scanned_at ASC NULLS FIRST
     LIMIT ${mineSlots}
@@ -935,7 +977,9 @@ export async function countScansSince(epochSeconds: number): Promise<number> {
 }
 
 /**
- * Count of `source: 'mined'` keyword scans recorded at or after
+ * Count of `source: 'mined'` OR `source: 'review'` (Batch C4 — the
+ * review-complaint miner shares this pool's quota, see
+ * keyword-review-miner.ts) keyword scans recorded at or after
  * `epochSeconds` — backs the mined-exploration daily quota
  * (`appstoreKeywordGap.minedExploration.dailyQuota`), tracked SEPARATELY
  * from `countScansSince`'s whole-corpus rolling budget so tier-1
@@ -951,7 +995,7 @@ export async function countMinedScansSince(epochSeconds: number): Promise<number
     SELECT count(*) AS count
     FROM appstore_keyword_scans s
     JOIN appstore_keywords k ON k.keyword = s.keyword
-    WHERE s.scanned_at >= ${epochSeconds} AND k.source = 'mined'
+    WHERE s.scanned_at >= ${epochSeconds} AND k.source IN ('mined', 'review')
   `;
   const count = (rows as ReadonlyArray<{ count: number | string }>)[0]?.count;
   return count === undefined ? 0 : Number(count);
@@ -1031,13 +1075,25 @@ export async function pruneKeywordScans(
 }
 
 /**
- * Latest scan per keyword, joined to its corpus row for `genre_zone`,
- * filtered to `opportunity >= minOpportunity` and ordered richest-first.
- * Used to seed autocomplete expansion from proven high-opportunity
- * "winners" — an inner join means a scan with no corresponding corpus row
- * (shouldn't happen in practice) is silently excluded rather than surfaced
- * with an unusable null zone.
+ * One `getWinnerKeywords`/`getDiverseZoneSample`/`getExpansionSeeds` pick —
+ * Batch C1+C2 (migration 051) widened this from a bare `{keyword, genreZone}`
+ * pair to also carry `nextPrefixOffset`, the seed's CURRENT prefix-fan-out
+ * rotation cursor (0..25) for the storefront being queried — see
+ * `keyword-autocomplete.ts`'s `expandCorpus`, which reads it to build a
+ * wraparound fan-out window instead of always querying the same fixed
+ * leading letters.
  */
+export interface ExpansionSeed {
+  readonly keyword: string;
+  readonly genreZone: string;
+  /** 0..25 — see this interface's doc comment. 0 for a keyword never before drawn as a seed in this storefront. */
+  readonly nextPrefixOffset: number;
+}
+
+function toNextPrefixOffset(raw: number | string | null | undefined): number {
+  return raw === null || raw === undefined ? 0 : Number(raw);
+}
+
 /**
  * High-opportunity "winner" keywords, seed-rotated (2026-07-21 audit item D
  * fix): among ALL qualifying winners (`opportunity >= minOpportunity`), the
@@ -1048,29 +1104,46 @@ export async function pruneKeywordScans(
  * EVERY pass (opportunity rarely changes pass-to-pass) — this is exactly the
  * "same ~25 seeds re-fetched every pass" flatlining the audit measured live.
  * Store-scoped to 'app' (2026-07-21 audit item B fix) — see module doc.
+ *
+ * Batch C2 (migration 051): `market` scopes the LEFT JOIN to that
+ * storefront's own rotation row (`appstore_seed_expansion_state`'s PK is now
+ * `(keyword, storefront)`) — each of the US/GB expansion lanes
+ * (`scraper.ts`'s `runAutocompleteExpansionIfDue`/`runGbHintsLaneIfDue`) gets
+ * an INDEPENDENT rotation cursor per keyword instead of fighting over one
+ * shared row. A keyword with no row yet for this storefront (never drawn as
+ * a seed in this market) sorts first (NULLS FIRST) and starts at
+ * `nextPrefixOffset: 0`, same as a brand-new keyword always has.
  */
-
 export async function getWinnerKeywords(
   minOpportunity: number,
   limit: number,
-): Promise<readonly { keyword: string; genreZone: string }[]> {
+  market: string = "us",
+): Promise<readonly ExpansionSeed[]> {
   const db = getDb();
   const rows = await db`
-    SELECT s.keyword, k.genre_zone
+    SELECT s.keyword, k.genre_zone, e.next_prefix_offset
     FROM (
       SELECT DISTINCT ON (keyword, store) *
       FROM appstore_keyword_scans
       ORDER BY keyword, store, scanned_at DESC
     ) s
     JOIN appstore_keywords k ON k.keyword = s.keyword
-    LEFT JOIN appstore_seed_expansion_state e ON e.keyword = s.keyword
+    LEFT JOIN appstore_seed_expansion_state e
+      ON e.keyword = s.keyword AND e.storefront = ${market}
     WHERE s.store = 'app' AND s.opportunity >= ${minOpportunity}
     ORDER BY e.last_expanded_at ASC NULLS FIRST, s.opportunity DESC
     LIMIT ${limit}
   `;
-  return (rows as ReadonlyArray<{ keyword: string; genre_zone: string }>).map((r) => ({
+  return (
+    rows as ReadonlyArray<{
+      keyword: string;
+      genre_zone: string;
+      next_prefix_offset: number | string | null;
+    }>
+  ).map((r) => ({
     keyword: r.keyword,
     genreZone: r.genre_zone,
+    nextPrefixOffset: toNextPrefixOffset(r.next_prefix_offset),
   }));
 }
 
@@ -1085,19 +1158,32 @@ export async function getWinnerKeywords(
  * (or hasn't been scanned at all) still gets a turn to seed expansion,
  * which keeps under-covered zones from starving (anti rich-get-richer
  * monoculture).
- */
-/**
+ *
  * Zone-diverse expansion-seed picks, seed-rotated (2026-07-21 audit item D
  * fix): PRIMARY order key is `e.last_expanded_at ASC NULLS FIRST` (seed
  * rotation state, via `appstore_seed_expansion_state` — see
  * `markSeedsExpanded`), not `last_scanned_at` (a different concern — SERP
  * scan cadence). `last_scanned_at` remains a secondary tiebreak among
  * equally-never-expanded keywords in a zone.
+ *
+ * Batch C2 (migration 051): `market` scopes the LEFT JOIN the same way as
+ * `getWinnerKeywords` — see that function's doc comment.
+ *
+ * Batch C3 ("fix fictional genre zones"): excludes `source = 'mined'` rows
+ * from the partition entirely. Live corpus measurement (2026-07-21): 94% of
+ * active rows are `source = 'mined'` AND `genre_zone = 'lifestyle'` — the
+ * miner's app-name-only extraction path (`keyword-miner.ts`'s
+ * `scannedNameToAppInput`) has no real category to work from and stamps
+ * every candidate with `DEFAULT_ZONE` regardless of what the app actually
+ * is, so this partition was overwhelmingly sampling one fake "zone" rather
+ * than the real diversity of the corpus — the exact opposite of this
+ * function's purpose. Excluding the mined pool also shrinks the window this
+ * query scans per call from O(whole active corpus) to O(non-mined corpus).
  */
-
 export async function getDiverseZoneSample(
   limit: number,
-): Promise<readonly { keyword: string; genreZone: string }[]> {
+  market: string = "us",
+): Promise<readonly ExpansionSeed[]> {
   if (limit <= 0) return [];
   const db = getDb();
   const rows = await db`
@@ -1105,22 +1191,31 @@ export async function getDiverseZoneSample(
       SELECT
         k.keyword,
         k.genre_zone,
+        e.next_prefix_offset,
         ROW_NUMBER() OVER (
           PARTITION BY k.genre_zone
           ORDER BY e.last_expanded_at ASC NULLS FIRST, k.last_scanned_at ASC NULLS FIRST, k.keyword ASC
         ) AS rn
       FROM appstore_keywords k
-      LEFT JOIN appstore_seed_expansion_state e ON e.keyword = k.keyword
-      WHERE k.active = TRUE
+      LEFT JOIN appstore_seed_expansion_state e
+        ON e.keyword = k.keyword AND e.storefront = ${market}
+      WHERE k.active = TRUE AND k.source <> 'mined'
     )
-    SELECT keyword, genre_zone
+    SELECT keyword, genre_zone, next_prefix_offset
     FROM ranked
     ORDER BY rn ASC, genre_zone ASC
     LIMIT ${limit}
   `;
-  return (rows as ReadonlyArray<{ keyword: string; genre_zone: string }>).map((r) => ({
+  return (
+    rows as ReadonlyArray<{
+      keyword: string;
+      genre_zone: string;
+      next_prefix_offset: number | string | null;
+    }>
+  ).map((r) => ({
     keyword: r.keyword,
     genreZone: r.genre_zone,
+    nextPrefixOffset: toNextPrefixOffset(r.next_prefix_offset),
   }));
 }
 
@@ -1133,15 +1228,19 @@ export async function getDiverseZoneSample(
  * rather than double-counted — so the combined, deduped list never exceeds
  * `winnerLimit + diverseLimit` entries. Both limits are caller-supplied so
  * behavior stays deterministic and testable against a fixed DB state.
+ * `opts.market` (Batch C2, default "us") is threaded to both sub-queries so
+ * each storefront lane draws seeds against its OWN rotation cursor.
  */
 export async function getExpansionSeeds(opts: {
   readonly minOpportunity: number;
   readonly winnerLimit: number;
   readonly diverseLimit: number;
-}): Promise<readonly { keyword: string; genreZone: string }[]> {
+  readonly market?: string;
+}): Promise<readonly ExpansionSeed[]> {
+  const market = opts.market ?? "us";
   const [winners, diverse] = await Promise.all([
-    getWinnerKeywords(opts.minOpportunity, opts.winnerLimit),
-    getDiverseZoneSample(opts.diverseLimit),
+    getWinnerKeywords(opts.minOpportunity, opts.winnerLimit, market),
+    getDiverseZoneSample(opts.diverseLimit, market),
   ]);
 
   const seen = new Set(winners.map((w) => w.keyword));
@@ -1154,24 +1253,42 @@ export async function getExpansionSeeds(opts: {
   return combined;
 }
 
+/** One `markSeedsExpanded` update — see that function's doc comment. */
+export interface SeedRotationUpdate {
+  readonly keyword: string;
+  /** Storefront this rotation cursor belongs to — must match the `market` `getExpansionSeeds`/`expandCorpus` was called with. */
+  readonly storefront: string;
+  /** The NEW `next_prefix_offset` to persist for this (keyword, storefront) pair — see `keyword-autocomplete.ts`'s wraparound-window doc comment. */
+  readonly nextPrefixOffset: number;
+}
+
 /**
- * Marks `keywords` as having just been used as autocomplete expansion seeds
- * (2026-07-21 audit item D fix) — upserts `last_expanded_at = at` into
+ * Marks each `updates` entry's `(keyword, storefront)` pair as having just
+ * been used as an autocomplete expansion seed (2026-07-21 audit item D fix,
+ * widened Batch C1+C2 — migration 051) — upserts `last_expanded_at = at` AND
+ * `next_prefix_offset = update.nextPrefixOffset` into
  * `appstore_seed_expansion_state` for each. Called once per expansion pass
  * for EVERY seed drawn that pass (regardless of whether its hint fetch
  * succeeded or yielded any candidates), so a permanently-failing seed still
- * rotates away next pass instead of being retried forever. See
+ * rotates away next pass instead of being retried forever. Keyed by
+ * `(keyword, storefront)` (not `keyword` alone) so the US and GB expansion
+ * lanes each own an independent rotation cursor — see
  * `getWinnerKeywords`/`getDiverseZoneSample`'s doc comments for how this
  * state is consumed.
  */
-export async function markSeedsExpanded(keywords: readonly string[], at: number): Promise<void> {
-  if (keywords.length === 0) return;
+export async function markSeedsExpanded(
+  updates: readonly SeedRotationUpdate[],
+  at: number,
+): Promise<void> {
+  if (updates.length === 0) return;
   const db = getDb();
-  for (const keyword of keywords) {
+  for (const update of updates) {
     await db`
-      INSERT INTO appstore_seed_expansion_state (keyword, last_expanded_at)
-      VALUES (${keyword}, ${at})
-      ON CONFLICT (keyword) DO UPDATE SET last_expanded_at = EXCLUDED.last_expanded_at
+      INSERT INTO appstore_seed_expansion_state (keyword, storefront, last_expanded_at, next_prefix_offset)
+      VALUES (${update.keyword}, ${update.storefront}, ${at}, ${update.nextPrefixOffset})
+      ON CONFLICT (keyword, storefront) DO UPDATE SET
+        last_expanded_at = EXCLUDED.last_expanded_at,
+        next_prefix_offset = EXCLUDED.next_prefix_offset
     `;
   }
 }
@@ -1323,7 +1440,7 @@ export async function getScanHistory(
 /** First-found timestamp + source for one keyword, from `appstore_keywords`. */
 export interface KeywordMeta {
   readonly firstFoundAt: number;
-  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined";
+  readonly source: "seed" | "autocomplete" | "manual" | "pipeline" | "mined" | "review";
 }
 
 /**
@@ -1412,26 +1529,28 @@ export async function getMinedDeactivationStats(keyword: string): Promise<{
  * EXISTING mined pool (see `scraper.ts`'s `runMinedBackfillOnce` — run once
  * per process lifetime off the async keyword-sweep tick, never blocking
  * startup). A single UPDATE rather than budgeted batches: narrowing the join
- * to only currently-`active`, `source = 'mined'` keywords BEFORE aggregating
- * their scans (rather than aggregating the whole `appstore_keyword_scans`
- * table first) keeps the query's cost proportional to the CURRENT active
- * mined pool, not the full historical scan volume — and that pool only ever
+ * to only currently-`active`, `source IN ('mined', 'review')` keywords
+ * (Batch C4: the review-complaint miner shares the mined pool's deactivation
+ * rule too — see keyword-review-miner.ts) BEFORE aggregating their scans
+ * (rather than aggregating the whole `appstore_keyword_scans` table first)
+ * keeps the query's cost proportional to the CURRENT active mined+review
+ * pool, not the full historical scan volume — and that pool only ever
  * shrinks across repeated calls (idempotent: `k.active = TRUE` in the WHERE
  * clause means a keyword already deactivated by a prior run, or by the
  * per-scan inline check, is never re-touched). The final UPDATE also
- * re-asserts `k.active = TRUE AND k.source = 'mined'` directly in its own
- * WHERE clause — belt + suspenders (mirroring `deactivateJunkKeywords`'s own
- * redundant `source NOT IN ('manual', 'seed')` check): the CTE already
- * scopes `agg` to exactly this set via the join, but the mass-write itself
- * must stay self-limiting even if that scoping/query shape ever changes,
- * rather than relying solely on the keyword PK join to stay mined-scoped.
- * Returns the count actually deactivated.
+ * re-asserts `k.active = TRUE AND k.source IN ('mined', 'review')` directly
+ * in its own WHERE clause — belt + suspenders (mirroring
+ * `deactivateJunkKeywords`'s own redundant `source NOT IN ('manual', 'seed')`
+ * check): the CTE already scopes `agg` to exactly this set via the join, but
+ * the mass-write itself must stay self-limiting even if that scoping/query
+ * shape ever changes, rather than relying solely on the keyword PK join to
+ * stay mined/review-scoped. Returns the count actually deactivated.
  */
 export async function backfillMinedDeactivation(): Promise<number> {
   const db = getDb();
   const rows = await db`
     WITH candidates AS (
-      SELECT keyword FROM appstore_keywords WHERE active = TRUE AND source = 'mined'
+      SELECT keyword FROM appstore_keywords WHERE active = TRUE AND source IN ('mined', 'review')
     ),
     agg AS (
       SELECT s.keyword AS keyword, count(*) AS scan_count, max(s.demand) AS max_demand
@@ -1444,7 +1563,7 @@ export async function backfillMinedDeactivation(): Promise<number> {
     FROM agg
     WHERE k.keyword = agg.keyword
       AND k.active = TRUE
-      AND k.source = 'mined'
+      AND k.source IN ('mined', 'review')
       AND agg.scan_count >= ${DEACTIVATION_MIN_SCANS}
       AND agg.max_demand < ${MINED_DEACTIVATION_MAX_DEMAND_EVER}
       AND NOT EXISTS (

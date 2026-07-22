@@ -303,6 +303,29 @@ export async function getLowRatedReviews(
   return rows as AppReviewRow[];
 }
 
+/**
+ * Recent complaint-shaped reviews (`rating <= 3` — a wider net than
+ * `getLowRatedReviews`'s `<= 2`, deliberate: even a 3-star review often
+ * carries a concrete "wish it had X" complaint) first seen at or after
+ * `sinceSeconds`, newest first — backs the review-complaint keyword miner
+ * (Batch C4, see `keyword-review-miner.ts`'s `mineReviewKeywords`), which
+ * needs a bounded, self-refreshing window rather than re-walking the whole
+ * historical review pool every mining pass.
+ */
+export async function getRecentComplaintReviews(
+  limit: number,
+  sinceSeconds: number,
+): Promise<AppReviewRow[]> {
+  const db = getDb();
+  const rows = await db`
+    SELECT * FROM appstore_reviews
+    WHERE rating <= 3 AND first_seen_at >= ${sinceSeconds}
+    ORDER BY first_seen_at DESC
+    LIMIT ${limit}
+  `;
+  return rows as AppReviewRow[];
+}
+
 export async function getUnindexedReviews(
   limit = 200,
 ): Promise<AppReviewRow[]> {

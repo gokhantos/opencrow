@@ -22,6 +22,14 @@ export interface TopApp {
   readonly price?: number; // numeric price (0 = free)
   readonly formattedPrice?: string; // e.g. "$4.99", "Free"
   readonly recentVelocity?: number; // ratings/day since prior scan; falls back to ratingsPerDay
+  // Batch C3 ("fix fictional genre zones"): the app's REAL iTunes category
+  // (`primaryGenreName` from the Search API payload — see `keyword-gaps.ts`'s
+  // `toTopApp`), used to self-heal a keyword's `genre_zone` from what its
+  // title-matched apps actually are, rather than the zone it inherited at
+  // discovery time (a seed's zone for autocomplete candidates, or
+  // `keyword-miner.ts`'s `DEFAULT_ZONE` for name-only mined ones). Optional
+  // so legacy persisted rows / external TopApp factories stay valid.
+  readonly genre?: string;
 }
 
 export interface KeywordGapProfile {

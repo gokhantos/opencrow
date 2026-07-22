@@ -1,4 +1,14 @@
 import { describe, expect, it, mock, afterEach } from "bun:test";
+// Real (unmocked) import, resolved at file-load time BEFORE any
+// `mock.module` call runs — captures the REAL pure-function exports of
+// "./keyword-miner" so the mock below can spread them verbatim rather than
+// hand-rolling (and risking silently drifting from) identity/passthrough
+// stand-ins. Only `mineKeywords` needs an actual override (to count calls);
+// everything else this module exports should behave exactly as production
+// code does, for any OTHER suite sharing this bun process whose transitive
+// imports might resolve through this mock (see the "isolated lane mock
+// leak" convention elsewhere in this directory).
+import * as RealKeywordMiner from "./keyword-miner";
 
 // This suite reproduces the PR #326 "deep scrape" production incident:
 // appstore_app_meta enrichment, review harvests, app-page HTML enrichment,
@@ -83,7 +93,22 @@ function fakeAppstoreConfig() {
       topN: 20,
       demandWeight: 1,
       opportunityThresholdForSeed: 0.15,
-      corpusDiscovery: { enabled: true, maxMinedPerCycle: 100 },
+      corpusDiscovery: {
+        enabled: true,
+        maxMinedPerCycle: 100,
+        // Batch C4: default OFF, so `runReviewHarvestIfDue`'s reviewMining
+        // sub-pass never actually fires this suite — but the field must
+        // exist or `reviewMiningCfg.enabled` throws (this mock hand-rolls
+        // the config shape rather than deriving it from the real schema —
+        // see keyword-gaps.isolated.test.ts for the alternative pattern).
+        reviewMining: {
+          enabled: false,
+          minIntervalMs: 6 * 60 * 60 * 1000,
+          reviewScanLimit: 5000,
+          lookbackMs: 30 * 24 * 60 * 60 * 1000,
+          maxNewPerCycle: 50,
+        },
+      },
       autocompleteExpansion: {
         enabled: true,
         minIntervalMs: 0,
@@ -202,6 +227,16 @@ function setUpMocks(): void {
   }));
 
   mock.module("./keyword-miner", () => ({
+    // Spread every REAL export first (see the `RealKeywordMiner` import's
+    // doc comment) — `keyword-review-miner.ts` (imported transitively via
+    // real `scraper.ts`, never invoked this suite since reviewMining
+    // defaults OFF) needs `DEFAULT_ZONE`/`mapCategoryToZone`/`normalizeText`/
+    // `tokenize`/`filterJunkTokens`/`filterStopwords` to exist with their
+    // TRUE semantics, not an identity stand-in, in case this mock ever
+    // leaks into another suite sharing this process.
+    ...RealKeywordMiner,
+    // Only override `mineKeywords` — the one export THIS suite needs to
+    // intercept, to count calls without hitting the DB.
     mineKeywords: async () => {
       calls.mineKeywords++;
       return { added: 0, scannedFromRankings: 0, scannedFromTopApps: 0 };
@@ -214,6 +249,17 @@ function setUpMocks(): void {
       return 0;
     },
     countScansSince: async () => 0,
+    // Batch C4: `./keyword-review-miner` (imported by scraper.ts, real/
+    // unmocked here — reviewMining defaults OFF so it's never actually
+    // invoked this suite) itself imports these from "./keyword-store" — must
+    // be present or the transitive import throws a missing-named-export ESM
+    // SyntaxError, per this file's own module-mocking convention.
+    keywordsExist: async () => new Set<string>(),
+    upsertKeywords: async (rows: readonly unknown[]) => rows.length,
+    // The REAL "./keyword-miner" (spread into the mock below, so its
+    // `mineKeywords`/pure-helper exports behave with true semantics) itself
+    // imports `getScannedAppNames` from "./keyword-store" too.
+    getScannedAppNames: async () => [],
   }));
 
   mock.module("./app-enrichment", () => ({
@@ -245,6 +291,10 @@ function setUpMocks(): void {
 
   mock.module("./app-meta-store", () => ({
     recordAppSightings: async () => undefined,
+    // Batch C4: see the "./keyword-store" mock's comment above — same
+    // transitive-import reasoning, this time for `./keyword-review-miner`'s
+    // `getAppMetaBatch` import.
+    getAppMetaBatch: async () => new Map(),
   }));
 
   mock.module("./charts-intl", () => ({
@@ -307,6 +357,10 @@ function setUpMocks(): void {
     markReviewsIndexed: async () => undefined,
     getUnindexedRankings: async () => [],
     markRankingsIndexed: async () => undefined,
+    // Batch C4: see the "./keyword-store" mock's comment above — same
+    // transitive-import reasoning, this time for `./keyword-review-miner`'s
+    // `getRecentComplaintReviews` import.
+    getRecentComplaintReviews: async () => [],
   }));
 
   mock.module("../scraper-config", () => ({

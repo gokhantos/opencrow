@@ -19,6 +19,7 @@ function itunesResult(overrides: Partial<ItunesSoftwareResult> = {}): ItunesSoft
     currentVersionReleaseDate: "2026-01-01T00:00:00Z",
     price: 0,
     formattedPrice: "Free",
+    primaryGenreName: "",
     ...overrides,
   };
 }

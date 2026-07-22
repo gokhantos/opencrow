@@ -15,8 +15,8 @@ function hintsPlist(terms: readonly string[]): string {
 }
 
 const SEEDS = [
-  { keyword: "budget", genreZone: "finance" },
-  { keyword: "meal prep", genreZone: "health" },
+  { keyword: "budget", genreZone: "finance", nextPrefixOffset: 0 },
+  { keyword: "meal prep", genreZone: "health", nextPrefixOffset: 0 },
 ];
 
 /** Every `./keyword-store` export `keyword-autocomplete.ts` imports, with inert defaults. */
@@ -37,12 +37,18 @@ function keywordStoreMockBase() {
   };
 }
 
+interface SeedRotationUpdateShape {
+  readonly keyword: string;
+  readonly storefront: string;
+  readonly nextPrefixOffset: number;
+}
+
 describe("expandCorpus", () => {
   let upsertedRows: unknown[];
   let keywordsExistCalls: Array<readonly string[]>;
   let fetchedUrls: string[];
   let fetchedHeaders: Array<Record<string, string> | undefined>;
-  let markSeedsExpandedCalls: Array<readonly string[]>;
+  let markSeedsExpandedCalls: Array<readonly SeedRotationUpdateShape[]>;
   let insertedHintRows: unknown[];
 
   beforeEach(() => {
@@ -64,8 +70,8 @@ describe("expandCorpus", () => {
         upsertedRows = [...upsertedRows, ...rows];
         return rows.length;
       },
-      markSeedsExpanded: async (keywords: readonly string[]) => {
-        markSeedsExpandedCalls.push(keywords);
+      markSeedsExpanded: async (updates: readonly SeedRotationUpdateShape[]) => {
+        markSeedsExpandedCalls.push(updates);
       },
       insertAutocompleteHints: async (rows: readonly unknown[]) => {
         insertedHintRows = [...insertedHintRows, ...rows];
@@ -263,7 +269,13 @@ describe("expandCorpus", () => {
     });
 
     expect(markSeedsExpandedCalls.length).toBe(1);
-    expect(markSeedsExpandedCalls[0]).toEqual(["budget", "meal prep"]);
+    // No prefix fan-out this call (maxPrefixesPerSeed omitted) — every
+    // seed's cursor stays at its starting offset (0), just the storefront
+    // and rotation timestamp change.
+    expect(markSeedsExpandedCalls[0]).toEqual([
+      { keyword: "budget", storefront: "us", nextPrefixOffset: 0 },
+      { keyword: "meal prep", storefront: "us", nextPrefixOffset: 0 },
+    ]);
   });
 
   // 2026-07-21 audit item D fix: rank hints persisted.

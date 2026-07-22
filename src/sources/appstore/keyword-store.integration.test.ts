@@ -30,7 +30,23 @@ import {
   pruneKeywordScans,
 } from "./keyword-store";
 import type { KeywordGapProfile, TopApp } from "./keyword-types";
-import type { TieredKeyword } from "./keyword-store";
+import type { SeedRotationUpdate, TieredKeyword } from "./keyword-store";
+
+/**
+ * Batch C1+C2 (migration 051): `markSeedsExpanded` now takes per-seed
+ * `{keyword, storefront, nextPrefixOffset}` updates rather than a bare
+ * keyword list. Every pre-Batch-C rotation test below only cares about
+ * `last_expanded_at` ordering (not the prefix-offset cursor itself — that
+ * gets its own dedicated coverage further down), so this helper defaults
+ * every update to the US storefront and offset 0, keeping those tests
+ * unchanged in intent.
+ */
+function rotationUpdates(
+  keywords: readonly string[],
+  storefront: string = "us",
+): readonly SeedRotationUpdate[] {
+  return keywords.map((keyword) => ({ keyword, storefront, nextPrefixOffset: 0 }));
+}
 
 /**
  * `getStaleKeywordsTiered` now returns lane-tagged rows (serp-rank Stage 1,
@@ -1152,7 +1168,7 @@ describe("keyword-store", () => {
       );
 
       // Mark "a" (the higher-opportunity one) as just-expanded.
-      await markSeedsExpanded(["zzz-rotate-winner-a"], now);
+      await markSeedsExpanded(rotationUpdates(["zzz-rotate-winner-a"]), now);
 
       // After: "b" (never expanded, NULLS FIRST) now ranks ahead of "a"
       // (has a last_expanded_at), even though "a" still has higher raw
@@ -1202,7 +1218,7 @@ describe("keyword-store", () => {
       ]);
 
       // Simulate expandCorpus having just used the top 2 as seeds.
-      await markSeedsExpanded(["zzz-rotate-winner-a", "zzz-rotate-winner-b"], now);
+      await markSeedsExpanded(rotationUpdates(["zzz-rotate-winner-a", "zzz-rotate-winner-b"]), now);
 
       const pass2 = await getExpansionSeeds({
         minOpportunity: 0.4,
@@ -1239,7 +1255,7 @@ describe("keyword-store", () => {
         beforeKeywords.indexOf("zzz-rotate-diverse-b"),
       );
 
-      await markSeedsExpanded(["zzz-rotate-diverse-a"], now);
+      await markSeedsExpanded(rotationUpdates(["zzz-rotate-diverse-a"]), now);
 
       const after = await getDiverseZoneSample(100_000);
       const afterKeywords = after.map((s) => s.keyword);
@@ -1253,8 +1269,8 @@ describe("keyword-store", () => {
       await upsertKeywords([
         { keyword: "zzz-rotate-winner-a", genreZone: "zzz-rotate-zone", source: "seed" },
       ]);
-      await markSeedsExpanded(["zzz-rotate-winner-a"], now - 1000);
-      await markSeedsExpanded(["zzz-rotate-winner-a"], now); // must not throw
+      await markSeedsExpanded(rotationUpdates(["zzz-rotate-winner-a"]), now - 1000);
+      await markSeedsExpanded(rotationUpdates(["zzz-rotate-winner-a"]), now); // must not throw
 
       const db = getDb();
       const rows = await db`

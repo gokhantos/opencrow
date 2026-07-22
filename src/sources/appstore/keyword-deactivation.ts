@@ -105,6 +105,9 @@ export function shouldDeactivateKeyword(candidate: DeactivationCandidate): boole
  */
 export const MINED_DEACTIVATION_MAX_DEMAND_EVER = 5;
 
+/** Sources `shouldDeactivateMinedKeyword` applies to — Batch C4 widened this from `'mined'` alone to also cover `'review'` (see keyword-review-miner.ts, which shares the mined pool's exploration quota AND its deactivation rule). */
+export const MINED_DEACTIVATION_SOURCES: ReadonlySet<string> = new Set(["mined", "review"]);
+
 export interface MinedDeactivationCandidate {
   readonly source: string;
   /** Total scans this keyword has EVER had. */
@@ -116,15 +119,15 @@ export interface MinedDeactivationCandidate {
 }
 
 /**
- * True iff `candidate` is a `source: 'mined'` keyword that has been scanned
- * at least `DEACTIVATION_MIN_SCANS` times, has NEVER reached
- * `MINED_DEACTIVATION_MAX_DEMAND_EVER` demand in any scan, and has no row in
- * `appstore_signature_hits`. Pure — no I/O. Evaluated in ADDITION to (never
- * instead of) `shouldDeactivateKeyword` above — either one firing is enough
- * to deactivate.
+ * True iff `candidate` is a `source: 'mined'` or `source: 'review'` (Batch
+ * C4) keyword that has been scanned at least `DEACTIVATION_MIN_SCANS` times,
+ * has NEVER reached `MINED_DEACTIVATION_MAX_DEMAND_EVER` demand in any scan,
+ * and has no row in `appstore_signature_hits`. Pure — no I/O. Evaluated in
+ * ADDITION to (never instead of) `shouldDeactivateKeyword` above — either one
+ * firing is enough to deactivate.
  */
 export function shouldDeactivateMinedKeyword(candidate: MinedDeactivationCandidate): boolean {
-  if (candidate.source !== "mined") return false;
+  if (!MINED_DEACTIVATION_SOURCES.has(candidate.source)) return false;
   if (candidate.scanCount < DEACTIVATION_MIN_SCANS) return false;
   if (candidate.maxDemandEver >= MINED_DEACTIVATION_MAX_DEMAND_EVER) return false;
   return !candidate.hasSignatureHit;

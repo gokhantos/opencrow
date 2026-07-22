@@ -139,8 +139,13 @@ const CATEGORY_TO_ZONE: Readonly<Record<string, string>> = {
   reference: "reference",
 };
 
-/** Catch-all genre zone for categories with no explicit mapping. */
-const DEFAULT_ZONE = "lifestyle";
+/**
+ * Catch-all genre zone for categories with no explicit mapping. Exported
+ * (Batch C4) so `keyword-review-miner.ts` can fall back to the same default
+ * when a review's app has no registry `genreName` yet, rather than inventing
+ * a second default.
+ */
+export const DEFAULT_ZONE = "lifestyle";
 
 /**
  * Maps a raw App Store category label to one of `keyword-corpus.ts`'s
@@ -156,9 +161,11 @@ export function mapCategoryToZone(category: string): string {
 /**
  * Lowercases, strips punctuation/emoji (keeps only letters/digits/spaces
  * via unicode property escapes so accented text survives while emoji and
- * symbols don't), and collapses whitespace.
+ * symbols don't), and collapses whitespace. Exported (Batch C4) for reuse by
+ * `keyword-review-miner.ts` — same text-normalization rules apply to review
+ * title+content as to app names.
  */
-function normalizeText(text: string): string {
+export function normalizeText(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
@@ -166,14 +173,18 @@ function normalizeText(text: string): string {
     .trim();
 }
 
-function tokenize(text: string): readonly string[] {
+/** Exported (Batch C4) for reuse by `keyword-review-miner.ts`. */
+export function tokenize(text: string): readonly string[] {
   return text.length === 0 ? [] : text.split(" ").filter((t) => t.length > 0);
 }
 
 const PURE_NUMBER_PATTERN = /^\d+$/;
 
-/** Drops tokens that are pure numbers or shorter than `MIN_TOKEN_LENGTH`. */
-function filterJunkTokens(tokens: readonly string[]): readonly string[] {
+/**
+ * Drops tokens that are pure numbers or shorter than `MIN_TOKEN_LENGTH`.
+ * Exported (Batch C4) for reuse by `keyword-review-miner.ts`.
+ */
+export function filterJunkTokens(tokens: readonly string[]): readonly string[] {
   return tokens.filter((t) => t.length >= MIN_TOKEN_LENGTH && !PURE_NUMBER_PATTERN.test(t));
 }
 
@@ -189,7 +200,8 @@ function filterArtistTokens(tokens: readonly string[], artist: string): readonly
   return tokens.filter((t) => !artistTokens.has(t));
 }
 
-function filterStopwords(tokens: readonly string[]): readonly string[] {
+/** Exported (Batch C4) for reuse by `keyword-review-miner.ts`. */
+export function filterStopwords(tokens: readonly string[]): readonly string[] {
   return tokens.filter((t) => !STOPWORDS.has(t));
 }
 

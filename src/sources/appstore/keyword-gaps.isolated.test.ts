@@ -16,11 +16,38 @@ import { RateLimitError } from "../shared/ssrf-safe-fetch";
 // partial object that could silently drift from `src/config/schema.ts`.
 import { opencrowConfigSchema } from "../../config/schema";
 
-/** Every `./keyword-store` export `keyword-gaps.ts` imports, with inert defaults. */
+// Batch C3: `keyword-gaps.ts` now imports `mapCategoryToZone` from
+// "./keyword-miner" (corpus zone self-healing). Deliberately NOT mocked —
+// `mapCategoryToZone` is a pure function and this file has no reason to fake
+// its behavior; a wholesale stub mock here previously leaked into ANOTHER
+// file's `scraper.ts` -> `keyword-review-miner.ts` transitive import chain
+// (all *.isolated.test.ts files share ONE bun process AND the project's
+// pre-commit hook can additionally batch *.test.ts + *.isolated.test.ts
+// files together in a single `bun test` invocation — see the "isolated lane
+// mock leak" convention elsewhere in this directory) — a stub's IDENTITY
+// `normalizeText`/case-sensitive comparisons silently diverged from the
+// real implementation once it won that cross-file race. Leaving
+// "./keyword-miner" real instead means `keyword-miner.ts` itself needs
+// `getScannedAppNames`/`keywordsExist`/`upsertKeywords` from THIS file's
+// "./keyword-store" mock (below) even though no test here calls
+// `mineKeywords` — see `keywordStoreMockBase`'s doc comment.
+/**
+ * Every `./keyword-store` export `keyword-gaps.ts` imports, with inert
+ * defaults. Also includes `getScannedAppNames`/`keywordsExist`/
+ * `upsertKeywords` — not read by `keyword-gaps.ts` itself, but required
+ * because `keyword-gaps.ts` now imports (real, unmocked) `mapCategoryToZone`
+ * from "./keyword-miner", and `keyword-miner.ts`'s own top-level `import {
+ * getScannedAppNames, keywordsExist, upsertKeywords } from "./keyword-store"`
+ * resolves to THIS mock — a missing name here is a load-time ESM
+ * SyntaxError regardless of whether the binding is ever called.
+ */
 function keywordStoreMockBase() {
   return {
     getStaleKeywords: async () => [],
     getStaleKeywordsTiered: async () => [],
+    getScannedAppNames: async () => [],
+    keywordsExist: async () => new Set<string>(),
+    upsertKeywords: async (rows: readonly unknown[]) => rows.length,
     insertScan: async () => {},
     markScanned: async () => {},
     // Batch A budget rescue (2026-07-22) — the DE storefront lane's own
@@ -38,6 +65,9 @@ function keywordStoreMockBase() {
       hasSignatureHit: false,
     }),
     getTier1ProtectedKeywords: async (_limit: number) => [],
+    // Batch C3 (corpus zone self-healing) — inert no-op default; tests that
+    // specifically exercise `setKeywordZone` override this.
+    setKeywordZone: async () => false,
   };
 }
 

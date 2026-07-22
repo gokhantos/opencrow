@@ -669,8 +669,55 @@ export const appstoreKeywordGapConfigSchema = z
         // `autocompleteExpansion`'s real user-query terms, not app-name
         // n-gram fragments.
         maxMinedPerCycle: z.number().int().min(1).max(2000).default(100),
+        // Batch C4: a FOURTH corpus-discovery source — mines candidate
+        // keywords from low-star (rating <= 3) REVIEW TEXT rather than app
+        // names/rankings (see keyword-review-miner.ts). Complaint language
+        // ("wish it had X", "missing Y") is a market-need signal none of the
+        // other sources capture, but the review pool is enrollment-gated to
+        // whatever population `review-harvester.ts` currently tracks (a few
+        // hundred apps at a time), so this deepens already-tracked niches
+        // rather than discovering brand-new ones. Default OFF — narrower and
+        // more speculative than autocomplete/mined; an operator opts in once
+        // the review-harvest pool has matured.
+        reviewMining: z
+          .object({
+            enabled: z.boolean().default(false),
+            // Minimum gap between mining passes — pure DB read/extract, no
+            // network calls of its own (reuses reviews the harvester already
+            // fetched), but shouldn't re-scan the whole complaint-review
+            // window on every ~1min sweep tick. Default 6h, same cadence
+            // family as `appstoreReviewHarvest.cohortRefresh`.
+            minIntervalMs: z.number().int().min(60_000).default(6 * 60 * 60 * 1000),
+            // How many of the most-recent rating<=3 reviews to scan per pass.
+            reviewScanLimit: z.number().int().min(1).max(20_000).default(5000),
+            // Only reviews first seen within this rolling window are
+            // considered — keeps each pass bounded and self-refreshing
+            // rather than re-walking the entire historical review pool.
+            lookbackMs: z.number().int().min(60_000).default(30 * 24 * 60 * 60 * 1000),
+            // Upper bound on newly-added corpus keywords per mining cycle —
+            // deliberately small (~50), matching the module doc's "narrow,
+            // speculative source" framing.
+            maxNewPerCycle: z.number().int().min(1).max(500).default(50),
+          })
+          .default({
+            enabled: false,
+            minIntervalMs: 6 * 60 * 60 * 1000,
+            reviewScanLimit: 5000,
+            lookbackMs: 30 * 24 * 60 * 60 * 1000,
+            maxNewPerCycle: 50,
+          }),
       })
-      .default({ enabled: true, maxMinedPerCycle: 100 }),
+      .default({
+        enabled: true,
+        maxMinedPerCycle: 100,
+        reviewMining: {
+          enabled: false,
+          minIntervalMs: 6 * 60 * 60 * 1000,
+          reviewScanLimit: 5000,
+          lookbackMs: 30 * 24 * 60 * 60 * 1000,
+          maxNewPerCycle: 50,
+        },
+      }),
     // PRIMARY corpus-discovery source (restored 2026-07-21): pulls Apple's
     // own search-suggest ("autocomplete") hints for a batch of expansion
     // seeds each cycle — real, popularity-ordered user search queries (e.g.
@@ -993,7 +1040,17 @@ export const appstoreKeywordGapConfigSchema = z
     topN: 20,
     demandWeight: 1,
     opportunityThresholdForSeed: 0.15,
-    corpusDiscovery: { enabled: true, maxMinedPerCycle: 100 },
+    corpusDiscovery: {
+      enabled: true,
+      maxMinedPerCycle: 100,
+      reviewMining: {
+        enabled: false,
+        minIntervalMs: 6 * 60 * 60 * 1000,
+        reviewScanLimit: 5000,
+        lookbackMs: 30 * 24 * 60 * 60 * 1000,
+        maxNewPerCycle: 50,
+      },
+    },
     autocompleteExpansion: {
       enabled: true,
       minIntervalMs: 3_600_000,
