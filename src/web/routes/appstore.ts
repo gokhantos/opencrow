@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { createLogger } from "../../logger";
+import { loadConfigWithOverrides } from "../../config/loader";
 import {
   getTopOpportunities,
   getScanHistory,
@@ -18,6 +19,12 @@ import {
   getLowRatedReviews,
 } from "../../sources/appstore/store";
 import { getRankSeriesFromScans, getRankClimbers } from "../../sources/appstore/serp-rank-store";
+import {
+  deleteKeywordVerdict,
+  getStarredKeywords,
+  upsertKeywordVerdict,
+} from "../../sources/appstore/keyword-verdict-store";
+import { getWhatsNewDigest } from "../../sources/appstore/gap-alerts";
 import { getDb } from "../../store/db";
 import type { CoreClient } from "../core-client";
 
@@ -44,10 +51,34 @@ const opportunitiesQuerySchema = z.object({
     .enum(["true", "false"])
     .transform((v) => v === "true")
     .optional(),
+  // Same boolean-string convention as `hideJunk` above (z.coerce.boolean()
+  // would treat "false" as truthy). Shares the exact filter semantics
+  // `collectKeywordGaps` (the idea-synthesis pipeline consumer) hardcodes —
+  // see `GetTopOpportunitiesOptions.excludeLowConfidence`'s doc comment —
+  // so the UI and the pipeline validate/consume the same contract.
+  excludeLowConfidence: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
 });
 
 const scanHistoryQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(30),
+});
+
+// Server-side watchlist (Batch F, F5 leg 1) — mirrors the App Store keyword
+// column length in practice; a bare length ceiling, not format validation
+// (keywords are free-text search phrases).
+const watchlistKeywordParamSchema = z.string().trim().min(1).max(200);
+const watchlistListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).default(200),
+});
+
+// "New this week" strip (Batch F4) — bounds the lookback window an operator
+// can request via `?days=`. Default (undefined) falls back to
+// `getWhatsNewDigest`'s own `WHATS_NEW_LOOKBACK_MS` (7 days).
+const whatsNewQuerySchema = z.object({
+  days: z.coerce.number().int().min(1).max(90).optional(),
 });
 
 const STORES = ["app", "play", "DE"] as const;
@@ -157,6 +188,7 @@ export function createAppStoreRoutes(
       "minOpportunity",
       "minBuildability",
       "hideJunk",
+      "excludeLowConfidence",
     ] as const) {
       const value = c.req.query(key);
       if (value) rawQuery[key] = value;
@@ -181,6 +213,7 @@ export function createAppStoreRoutes(
       minOpportunity,
       minBuildability,
       hideJunk,
+      excludeLowConfidence,
     } = parsed.data;
     const { rows, total } = await getTopOpportunities({
       limit,
@@ -195,6 +228,7 @@ export function createAppStoreRoutes(
       minOpportunity,
       minBuildability,
       hideJunk,
+      excludeLowConfidence,
     });
     return c.json({
       success: true,
@@ -229,6 +263,69 @@ export function createAppStoreRoutes(
           firstFoundAt: meta?.firstFoundAt ?? null,
           source: meta?.source ?? null,
         },
+      },
+    });
+  });
+
+  // Server-side watchlist (Batch F, F5 leg 1) — durable, cross-device star
+  // state backed by `appstore_keyword_verdicts` (`source: "human"`,
+  // `verdict: "starred"`). `OpportunitiesTab.tsx` keeps localStorage as an
+  // offline cache but these routes are the source of truth going forward,
+  // and `collectKeywordGaps` (F5 leg 3) reads `getStarredKeywords` directly
+  // to auto-pull starred keywords as priority seeds every run.
+  app.get("/appstore/watchlist", async (c) => {
+    const parsed = watchlistListQuerySchema.safeParse({ limit: c.req.query("limit") ?? undefined });
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+    const keywords = await getStarredKeywords(parsed.data.limit);
+    return c.json({ success: true, data: keywords, meta: { count: keywords.length } });
+  });
+
+  app.post("/appstore/watchlist/:keyword", async (c) => {
+    const parsedKeyword = watchlistKeywordParamSchema.safeParse(c.req.param("keyword"));
+    if (!parsedKeyword.success) {
+      return c.json({ success: false, error: "Invalid keyword" }, 400);
+    }
+    const record = await upsertKeywordVerdict({
+      keyword: parsedKeyword.data,
+      verdict: "starred",
+      source: "human",
+    });
+    return c.json({ success: true, data: record });
+  });
+
+  app.delete("/appstore/watchlist/:keyword", async (c) => {
+    const parsedKeyword = watchlistKeywordParamSchema.safeParse(c.req.param("keyword"));
+    if (!parsedKeyword.success) {
+      return c.json({ success: false, error: "Invalid keyword" }, 400);
+    }
+    const deleted = await deleteKeywordVerdict(parsedKeyword.data, "human");
+    return c.json({ success: true, data: { deleted } });
+  });
+
+  // "New this week" strip (Batch F4) — same digest shape `runGapAlerts`
+  // sends, but computed read-only against a rolling lookback window (NOT the
+  // cron alert watermark — see `gap-alerts.ts`'s module doc on why a GET
+  // must never advance that state).
+  app.get("/appstore/whats-new", async (c) => {
+    const parsed = whatsNewQuerySchema.safeParse({ days: c.req.query("days") ?? undefined });
+    if (!parsed.success) {
+      const message = parsed.error.issues[0]?.message ?? "Invalid query parameters";
+      return c.json({ success: false, error: message }, 400);
+    }
+    const config = await loadConfigWithOverrides();
+    const digest = await getWhatsNewDigest({
+      opportunityThreshold: config.appstoreKeywordGap.opportunityThresholdForSeed,
+      lookbackMs: parsed.data.days !== undefined ? parsed.data.days * 24 * 60 * 60 * 1000 : undefined,
+    });
+    return c.json({
+      success: true,
+      data: digest,
+      meta: {
+        signatureHits: digest.newSignatureHits.length,
+        crossings: digest.newCrossings.length,
       },
     });
   });

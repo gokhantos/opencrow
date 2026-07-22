@@ -78,6 +78,13 @@ const ALLOWED_MODELS = [
 ] as const;
 
 
+// Max distinct keywords a caller may thread into a run as a priority seed
+// allowlist — see `PipelineConfig.seedKeywords`. Bounds the extra
+// `getLatestScan` fan-out `collectKeywordGaps`'s `selectPriorityGapSeeds`
+// performs (one query per keyword) and mirrors the dashboard watchlist's
+// realistic size.
+const MAX_SEED_KEYWORDS = 25;
+
 const runConfigSchema = z
   .object({
     category: z.enum(VALID_CATEGORIES).optional(),
@@ -89,6 +96,9 @@ const runConfigSchema = z
       .max(8)
       .optional(),
     model: z.enum(ALLOWED_MODELS).optional(),
+    // Explicit App Store keyword picks (dashboard "Generate ideas from these
+    // keywords") — see `PipelineConfig.seedKeywords`.
+    seedKeywords: z.array(z.string().trim().min(1).max(200)).max(MAX_SEED_KEYWORDS).optional(),
   })
   .strict();
 
@@ -332,6 +342,7 @@ export function createPipelineRoutes(deps?: {
         sourcesToInclude: overrides.sourcesToInclude,
       }),
       ...(overrides.model && { model: overrides.model }),
+      ...(overrides.seedKeywords && { seedKeywords: overrides.seedKeywords }),
     };
 
     // Create run record — multiple concurrent runs are allowed

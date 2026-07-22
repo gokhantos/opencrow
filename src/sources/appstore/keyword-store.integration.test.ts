@@ -231,6 +231,10 @@ const TEST_KEYWORDS: readonly string[] = [
   // ASA popularity LEFT JOIN LATERAL fixtures (batch E)
   "zzz-asa-pop-probed",
   "zzz-asa-pop-unprobed",
+  // Batch F, F1 — store / excludeLowConfidence filter fixtures
+  "zzz-filter-store-multi",
+  "zzz-filter-lowconf-true",
+  "zzz-filter-lowconf-false",
 ];
 
 async function cleanupTestKeywords(): Promise<void> {
@@ -537,6 +541,60 @@ describe("keyword-store", () => {
       const keywords = top.rows.map((r) => r.keyword);
       expect(keywords).toContain("zzz-filter-opp-high");
       expect(keywords).not.toContain("zzz-filter-opp-low");
+    });
+
+    // Batch F, F1: quality-filter knobs `collectKeywordGaps` (the idea-
+    // synthesis pipeline consumer) now hardcodes on every fetch.
+    it("bounds by store — a DE-storefront scan is excluded when store:'app' is requested", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-filter-store-zone";
+      await upsertKeywords([
+        { keyword: "zzz-filter-store-multi", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(makeScan({ keyword: "zzz-filter-store-multi", store: "app", scannedAt: now }));
+      await insertScan(makeScan({ keyword: "zzz-filter-store-multi", store: "DE", scannedAt: now }));
+
+      const appOnly = await getTopOpportunities({ limit: 50, genreZone: zone, store: "app" });
+      expect(appOnly.rows.map((r) => r.store)).toEqual(["app"]);
+
+      const deOnly = await getTopOpportunities({ limit: 50, genreZone: zone, store: "DE" });
+      expect(deOnly.rows.map((r) => r.store)).toEqual(["DE"]);
+
+      // No store filter → both rows (one per store) come back.
+      const both = await getTopOpportunities({ limit: 50, genreZone: zone });
+      expect(both.rows.map((r) => r.store).sort()).toEqual(["DE", "app"]);
+    });
+
+    it("excludeLowConfidence drops a low_confidence scan but keeps a normal-confidence one", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const zone = "zzz-filter-lowconf-zone";
+      await upsertKeywords([
+        { keyword: "zzz-filter-lowconf-true", genreZone: zone, source: "seed" },
+        { keyword: "zzz-filter-lowconf-false", genreZone: zone, source: "seed" },
+      ]);
+      await insertScan(
+        makeScan({ keyword: "zzz-filter-lowconf-true", lowConfidence: true, scannedAt: now }),
+      );
+      await insertScan(
+        makeScan({ keyword: "zzz-filter-lowconf-false", lowConfidence: false, scannedAt: now }),
+      );
+
+      const filtered = await getTopOpportunities({
+        limit: 50,
+        genreZone: zone,
+        excludeLowConfidence: true,
+      });
+      const keywords = filtered.rows.map((r) => r.keyword);
+      expect(keywords).toContain("zzz-filter-lowconf-false");
+      expect(keywords).not.toContain("zzz-filter-lowconf-true");
+
+      // Default (excludeLowConfidence omitted) — both come back, matching the
+      // dashboard's existing (unfiltered) behavior.
+      const unfiltered = await getTopOpportunities({ limit: 50, genreZone: zone });
+      expect(unfiltered.rows.map((r) => r.keyword).sort()).toEqual([
+        "zzz-filter-lowconf-false",
+        "zzz-filter-lowconf-true",
+      ]);
     });
 
     describe("hideJunk", () => {

@@ -622,14 +622,26 @@ export interface AggregateDemandOptions {
    * confidence. Default 1 (any evidence corroborates).
    */
   readonly minMatches?: number;
+  /**
+   * Per-kind weight overrides layered on top of {@link DEMAND_KIND_WEIGHTS}
+   * (a caller-supplied kind wins; every other kind keeps its
+   * `DEMAND_KIND_WEIGHTS` default). This module stays config-free/PURE — the
+   * caller (`demand-probes.ts`'s `enrichDemand`) resolves the live value
+   * (e.g. `loadConfig().appstoreKeywordGap.demandWeight` for `appstore_gap`)
+   * and passes it through here.
+   */
+  readonly kindWeightOverrides?: Partial<Record<DemandEvidenceKind, number>>;
 }
 
 /** Total weighted match count across all evidence (kind-weighted). */
-function weightedMatchTotal(evidence: readonly DemandEvidence[]): number {
+function weightedMatchTotal(
+  evidence: readonly DemandEvidence[],
+  kindWeightOverrides?: Partial<Record<DemandEvidenceKind, number>>,
+): number {
   let total = 0;
   for (const e of evidence) {
     const count = Number.isFinite(e.count) && e.count > 0 ? e.count : 0;
-    const weight = DEMAND_KIND_WEIGHTS[e.kind] ?? 1;
+    const weight = kindWeightOverrides?.[e.kind] ?? DEMAND_KIND_WEIGHTS[e.kind] ?? 1;
     total += count * weight;
   }
   return total;
@@ -712,7 +724,7 @@ export function aggregateDemand(
     };
   }
 
-  const weightedTotal = weightedMatchTotal(evidence);
+  const weightedTotal = weightedMatchTotal(evidence, opts.kindWeightOverrides);
   const score = scoreFromWeightedTotal(weightedTotal);
 
   let confidence = confidenceFromEvidence(evidence, totalMatches);

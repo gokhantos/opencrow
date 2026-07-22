@@ -356,6 +356,33 @@ describe("aggregateDemand — scoring", () => {
     expect(funding.score).toBeGreaterThan(reddit.score);
   });
 
+  // Batch F, F2: appstore_gap's weight is resolved by the CALLER
+  // (demand-probes.ts's enrichDemand, from `appstoreKeywordGap.demandWeight`)
+  // and threaded through `kindWeightOverrides`, rather than the old hardcoded
+  // `DEMAND_KIND_WEIGHTS.appstore_gap`.
+  test("kindWeightOverrides overrides a single kind's weight, leaving others at their default", () => {
+    const baseline = aggregateDemand([ev({ kind: "appstore_gap", count: 4 })]);
+    const boosted = aggregateDemand([ev({ kind: "appstore_gap", count: 4 })], {
+      kindWeightOverrides: { appstore_gap: 3 },
+    });
+    expect(boosted.score).toBeGreaterThan(baseline.score);
+
+    // A kind with NO override still uses its DEMAND_KIND_WEIGHTS default.
+    const redditBaseline = aggregateDemand([ev({ kind: "reddit_intent", count: 4 })]);
+    const redditWithUnrelatedOverride = aggregateDemand([ev({ kind: "reddit_intent", count: 4 })], {
+      kindWeightOverrides: { appstore_gap: 3 },
+    });
+    expect(redditWithUnrelatedOverride.score).toBe(redditBaseline.score);
+  });
+
+  test("kindWeightOverrides of 1 (the config default) is byte-identical to no override", () => {
+    const withDefaultOverride = aggregateDemand([ev({ kind: "appstore_gap", count: 6 })], {
+      kindWeightOverrides: { appstore_gap: 1 },
+    });
+    const withoutOverride = aggregateDemand([ev({ kind: "appstore_gap", count: 6 })]);
+    expect(withDefaultOverride).toEqual(withoutOverride);
+  });
+
   test("clears the absence cap once real evidence exists", () => {
     const art = aggregateDemand([
       ev({ kind: "reddit_intent", count: 8 }),

@@ -12,6 +12,10 @@ import {
   SIGNATURE_HIT_STATUSES,
   type SignatureHitStatus,
 } from "../../sources/appstore/signature-hits-store";
+import {
+  deleteKeywordVerdict,
+  upsertKeywordVerdict,
+} from "../../sources/appstore/keyword-verdict-store";
 
 const log = createLogger("appstore-signature-hits-api");
 
@@ -64,6 +68,29 @@ export function createAppStoreSignatureHitsRoutes(): Hono {
     const updated = await setSignatureHitStatus(keyword, parsed.data.status);
     if (!updated) {
       return c.json({ success: false, error: `Unknown signature hit: ${keyword}` }, 404);
+    }
+
+    // Batch F, F5 leg 2: mirror a screener dismissal into a PIPELINE-sourced
+    // keyword verdict — SOFT downweight for `collectKeywordGaps` (Batch F,
+    // F5 leg 3), deliberately distinct from a HUMAN keyword-level dismissal
+    // (hard exclude). A screener dismissal means "this velocity alert is
+    // noise", not "stop scanning/seeding this keyword" — see
+    // `keyword-deactivation.ts`'s doc comment on the same distinction, and
+    // `keyword-verdict-store.ts`'s module doc. Re-activating (`status:
+    // "active"`) clears the downweight. Best-effort: never fails the triage
+    // action itself.
+    try {
+      if (parsed.data.status === "dismissed") {
+        await upsertKeywordVerdict({ keyword, verdict: "dismissed", source: "pipeline" });
+      } else {
+        await deleteKeywordVerdict(keyword, "pipeline");
+      }
+    } catch (err) {
+      log.warn("Failed to mirror screener status into keyword verdict", {
+        keyword,
+        status: parsed.data.status,
+        err,
+      });
     }
 
     log.info("Signature hit status updated", { keyword, status: parsed.data.status });

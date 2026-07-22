@@ -48,6 +48,11 @@ import {
   type IdeaVerdict,
 } from "./graph-outcome-feedback";
 import {
+  appendKeywordOutcomeEvents,
+  loadRunKeywordSeeds,
+  recomputeKeywordOutcomeCounts,
+} from "./keyword-outcome-feedback";
+import {
   buildIdeaProvenance,
   candidateHasDemandEvidence,
   demandProvenanceEntries,
@@ -712,6 +717,29 @@ export async function runProxyLabelPhase(params: {
 }
 
 /**
+ * Build the run's per-idea verdict map from its proxy labels (archived →
+ * "killed") — the shared input {@link buildSeedOutcomeEvents} needs for BOTH
+ * the graph-feedback and keyword-outcome-attribution write-back blocks below.
+ * Only `validated`/`archived` proxy-label kinds map to a verdict; only
+ * gold/reprobe-tier verdicts survive `buildSeedOutcomeEvents`'s own trust
+ * filter — same-run proxy verdicts are excluded there by design, not here.
+ */
+function buildIdeaVerdictMapFromProxyLabels(
+  proxyLabels: readonly import("./feedback-bootstrap").ProxyLabel[],
+): Map<string, IdeaVerdict> {
+  const verdictMap = new Map<string, IdeaVerdict>();
+  for (const label of proxyLabels) {
+    const kind = label.event.kind;
+    if (kind !== "validated" && kind !== "archived") continue;
+    verdictMap.set(label.event.idea_id, {
+      verdict: kind === "validated" ? "validated" : "killed",
+      verdictSource: `proxy:${label.reason}`,
+    });
+  }
+  return verdictMap;
+}
+
+/**
  * Outcome-memory WRITE hook (gated writeBack, default OFF).
  * Write one memory per stored idea (+ one per dedup-rejected title) back to
  * mem0. Placed AFTER persistence + proxy-labels (the verdict map is complete).
@@ -771,6 +799,22 @@ export async function runOutcomeMemoryWriteBack(params: {
       readonly queryTimeoutMs: number;
     } | null;
   };
+  /**
+   * App Store keyword-gap run-aggregate outcome attribution (Batch F, F5 leg
+   * 4). Absent / enabled:false → no Postgres writes (byte-identical).
+   * Independent of `graphFeedback` above — attributes the SAME run-aggregate
+   * gold/reprobe verdict back to the gap-seed KEYWORDS this run was exposed
+   * to (loaded from `appstore_keyword_seed_exposure`, migration 055), not
+   * Neo4j `:Entity` seeds. See `keyword-outcome-feedback.ts`'s module doc.
+   * Best-effort: never breaks the run.
+   */
+  readonly keywordOutcomeAttribution?: {
+    readonly enabled: boolean;
+    readonly validatedWeight: number;
+    readonly killedWeight: number;
+    readonly weightHalfLifeDays: number;
+    readonly maxSeedWeight: number;
+  };
 }): Promise<void> {
   const {
     storedPairs,
@@ -790,6 +834,7 @@ export async function runOutcomeMemoryWriteBack(params: {
     supersedePriorOnRerun = true,
     reprobe,
     graphFeedback,
+    keywordOutcomeAttribution,
   } = params;
 
   try {
@@ -927,17 +972,10 @@ export async function runOutcomeMemoryWriteBack(params: {
     try {
       // Build the run's per-idea verdict map from the proxy labels (archived →
       // "killed"). Re-derived here (the map inside the try-block above is out of
-      // scope). Only gold/reprobe-tier verdicts survive the trust filter inside the
-      // builder — same-run proxy verdicts are excluded by design.
-      const verdictMap = new Map<string, IdeaVerdict>();
-      for (const label of proxyLabels) {
-        const kind = label.event.kind;
-        if (kind !== "validated" && kind !== "archived") continue;
-        verdictMap.set(label.event.idea_id, {
-          verdict: kind === "validated" ? "validated" : "killed",
-          verdictSource: `proxy:${label.reason}`,
-        });
-      }
+      // scope) via the shared helper. Only gold/reprobe-tier verdicts survive
+      // the trust filter inside the builder — same-run proxy verdicts are
+      // excluded by design.
+      const verdictMap = buildIdeaVerdictMapFromProxyLabels(proxyLabels);
 
       const runSeeds = await loadRunSeeds(runId);
       const events = buildSeedOutcomeEvents({
@@ -983,6 +1021,46 @@ export async function runOutcomeMemoryWriteBack(params: {
       log.warn("Graph outcome feedback write-back failed — skipping", { err });
     } finally {
       if (graphWriteClient) await graphWriteClient.close().catch(() => {});
+    }
+  }
+
+  // ── App Store keyword-gap outcome attribution write-back (gated, F5 leg 4) ─
+  // Attribute the SAME run-aggregate gold/reprobe verdict back to the gap-seed
+  // KEYWORDS this run was exposed to (loaded from
+  // appstore_keyword_seed_exposure, migration 055) — independent of
+  // graphFeedback above (a keyword is not a Neo4j :Entity seed). See
+  // keyword-outcome-feedback.ts's module doc for why this is run-aggregate,
+  // not per-idea. Independent best-effort block — a failure here never
+  // affects the mem0 write or the graph-feedback block above.
+  if (keywordOutcomeAttribution?.enabled) {
+    try {
+      const verdictMap = buildIdeaVerdictMapFromProxyLabels(proxyLabels);
+      const runKeywordSeeds = await loadRunKeywordSeeds(runId);
+      const events = buildSeedOutcomeEvents({
+        runId,
+        verdictMap,
+        runSeeds: runKeywordSeeds,
+        config: {
+          validatedWeight: keywordOutcomeAttribution.validatedWeight,
+          killedWeight: keywordOutcomeAttribution.killedWeight,
+          maxSeedWeight: keywordOutcomeAttribution.maxSeedWeight,
+        },
+        createdAtSec,
+      });
+
+      await appendKeywordOutcomeEvents(events);
+      await recomputeKeywordOutcomeCounts({
+        now: createdAtSec,
+        halfLifeDays: keywordOutcomeAttribution.weightHalfLifeDays,
+      });
+
+      log.info("Keyword outcome attribution write-back complete", {
+        runId,
+        keywords: runKeywordSeeds.length,
+        events: events.length,
+      });
+    } catch (err) {
+      log.warn("Keyword outcome attribution write-back failed — skipping", { err });
     }
   }
 }

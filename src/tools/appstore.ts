@@ -12,16 +12,81 @@ import {
 } from "../sources/appstore/store";
 import { createSemanticSearchTool } from "./search-factory";
 import { createDigestTool } from "./digest-factory";
-import { getEnum } from "./input-helpers";
+import { getEnum, isToolError, requireString } from "./input-helpers";
 import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
+import { loadConfig } from "../config/loader";
 import { scanKeyword } from "../sources/appstore/keyword-gaps";
 import { formatGapProfile } from "../sources/appstore/format-gap-profile";
 import { getLatestPopularity } from "../sources/appstore/popularity-store";
+import {
+  countScansSince,
+  insertScan,
+  keywordsExist,
+  upsertKeywords,
+} from "../sources/appstore/keyword-store";
+import type { KeywordGapProfile } from "../sources/appstore/keyword-types";
 import { RateLimitError } from "../sources/shared/rate-limit-error";
 import { createMinIntervalGate } from "../sources/shared/min-interval-gate";
 
 const log = createLogger("tool:appstore");
+
+/**
+ * Genre-zone bucket newly-discovered `analyze_keyword_gap` keywords are
+ * corpus-registered under (Batch F, F2). This tool has no classifier — it
+ * cannot pick one of `GENRE_ZONES` (keyword-corpus.ts) accurately from a bare
+ * search phrase — so every brand-new agent-analyzed keyword lands in this one
+ * catch-all zone rather than a wrong guess. Only used for keywords NOT
+ * already in the corpus (see `recordAgentAnalyzedKeyword`'s `keywordsExist`
+ * check) — an existing keyword's real `genre_zone` is never overwritten.
+ */
+const MANUAL_ANALYSIS_GENRE_ZONE = "reference";
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Persist a successful `analyze_keyword_gap` scan into the corpus/scan
+ * history (Batch F, F2) — previously the tool only ever returned a formatted
+ * string, so agent-analyzed keywords left no trace for the dashboard, the
+ * idea-synthesis pipeline's `collectKeywordGaps`, or future trend/velocity
+ * scoring. Gated on the SAME rolling-24h `dailyKeywordBudget` ceiling the
+ * scanner sweep respects (`countScansSince`), so an agent hammering this tool
+ * cannot blow past the corpus-wide scan budget the sweep is throttled to.
+ * Best-effort: any failure is logged and swallowed — persistence must never
+ * turn a successful live scan into a tool error.
+ */
+async function recordAgentAnalyzedKeyword(profile: KeywordGapProfile): Promise<void> {
+  try {
+    const dailyKeywordBudget = loadConfig().appstoreKeywordGap.dailyKeywordBudget;
+    const windowStart = Math.floor((Date.now() - MS_PER_DAY) / 1000);
+    const scansInWindow = await countScansSince(windowStart);
+    if (scansInWindow >= dailyKeywordBudget) {
+      log.warn("analyze_keyword_gap skipped persistence — daily keyword budget exhausted", {
+        keyword: profile.keyword,
+        scansInWindow,
+        dailyKeywordBudget,
+      });
+      return;
+    }
+
+    await insertScan(profile);
+
+    // Only register a brand-new keyword into the corpus — never overwrite an
+    // EXISTING keyword's real `genre_zone` with this tool's generic fallback
+    // bucket (`upsertKeywords`'s ON CONFLICT would otherwise clobber it).
+    const known = await keywordsExist([profile.keyword]);
+    if (!known.has(profile.keyword)) {
+      await upsertKeywords([
+        { keyword: profile.keyword, genreZone: MANUAL_ANALYSIS_GENRE_ZONE, source: "manual" },
+      ]);
+    }
+  } catch (err) {
+    log.warn("Failed to persist analyze_keyword_gap scan; tool output still returned", {
+      keyword: profile.keyword,
+      error: getErrorMessage(err),
+    });
+  }
+}
 
 // analyze_keyword_gap is agent-invokable on demand — outside the scanner's
 // own scrape-cycle budget. Without a floor, a tool-call loop could spray
@@ -343,6 +408,8 @@ export function createAppStoreTools(
         properties: {
           keyword: {
             type: "string",
+            minLength: 1,
+            maxLength: 200,
             description:
               "App Store search phrase to analyze for a supply/demand gap (e.g. 'fatty liver diet').",
           },
@@ -351,7 +418,8 @@ export function createAppStoreTools(
       },
       categories: ["research"] as const,
       async execute(input) {
-        const keyword = String(input.keyword ?? "");
+        const keyword = requireString(input, "keyword", { maxLength: 200 });
+        if (isToolError(keyword)) return keyword;
         try {
           await analyzeKeywordGapGate();
           const profile = await scanKeyword(keyword);
@@ -362,6 +430,7 @@ export function createAppStoreTools(
           const volumeCheck = popularity
             ? { popularity: popularity.value, checkedAt: popularity.checkedAt }
             : null;
+          await recordAgentAnalyzedKeyword(profile);
           return { output: formatGapProfile(profile, volumeCheck), isError: false };
         } catch (err) {
           if (err instanceof RateLimitError) {

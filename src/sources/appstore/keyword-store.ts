@@ -8,7 +8,13 @@ import {
 import { DEACTIVATION_MIN_SCANS, MINED_DEACTIVATION_MAX_DEMAND_EVER } from "./keyword-deactivation";
 import type { ClusterAssignmentRow, RawCandidate } from "./keyword-clustering";
 import { computeBuildability } from "./keyword-scoring";
-import type { GapTrend, HintEvidence, KeywordGapProfile, TopApp } from "./keyword-types";
+import type {
+  GapTrend,
+  HintEvidence,
+  KeywordGapProfile,
+  KeywordScanStore,
+  TopApp,
+} from "./keyword-types";
 
 /**
  * Bun's SQL driver returns `jsonb` columns as raw JSON strings, not parsed
@@ -831,6 +837,15 @@ interface OpportunityFilters {
   readonly minOpportunity: number | null;
   readonly minBuildability: number | null;
   readonly hideJunk: boolean;
+  /** Only include rows for this storefront lane ("app" | "play" | "DE"). Null = no store filter. */
+  readonly store: KeywordScanStore | null;
+  /**
+   * When true, drop rows whose latest scan is `low_confidence` (migration
+   * 042 — zero title-matched incumbents, demand/weakness estimated from an
+   * unrelated fallback field). Default false (no suppression) so the
+   * dashboard's existing behavior is unchanged; pipeline consumers opt in.
+   */
+  readonly excludeLowConfidence: boolean;
 }
 
 /**
@@ -883,6 +898,8 @@ function buildFilterClause(db: ReturnType<typeof getDb>, filters: OpportunityFil
         AND s.keyword !~ '^[0-9[:punct:][:space:]]+$'
       )
     )
+    AND (${filters.store}::text IS NULL OR s.store = ${filters.store})
+    AND (${filters.excludeLowConfidence} = FALSE OR s.low_confidence = FALSE)
   `;
 }
 
@@ -937,6 +954,21 @@ export interface GetTopOpportunitiesOptions {
    * numeric/punctuation/whitespace keywords. Default false (no suppression).
    */
   readonly hideJunk?: boolean;
+  /**
+   * Only include rows for this storefront lane. Default undefined (all
+   * stores). Added so pipeline consumers (`collectKeywordGaps`) can scope
+   * seeds to `"app"` — the DE storefront lane is querying/mining-only data,
+   * deliberately excluded from the (US-calibrated) signature screener, and
+   * should not seed idea synthesis either.
+   */
+  readonly store?: KeywordScanStore;
+  /**
+   * When true, drop rows whose latest scan is `low_confidence` (migration
+   * 042 — zero title-matched incumbents; demand/weakness were computed over
+   * a giant-excluded non-matched fallback field, not a real title match).
+   * Default false (no suppression, matches today's dashboard behavior).
+   */
+  readonly excludeLowConfidence?: boolean;
 }
 
 export interface GetTopOpportunitiesResult {
@@ -988,6 +1020,8 @@ export async function getTopOpportunities(
     minOpportunity: opts.minOpportunity ?? null,
     minBuildability: opts.minBuildability ?? null,
     hideJunk: opts.hideJunk ?? false,
+    store: opts.store ?? null,
+    excludeLowConfidence: opts.excludeLowConfidence ?? false,
   };
   const offset = opts.offset ?? 0;
   const sort = opts.sort ?? "opportunity";
@@ -2060,6 +2094,11 @@ function clusterMemberFilters(opts: GetOpportunityClustersOptions): OpportunityF
     minOpportunity: opts.minOpportunity ?? null,
     minBuildability: opts.minBuildability ?? null,
     hideJunk: opts.hideJunk ?? false,
+    // Clusters span all storefronts/confidence levels — no store or
+    // low-confidence filter here (neither is exposed on
+    // `GetOpportunityClustersOptions`, matching genreZone above).
+    store: null,
+    excludeLowConfidence: false,
   };
 }
 

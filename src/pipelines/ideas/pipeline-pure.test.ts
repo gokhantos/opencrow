@@ -34,6 +34,7 @@ import {
   computeSigeConvergenceVeto,
   mergeSelectedIds,
   applyMinQualityFloor,
+  hasNoFreshSourceData,
 } from "./pipeline";
 import type { GiantAxisScores } from "./giant";
 import { GIANT_AXIS_KEYS } from "./giant";
@@ -714,5 +715,51 @@ describe("applyMinQualityFloor", () => {
     expect(result[0]?.title).toBe("A");
     expect(result[1]?.title).toBe("B");
     expect(result[2]?.title).toBe("C");
+  });
+});
+
+// ── hasNoFreshSourceData ──────────────────────────────────────────────────────
+// Batch F, F3: the empty-run guard MUST treat a seeds-only run (keyword-gap
+// seeds present, everything else empty) as having fresh data — the bug this
+// fix addresses was the guard silently discarding collected keyword-gap
+// seeds and reporting a 0-idea "success" instead of proceeding to synthesis.
+
+describe("hasNoFreshSourceData", () => {
+  const ALL_ZERO = {
+    capabilitiesCount: 0,
+    trendingCategoriesCount: 0,
+    clustersCount: 0,
+    keywordGapCount: 0,
+  };
+
+  test("true when every source is empty (including keyword gaps)", () => {
+    expect(hasNoFreshSourceData(ALL_ZERO)).toBe(true);
+  });
+
+  test("false when only keywordGapCount is non-zero — the F3 regression case", () => {
+    expect(hasNoFreshSourceData({ ...ALL_ZERO, keywordGapCount: 1 })).toBe(false);
+  });
+
+  test("false when only capabilitiesCount is non-zero", () => {
+    expect(hasNoFreshSourceData({ ...ALL_ZERO, capabilitiesCount: 3 })).toBe(false);
+  });
+
+  test("false when only trendingCategoriesCount is non-zero", () => {
+    expect(hasNoFreshSourceData({ ...ALL_ZERO, trendingCategoriesCount: 2 })).toBe(false);
+  });
+
+  test("false when only clustersCount is non-zero", () => {
+    expect(hasNoFreshSourceData({ ...ALL_ZERO, clustersCount: 5 })).toBe(false);
+  });
+
+  test("false when every source has data", () => {
+    expect(
+      hasNoFreshSourceData({
+        capabilitiesCount: 1,
+        trendingCategoriesCount: 1,
+        clustersCount: 1,
+        keywordGapCount: 1,
+      }),
+    ).toBe(false);
   });
 });

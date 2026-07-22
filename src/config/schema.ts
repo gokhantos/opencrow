@@ -636,13 +636,12 @@ export const appstoreKeywordGapConfigSchema = z
     tier1AutocompleteCap: z.number().int().min(0).max(500).default(50),
     // How many top-ranked gap candidates to surface per scan.
     topN: z.number().int().min(5).max(50).default(20),
-    // Weight applied to demand-side signal when scoring a keyword gap.
-    // Modest default so demand nudges but does not dominate ranking/difficulty.
-    // RESERVED — not yet applied to demand weighting. DEMAND_KIND_WEIGHTS
-    // .appstore_gap in src/pipelines/ideas/demand.ts is hardcoded to 1.0 and
-    // does not read this field yet. Kept in the schema (rather than removed)
-    // so the config surface is stable once it IS wired in; do not assume it
-    // has any effect until DEMAND_KIND_WEIGHTS reads it.
+    // Weight applied to the `appstore_gap` demand-evidence kind when
+    // aggregating a candidate's demand artifact (see `demand-probes.ts`'s
+    // `enrichDemand`, which resolves this field into `aggregateDemand`'s
+    // `kindWeightOverrides` — `DEMAND_KIND_WEIGHTS.appstore_gap` in
+    // `demand.ts` stays the 1.0 default fallback when this equals 1). Modest
+    // default so demand nudges but does not dominate ranking/difficulty.
     demandWeight: z.number().min(0).max(5).default(1),
     // Minimum opportunity score (0..1) a keyword must clear before it is fed
     // back as a seed into further expansion/generation. Live opportunity
@@ -667,6 +666,20 @@ export const appstoreKeywordGapConfigSchema = z
     // ignored by the veto — search demand drifts, so a probe from months ago
     // should not permanently blacklist a keyword.
     zeroVolumeFreshnessDays: z.number().int().min(1).max(365).default(45),
+    // Minimum `buildability` (0..100, see `computeBuildability`) a keyword's
+    // latest US-storefront scan must clear before `collectKeywordGaps`
+    // (idea-synthesis pipeline consumer) will draw it as a seed. Additive to
+    // the store/low-confidence/junk filters `collectKeywordGaps` always
+    // applies (Batch F, F1) — default 0 (no-op) so this ships without
+    // silently starving the pipeline of seeds; raise once the corpus's real
+    // buildability distribution is understood from the dashboard.
+    pipelineMinBuildability: z.number().int().min(0).max(100).default(0),
+    // Cap on how many top-opportunity scans `collectKeywordGaps` fetches per
+    // pipeline run before ranking/selecting seeds (was a hardcoded `limit: 10`
+    // in `pipeline.ts`'s Step 3b). Lifted into config so an operator can widen
+    // the seed pool without a code change; kept at the prior hardcoded value
+    // as the default so this ships behavior-neutral.
+    seedLimit: z.number().int().min(1).max(100).default(10),
     // SECONDARY corpus-discovery: mines new keyword candidates from App
     // Store data the scraper already fetches (top-chart app names +
     // categories — see keyword-miner.ts). Demoted 2026-07-21 in favor of
@@ -1045,6 +1058,68 @@ export const appstoreKeywordGapConfigSchema = z
         maxChunksPerRun: 1_000,
         minIntervalMs: 6 * 60 * 60 * 1000,
       }),
+    // ─── Run-aggregate outcome attribution (Batch F, F5 leg 4) ─────────────
+    // When a run reaches a terminal gold/reprobe idea verdict,
+    // `keyword-outcome-feedback.ts` attributes the run's AGGREGATE verdict
+    // back to every gap-seed keyword the run was exposed to (see
+    // `collector-keyword-gaps.ts`'s module doc on why this is run-aggregate,
+    // not per-idea). Default ON: bounded, in-process Postgres bookkeeping,
+    // no extra network calls — same "safe by default" reasoning as
+    // `appstoreVelocity`/`appstoreSignatureScreener` above. The materialized
+    // `killed_count` this produces is consumed by `collectKeywordGaps` as a
+    // SOFT downweight only (see `killDownweightStrength` below) — never a
+    // hard exclude.
+    outcomeAttribution: z
+      .object({
+        enabled: z.boolean().default(true),
+        // Per-run signed credit magnitude for a validated / killed aggregate
+        // verdict, before temporal decay — mirrors
+        // `pipelines.ideas.smart.graphFeedback`'s validatedWeight/killedWeight
+        // shape (same buildSeedOutcomeEvents builder, reused unchanged).
+        validatedWeight: z.number().default(1),
+        killedWeight: z.number().default(-1),
+        // Half-life (days) for `applyTemporalDecay` when materializing
+        // validated_count/killed_count from the immutable event log — an old
+        // kill signal fades so a keyword isn't downweighted forever.
+        weightHalfLifeDays: z.number().min(0).default(45),
+        // Clamp on the net per-run signed weight attributed to EVERY exposed
+        // keyword (mirrors graphFeedback.maxSeedWeight) — bounds how much a
+        // single run's outcome can move any one keyword.
+        maxSeedWeight: z.number().min(0).default(5),
+        // Strength of the graduated SOFT downweight `collectKeywordGaps`
+        // applies from a keyword's decayed `killed_count`: sort rank is
+        // divided by `1 + killedCount * killDownweightStrength`. Higher =
+        // repeatedly-killed keywords sink further, never excluded outright.
+        killDownweightStrength: z.number().min(0).default(0.35),
+      })
+      .default({
+        enabled: true,
+        validatedWeight: 1,
+        killedWeight: -1,
+        weightHalfLifeDays: 45,
+        maxSeedWeight: 5,
+        killDownweightStrength: 0.35,
+      }),
+    // ─── New-hit / first-crossing alert digest (Batch F4) ───────────────────
+    // Daily, off the keyword-sweep tick (see `scraper.ts`'s
+    // `runGapAlertsIfDue`): batches new signature-screener hits + first-ever
+    // opportunity-threshold crossings (`gap-alerts.ts`) into ONE digest
+    // message, enqueued into the existing cron delivery queue (never a
+    // separate Telegram bot instance in the scraper process — see that
+    // module's doc comment on the 409/duplicate-poller risk this avoids).
+    // Default OFF: unlike the bookkeeping-only knobs above, this actually
+    // sends a message to the operator's primary Telegram chat, so it should
+    // be an explicit opt-in.
+    alerts: z
+      .object({
+        enabled: z.boolean().default(false),
+        // Minimum gap between alert runs — this scans the WHOLE corpus
+        // (cheap, index-friendly SQL), so this cap exists purely to keep the
+        // digest at a sane cadence ("what's new this week"-ish) rather than
+        // firing on every sweep tick. Default 24h.
+        minRunIntervalMs: z.number().int().min(60_000).default(24 * 60 * 60 * 1000),
+      })
+      .default({ enabled: false, minRunIntervalMs: 24 * 60 * 60 * 1000 }),
   })
   .default({
     enabled: true,
@@ -1061,6 +1136,8 @@ export const appstoreKeywordGapConfigSchema = z
     excludeKnownZeroVolume: false,
     zeroVolumeThreshold: 1,
     zeroVolumeFreshnessDays: 45,
+    pipelineMinBuildability: 0,
+    seedLimit: 10,
     corpusDiscovery: {
       enabled: true,
       maxMinedPerCycle: 100,
@@ -1112,6 +1189,15 @@ export const appstoreKeywordGapConfigSchema = z
       maxChunksPerRun: 1_000,
       minIntervalMs: 6 * 60 * 60 * 1000,
     },
+    outcomeAttribution: {
+      enabled: true,
+      validatedWeight: 1,
+      killedWeight: -1,
+      weightHalfLifeDays: 45,
+      maxSeedWeight: 5,
+      killDownweightStrength: 0.35,
+    },
+    alerts: { enabled: false, minRunIntervalMs: 24 * 60 * 60 * 1000 },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 

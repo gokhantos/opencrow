@@ -3,6 +3,7 @@ import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
 import { runKeywordSweep, runDeStorefrontSweep } from "./keyword-gaps";
 import { runScreener } from "./keyword-screener";
+import { runGapAlerts } from "./gap-alerts";
 import { expandCorpus } from "./keyword-autocomplete";
 import { mineKeywords } from "./keyword-miner";
 import { mineReviewKeywords } from "./keyword-review-miner";
@@ -177,6 +178,12 @@ export function createAppStoreScraper(config?: {
   // a screener run from firing on every keyword-sweep tick (as often as every
   // minute) when config wants it capped to `minRunIntervalMs` (default 6h).
   let lastScreenerRunAt = 0;
+  // Soft cadence gate for the new-hit / first-crossing alert digest (Batch
+  // F4 — see `runGapAlertsIfDue` below): process-local, same rationale as
+  // `lastScreenerRunAt` — gated to its own
+  // `appstoreKeywordGap.alerts.minRunIntervalMs` (default 24h) so the digest
+  // fires at a sane cadence instead of on every ~1min sweep tick.
+  let lastGapAlertsRunAt = 0;
   // Soft cadence gate for autocomplete corpus expansion (see
   // keyword-autocomplete.ts's `expandCorpus`) — process-local, same
   // rationale as `lastScreenerRunAt`: gated to its own
@@ -770,6 +777,12 @@ export function createAppStoreScraper(config?: {
       // cycle scanned anything new — it evaluates the corpus's LATEST scans,
       // not just this cycle's), gated to its own cadence internally.
       await runSignatureScreenerIfDue();
+
+      // New-hit / first-crossing alert digest (Batch F4) — runs after the
+      // screener so a fresh signature hit from THIS cycle is eligible to be
+      // included, gated to its own (default 24h) cadence internally, same
+      // pattern as every other lane on this tick.
+      await runGapAlertsIfDue();
 
       // Autocomplete corpus expansion (PRIMARY discovery source — see
       // keyword-autocomplete.ts) also runs off this tick, gated to its own
@@ -1592,6 +1605,41 @@ export function createAppStoreScraper(config?: {
       });
     } catch (err) {
       log.warn("Newborn-velocity screener failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // New-hit / first-crossing alert digest (Batch F4 — see `gap-alerts.ts`).
+  // Default OFF (`appstoreKeywordGap.alerts.enabled`): unlike the other
+  // *IfDue lanes on this tick, this actually sends a message to the
+  // operator's primary Telegram chat via the EXISTING cron delivery queue
+  // (`DeliveryStore.enqueue` — never a separate Telegram bot instance here,
+  // avoiding a duplicate-poller 409 risk), so it stays opt-in. Never throws
+  // — failures are logged and swallowed, same pattern as every other lane on
+  // this tick.
+  async function runGapAlertsIfDue(): Promise<void> {
+    try {
+      const fullConfig = loadConfig();
+      const cfg = fullConfig.appstoreKeywordGap;
+      if (!cfg.alerts.enabled) return;
+
+      const now = Date.now();
+      if (now - lastGapAlertsRunAt < cfg.alerts.minRunIntervalMs) return;
+      lastGapAlertsRunAt = now;
+
+      const primaryUserId = fullConfig.channels.telegram.allowedUserIds[0];
+      if (!primaryUserId) {
+        log.debug("Gap alerts skipped — no primary Telegram user configured");
+        return;
+      }
+
+      const result = await runGapAlerts({
+        opportunityThreshold: cfg.opportunityThresholdForSeed,
+        channel: "telegram",
+        chatId: String(primaryUserId),
+      });
+      log.info("Gap alerts run complete", result);
+    } catch (err) {
+      log.warn("Gap alerts run failed", { error: getErrorMessage(err) });
     }
   }
 

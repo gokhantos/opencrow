@@ -98,7 +98,18 @@ describe("selectGapSeeds", () => {
 
   it("stamps store=appstore and signalType=keyword_gap on every seed", () => {
     const seeds = selectGapSeeds(
-      [makeScan({ id: 7, keyword: "x", opportunity: 0.8 })],
+      [
+        makeScan({
+          id: 7,
+          keyword: "x",
+          opportunity: 0.8,
+          demand: 12.5,
+          competitiveness: 33.3,
+          incumbentWeakness: 0.6,
+          trend: "heating",
+          lowConfidence: false,
+        }),
+      ],
       new Set(),
       { limit: 5, minOpportunity: 0.4 },
     );
@@ -109,6 +120,11 @@ describe("selectGapSeeds", () => {
       store: "appstore",
       signalType: "keyword_gap",
       sourceId: "7",
+      demand: 12.5,
+      competitiveness: 33.3,
+      incumbentWeakness: 0.6,
+      trend: "heating",
+      lowConfidence: false,
     });
   });
 
@@ -131,6 +147,208 @@ describe("selectGapSeeds", () => {
       { limit: 0, minOpportunity: 0.4 },
     );
     expect(seeds).toEqual([]);
+  });
+
+  // Batch F, F5 leg 2/3: a PIPELINE-sourced (screener) soft-downweight verdict
+  // must only affect SORT RANK, never exclude the keyword or distort its
+  // reported opportunity.
+  describe("downweightedKeywords (Batch F, F5)", () => {
+    it("ranks a downweighted keyword below an equal-opportunity keyword with no flag", () => {
+      const scans = [
+        makeScan({ id: 1, keyword: "flagged", opportunity: 0.8 }),
+        makeScan({ id: 2, keyword: "clean", opportunity: 0.8 }),
+      ];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4 },
+        new Set(["flagged"]),
+      );
+      expect(seeds.map((s) => s.keyword)).toEqual(["clean", "flagged"]);
+    });
+
+    it("still includes a downweighted keyword — soft, never a hard exclude", () => {
+      const scans = [makeScan({ id: 1, keyword: "flagged", opportunity: 0.9 })];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4 },
+        new Set(["flagged"]),
+      );
+      expect(seeds.map((s) => s.keyword)).toEqual(["flagged"]);
+    });
+
+    it("never distorts the seed's reported opportunity value", () => {
+      const scans = [makeScan({ id: 1, keyword: "flagged", opportunity: 0.9 })];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4 },
+        new Set(["flagged"]),
+      );
+      expect(seeds[0]?.opportunity).toBe(0.9);
+    });
+
+    it("a strong downweighted keyword can still outrank a much weaker clean one", () => {
+      const scans = [
+        makeScan({ id: 1, keyword: "flagged", opportunity: 0.95 }),
+        makeScan({ id: 2, keyword: "clean", opportunity: 0.1 }),
+      ];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.05 },
+        new Set(["flagged"]),
+      );
+      // 0.95 * 0.5 = 0.475, still well above 0.1 — a soft downweight, not a
+      // hard demotion to the bottom regardless of real opportunity.
+      expect(seeds.map((s) => s.keyword)).toEqual(["flagged", "clean"]);
+    });
+
+    it("defaults to no downweighting when the parameter is omitted", () => {
+      const scans = [
+        makeScan({ id: 1, keyword: "a", opportunity: 0.5 }),
+        makeScan({ id: 2, keyword: "b", opportunity: 0.6 }),
+      ];
+      const seeds = selectGapSeeds(scans, new Set(), { limit: 10, minOpportunity: 0.4 });
+      expect(seeds.map((s) => s.keyword)).toEqual(["b", "a"]);
+    });
+  });
+
+  // Batch F, F5 leg 4: a pipeline-sourced accumulated `killed_count` (run-
+  // aggregate outcome attribution) must only SOFTEN sort rank, graduated by
+  // magnitude — never a hard exclude, and never distort the reported
+  // opportunity value.
+  describe("killedWeights (Batch F, F5 leg 4)", () => {
+    it("ranks a killed keyword below an equal-opportunity keyword with no kill signal", () => {
+      const scans = [
+        makeScan({ id: 1, keyword: "killed", opportunity: 0.8 }),
+        makeScan({ id: 2, keyword: "clean", opportunity: 0.8 }),
+      ];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4 },
+        new Set(),
+        new Map([["killed", 2]]),
+      );
+      expect(seeds.map((s) => s.keyword)).toEqual(["clean", "killed"]);
+    });
+
+    it("still includes a killed keyword — soft, never a hard exclude", () => {
+      const scans = [makeScan({ id: 1, keyword: "killed", opportunity: 0.9 })];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4 },
+        new Set(),
+        new Map([["killed", 10]]),
+      );
+      expect(seeds.map((s) => s.keyword)).toEqual(["killed"]);
+    });
+
+    it("never distorts the seed's reported opportunity value", () => {
+      const scans = [makeScan({ id: 1, keyword: "killed", opportunity: 0.9 })];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4 },
+        new Set(),
+        new Map([["killed", 3]]),
+      );
+      expect(seeds[0]?.opportunity).toBe(0.9);
+    });
+
+    it("a keyword killed more times sinks further than one killed once (graduated, not flat)", () => {
+      const scans = [
+        makeScan({ id: 1, keyword: "killed-once", opportunity: 0.8 }),
+        makeScan({ id: 2, keyword: "killed-many", opportunity: 0.8 }),
+      ];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4 },
+        new Set(),
+        new Map([
+          ["killed-once", 1],
+          ["killed-many", 10],
+        ]),
+      );
+      expect(seeds.map((s) => s.keyword)).toEqual(["killed-once", "killed-many"]);
+    });
+
+    it("composes with the screener downweight (both apply multiplicatively)", () => {
+      const scans = [
+        makeScan({ id: 1, keyword: "both", opportunity: 0.9 }),
+        makeScan({ id: 2, keyword: "dismissed-only", opportunity: 0.9 }),
+        makeScan({ id: 3, keyword: "killed-only", opportunity: 0.9 }),
+        makeScan({ id: 4, keyword: "clean", opportunity: 0.9 }),
+      ];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4 },
+        new Set(["both", "dismissed-only"]),
+        new Map([
+          ["both", 5],
+          ["killed-only", 5],
+        ]),
+      );
+      // Clean ranks first; "both" (screener-dismissed AND killed) ranks last —
+      // the two downweights compose rather than one overriding the other.
+      expect(seeds[0]?.keyword).toBe("clean");
+      expect(seeds[seeds.length - 1]?.keyword).toBe("both");
+    });
+
+    it("respects a custom killDownweightStrength", () => {
+      const scans = [
+        makeScan({ id: 1, keyword: "killed", opportunity: 0.9 }),
+        makeScan({ id: 2, keyword: "clean", opportunity: 0.5 }),
+      ];
+      // With a near-zero strength, "killed" barely moves and still outranks "clean".
+      const weakDownweight = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4, killDownweightStrength: 0.01 },
+        new Set(),
+        new Map([["killed", 3]]),
+      );
+      expect(weakDownweight.map((s) => s.keyword)).toEqual(["killed", "clean"]);
+
+      // With a strong strength, "killed" sinks below "clean".
+      const strongDownweight = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4, killDownweightStrength: 50 },
+        new Set(),
+        new Map([["killed", 3]]),
+      );
+      expect(strongDownweight.map((s) => s.keyword)).toEqual(["clean", "killed"]);
+    });
+
+    it("defaults to no downweighting when the parameter is omitted", () => {
+      const scans = [
+        makeScan({ id: 1, keyword: "a", opportunity: 0.5 }),
+        makeScan({ id: 2, keyword: "b", opportunity: 0.6 }),
+      ];
+      const seeds = selectGapSeeds(scans, new Set(), { limit: 10, minOpportunity: 0.4 });
+      expect(seeds.map((s) => s.keyword)).toEqual(["b", "a"]);
+    });
+
+    it("ignores a zero-valued kill weight entry (no-op, not a negative boost)", () => {
+      const scans = [
+        makeScan({ id: 1, keyword: "a", opportunity: 0.5 }),
+        makeScan({ id: 2, keyword: "b", opportunity: 0.6 }),
+      ];
+      const seeds = selectGapSeeds(
+        scans,
+        new Set(),
+        { limit: 10, minOpportunity: 0.4 },
+        new Set(),
+        new Map([["a", 0]]),
+      );
+      expect(seeds.map((s) => s.keyword)).toEqual(["b", "a"]);
+    });
   });
 });
 

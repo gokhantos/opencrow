@@ -113,4 +113,21 @@ describe("formatGapProfile", () => {
     const output = formatGapProfile(profile, { popularity: 1, checkedAt: 1_784_548_800 });
     expect(output).toContain("ASA popularity: 1/5 (probed 2026-07-20)");
   });
+
+  it("includes a computed buildability line (Batch F, F2)", () => {
+    const output = formatGapProfile(profile);
+    expect(output).toContain("Buildability:");
+    expect(output).toContain("/100");
+  });
+
+  it("does NOT include a low-confidence banner for a normal-confidence profile", () => {
+    const output = formatGapProfile(profile);
+    expect(output).not.toContain("LOW CONFIDENCE");
+  });
+
+  it("includes a low-confidence banner when the profile is lowConfidence (Batch F, F2)", () => {
+    const lowConf: KeywordGapProfile = { ...profile, lowConfidence: true };
+    const output = formatGapProfile(lowConf);
+    expect(output).toContain("LOW CONFIDENCE");
+  });
 });

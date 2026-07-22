@@ -129,9 +129,18 @@ const FILTER_DEBOUNCE_MS = 400;
 
 // ─── Watchlist (localStorage) ──────────────────────────────────────────────────
 
-const WATCHLIST_STORAGE_KEY = "opencrow_appstore_opportunities_watchlist";
+// Exported so `KeywordResearch.tsx` (the "Generate ideas from these
+// keywords" button) can read the current watchlist without lifting this
+// component's state — see that file's `handleGenerateIdeas`.
+export const WATCHLIST_STORAGE_KEY = "opencrow_appstore_opportunities_watchlist";
 
-function loadWatchlist(): Set<string> {
+// Fired whenever `saveWatchlist` writes a new watchlist (same-tab — the
+// native `storage` event only fires in OTHER tabs) so `KeywordResearch.tsx`
+// can keep its button-label count live without prop-drilling watchlist state
+// through this tab-switcher.
+const WATCHLIST_CHANGED_EVENT = "opencrow:appstore-watchlist-changed";
+
+export function loadWatchlist(): Set<string> {
   try {
     const raw = localStorage.getItem(WATCHLIST_STORAGE_KEY);
     if (!raw) return new Set();
@@ -147,9 +156,26 @@ function loadWatchlist(): Set<string> {
 function saveWatchlist(keywords: ReadonlySet<string>): void {
   try {
     localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(Array.from(keywords)));
+    window.dispatchEvent(new Event(WATCHLIST_CHANGED_EVENT));
   } catch {
     // localStorage may be unavailable (private mode, quota) — watchlist is a
     // nice-to-have, so fail silently rather than breaking the table.
+  }
+}
+
+// Server-side watchlist mirror (Batch F, F5 leg 1) — best-effort writes so a
+// starred/unstarred keyword is durable across devices/browsers via
+// `appstore_keyword_verdicts`, not just this browser's localStorage. Fire-
+// and-forget: a failure here never blocks the (still-authoritative for THIS
+// browser) localStorage toggle, and is not surfaced to the user — the star
+// state already updated optimistically.
+async function syncWatchlistVerdict(keyword: string, starred: boolean): Promise<void> {
+  try {
+    await apiFetch(`/api/appstore/watchlist/${encodeURIComponent(keyword)}`, {
+      method: starred ? "POST" : "DELETE",
+    });
+  } catch {
+    // Best-effort — see doc comment above.
   }
 }
 
@@ -473,12 +499,14 @@ export default function OpportunitiesTab() {
   function toggleStar(keyword: string): void {
     setWatchlist((prev) => {
       const next = new Set(prev);
-      if (next.has(keyword)) {
-        next.delete(keyword);
-      } else {
+      const nowStarred = !next.has(keyword);
+      if (nowStarred) {
         next.add(keyword);
+      } else {
+        next.delete(keyword);
       }
       saveWatchlist(next);
+      void syncWatchlistVerdict(keyword, nowStarred);
       return next;
     });
   }

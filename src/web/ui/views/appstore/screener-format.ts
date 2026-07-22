@@ -134,3 +134,29 @@ export function formatIntOrDash(value: number | null): string {
 export function formatZone(zone: string | null): string {
   return zone ?? "—";
 }
+
+// ─── "New this week" digest (Batch F4) — GET /appstore/whats-new ────────────
+// Mirrors `GapAlertsDigest`/`KeywordCrossing` (src/sources/appstore/gap-alerts.ts).
+
+export interface KeywordCrossing {
+  readonly keyword: string;
+  readonly scannedAt: number;
+  readonly opportunity: number;
+}
+
+export interface WhatsNewDigest {
+  readonly newSignatureHits: readonly SignatureHit[];
+  readonly newCrossings: readonly KeywordCrossing[];
+}
+
+/**
+ * Total item count across both sections — drives whether the strip renders at
+ * all. Defensively tolerant of a malformed/absent digest (e.g. an older cached
+ * API response shape) — never throws, just reports 0.
+ */
+export function whatsNewCount(digest: WhatsNewDigest | null | undefined): number {
+  if (!digest) return 0;
+  const hits = Array.isArray(digest.newSignatureHits) ? digest.newSignatureHits.length : 0;
+  const crossings = Array.isArray(digest.newCrossings) ? digest.newCrossings.length : 0;
+  return hits + crossings;
+}

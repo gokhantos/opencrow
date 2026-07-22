@@ -96,6 +96,9 @@ function defaultApiFetchImpl(
   if (path.startsWith("/api/appstore/signature-hits")) {
     return Promise.resolve({ success: true, data: hitsToReturn });
   }
+  if (path.startsWith("/api/appstore/whats-new")) {
+    return Promise.resolve({ success: true, data: { newSignatureHits: [], newCrossings: [] } });
+  }
   return Promise.reject(new Error(`Unexpected apiFetch call in test: ${path}`));
 }
 
@@ -276,6 +279,9 @@ test("shows a toast error and does not crash when the PATCH fails", async () => 
   mockApiFetch.mockImplementation((path: string, opts?: { readonly method?: string }) => {
     if (path.startsWith("/api/appstore/signature-hits/") && opts?.method === "PATCH") {
       return Promise.reject(new Error("Network error"));
+    }
+    if (path.startsWith("/api/appstore/whats-new")) {
+      return Promise.resolve({ success: true, data: { newSignatureHits: [], newCrossings: [] } });
     }
     return Promise.resolve({ success: true, data: hitsToReturn });
   });
