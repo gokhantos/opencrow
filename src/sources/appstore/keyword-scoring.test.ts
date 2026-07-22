@@ -5,10 +5,16 @@ import {
   computeBuildability,
   computeCompetitiveness,
   computeDemand,
+  computeDemandConfidenceMultiplier,
   computeIncumbentWeakness,
   computeOpportunity,
+  computeVelocityCap,
+  HINT_ABSENCE_PENALTY,
+  HINT_CROSS_STOREFRONT_BOOST,
+  HINT_PRESENCE_BOOST,
+  VELOCITY_CAP_P90_MULTIPLIER,
 } from "./keyword-scoring";
-import type { TopApp } from "./keyword-types";
+import type { HintEvidence, TopApp } from "./keyword-types";
 
 const app = (o: Partial<TopApp> = {}): TopApp => ({
   id: "x",
@@ -269,5 +275,107 @@ describe("computeBuildability — solo-indie 0..100 score", () => {
       expect(score).toBeGreaterThanOrEqual(0);
       expect(score).toBeLessThanOrEqual(100);
     }
+  });
+});
+
+// Batch D item D4 (2026-07-22, ADJUSTED fix): set-level, ratingsPerDay-p90-
+// derived velocity cap — replaces the old per-app `10 * a.ratingsPerDay` cap
+// in `keyword-gaps.ts`'s `enrichWithVelocity`.
+describe("computeVelocityCap — set-level ratingsPerDay-p90-derived bound", () => {
+  it("floors at floorPerDay when the set's p90 lifetime rate is low", () => {
+    const apps = [app({ ratingsPerDay: 0.5 }), app({ ratingsPerDay: 1 })];
+    expect(computeVelocityCap(apps, 50)).toBe(50);
+  });
+
+  it("scales with the set's p90 lifetime rate once k*p90 exceeds the floor", () => {
+    // 20 apps at ratingsPerDay=100 -> p90=100 -> k*100 = 300 (k=3) >> floor.
+    const apps = Array.from({ length: 20 }, () => app({ ratingsPerDay: 100 }));
+    expect(computeVelocityCap(apps, 50)).toBeCloseTo(VELOCITY_CAP_P90_MULTIPLIER * 100, 6);
+  });
+
+  it("does NOT let a single high-lifetime-rate app scale the cap by its own 10x rate (the bug this replaces)", () => {
+    // One entrenched, high-rate incumbent among a realistically-sized field
+    // of otherwise-quiet apps: the OLD per-app formula would have capped
+    // THIS app's own velocity at 10 * 500 = 5000/day. The set-level p90
+    // (dominated by the 19 quiet apps, so it reads ~1, not 500) keeps the
+    // SHARED cap far below that instead.
+    const apps = [
+      app({ ratingsPerDay: 500 }),
+      ...Array.from({ length: 19 }, () => app({ ratingsPerDay: 1 })),
+    ];
+    const cap = computeVelocityCap(apps, 50);
+    expect(cap).toBeLessThan(500);
+    expect(cap).toBe(50); // p90 of the 20-app set reads ~1 -> k*1=3 -> floor (50) dominates
+  });
+
+  it("degenerates to the single app's own rate (times k) for a one-app set", () => {
+    const apps = [app({ ratingsPerDay: 40 })];
+    expect(computeVelocityCap(apps, 10)).toBeCloseTo(VELOCITY_CAP_P90_MULTIPLIER * 40, 6);
+  });
+
+  it("returns the floor for an empty set", () => {
+    expect(computeVelocityCap([], 50)).toBe(50);
+  });
+});
+
+// Batch D item D1 (2026-07-22): coverage-conditioned autocomplete hint
+// demand-confidence multiplier.
+describe("computeDemandConfidenceMultiplier", () => {
+  function evidence(overrides: Partial<HintEvidence> = {}): HintEvidence {
+    return {
+      bestRank: null,
+      seedCount: 0,
+      storefrontCount: 0,
+      lastSeenAt: null,
+      covered: false,
+      ...overrides,
+    };
+  }
+
+  it("is neutral (1) when evidence is unavailable", () => {
+    expect(computeDemandConfidenceMultiplier(undefined)).toBe(1);
+  });
+
+  it("is neutral (1) when uncovered and never observed — sampling gap, not confirmed absence", () => {
+    expect(
+      computeDemandConfidenceMultiplier(evidence({ covered: false, seedCount: 0 })),
+    ).toBe(1);
+  });
+
+  it("applies the absence penalty when covered (actually queried) and never observed", () => {
+    expect(
+      computeDemandConfidenceMultiplier(evidence({ covered: true, seedCount: 0 })),
+    ).toBe(HINT_ABSENCE_PENALTY);
+  });
+
+  it("is neutral (1) for weak presence (single seed / late rank) — proven not hopeless, but not strong enough to boost", () => {
+    expect(
+      computeDemandConfidenceMultiplier(
+        evidence({ covered: true, seedCount: 1, bestRank: 5, storefrontCount: 1 }),
+      ),
+    ).toBe(1);
+  });
+
+  it("applies the presence boost for strong presence (rank <=2, 2+ seeds)", () => {
+    expect(
+      computeDemandConfidenceMultiplier(
+        evidence({ covered: true, seedCount: 2, bestRank: 1, storefrontCount: 1 }),
+      ),
+    ).toBe(HINT_PRESENCE_BOOST);
+  });
+
+  it("applies an extra cross-storefront boost when 2+ storefronts corroborate strong presence", () => {
+    const multiplier = computeDemandConfidenceMultiplier(
+      evidence({ covered: true, seedCount: 3, bestRank: 0, storefrontCount: 2 }),
+    );
+    expect(multiplier).toBeCloseTo(HINT_PRESENCE_BOOST * HINT_CROSS_STOREFRONT_BOOST, 6);
+    expect(multiplier).toBeGreaterThan(HINT_PRESENCE_BOOST);
+  });
+
+  it("never applies a penalty on any presence, even weak presence", () => {
+    const weak = computeDemandConfidenceMultiplier(
+      evidence({ covered: true, seedCount: 1, bestRank: 10 }),
+    );
+    expect(weak).toBeGreaterThanOrEqual(1);
   });
 });

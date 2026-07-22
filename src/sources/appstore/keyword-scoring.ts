@@ -8,7 +8,7 @@
 // `keyword-gaps.ts` and PASSED IN as plain numbers/fields. This module never
 // touches the DB or the clock.
 
-import type { GapTrend, TopApp } from "./keyword-types";
+import type { GapTrend, HintEvidence, TopApp } from "./keyword-types";
 
 export const REVIEWS_REF = 500_000;
 export const VELOCITY_REF = 400;
@@ -95,6 +95,102 @@ export function winsorizeRatingsPerDayAtP90(apps: readonly TopApp[]): readonly T
   const p90Index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.9 * sorted.length) - 1));
   const p90 = sorted[p90Index] as number;
   return apps.map((a) => (a.ratingsPerDay > p90 ? { ...a, ratingsPerDay: p90 } : a));
+}
+
+/** Shared p90 helper — extracted from `winsorizeRatingsPerDayAtP90` so `computeVelocityCap` (below) can reuse the exact same percentile math without re-deriving it. Pure; `values.length === 0` returns 0. */
+function p90(values: readonly number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const p90Index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.9 * sorted.length) - 1));
+  return sorted[p90Index] as number;
+}
+
+// Batch D item D4 (2026-07-22, adjusted fix): multiplier applied to the
+// SET's own (winsorized) p90 lifetime `ratingsPerDay` to derive the recent-
+// velocity cap in `keyword-gaps.ts`'s `enrichWithVelocity` — replacing the
+// old PER-APP `10 * a.ratingsPerDay` cap. The old cap scaled with each app's
+// OWN lifetime rate, so a single already-high-lifetime-rate incumbent could
+// have its `recentVelocity` capped at up to 10x ITS OWN (possibly large)
+// rate — a transient flap/spike for an already-big app could inject a huge
+// velocity into `computeDemand`'s mean. Deliberately NOT an order-statistic
+// winsorize of velocity itself (rejected — see `computeVelocityCap`'s doc
+// comment): velocity is ~97% zero across the live corpus, so a p90 of
+// velocity values would clamp the ONE heating app's signal to ~0, killing
+// exactly the momentum bonus `VELOCITY_WEIGHT` exists to reward. Bounding by
+// the set's own LIFETIME ratingsPerDay p90 instead gives every app
+// (including a genuinely new, low-lifetime-rate one) the SAME generous,
+// corpus-shaped cap, rather than tying each app's headroom to its own
+// (possibly tiny or possibly huge) rate. `k=3` is a conservative starting
+// value, not backtest-validated (see the module-level TODO in
+// `keyword-gaps.ts`) — safe to retune once a backtest harness exists.
+export const VELOCITY_CAP_P90_MULTIPLIER = 3;
+
+/**
+ * Set-level recentVelocity cap (Batch D item D4): `max(k * p90(lifetime
+ * ratingsPerDay across `apps`), floorPerDay)`. Pure; `apps` is the SERP's
+ * fetched apps (NOT yet velocity-enriched) — only `ratingsPerDay` is read.
+ * `apps.length <= 1` degenerates to `max(k * that one app's own rate,
+ * floorPerDay)`, which is intentionally close to (though not identical to —
+ * no 10x) the OLD per-app formula's behavior in the single-incumbent case,
+ * where a set-level bound and a per-app bound are the same thing by
+ * construction.
+ */
+export function computeVelocityCap(apps: readonly TopApp[], floorPerDay: number): number {
+  const setP90 = p90(apps.map((a) => a.ratingsPerDay));
+  return Math.max(VELOCITY_CAP_P90_MULTIPLIER * setP90, floorPerDay);
+}
+
+// ---------------------------------------------------------------------------
+// Autocomplete hint demand-confidence (Batch D item D1) — a multiplier
+// applied to `computeDemand`'s output, COVERAGE-CONDITIONED so a merely
+// under-sampled keyword (the overwhelming majority — ~25-40 rotated seeds
+// against a 100k+ corpus) is never confused with a confirmed-zero-volume
+// one. See `HintEvidence`'s doc comment (keyword-types.ts) for the
+// `covered`/`seedCount` contract this reads.
+// ---------------------------------------------------------------------------
+
+/** Applied when the term was actually queried (covered) in the window but never resurfaced as a hint — a real, confirmed absence signal. */
+export const HINT_ABSENCE_PENALTY = 0.7;
+/** Applied on strong presence (see `computeDemandConfidenceMultiplier`) — a small boost, never allowed to dominate the score. */
+export const HINT_PRESENCE_BOOST = 1.1;
+/** Extra multiplicative bump on top of `HINT_PRESENCE_BOOST` when the term corroborates across 2+ storefronts (e.g. US + GB). */
+export const HINT_CROSS_STOREFRONT_BOOST = 1.05;
+/** "Strong presence" requires the best observed rank to be at or above (numerically <=) this position. */
+const HINT_BOOST_MAX_RANK = 2;
+/** "Strong presence" requires at least this many distinct seeds to have surfaced the term. */
+const HINT_BOOST_MIN_SEED_COUNT = 2;
+
+/**
+ * Demand-confidence multiplier from a keyword's autocomplete hint evidence.
+ * Pure; `evidence === undefined` (evidence lookup unavailable/failed) is
+ * always neutral (1) — this signal is additive, never a hard requirement.
+ *
+ *  - Strong presence (best rank 0..`HINT_BOOST_MAX_RANK`, from at least
+ *    `HINT_BOOST_MIN_SEED_COUNT` distinct seeds): a small boost
+ *    (`HINT_PRESENCE_BOOST`), amplified further (`* HINT_CROSS_STOREFRONT_BOOST`)
+ *    when 2+ storefronts corroborate it.
+ *  - Any other presence (`seedCount > 0` but not "strong"): neutral (1) — a
+ *    single weak/late-rank sighting isn't confident enough to boost, but IS
+ *    confident enough to prove the term isn't hopeless, so no penalty either.
+ *  - Zero presence AND `covered` (the term/a prefix was actually queried in
+ *    the window, so absence is a real signal, not a sampling gap):
+ *    `HINT_ABSENCE_PENALTY`.
+ *  - Zero presence AND NOT covered (never sampled): neutral (1) — absence of
+ *    evidence is not evidence of absence here.
+ */
+export function computeDemandConfidenceMultiplier(evidence: HintEvidence | undefined): number {
+  if (!evidence) return 1;
+  if (evidence.seedCount > 0) {
+    const strongPresence =
+      evidence.bestRank !== null &&
+      evidence.bestRank <= HINT_BOOST_MAX_RANK &&
+      evidence.seedCount >= HINT_BOOST_MIN_SEED_COUNT;
+    if (!strongPresence) return 1;
+    return evidence.storefrontCount >= 2
+      ? HINT_PRESENCE_BOOST * HINT_CROSS_STOREFRONT_BOOST
+      : HINT_PRESENCE_BOOST;
+  }
+  return evidence.covered ? HINT_ABSENCE_PENALTY : 1;
 }
 
 export function computeCompetitiveness(apps: readonly TopApp[]): number {

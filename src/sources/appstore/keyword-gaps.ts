@@ -12,20 +12,24 @@ import {
   shouldDeactivateBrandNavigationalKeyword,
   shouldDeactivateKeyword,
   shouldDeactivateMinedKeyword,
+  shouldDeactivateForHintAbsence,
   DEACTIVATION_MIN_SCANS,
 } from "./keyword-deactivation";
 import type {
   BrandNavigationalDeactivationCandidate,
   DeactivationCandidate,
   MinedDeactivationCandidate,
+  AutocompleteHintDeactivationCandidate,
 } from "./keyword-deactivation";
 import { computePerSweepCap } from "./keyword-tiering";
 import {
   classifyTrend,
   computeCompetitiveness,
   computeDemand,
+  computeDemandConfidenceMultiplier,
   computeIncumbentWeakness,
   computeOpportunity,
+  computeVelocityCap,
   winsorizeRatingsPerDayAtP90,
 } from "./keyword-scoring";
 import { isBrandNavigationalScan } from "./keyword-brand";
@@ -33,11 +37,12 @@ import { buildSerpTail } from "./serp-tail";
 import type { SerpTailEntry } from "./serp-tail";
 import { recordAppSightings } from "./app-meta-store";
 import { mapCategoryToZone } from "./keyword-miner";
-import type { KeywordGapProfile, TopApp } from "./keyword-types";
+import type { HintEvidence, KeywordGapProfile, TopApp } from "./keyword-types";
 import {
   countMinedScansSince,
   countScansSince,
   deactivateJunkKeywords,
+  getHintEvidence,
   getKeywordMeta,
   getMinedDeactivationStats,
   getScanHistory,
@@ -278,17 +283,26 @@ function enrichWithVelocity(
   if (baselineReviews.size === 0 || daysBetweenScans < MIN_VELOCITY_WINDOW_DAYS) {
     return apps;
   }
+  // Cap (2026-07-21 audit item C fix; ADJUSTED 2026-07-22, Batch D item D4):
+  // bounds a single flapped/corrected review-count reading from minting an
+  // implausible demand spike — see `scanKeyword`'s "flap-robust velocity
+  // baseline" doc comment. ONE shared, SET-level cap (`computeVelocityCap`,
+  // keyword-scoring.ts) derived from this SERP's own lifetime `ratingsPerDay`
+  // p90, not a PER-APP cap relative to each app's own rate — the old
+  // `max(10 * a.ratingsPerDay, floor)` let a single already-high-lifetime-rate
+  // incumbent's `recentVelocity` get capped at up to 10x ITS OWN (possibly
+  // large) rate, so a transient flap for an already-big app could inject a
+  // huge velocity into `computeDemand`'s mean. A set-level bound gives every
+  // app — including a genuinely new, low-lifetime-rate one — the same
+  // corpus-shaped headroom instead, which PRESERVES (rather than crushes)
+  // the single-app heating signal `VELOCITY_WEIGHT` exists to reward. See
+  // `computeVelocityCap`'s doc comment for why this is NOT an order-statistic
+  // winsorize of velocity itself.
+  const cap = computeVelocityCap(apps, MIN_VELOCITY_CAP_PER_DAY);
   return apps.map((a) => {
     const prev = baselineReviews.get(a.id);
     if (prev === undefined) return a;
     const rawVelocity = Math.max(0, a.reviews - prev) / daysBetweenScans;
-    // Cap (2026-07-21 audit item C fix): bounds a single flapped/corrected
-    // review-count reading from minting an implausible demand spike — see
-    // `scanKeyword`'s "flap-robust velocity baseline" doc comment. A cap
-    // relative to the app's OWN lifetime rate (10x headroom for genuine
-    // heating) with an absolute floor (so a near-zero-lifetime-rate app
-    // isn't capped to near-zero).
-    const cap = Math.max(10 * a.ratingsPerDay, MIN_VELOCITY_CAP_PER_DAY);
     const recentVelocity = Math.min(rawVelocity, cap);
     return { ...a, recentVelocity };
   });
@@ -440,13 +454,41 @@ async function computeGapProfile(input: {
   // affect `topApps`/`incumbentWeakness`, and is NOT persisted back onto the
   // stored `topApps` payload — see `winsorizeRatingsPerDayAtP90`'s doc
   // comment for why median was tried and rejected).
-  const demand = computeDemand(winsorizeRatingsPerDayAtP90(relevant));
+  const rawDemand = computeDemand(winsorizeRatingsPerDayAtP90(relevant));
+
+  // Batch D item D1: coverage-conditioned demand-confidence multiplier from
+  // this keyword's autocomplete hint evidence (the one giant-free, typed
+  // demand signal in the system — see `keyword-store.ts`'s
+  // `getHintEvidence`). Graceful: a lookup failure (DB hiccup, etc.) must
+  // never break a scan, so it degrades to "no evidence" (neutral
+  // multiplier, never a penalty) rather than throwing.
+  let hintEvidence: HintEvidence | undefined;
+  try {
+    hintEvidence = (await getHintEvidence([keyword])).get(keyword);
+  } catch (err) {
+    log.warn("Hint evidence lookup failed — treating as unavailable", { keyword, error: err });
+  }
+  const demandConfidenceMultiplier = computeDemandConfidenceMultiplier(hintEvidence);
+  const demand = rawDemand * demandConfidenceMultiplier;
   const competitiveness = computeCompetitiveness(topApps);
   const incumbentWeakness = computeIncumbentWeakness(relevant);
 
-  // Oldest → newest demand series (prior scans, newest-first from the store),
-  // with the current demand appended, so momentum reflects this reading too.
-  const demandSeries = [...history.map((h) => h.demand).reverse(), demand];
+  // Oldest → newest demand series (prior scans, newest-first from the
+  // store), with the current demand appended, so momentum reflects this
+  // reading too. Batch D item D2: gated on `lowConfidence` — a
+  // low-confidence scan's `demand` comes from a giant-excluded non-matched
+  // fallback (or 0), a DIFFERENT regime than a title-matched scan's demand
+  // (see `lowConfidence`'s doc comment above); mixing the two regimes into
+  // one series manufactured phantom ±15% heating/cooling swings
+  // (`TREND_MULT`) purely from regime changes, not real momentum. History
+  // rows are filtered to confident ones only; the CURRENT point is appended
+  // only when THIS scan is also confident — otherwise trend is classified
+  // from confident history alone (or `classifyTrend`'s own `< 2 points ->
+  // "new"` fallback when there isn't enough confident history yet).
+  const confidentHistory = history.filter((h) => !h.lowConfidence);
+  const demandSeries = lowConfidence
+    ? confidentHistory.map((h) => h.demand).reverse()
+    : [...confidentHistory.map((h) => h.demand).reverse(), demand];
   const trend = classifyTrend(demandSeries);
 
   const opportunity = computeOpportunity({ demand, competitiveness, incumbentWeakness, trend });
@@ -476,6 +518,8 @@ async function computeGapProfile(input: {
     scannedAt,
     lowConfidence,
     brandNavigational,
+    hintBestRank: hintEvidence?.bestRank ?? null,
+    hintSeedCount: hintEvidence?.seedCount ?? null,
     ...(serpTail && serpTail.length > 0 ? { serpTail } : {}),
   };
 }
@@ -731,15 +775,18 @@ async function scanAndRecord(
 
       // Junk deactivation: evaluated per-keyword here (needs this scan's
       // fresh profile), applied in ONE bulk UPDATE after the batch — see
-      // below. THREE independent rules OR together: the general
+      // below. FOUR independent rules OR together: the general
       // data-hopeless rule (any non-protected source, latest-scan demand),
       // the mined-pool-specific rule (source: 'mined'/'review' — Batch C4
       // shares this rule, see keyword-review-miner.ts — demand EVER reached
       // across the whole scan history, exempt on any signature hit — see
-      // `keyword-deactivation.ts`'s `shouldDeactivateMinedKeyword`), and the
+      // `keyword-deactivation.ts`'s `shouldDeactivateMinedKeyword`), the
       // brand-navigational rule (Batch A budget rescue, 2026-07-22: any
       // non-protected source whose last DEACTIVATION_MIN_SCANS scans were
-      // ALL brand-navigational — see `shouldDeactivateBrandNavigationalKeyword`).
+      // ALL brand-navigational — see `shouldDeactivateBrandNavigationalKeyword`),
+      // and the autocomplete-specific hint-absence rule (Batch D item D1:
+      // source: 'autocomplete' only, weak scan demand AND confirmed hint
+      // absence — see `shouldDeactivateForHintAbsence`).
       if (appstoreJunkDeactivation.enabled && runBookkeeping) {
         try {
           const candidate = await buildDeactivationCandidate(profile);
@@ -762,6 +809,22 @@ async function scanAndRecord(
                 recentScansAllBrandNavigational: candidate.recentScansAllBrandNavigational,
               };
               deactivate = shouldDeactivateBrandNavigationalKeyword(brandCandidate);
+            }
+            if (!deactivate && candidate.source === "autocomplete") {
+              const [stats, evidence] = await Promise.all([
+                getMinedDeactivationStats(keyword),
+                getHintEvidence([keyword]),
+              ]);
+              const hint = evidence.get(keyword);
+              const autocompleteCandidate: AutocompleteHintDeactivationCandidate = {
+                source: candidate.source,
+                scanCount: stats.scanCount,
+                maxDemandEver: stats.maxDemand,
+                hasSignatureHit: stats.hasSignatureHit,
+                hintCovered: hint?.covered ?? false,
+                hintSeedCount: hint?.seedCount ?? 0,
+              };
+              deactivate = shouldDeactivateForHintAbsence(autocompleteCandidate);
             }
             if (deactivate) toDeactivate.push(keyword);
           }

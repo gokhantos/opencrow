@@ -6,7 +6,12 @@ import { runScreener } from "./keyword-screener";
 import { expandCorpus } from "./keyword-autocomplete";
 import { mineKeywords } from "./keyword-miner";
 import { mineReviewKeywords } from "./keyword-review-miner";
-import { backfillMinedDeactivation, countScansSince, pruneKeywordScans } from "./keyword-store";
+import {
+  backfillMinedDeactivation,
+  countScansSince,
+  pruneAutocompleteHints,
+  pruneKeywordScans,
+} from "./keyword-store";
 import { advanceThrottle, computeEffectiveSweepRate, computeErrorRate, INITIAL_THROTTLE_STATE } from "./sweep-throttle";
 import type { ThrottleOutcome, ThrottleState } from "./sweep-throttle";
 import {
@@ -71,6 +76,16 @@ const KEYWORD_MINING_SCAN_LIMIT = 3000; // ranking rows scanned for keyword cand
 // few passes (the 2026-07-18 header change killed discovery for days — see
 // keyword-autocomplete.ts's module doc).
 const FLATLINE_STREAK_THRESHOLD = 3;
+
+// Batch D item D1: retention for `appstore_autocomplete_hints` (migration
+// 052 raised the table from no-retention to this, now that
+// `getHintEvidence` reads it — see `keyword-store.ts`'s
+// `pruneAutocompleteHints`) and how often the prune runs. A separate,
+// clearly-named lane from `appstoreKeywordGap.dailyKeywordBudget`'s scan
+// ledger / any sibling scans-table prune — this one is scoped exclusively to
+// the autocomplete hints table.
+const AUTOCOMPLETE_HINTS_PRUNE_RETENTION_DAYS = 90;
+const AUTOCOMPLETE_HINTS_PRUNE_MIN_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
 
 const APPSTORE_AGENT_ID = "appstore";
 
@@ -168,6 +183,11 @@ export function createAppStoreScraper(config?: {
   // `autocompleteExpansion.minIntervalMs` (default 15min) so its network
   // fan-out (one request per seed) doesn't run on every ~1min sweep tick.
   let lastAutocompleteRunAt = 0;
+  // Soft cadence gate for the autocomplete-hints ledger prune (Batch D item
+  // D1 — see `pruneAutocompleteHints`'s doc comment): process-local, same
+  // rationale as `lastAutocompleteRunAt` — default 24h, own lane, separate
+  // from any sibling scans-table prune.
+  let lastAutocompleteHintsPruneRunAt = 0;
   // Soft cadence gate for the GB hints lane (throughput wave item 3 — see
   // `keyword-autocomplete.ts`'s `expandCorpus` called a second time with
   // `storefront`/`market` swapped to GB), independent of
@@ -936,6 +956,20 @@ export function createAppStoreScraper(config?: {
       }
     } catch (err) {
       log.warn("Autocomplete expansion failed", { error: getErrorMessage(err) });
+    }
+
+    // Autocomplete-hints ledger prune (Batch D item D1) — its own cadence
+    // gate, independent of (and outside) the try/catch above so a failed
+    // expansion pass never skips the prune, and vice versa. Try/catch-
+    // swallowed, matching every other ledger-prune lane in this file.
+    if (Date.now() - lastAutocompleteHintsPruneRunAt >= AUTOCOMPLETE_HINTS_PRUNE_MIN_INTERVAL_MS) {
+      lastAutocompleteHintsPruneRunAt = Date.now();
+      try {
+        const pruned = await pruneAutocompleteHints(AUTOCOMPLETE_HINTS_PRUNE_RETENTION_DAYS);
+        log.debug("Autocomplete-hints ledger pruned", { pruned });
+      } catch (err) {
+        log.warn("Autocomplete-hints ledger prune failed", { error: getErrorMessage(err) });
+      }
     }
   }
 

@@ -171,3 +171,59 @@ export function shouldDeactivateBrandNavigationalKeyword(
   if (candidate.scanCount < DEACTIVATION_MIN_SCANS) return false;
   return candidate.recentScansAllBrandNavigational;
 }
+
+// ---------------------------------------------------------------------------
+// Autocomplete-specific rule (Batch D item D1, 2026-07-22) — modeled
+// directly on `shouldDeactivateMinedKeyword` above (same
+// `DEACTIVATION_MIN_SCANS` gate, same `maxDemandEver` threshold reused
+// verbatim as `AUTOCOMPLETE_HINT_DEACTIVATION_MAX_DEMAND_EVER`, same
+// signature-hit exemption), narrowed to `source: 'autocomplete'` and adding
+// a SECOND, independent confirmation on top of weak scan demand: the term
+// must have been ACTUALLY re-queried (`hintCovered`) in the autocomplete
+// hint lookback window and never resurfaced (`hintSeedCount === 0`). Firing
+// only requires EITHER signal alone (weak SERP demand from
+// `shouldDeactivateKeyword`'s general branch, say) to be somewhat
+// suspicious; this rule specifically wants BOTH weak scan demand AND
+// confirmed hint absence before deactivating an autocomplete-sourced term —
+// see `HintEvidence`'s doc comment (keyword-types.ts) for why `hintCovered`
+// must gate this (an UNcovered term was simply never re-sampled, which is
+// not evidence of anything).
+// ---------------------------------------------------------------------------
+
+/** Same bar as `MINED_DEACTIVATION_MAX_DEMAND_EVER` — reused, not reinvented. */
+export const AUTOCOMPLETE_HINT_DEACTIVATION_MAX_DEMAND_EVER = MINED_DEACTIVATION_MAX_DEMAND_EVER;
+
+export interface AutocompleteHintDeactivationCandidate {
+  readonly source: string;
+  /** Total scans this keyword has EVER had. */
+  readonly scanCount: number;
+  /** MAX(demand) across the keyword's entire scan history (all stores). */
+  readonly maxDemandEver: number;
+  /** True iff the keyword has ANY row in `appstore_signature_hits`, regardless of status. */
+  readonly hasSignatureHit: boolean;
+  /** `HintEvidence.covered` for this keyword over the autocomplete hint lookback window. */
+  readonly hintCovered: boolean;
+  /** `HintEvidence.seedCount` for this keyword over the same window. */
+  readonly hintSeedCount: number;
+}
+
+/**
+ * True iff `candidate` is a `source: 'autocomplete'` keyword that has been
+ * scanned at least `DEACTIVATION_MIN_SCANS` times, has NEVER reached
+ * `AUTOCOMPLETE_HINT_DEACTIVATION_MAX_DEMAND_EVER` demand in any scan, has
+ * no signature hit, WAS actually re-queried as (or via a prefix of) an
+ * autocomplete seed in the lookback window, and never resurfaced as a hint
+ * in that window. Pure — no I/O. Evaluated in ADDITION to (never instead of)
+ * `shouldDeactivateKeyword`/`shouldDeactivateMinedKeyword` — any one rule
+ * firing is enough to deactivate.
+ */
+export function shouldDeactivateForHintAbsence(
+  candidate: AutocompleteHintDeactivationCandidate,
+): boolean {
+  if (candidate.source !== "autocomplete") return false;
+  if (candidate.scanCount < DEACTIVATION_MIN_SCANS) return false;
+  if (candidate.maxDemandEver >= AUTOCOMPLETE_HINT_DEACTIVATION_MAX_DEMAND_EVER) return false;
+  if (candidate.hasSignatureHit) return false;
+  if (!candidate.hintCovered) return false;
+  return candidate.hintSeedCount === 0;
+}

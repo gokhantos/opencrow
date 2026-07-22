@@ -63,4 +63,39 @@ describe("formatGapProfile", () => {
     const brandy: KeywordGapProfile = { ...profile, brandNavigational: true };
     expect(formatGapProfile(brandy)).toContain("navigational query — demand reflects one brand");
   });
+
+  // Batch D item D2: low-confidence caveat.
+  it("appends a caveat line when lowConfidence is true", () => {
+    const lowConf: KeywordGapProfile = { ...profile, lowConfidence: true };
+    expect(formatGapProfile(lowConf)).toContain(
+      "no title-matched incumbent — demand estimated from unrelated non-giant apps",
+    );
+  });
+
+  it("omits the caveat line when lowConfidence is false", () => {
+    expect(formatGapProfile(profile)).not.toContain("Caveat:");
+  });
+
+  // Batch D item D1: autocomplete hint evidence line.
+  it("surfaces the autocomplete hint rank/seed count when present", () => {
+    const withHint: KeywordGapProfile = { ...profile, hintBestRank: 2, hintSeedCount: 3 };
+    const output = formatGapProfile(withHint);
+    expect(output).toContain("observed as a real typed query, rank 2");
+    expect(output).toContain("3 seeds");
+  });
+
+  it("uses singular 'seed' for a single-seed observation", () => {
+    const withHint: KeywordGapProfile = { ...profile, hintBestRank: 0, hintSeedCount: 1 };
+    expect(formatGapProfile(withHint)).toContain("1 seed)");
+  });
+
+  it("omits the hint line when there is no hint evidence", () => {
+    const noHint: KeywordGapProfile = { ...profile, hintBestRank: null, hintSeedCount: null };
+    expect(formatGapProfile(noHint)).not.toContain("Autocomplete hint");
+  });
+
+  it("omits the hint line when seedCount is 0 (evidence unavailable, not a real observation)", () => {
+    const zeroSeeds: KeywordGapProfile = { ...profile, hintBestRank: null, hintSeedCount: 0 };
+    expect(formatGapProfile(zeroSeeds)).not.toContain("Autocomplete hint");
+  });
 });

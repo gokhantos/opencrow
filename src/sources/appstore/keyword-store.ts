@@ -8,7 +8,7 @@ import {
 import { DEACTIVATION_MIN_SCANS, MINED_DEACTIVATION_MAX_DEMAND_EVER } from "./keyword-deactivation";
 import type { ClusterAssignmentRow, RawCandidate } from "./keyword-clustering";
 import { computeBuildability } from "./keyword-scoring";
-import type { GapTrend, KeywordGapProfile, TopApp } from "./keyword-types";
+import type { GapTrend, HintEvidence, KeywordGapProfile, TopApp } from "./keyword-types";
 
 /**
  * Bun's SQL driver returns `jsonb` columns as raw JSON strings, not parsed
@@ -85,6 +85,15 @@ export interface KeywordScanRow {
    * rescue, 2026-07-22).
    */
   readonly brandNavigational: boolean;
+  /**
+   * Batch D (migration 052) — this scan's snapshot of the keyword's
+   * autocomplete hint evidence at scan time. `null` means no evidence in the
+   * lookback window (a sampling gap, never confirmed zero volume) — see
+   * `HintEvidence.bestRank`/`getHintEvidence`.
+   */
+  readonly hintBestRank: number | null;
+  /** Companion to `hintBestRank` — see `HintEvidence.seedCount`. */
+  readonly hintSeedCount: number | null;
 }
 
 /**
@@ -135,6 +144,10 @@ interface KeywordScanDbRow {
   readonly low_confidence?: boolean | null;
   /** Migration 050. Absent/null on any pre-migration row — treated as `false`. */
   readonly brand_navigational?: boolean | null;
+  /** Migration 052. Absent/null when the column isn't selected, or on any pre-migration row. */
+  readonly hint_best_rank?: number | string | null;
+  /** Migration 052. Absent/null when the column isn't selected, or on any pre-migration row. */
+  readonly hint_seed_count?: number | string | null;
 }
 
 /** Raw column shape returned by `getTopOpportunities`'s scan+corpus join. */
@@ -157,7 +170,7 @@ interface OpportunityDbRow extends KeywordScanDbRow {
 const SCAN_COLUMNS_SQL = `
   id, keyword, store, scanned_at, competitiveness, demand, incumbent_weakness,
   opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps, low_confidence,
-  brand_navigational
+  brand_navigational, hint_best_rank, hint_seed_count
 `;
 
 export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
@@ -185,6 +198,14 @@ export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
     buildability,
     lowConfidence: row.low_confidence === true,
     brandNavigational: row.brand_navigational === true,
+    hintBestRank:
+      row.hint_best_rank === undefined || row.hint_best_rank === null
+        ? null
+        : Number(row.hint_best_rank),
+    hintSeedCount:
+      row.hint_seed_count === undefined || row.hint_seed_count === null
+        ? null
+        : Number(row.hint_seed_count),
   };
 }
 
@@ -644,12 +665,13 @@ export async function insertScan(p: KeywordGapProfile): Promise<void> {
     INSERT INTO appstore_keyword_scans (
       keyword, store, scanned_at, competitiveness, demand, incumbent_weakness,
       opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps,
-      low_confidence, serp_tail, brand_navigational
+      low_confidence, serp_tail, brand_navigational, hint_best_rank, hint_seed_count
     ) VALUES (
       ${p.keyword}, ${p.store}, ${p.scannedAt}, ${p.competitiveness}, ${p.demand},
       ${p.incumbentWeakness}, ${p.opportunity}, ${p.trend}, ${p.topAppReviews},
       ${p.avgRating}, ${p.avgAgeDays}, ${JSON.stringify(p.topApps)}, ${p.lowConfidence},
-      ${p.serpTail ? JSON.stringify(p.serpTail) : null}, ${p.brandNavigational}
+      ${p.serpTail ? JSON.stringify(p.serpTail) : null}, ${p.brandNavigational},
+      ${p.hintBestRank ?? null}, ${p.hintSeedCount ?? null}
     )
   `;
 }
@@ -838,6 +860,7 @@ async function countFilteredOpportunities(filters: OpportunityFilters): Promise<
     WITH s AS (
       SELECT DISTINCT ON (keyword, store) *
       FROM appstore_keyword_scans
+      WHERE store = 'app'
       ORDER BY keyword, store, scanned_at DESC
     )
     SELECT count(*) AS count
@@ -888,9 +911,23 @@ export interface GetTopOpportunitiesResult {
  * Sorting is full-column (see `SortKey`) via a whitelisted ORDER BY
  * (`buildOrderByClause`), never by interpolating caller input into SQL
  * text. `peakOpportunity` (MAX(opportunity) over each keyword's full scan
- * history, all stores) is always included on every row alongside the
- * latest-scan `opportunity`, so the UI can show both numbers regardless of
- * sort column. `total` is the filtered, pre-pagination match count.
+ * history) is always included on every row alongside the latest-scan
+ * `opportunity`, so the UI can show both numbers regardless of sort column.
+ * `total` is the filtered, pre-pagination match count.
+ *
+ * Both the `s` (latest-scan) and `peak` CTEs — and `countFilteredOpportunities`'s
+ * own `s` CTE, which must stay in lockstep so `total` never drifts from
+ * `rows` — are pinned to `store = 'app'` (Batch D item D3, 2026-07-22): this
+ * endpoint has no `store` filter param (unlike `rank-series`/`rank-climbers`,
+ * which do), so before this pin a fresher `store = 'DE'` row (the German
+ * storefront querying/mining lane — see `keyword-gaps.ts`'s
+ * `runDeStorefrontSweep`) could appear as an undifferentiated leaderboard
+ * entry, or dominate `peak_opportunity` with a DE-market score never meant
+ * to compete on the (US-calibrated) opportunity scale. `store: "play"` is
+ * reserved but currently unwritten (no live scraping lane produces it) —
+ * positively pinning to `'app'` rather than negatively excluding `'DE'` is
+ * deliberately future-proof against that lane landing without a matching
+ * quarantine fix here.
  */
 export async function getTopOpportunities(
   opts: GetTopOpportunitiesOptions,
@@ -915,11 +952,13 @@ export async function getTopOpportunities(
     WITH s AS (
       SELECT DISTINCT ON (keyword, store) *
       FROM appstore_keyword_scans
+      WHERE store = 'app'
       ORDER BY keyword, store, scanned_at DESC
     ),
     peak AS (
       SELECT keyword, MAX(opportunity) AS peak_opportunity
       FROM appstore_keyword_scans
+      WHERE store = 'app'
       GROUP BY keyword
     )
     SELECT
@@ -1113,6 +1152,11 @@ function toNextPrefixOffset(raw: number | string | null | undefined): number {
  * shared row. A keyword with no row yet for this storefront (never drawn as
  * a seed in this market) sorts first (NULLS FIRST) and starts at
  * `nextPrefixOffset: 0`, same as a brand-new keyword always has.
+ *
+ * `low_confidence = FALSE` (Batch D item D2, 2026-07-22): a low-confidence
+ * scan's `opportunity` was computed over a giant-excluded non-matched
+ * fallback field, never a field we actually know serves this keyword — never
+ * let one seed further autocomplete expansion.
  */
 export async function getWinnerKeywords(
   minOpportunity: number,
@@ -1130,7 +1174,7 @@ export async function getWinnerKeywords(
     JOIN appstore_keywords k ON k.keyword = s.keyword
     LEFT JOIN appstore_seed_expansion_state e
       ON e.keyword = s.keyword AND e.storefront = ${market}
-    WHERE s.store = 'app' AND s.opportunity >= ${minOpportunity}
+    WHERE s.store = 'app' AND s.opportunity >= ${minOpportunity} AND s.low_confidence = FALSE
     ORDER BY e.last_expanded_at ASC NULLS FIRST, s.opportunity DESC
     LIMIT ${limit}
   `;
@@ -1307,6 +1351,17 @@ export interface AutocompleteHintRow {
    * `"us"` so every pre-item-3 caller is unaffected.
    */
   readonly storefront?: string;
+  /**
+   * Batch D item D1 (migration 052): true iff this term survived
+   * `keyword-autocomplete.ts`'s junk/length/dedup filter and the per-seed
+   * cap (i.e. it's a genuine expansion candidate) — false for a raw parsed
+   * term that was filtered out. Going forward EVERY parsed term is logged
+   * (not just kept ones), so absence of a row for a given rank is a sound
+   * "this rank was never returned", never "it was returned but discarded" —
+   * see `HintEvidence`'s doc comment (keyword-types.ts) for why this matters
+   * for absence-based reasoning.
+   */
+  readonly kept: boolean;
 }
 
 /**
@@ -1316,17 +1371,177 @@ export interface AutocompleteHintRow {
  * time (`HintCandidate.rank` was computed but never persisted — see
  * keyword-autocomplete.ts's `expandCorpus`). `storefront` (migration 049,
  * throughput wave item 3) distinguishes which market a hint was observed in
- * — a hint's popularity ranking is inherently per-storefront.
+ * — a hint's popularity ranking is inherently per-storefront. `kept`
+ * (migration 052) distinguishes a genuine expansion candidate from a raw
+ * term that was filtered out — see `AutocompleteHintRow.kept`'s doc comment.
  */
 export async function insertAutocompleteHints(rows: readonly AutocompleteHintRow[]): Promise<void> {
   if (rows.length === 0) return;
   const db = getDb();
   for (const row of rows) {
     await db`
-      INSERT INTO appstore_autocomplete_hints (seed, term, rank, seen_at, storefront)
-      VALUES (${row.seed}, ${row.term}, ${row.rank}, ${row.seenAt}, ${row.storefront ?? "us"})
+      INSERT INTO appstore_autocomplete_hints (seed, term, rank, seen_at, storefront, kept)
+      VALUES (${row.seed}, ${row.term}, ${row.rank}, ${row.seenAt}, ${row.storefront ?? "us"}, ${row.kept})
     `;
   }
+}
+
+/** Default lookback window for `getHintEvidence` — matches the module's "30d window" contract. */
+const HINT_EVIDENCE_WINDOW_DAYS = 30;
+
+/**
+ * Word-boundary + single-letter-fanout prefixes of `keyword` that a real
+ * autocomplete seed/query could plausibly equal — mirrors
+ * `keyword-autocomplete.ts`'s `expandCorpus` query shapes: the bare seed
+ * itself, each word-boundary-truncated prefix of `keyword`, and (for each
+ * such prefix) that prefix plus a single following letter (the
+ * `"<seed> <letter>"` prefix-fan-out shape). Used by `getHintEvidence`'s
+ * coverage check to test "was this keyword, or a plausible query prefix of
+ * it, actually issued" via a bounded, INDEXED equality lookup
+ * (`seed = ANY(candidates)`) against the `(seed, seen_at DESC)` index,
+ * instead of an unindexed `LIKE seed || '%'` scan over the whole lookback
+ * window (which would cost a full table scan on every single scan's demand
+ * computation — this runs on the hot scan-scoring path).
+ */
+function candidateSeedPrefixes(keyword: string): readonly string[] {
+  const words = keyword.split(" ").filter((w) => w.length > 0);
+  if (words.length === 0) return [keyword];
+  const candidates = new Set<string>([keyword]);
+  let running = "";
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i] as string;
+    running = i === 0 ? word : `${running} ${word}`;
+    candidates.add(running);
+    const nextWord = words[i + 1];
+    if (nextWord !== undefined && nextWord.length > 0) {
+      candidates.add(`${running} ${nextWord[0]}`);
+    }
+  }
+  return [...candidates];
+}
+
+/**
+ * Batch D item D1: reads `appstore_autocomplete_hints` (previously
+ * write-only — see `insertAutocompleteHints`'s doc comment) as a per-keyword
+ * demand-confidence signal over a `windowDays` lookback (default 30,
+ * matching the retention `pruneAutocompleteHints` extends to).
+ * STOREFRONT-AWARE: `storefrontCount` distinguishes single- vs
+ * cross-storefront (e.g. US + GB) corroboration — see migration 049.
+ *
+ * Two independent queries, both index-friendly (equality lookups, never a
+ * scan-time `LIKE`):
+ *  1. Presence: `MIN(rank)`/`COUNT(DISTINCT seed)`/`COUNT(DISTINCT
+ *     storefront)`/`MAX(seen_at)` per `term`, restricted to `kept = TRUE`
+ *     rows (a term that was filtered out at write time — see
+ *     `AutocompleteHintRow.kept` — never counts as "presence").
+ *  2. Coverage: `SELECT DISTINCT seed` restricted to `seed = ANY(candidates)`
+ *     (see `candidateSeedPrefixes`) — this does NOT filter on `kept`,
+ *     because coverage asks "was this query ever attempted", not "did it
+ *     produce a usable term" (an attempted query that came back all-junk is
+ *     still a real, meaningful zero — `covered: true, seedCount: 0`).
+ *
+ * A keyword absent from the presence results (never observed as a `kept`
+ * hint in the window) is NOT assumed to have zero demand — `covered` tells
+ * the caller whether that absence is a confirmed signal or just a sampling
+ * gap. See `HintEvidence`'s doc comment (keyword-types.ts) for the full
+ * contract and `keyword-scoring.ts`'s `computeDemandConfidenceMultiplier`
+ * for how it's consumed.
+ */
+export async function getHintEvidence(
+  keywords: readonly string[],
+  windowDays: number = HINT_EVIDENCE_WINDOW_DAYS,
+): Promise<ReadonlyMap<string, HintEvidence>> {
+  if (keywords.length === 0) return new Map();
+  const db = getDb();
+  const windowStart = Math.floor(Date.now() / 1000) - windowDays * 86_400;
+  const dedupedKeywords = [...new Set(keywords)];
+
+  const candidatesByKeyword = new Map<string, readonly string[]>();
+  const allCandidates = new Set<string>();
+  for (const keyword of dedupedKeywords) {
+    const candidates = candidateSeedPrefixes(keyword);
+    candidatesByKeyword.set(keyword, candidates);
+    for (const c of candidates) allCandidates.add(c);
+  }
+
+  const [presenceRows, coveredSeedRows] = await Promise.all([
+    db`
+      SELECT
+        term AS keyword,
+        MIN(rank) AS best_rank,
+        COUNT(DISTINCT seed) AS seed_count,
+        COUNT(DISTINCT storefront) AS storefront_count,
+        MAX(seen_at) AS last_seen_at
+      FROM appstore_autocomplete_hints
+      WHERE kept = TRUE AND seen_at >= ${windowStart}
+        AND term = ANY(${db.array(dedupedKeywords, "text")})
+      GROUP BY term
+    `,
+    db`
+      SELECT DISTINCT seed
+      FROM appstore_autocomplete_hints
+      WHERE seen_at >= ${windowStart}
+        AND seed = ANY(${db.array([...allCandidates], "text")})
+    `,
+  ]);
+
+  const coveredSeeds = new Set(
+    (coveredSeedRows as ReadonlyArray<{ seed: string }>).map((r) => r.seed),
+  );
+  const presenceByKeyword = new Map(
+    (
+      presenceRows as ReadonlyArray<{
+        keyword: string;
+        best_rank: number | string | null;
+        seed_count: number | string;
+        storefront_count: number | string;
+        last_seen_at: number | string | null;
+      }>
+    ).map((row) => [row.keyword, row]),
+  );
+
+  const evidence = new Map<string, HintEvidence>();
+  for (const keyword of dedupedKeywords) {
+    const presence = presenceByKeyword.get(keyword);
+    const candidates = candidatesByKeyword.get(keyword) ?? [keyword];
+    // Presence trivially implies coverage: a `kept` hint row exists only
+    // because SOME query was actually issued and returned this exact term
+    // (see `insertAutocompleteHints`'s doc comment) — we don't need the
+    // prefix-candidate check to already know that. The prefix check
+    // (`candidateSeedPrefixes`) exists specifically for the ZERO-presence
+    // case, to distinguish "queried, confirmed nothing" from "never
+    // sampled".
+    const covered = presence !== undefined || candidates.some((c) => coveredSeeds.has(c));
+    evidence.set(keyword, {
+      bestRank: presence?.best_rank === null || presence?.best_rank === undefined
+        ? null
+        : Number(presence.best_rank),
+      seedCount: presence ? Number(presence.seed_count) : 0,
+      storefrontCount: presence ? Number(presence.storefront_count) : 0,
+      lastSeenAt:
+        presence?.last_seen_at === null || presence?.last_seen_at === undefined
+          ? null
+          : Number(presence.last_seen_at),
+      covered,
+    });
+  }
+  return evidence;
+}
+
+/**
+ * Deletes `appstore_autocomplete_hints` rows older than `retentionDays`
+ * (default 90 — raised from the table's initial no-retention state now that
+ * `getHintEvidence` reads it: keep enough history for the 30d evidence
+ * window plus margin). Modeled on `review-harvest-store.ts`'s
+ * `pruneReviewHarvestLedger`. Returns the count deleted.
+ */
+export async function pruneAutocompleteHints(retentionDays: number = 90): Promise<number> {
+  const db = getDb();
+  const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86_400;
+  const rows = await db`
+    DELETE FROM appstore_autocomplete_hints WHERE seen_at < ${cutoff} RETURNING id
+  `;
+  return (rows as ReadonlyArray<{ id: number }>).length;
 }
 
 /**
@@ -1976,6 +2191,15 @@ export interface GetClusterMembersOptions extends GetOpportunityClustersOptions 
  * same projection `getTopOpportunities` returns), for the concept expand view.
  * Applies the same member-level filters, ordered by buildability desc, bounded
  * by `limit`. Returns `[]` for an unknown cluster id.
+ *
+ * Both the `s` and `peak` CTEs are pinned to `store = 'app'` (Batch D item
+ * D3, 2026-07-22 — mirrors `getTopOpportunities`'s own pin, see its doc
+ * comment for the full rationale). This one was the BIGGER hole: `s` here
+ * has no `store` in its `DISTINCT ON` at all (unlike `getTopOpportunities`'s
+ * `DISTINCT ON (keyword, store)`), so a fresher `store = 'DE'` scan didn't
+ * just appear as an extra row — it REPLACED the US member's row outright
+ * (`ORDER BY keyword, scanned_at DESC` alone picks whichever store scanned
+ * most recently).
  */
 export async function getClusterMembers(
   opts: GetClusterMembersOptions,
@@ -1987,11 +2211,13 @@ export async function getClusterMembers(
     WITH s AS (
       SELECT DISTINCT ON (keyword) *
       FROM appstore_keyword_scans
+      WHERE store = 'app'
       ORDER BY keyword, scanned_at DESC
     ),
     peak AS (
       SELECT keyword, MAX(opportunity) AS peak_opportunity
       FROM appstore_keyword_scans
+      WHERE store = 'app'
       GROUP BY keyword
     )
     SELECT

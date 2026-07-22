@@ -24,6 +24,8 @@ function makeScan(overrides: Partial<KeywordScanRow> & { id: number }): KeywordS
     buildability: 0,
     lowConfidence: false,
     brandNavigational: false,
+    hintBestRank: null,
+    hintSeedCount: null,
     ...overrides,
   };
 }

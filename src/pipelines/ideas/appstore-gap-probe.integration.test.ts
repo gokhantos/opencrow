@@ -15,10 +15,17 @@ import { appstoreGapProbe } from "./appstore-gap-probe";
 // zzz-prefixed nonce keywords so fixtures can't collide with real scanned rows.
 const KEYWORD = "zzzgapprobe fatty liver diet";
 const DEDUP_KEYWORD = "zzzgapprobe dedup latest scan wins";
+const DE_STORE_KEYWORD = "zzzgapprobe de store excluded";
+const LOW_CONFIDENCE_KEYWORD = "zzzgapprobe low confidence excluded";
 const GENRE_ZONE = "health/us";
 const NOW = Math.floor(Date.now() / 1000);
 const OPTS = { windowSec: 3600 * 24 * 400, limit: 50 } as const;
-const KEYWORDS_UNDER_TEST = [KEYWORD, DEDUP_KEYWORD] as const;
+const KEYWORDS_UNDER_TEST = [
+  KEYWORD,
+  DEDUP_KEYWORD,
+  DE_STORE_KEYWORD,
+  LOW_CONFIDENCE_KEYWORD,
+] as const;
 
 // NOTE: keywords contain spaces, so a hand-built PG array literal (the
 // codebase's usual workaround for Bun.sql misformatting JS arrays in ANY())
@@ -187,6 +194,60 @@ describe("appstoreGapProbe", () => {
 
   it("returns [] when no candidate keywords are supplied", async () => {
     const out = await appstoreGapProbe.probe([], OPTS);
+    expect(out).toEqual([]);
+  });
+
+  // Batch D item D3 (2026-07-22): a DE-store scan must never surface as
+  // appstore_gap evidence — the DE lane is querying/mining data only,
+  // deliberately excluded from every US-calibrated downstream consumer.
+  it("excludes a DE-store scan, even with a high opportunity, from evidence", async () => {
+    await upsertKeywords([{ keyword: DE_STORE_KEYWORD, genreZone: GENRE_ZONE, source: "manual" }]);
+    await insertScan({
+      keyword: DE_STORE_KEYWORD,
+      store: "DE",
+      competitiveness: 10,
+      demand: 20,
+      incumbentWeakness: 0.9,
+      opportunity: 0.9, // well above threshold
+      trend: "heating",
+      topAppReviews: 5,
+      avgRating: 2.0,
+      avgAgeDays: 100,
+      topApps: [],
+      scannedAt: NOW,
+      lowConfidence: false,
+      brandNavigational: false,
+    });
+
+    const out = await appstoreGapProbe.probe([DE_STORE_KEYWORD], OPTS);
+    expect(out).toEqual([]);
+  });
+
+  // Batch D item D2 (2026-07-22): a low-confidence scan's demand/opportunity
+  // came from a giant-excluded non-matched fallback, never a field we
+  // actually know serves this keyword — must never surface as evidence.
+  it("excludes a low-confidence scan, even with a high opportunity, from evidence", async () => {
+    await upsertKeywords([
+      { keyword: LOW_CONFIDENCE_KEYWORD, genreZone: GENRE_ZONE, source: "manual" },
+    ]);
+    await insertScan({
+      keyword: LOW_CONFIDENCE_KEYWORD,
+      store: "app",
+      competitiveness: 10,
+      demand: 20,
+      incumbentWeakness: 0.9,
+      opportunity: 0.9, // well above threshold
+      trend: "heating",
+      topAppReviews: 5,
+      avgRating: 2.0,
+      avgAgeDays: 100,
+      topApps: [],
+      scannedAt: NOW,
+      lowConfidence: true,
+      brandNavigational: false,
+    });
+
+    const out = await appstoreGapProbe.probe([LOW_CONFIDENCE_KEYWORD], OPTS);
     expect(out).toEqual([]);
   });
 });
