@@ -1,4 +1,5 @@
 import { getDb } from "../../store/db";
+import { createLogger } from "../../logger";
 import { JUNK_KEYWORDS } from "./keyword-junk";
 import {
   computeMineSlots,
@@ -15,6 +16,8 @@ import type {
   KeywordScanStore,
   TopApp,
 } from "./keyword-types";
+
+const logger = createLogger("appstore:keyword-store");
 
 /**
  * Bun's SQL driver returns `jsonb` columns as raw JSON strings, not parsed
@@ -200,6 +203,60 @@ const SCAN_COLUMNS_SQL = `
   opportunity, trend, top_app_reviews, avg_rating, avg_age_days, top_apps, low_confidence,
   brand_navigational, hint_best_rank, hint_seed_count
 `;
+
+/**
+ * Thin column list for the `(keyword, store)` "latest scan" DISTINCT ON
+ * dedup step shared by `countFilteredOpportunities`, `getTopOpportunities`,
+ * and `getWinnerKeywords`. Deliberately EXCLUDES `top_apps`/`serp_tail` (the
+ * two JSONB columns that make a full row ~1.7KB on average and dominate the
+ * table's on-disk size) and the rarely-used `hint_best_rank`/`hint_seed_count`
+ * — none of the three callers filter, sort, or dedup-select on those, only
+ * (at most) display them for the handful of rows a caller actually returns.
+ *
+ * Root-cause context (2026-07-23 production incident — see migration
+ * `056_appstore_keyword_scans_covering_index.sql`): selecting `*` here forced
+ * Postgres to heap-fetch (and TOAST-detoast) a full fat row for every one of
+ * the ~128k distinct latest-scan rows on EVERY call, via a physically random
+ * access pattern (index-ordered by keyword, not by heap/insertion order) —
+ * confirmed via `EXPLAIN (ANALYZE, BUFFERS)` to read ~150k+ pages against the
+ * live 244k-row/458MB table. Projecting only these columns lets Postgres fall
+ * back to (or, once it favors `idx_appstore_keyword_scans_history_covering`,
+ * use an Index Only Scan for) a cheap, mostly-sequential scan instead, and
+ * matches that migration's INCLUDE columns exactly.
+ */
+const LATEST_SCAN_THIN_COLUMNS_SQL = `
+  id, keyword, store, scanned_at, competitiveness, demand, incumbent_weakness,
+  opportunity, trend, top_app_reviews, avg_rating, avg_age_days, low_confidence,
+  brand_navigational
+`;
+
+/**
+ * Per-query statement timeout (ms), enforced at the PostgreSQL level via
+ * `SET LOCAL statement_timeout`, for the three `(keyword, store)` DISTINCT ON
+ * "latest scan across the whole corpus" reads (`countFilteredOpportunities`,
+ * `getTopOpportunities`, `getWinnerKeywords`). These touch the full scan
+ * history on every call; without a bound, a runaway execution (cold cache,
+ * disk contention, an overlapping pile-up of the same query — all observed
+ * in the 2026-07-23 incident) can hold locks indefinitely and, if it lands
+ * behind a startup migration's DDL, queue up everything behind it — the
+ * exact failure mode that hung core startup. 45s is generous for a query
+ * that should normally complete in well under a second; tripping it fails
+ * the one request loudly (logged, then a thrown error) rather than hanging
+ * the connection — and the whole stack behind it — forever.
+ */
+const HEAVY_QUERY_STATEMENT_TIMEOUT_MS = 45_000;
+
+/** Postgres SQLSTATE for a statement cancelled by `statement_timeout`. */
+const QUERY_CANCELED_SQLSTATE = "57014";
+
+function isStatementTimeout(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === QUERY_CANCELED_SQLSTATE
+  );
+}
 
 export function rowToScan(row: KeywordScanDbRow): KeywordScanRow {
   const demand = Number(row.demand);
@@ -828,6 +885,23 @@ function buildOrderByClause(sort: SortKey, dir: "asc" | "desc"): string {
   return `${column} ${direction} NULLS LAST, s.keyword ASC, s.store ASC`;
 }
 
+/**
+ * Same sort as `buildOrderByClause`, but against the `paged` alias
+ * (`getTopOpportunities`'s outer, join-back SELECT — see that function's
+ * doc). `paged` already carries a materialized `buildability` column (computed
+ * once inside the `paged` CTE), so the `buildability` sort key resolves to
+ * that column directly rather than re-embedding `BUILDABILITY_SQL` a second
+ * time. This re-sort exists only because a `JOIN`/`LEFT JOIN LATERAL` after
+ * `paged`'s own `ORDER BY ... LIMIT` does not guarantee the limited page's
+ * row order survives — the actual work here is over `paged`'s own row count
+ * (`opts.limit`, e.g. 50), never the full corpus.
+ */
+function buildPagedOrderByClause(sort: SortKey, dir: "asc" | "desc"): string {
+  const column = sort === "buildability" ? "paged.buildability" : SORT_COLUMNS[sort].replace(/^s\./, "paged.");
+  const direction = dir === "asc" ? "ASC" : "DESC";
+  return `${column} ${direction} NULLS LAST, paged.keyword ASC, paged.store ASC`;
+}
+
 interface OpportunityFilters {
   readonly genreZone: string | null;
   readonly trend: GapTrend | null;
@@ -913,20 +987,35 @@ function buildFilterClause(db: ReturnType<typeof getDb>, filters: OpportunityFil
  */
 async function countFilteredOpportunities(filters: OpportunityFilters): Promise<number> {
   const db = getDb();
-  const rows = await db`
-    WITH s AS (
-      SELECT DISTINCT ON (keyword, store) *
-      FROM appstore_keyword_scans
-      WHERE store = 'app'
-      ORDER BY keyword, store, scanned_at DESC
-    )
-    SELECT count(*) AS count
-    FROM s
-    LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
-    WHERE ${buildFilterClause(db, filters)}
-  `;
-  const count = (rows as ReadonlyArray<{ count: number | string }>)[0]?.count;
-  return count === undefined ? 0 : Number(count);
+  try {
+    const rows = await db.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${HEAVY_QUERY_STATEMENT_TIMEOUT_MS}`);
+      return await tx`
+        WITH s AS (
+          SELECT DISTINCT ON (keyword, store) ${tx.unsafe(LATEST_SCAN_THIN_COLUMNS_SQL)}
+          FROM appstore_keyword_scans
+          WHERE store = 'app'
+          ORDER BY keyword, store, scanned_at DESC
+        )
+        SELECT count(*) AS count
+        FROM s
+        LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
+        WHERE ${buildFilterClause(tx, filters)}
+      `;
+    });
+    const count = (rows as ReadonlyArray<{ count: number | string }>)[0]?.count;
+    return count === undefined ? 0 : Number(count);
+  } catch (err) {
+    if (isStatementTimeout(err)) {
+      logger.warn("countFilteredOpportunities timed out", {
+        timeoutMs: HEAVY_QUERY_STATEMENT_TIMEOUT_MS,
+      });
+      throw new Error(
+        `countFilteredOpportunities exceeded ${HEAVY_QUERY_STATEMENT_TIMEOUT_MS}ms statement timeout`,
+      );
+    }
+    throw err;
+  }
 }
 
 export interface GetTopOpportunitiesOptions {
@@ -975,6 +1064,95 @@ export interface GetTopOpportunitiesResult {
   readonly rows: readonly OpportunityRow[];
   /** Count of (keyword, store) rows matching ALL supplied filters, ignoring `limit`/`offset` — for pagination. */
   readonly total: number;
+}
+
+/**
+ * `getTopOpportunities`'s data query, split out so the statement-timeout +
+ * error-handling wrapper doesn't crowd the (already large) query text.
+ *
+ * Three-stage shape (2026-07-23 production-hazard fix — see
+ * `LATEST_SCAN_THIN_COLUMNS_SQL`'s doc and migration
+ * `056_appstore_keyword_scans_covering_index.sql`):
+ *   1. `s` — the `(keyword, store)` DISTINCT ON dedup, projecting only the
+ *      thin filter/sort columns (never `top_apps`/`serp_tail`/hint_*), over
+ *      the WHOLE corpus (~128k rows).
+ *   2. `paged` — filters, sorts, and applies `LIMIT`/`OFFSET` on that thin
+ *      set, so the row count actually processed for anything beyond stage 1
+ *      is exactly `opts.limit`, never the full corpus.
+ *   3. The outer SELECT joins the ≤`limit` paged rows back to
+ *      `appstore_keyword_scans` by `id` (a PK point lookup) for the fat
+ *      display-only columns (`top_apps`, `hint_best_rank`, `hint_seed_count`),
+ *      and computes `peak_opportunity`/`asa_popularity` per-row via LATERAL
+ *      — both display-only, so they're now evaluated `opts.limit` times
+ *      instead of once per row in the full corpus (`peak_opportunity` was
+ *      previously a full second table scan via a `GROUP BY keyword` CTE).
+ *      A final `ORDER BY` (via `buildPagedOrderByClause`) re-applies the same
+ *      sort because a `JOIN`/`LEFT JOIN LATERAL` after `paged`'s own
+ *      `ORDER BY ... LIMIT` doesn't guarantee that row order survives.
+ */
+async function runDataQuery(
+  db: ReturnType<typeof getDb>,
+  filters: OpportunityFilters,
+  orderByClause: string,
+  pagedOrderByClause: string,
+  limit: number,
+  offset: number,
+): Promise<unknown> {
+  try {
+    return await db.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${HEAVY_QUERY_STATEMENT_TIMEOUT_MS}`);
+      return await tx`
+        WITH s AS (
+          SELECT DISTINCT ON (keyword, store) ${tx.unsafe(LATEST_SCAN_THIN_COLUMNS_SQL)}
+          FROM appstore_keyword_scans
+          WHERE store = 'app'
+          ORDER BY keyword, store, scanned_at DESC
+        ),
+        paged AS (
+          SELECT
+            s.*,
+            ${tx.unsafe(BUILDABILITY_SQL)} AS buildability,
+            k.created_at AS keyword_created_at,
+            k.source AS keyword_source
+          FROM s
+          LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
+          WHERE ${buildFilterClause(tx, filters)}
+          ORDER BY ${tx.unsafe(orderByClause)}
+          LIMIT ${limit} OFFSET ${offset}
+        )
+        SELECT
+          paged.*,
+          full_row.top_apps,
+          full_row.hint_best_rank,
+          full_row.hint_seed_count,
+          peak.peak_opportunity AS peak_opportunity,
+          asa.value AS asa_popularity,
+          asa.checked_at AS asa_checked_at
+        FROM paged
+        JOIN appstore_keyword_scans full_row ON full_row.id = paged.id
+        LEFT JOIN LATERAL (
+          SELECT MAX(opportunity) AS peak_opportunity
+          FROM appstore_keyword_scans
+          WHERE keyword = paged.keyword AND store = 'app'
+        ) peak ON true
+        LEFT JOIN LATERAL (
+          SELECT value, checked_at FROM appstore_search_popularity
+          WHERE keyword = paged.keyword AND source = 'asa'
+          ORDER BY checked_at DESC
+          LIMIT 1
+        ) asa ON true
+        ORDER BY ${tx.unsafe(pagedOrderByClause)}
+      `;
+    });
+  } catch (err) {
+    if (isStatementTimeout(err)) {
+      logger.warn("getTopOpportunities timed out", { timeoutMs: HEAVY_QUERY_STATEMENT_TIMEOUT_MS });
+      throw new Error(
+        `getTopOpportunities exceeded ${HEAVY_QUERY_STATEMENT_TIMEOUT_MS}ms statement timeout`,
+      );
+    }
+    throw err;
+  }
 }
 
 /**
@@ -1027,41 +1205,9 @@ export async function getTopOpportunities(
   const sort = opts.sort ?? "opportunity";
   const dir = opts.dir ?? "desc";
   const orderByClause = buildOrderByClause(sort, dir);
+  const pagedOrderByClause = buildPagedOrderByClause(sort, dir);
 
-  const dataQuery = db`
-    WITH s AS (
-      SELECT DISTINCT ON (keyword, store) *
-      FROM appstore_keyword_scans
-      WHERE store = 'app'
-      ORDER BY keyword, store, scanned_at DESC
-    ),
-    peak AS (
-      SELECT keyword, MAX(opportunity) AS peak_opportunity
-      FROM appstore_keyword_scans
-      WHERE store = 'app'
-      GROUP BY keyword
-    )
-    SELECT
-      s.*,
-      ${db.unsafe(BUILDABILITY_SQL)} AS buildability,
-      peak.peak_opportunity AS peak_opportunity,
-      k.created_at AS keyword_created_at,
-      k.source AS keyword_source,
-      asa.value AS asa_popularity,
-      asa.checked_at AS asa_checked_at
-    FROM s
-    LEFT JOIN peak ON peak.keyword = s.keyword
-    LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
-    LEFT JOIN LATERAL (
-      SELECT value, checked_at FROM appstore_search_popularity
-      WHERE keyword = s.keyword AND source = 'asa'
-      ORDER BY checked_at DESC
-      LIMIT 1
-    ) asa ON true
-    WHERE ${buildFilterClause(db, filters)}
-    ORDER BY ${db.unsafe(orderByClause)}
-    LIMIT ${opts.limit} OFFSET ${offset}
-  `;
+  const dataQuery = runDataQuery(db, filters, orderByClause, pagedOrderByClause, opts.limit, offset);
 
   const [rows, total] = await Promise.all([dataQuery, countFilteredOpportunities(filters)]);
 
@@ -1252,20 +1398,44 @@ export async function getWinnerKeywords(
   market: string = "us",
 ): Promise<readonly ExpansionSeed[]> {
   const db = getDb();
-  const rows = await db`
-    SELECT s.keyword, k.genre_zone, e.next_prefix_offset
-    FROM (
-      SELECT DISTINCT ON (keyword, store) *
-      FROM appstore_keyword_scans
-      ORDER BY keyword, store, scanned_at DESC
-    ) s
-    JOIN appstore_keywords k ON k.keyword = s.keyword
-    LEFT JOIN appstore_seed_expansion_state e
-      ON e.keyword = s.keyword AND e.storefront = ${market}
-    WHERE s.store = 'app' AND s.opportunity >= ${minOpportunity} AND s.low_confidence = FALSE
-    ORDER BY e.last_expanded_at ASC NULLS FIRST, s.opportunity DESC
-    LIMIT ${limit}
-  `;
+  let rows: unknown;
+  try {
+    rows = await db.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = ${HEAVY_QUERY_STATEMENT_TIMEOUT_MS}`);
+      // `WHERE store = 'app'` is pushed INSIDE the dedup subquery (rather
+      // than applied after, as the surrounding `s.store = 'app'` filter
+      // below still redundantly does) — safe because DISTINCT ON (keyword,
+      // store) groups by store already, so dropping non-'app' history rows
+      // before the dedup can never change which row wins the 'app' group.
+      // This keeps the dedup step's projection thin (see
+      // `LATEST_SCAN_THIN_COLUMNS_SQL`) AND scoped to only the storefront
+      // this function ever reads, instead of deduping the DE lane's history
+      // on every call just to discard it in the outer WHERE.
+      return await tx`
+        SELECT s.keyword, k.genre_zone, e.next_prefix_offset
+        FROM (
+          SELECT DISTINCT ON (keyword, store) ${tx.unsafe(LATEST_SCAN_THIN_COLUMNS_SQL)}
+          FROM appstore_keyword_scans
+          WHERE store = 'app'
+          ORDER BY keyword, store, scanned_at DESC
+        ) s
+        JOIN appstore_keywords k ON k.keyword = s.keyword
+        LEFT JOIN appstore_seed_expansion_state e
+          ON e.keyword = s.keyword AND e.storefront = ${market}
+        WHERE s.store = 'app' AND s.opportunity >= ${minOpportunity} AND s.low_confidence = FALSE
+        ORDER BY e.last_expanded_at ASC NULLS FIRST, s.opportunity DESC
+        LIMIT ${limit}
+      `;
+    });
+  } catch (err) {
+    if (isStatementTimeout(err)) {
+      logger.warn("getWinnerKeywords timed out, degrading to no seeds", {
+        timeoutMs: HEAVY_QUERY_STATEMENT_TIMEOUT_MS,
+      });
+      return [];
+    }
+    throw err;
+  }
   return (
     rows as ReadonlyArray<{
       keyword: string;
