@@ -116,6 +116,36 @@ export function sourceBadge(source: string | null): TrendBadge {
   );
 }
 
+// ─── ASA popularity badge (manual-import veto/annotation, batch E) ─────────
+// `asaPopularity`/`asaPopularityCheckedAt` are LEFT JOIN LATERAL'd onto every
+// opportunities row (`getTopOpportunities`, `appstore_search_popularity`
+// migration 053, `source='asa'` only) — the ground-truth manually-probed
+// Apple Search Ads score. `null` means "never manually probed" (the vast
+// majority of the corpus), NOT "zero popularity". This is an
+// ANNOTATION/veto surface, never mixed into `opportunity`/`buildability` —
+// see `collector-keyword-gaps.ts`'s `filterKnownZeroVolume` for the one
+// place a low reading actually vetoes anything.
+
+const ASA_POPULARITY_LOW_THRESHOLD = 1;
+const ASA_UNVERIFIED_BADGE: TrendBadge = { label: "Unverified", className: "bg-bg-3 text-faint" };
+
+/**
+ * Maps a keyword's latest ASA popularity reading to a display label +
+ * Tailwind className: a known-dead reading (`<= ASA_POPULARITY_LOW_
+ * THRESHOLD`) reads as a warning, anything higher as a neutral fact, and
+ * `null` (never probed) as "Unverified" — deliberately NOT alarming, since
+ * most of the corpus has simply never been checked. `checkedAt` isn't
+ * reflected in the returned label/className — the caller renders it
+ * separately (e.g. a `title` tooltip) via `formatFirstFound`/`timeAgo`.
+ */
+export function volumeCheckBadge(asaPopularity: number | null): TrendBadge {
+  if (asaPopularity === null) return ASA_UNVERIFIED_BADGE;
+  if (asaPopularity <= ASA_POPULARITY_LOW_THRESHOLD) {
+    return { label: `ASA ${asaPopularity}/5`, className: "bg-danger/15 text-danger" };
+  }
+  return { label: `ASA ${asaPopularity}/5`, className: "bg-bg-3 text-muted" };
+}
+
 // ─── First-found formatting ─────────────────────────────────────────────────
 
 /**

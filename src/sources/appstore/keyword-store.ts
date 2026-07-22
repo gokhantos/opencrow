@@ -114,6 +114,20 @@ export interface OpportunityRow extends KeywordScanRow {
    * never to happen in practice) case the peak CTE has no matching row.
    */
   readonly peakOpportunity: number;
+  /**
+   * Most recently recorded Apple Search Ads `searchPopularity` score (0..5,
+   * `appstore_search_popularity` migration 053, `source='asa'` only — never
+   * the `'hint'` lane, which composes in separately), or `null` if this
+   * keyword has never been manually probed. A VETO/ANNOTATION signal only —
+   * NEVER multiplied into `opportunity`/`buildability` (coverage is a
+   * handful of manually-probed keywords against the whole corpus). See
+   * `collector-keyword-gaps.ts`'s `excludeKnownZeroVolume` for the one place
+   * this actually gates anything, and `popularity-store.ts` for why this is
+   * a manual-import surface rather than an API sweep.
+   */
+  readonly asaPopularity: number | null;
+  /** Epoch seconds `asaPopularity` was recorded, or `null` if never probed. */
+  readonly asaPopularityCheckedAt: number | null;
 }
 
 /** Raw column shape returned by `SELECT * FROM appstore_keyword_scans`. */
@@ -155,6 +169,14 @@ interface OpportunityDbRow extends KeywordScanDbRow {
   readonly keyword_created_at: number | string | null;
   readonly keyword_source: string | null;
   readonly peak_opportunity: number | string | null;
+  /**
+   * Only present when the query's SELECT list added the ASA-popularity LEFT
+   * JOIN LATERAL (`getTopOpportunities`) — absent (undefined) on queries
+   * that don't join it (e.g. `getClusterMembers`), which `rowToOpportunity`
+   * treats the same as "never probed" (`null`).
+   */
+  readonly asa_popularity?: number | string | null;
+  readonly asa_checked_at?: Date | string | number | null;
 }
 
 /**
@@ -221,7 +243,25 @@ export function rowToOpportunity(row: OpportunityDbRow): OpportunityRow {
       row.peak_opportunity === null || row.peak_opportunity === undefined
         ? Number(row.opportunity)
         : Number(row.peak_opportunity),
+    asaPopularity:
+      row.asa_popularity === null || row.asa_popularity === undefined
+        ? null
+        : Number(row.asa_popularity),
+    asaPopularityCheckedAt: toEpochSecondsOrNull(row.asa_checked_at),
   };
+}
+
+/**
+ * `asa_checked_at` comes back from `Bun.sql` as a JS `Date` (the column is
+ * `TIMESTAMPTZ`), but tests/callers may also hand this a raw epoch-seconds
+ * number or an ISO string — normalize all three to epoch seconds, matching
+ * `popularity-store.ts`'s `toEpochSeconds` convention.
+ */
+function toEpochSecondsOrNull(value: Date | string | number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return Math.floor(value.getTime() / 1000);
+  if (typeof value === "number") return Math.floor(value);
+  return Math.floor(new Date(value).getTime() / 1000);
 }
 
 /**
@@ -928,6 +968,12 @@ export interface GetTopOpportunitiesResult {
  * positively pinning to `'app'` rather than negatively excluding `'DE'` is
  * deliberately future-proof against that lane landing without a matching
  * quarantine fix here.
+ *
+ * `asaPopularity`/`asaPopularityCheckedAt` are LEFT JOIN LATERAL'd from
+ * `appstore_search_popularity` (migration 053, `source='asa'` only) — an
+ * annotation/veto field, `null` when the keyword was never manually probed;
+ * NOT sortable/filterable (coverage is far too sparse to be a query
+ * dimension yet).
  */
 export async function getTopOpportunities(
   opts: GetTopOpportunitiesOptions,
@@ -966,10 +1012,18 @@ export async function getTopOpportunities(
       ${db.unsafe(BUILDABILITY_SQL)} AS buildability,
       peak.peak_opportunity AS peak_opportunity,
       k.created_at AS keyword_created_at,
-      k.source AS keyword_source
+      k.source AS keyword_source,
+      asa.value AS asa_popularity,
+      asa.checked_at AS asa_checked_at
     FROM s
     LEFT JOIN peak ON peak.keyword = s.keyword
     LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
+    LEFT JOIN LATERAL (
+      SELECT value, checked_at FROM appstore_search_popularity
+      WHERE keyword = s.keyword AND source = 'asa'
+      ORDER BY checked_at DESC
+      LIMIT 1
+    ) asa ON true
     WHERE ${buildFilterClause(db, filters)}
     ORDER BY ${db.unsafe(orderByClause)}
     LIMIT ${opts.limit} OFFSET ${offset}

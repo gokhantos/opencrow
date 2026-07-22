@@ -23,7 +23,11 @@
  * audit/whitespace trail); only the consumption/dedup key is the keyword.
  */
 import { createLogger } from "../../logger";
-import { getTopOpportunities, type KeywordScanRow } from "../../sources/appstore/keyword-store";
+import {
+  getTopOpportunities,
+  type KeywordScanRow,
+  type OpportunityRow,
+} from "../../sources/appstore/keyword-store";
 import type { CollectorContext } from "./collectors";
 
 const log = createLogger("pipeline:collector-keyword-gaps");
@@ -57,6 +61,38 @@ export interface SelectGapSeedsOptions {
   readonly limit: number;
   /** Minimum opportunity score (0..1) a scan must clear to become a seed. */
   readonly minOpportunity: number;
+}
+
+export interface ZeroVolumeVetoOptions {
+  /** Recorded ASA `searchPopularity` at/under this value is treated as "known dead". */
+  readonly threshold: number;
+  /** A reading older than this many days is ignored by the veto (stale). */
+  readonly freshnessDays: number;
+  readonly nowEpochSeconds: number;
+}
+
+/**
+ * Batch E — ASA popularity manual-import veto (`appstoreKeywordGap.
+ * excludeKnownZeroVolume` config knob, `popularity-store.ts`). PURE: drops
+ * scans whose LEFT-JOINed `asaPopularity` (`getTopOpportunities`) is <=
+ * `opts.threshold` AND whose `asaPopularityCheckedAt` is within the
+ * freshness window — a scan with no recorded popularity, or one whose
+ * reading has aged past `freshnessDays`, is left untouched (never probed, or
+ * the probe is too stale to trust). This is a hard VETO on seed selection
+ * only, never a scoring multiplier — see the config field's doc comment for
+ * why (coverage is a handful of manually-probed keywords against the whole
+ * corpus).
+ */
+export function filterKnownZeroVolume(
+  scans: readonly OpportunityRow[],
+  opts: ZeroVolumeVetoOptions,
+): readonly OpportunityRow[] {
+  const freshnessFloorSec = opts.nowEpochSeconds - opts.freshnessDays * 86_400;
+  return scans.filter((s) => {
+    if (s.asaPopularity === null || s.asaPopularityCheckedAt === null) return true;
+    if (s.asaPopularityCheckedAt < freshnessFloorSec) return true; // stale — ignore veto
+    return s.asaPopularity > opts.threshold;
+  });
 }
 
 /**
@@ -95,6 +131,16 @@ export function selectGapSeeds(
     );
 }
 
+export interface CollectKeywordGapsOptions extends SelectGapSeedsOptions {
+  /** Batch E: when true, drop known-dead (recorded ASA popularity <= `zeroVolumeThreshold`) keywords from seed selection. Default false (off). */
+  readonly excludeKnownZeroVolume?: boolean;
+  readonly zeroVolumeThreshold?: number;
+  readonly zeroVolumeFreshnessDays?: number;
+}
+
+const DEFAULT_ZERO_VOLUME_THRESHOLD = 1;
+const DEFAULT_ZERO_VOLUME_FRESHNESS_DAYS = 45;
+
 /**
  * Load the top keyword opportunities, select fresh above-threshold seeds, record
  * the chosen KEYWORDS into `ctx.selected` under {@link KEYWORD_SCANS_TABLE}
@@ -111,13 +157,20 @@ export function selectGapSeeds(
  */
 export async function collectKeywordGaps(
   ctx: CollectorContext,
-  opts: SelectGapSeedsOptions,
+  opts: CollectKeywordGapsOptions,
 ): Promise<readonly GapSeed[]> {
   try {
     const fetchLimit = Math.max(Math.floor(opts.limit) * FETCH_MULTIPLIER, MIN_FETCH);
     const { rows: scans } = await getTopOpportunities({ limit: fetchLimit });
+    const eligibleScans = opts.excludeKnownZeroVolume
+      ? filterKnownZeroVolume(scans, {
+          threshold: opts.zeroVolumeThreshold ?? DEFAULT_ZERO_VOLUME_THRESHOLD,
+          freshnessDays: opts.zeroVolumeFreshnessDays ?? DEFAULT_ZERO_VOLUME_FRESHNESS_DAYS,
+          nowEpochSeconds: Math.floor(Date.now() / 1000),
+        })
+      : scans;
     const consumedKeywords = ctx.consumed.get(KEYWORD_SCANS_TABLE) ?? new Set<string>();
-    const seeds = selectGapSeeds(scans, consumedKeywords, opts);
+    const seeds = selectGapSeeds(eligibleScans, consumedKeywords, opts);
 
     if (seeds.length > 0) {
       // Record selected KEYWORDS (not scan ids) so the pipeline can mark them

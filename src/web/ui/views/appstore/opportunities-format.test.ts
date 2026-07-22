@@ -6,6 +6,7 @@ import {
   sourceBadge,
   titleCaseLabel,
   trendBadge,
+  volumeCheckBadge,
 } from "./opportunities-format";
 
 /* ---------- formatOpportunity ---------- */
@@ -134,6 +135,31 @@ test("sourceBadge: unrecognized string falls back to the raw label", () => {
   const badge = sourceBadge("mystery-source");
   expect(badge.label).toBe("mystery-source");
   expect(badge.className.length).toBeGreaterThan(0);
+});
+
+/* ---------- volumeCheckBadge ---------- */
+
+test("volumeCheckBadge: null (never probed) renders as Unverified", () => {
+  const badge = volumeCheckBadge(null);
+  expect(badge.label).toBe("Unverified");
+});
+
+test("volumeCheckBadge: a known-dead reading (<= 1) reads as a warning", () => {
+  const badge = volumeCheckBadge(1);
+  expect(badge.label).toBe("ASA 1/5");
+  expect(badge.className).toContain("danger");
+});
+
+test("volumeCheckBadge: zero also reads as a warning", () => {
+  const badge = volumeCheckBadge(0);
+  expect(badge.label).toBe("ASA 0/5");
+  expect(badge.className).toContain("danger");
+});
+
+test("volumeCheckBadge: a healthy reading (> 1) reads as neutral, not a warning", () => {
+  const badge = volumeCheckBadge(4);
+  expect(badge.label).toBe("ASA 4/5");
+  expect(badge.className).not.toContain("danger");
 });
 
 /* ---------- formatFirstFound ---------- */

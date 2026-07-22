@@ -98,4 +98,19 @@ describe("formatGapProfile", () => {
     const zeroSeeds: KeywordGapProfile = { ...profile, hintBestRank: null, hintSeedCount: 0 };
     expect(formatGapProfile(zeroSeeds)).not.toContain("Autocomplete hint");
   });
+
+  it("prints 'unverified' when no ASA popularity reading is passed", () => {
+    const output = formatGapProfile(profile);
+    expect(output).toContain("ASA popularity: unverified");
+  });
+
+  it("prints 'unverified' when volumeCheck is explicitly null", () => {
+    const output = formatGapProfile(profile, null);
+    expect(output).toContain("ASA popularity: unverified");
+  });
+
+  it("prints the popularity score and probed date when a volumeCheck is passed", () => {
+    const output = formatGapProfile(profile, { popularity: 1, checkedAt: 1_784_548_800 });
+    expect(output).toContain("ASA popularity: 1/5 (probed 2026-07-20)");
+  });
 });
