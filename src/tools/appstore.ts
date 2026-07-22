@@ -12,7 +12,7 @@ import {
 } from "../sources/appstore/store";
 import { createSemanticSearchTool } from "./search-factory";
 import { createDigestTool } from "./digest-factory";
-import { getEnum } from "./input-helpers";
+import { getEnum, isToolError, requireString } from "./input-helpers";
 import { createLogger } from "../logger";
 import { getErrorMessage } from "../lib/error-serialization";
 import { loadConfig } from "../config/loader";
@@ -408,6 +408,8 @@ export function createAppStoreTools(
         properties: {
           keyword: {
             type: "string",
+            minLength: 1,
+            maxLength: 200,
             description:
               "App Store search phrase to analyze for a supply/demand gap (e.g. 'fatty liver diet').",
           },
@@ -416,7 +418,8 @@ export function createAppStoreTools(
       },
       categories: ["research"] as const,
       async execute(input) {
-        const keyword = String(input.keyword ?? "");
+        const keyword = requireString(input, "keyword", { maxLength: 200 });
+        if (isToolError(keyword)) return keyword;
         try {
           await analyzeKeywordGapGate();
           const profile = await scanKeyword(keyword);
