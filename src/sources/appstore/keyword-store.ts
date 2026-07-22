@@ -957,6 +957,79 @@ export async function countMinedScansSince(epochSeconds: number): Promise<number
   return count === undefined ? 0 : Number(count);
 }
 
+export interface PruneKeywordScansOptions {
+  /** Rows scanned longer ago than this (seconds) are prune CANDIDATES. */
+  readonly maxAgeSeconds: number;
+  /**
+   * Keep-newest guard: never delete a (keyword, store)'s newest N scans, even
+   * when they're older than the cutoff. Clamped to a hard floor of 200 — the
+   * `GET /appstore/opportunities/:keyword` history route reads up to
+   * `limit=200`, so dropping below that would truncate the dashboard chart.
+   */
+  readonly keepNewestPerKeyword: number;
+  /** Max rows deleted per DELETE (chunked so one call can't lock the table for minutes). */
+  readonly chunkSize: number;
+  /** Safety bound on how many chunk-DELETEs a single run performs. */
+  readonly maxChunks: number;
+}
+
+/** Absolute floor on `keepNewestPerKeyword` — see its doc comment. */
+const MIN_KEEP_NEWEST_SCANS = 200;
+
+/**
+ * Age-based retention prune for `appstore_keyword_scans` (B3) — the table had
+ * ZERO production DELETEs and grows ~17k rows/day. Models the ledger prunes
+ * (`pruneReviewHarvestLedger`, `pruneLookupRequestLedger`) but adds two
+ * safety properties this append-only history table needs:
+ *
+ * 1. Keep-newest-N-per-(keyword, store) guard: the `ROW_NUMBER()` partition is
+ *    applied ONLY to the pre-filtered OLD-row candidate set (`WHERE
+ *    scanned_at < cutoff`), never the whole table — so a keyword whose entire
+ *    history predates the cutoff still keeps its newest `keepNewestPerKeyword`
+ *    rows, and the far larger set of already-recent rows is never even ranked.
+ * 2. Chunked deletes (`LIMIT chunkSize` by PK `id`): a first run against a
+ *    long backlog can't hold row locks for minutes; each DELETE touches at
+ *    most `chunkSize` rows, looping until a short chunk (or `maxChunks`)
+ *    signals the backlog is drained.
+ *
+ * Age-only: there is no total-row cap — retention is purely "older than
+ * `maxAgeSeconds`, beyond the keep-newest guard". Returns the total rows
+ * deleted across all chunks.
+ */
+export async function pruneKeywordScans(
+  opts: PruneKeywordScansOptions,
+): Promise<{ readonly pruned: number }> {
+  const db = getDb();
+  const cutoff = Math.floor(Date.now() / 1000) - Math.max(0, opts.maxAgeSeconds);
+  const keepNewest = Math.max(MIN_KEEP_NEWEST_SCANS, opts.keepNewestPerKeyword);
+  const chunkSize = Math.max(1, opts.chunkSize);
+  const maxChunks = Math.max(1, opts.maxChunks);
+
+  let pruned = 0;
+  for (let chunk = 0; chunk < maxChunks; chunk++) {
+    const rows = await db`
+      WITH candidates AS (
+        SELECT
+          id,
+          ROW_NUMBER() OVER (
+            PARTITION BY keyword, store ORDER BY scanned_at DESC
+          ) AS rn
+        FROM appstore_keyword_scans
+        WHERE scanned_at < ${cutoff}
+      )
+      DELETE FROM appstore_keyword_scans
+      WHERE id IN (
+        SELECT id FROM candidates WHERE rn > ${keepNewest} LIMIT ${chunkSize}
+      )
+      RETURNING id
+    `;
+    const deleted = (rows as ReadonlyArray<{ id: number | string }>).length;
+    pruned += deleted;
+    if (deleted < chunkSize) break;
+  }
+  return { pruned };
+}
+
 /**
  * Latest scan per keyword, joined to its corpus row for `genre_zone`,
  * filtered to `opportunity >= minOpportunity` and ordered richest-first.

@@ -326,6 +326,17 @@ export interface ExpandCorpusResult {
    * `deactivateJunkKeywords` call site logs for junk deactivation.
    */
   readonly brandFiltered: number;
+  /**
+   * Total RAW terms Apple returned across every query this pass, summed
+   * BEFORE any junk/length/dedup filtering (B2 flatline detector). This is
+   * the signal the caller (`scraper.ts`'s flatline check) uses to tell
+   * "endpoint/header broke" (rawTermCount === 0 despite attempted > 0 — the
+   * exact shape of the silent 2026-07-18 header-change incident) apart from
+   * "Apple answered but everything was junk/already-known" (rawTermCount > 0,
+   * added possibly 0). `added` alone can't distinguish these — an all-junk or
+   * all-existing pass and a dead-endpoint pass both log `added: 0`.
+   */
+  readonly rawTermCount: number;
 }
 
 const EMPTY_RESULT: ExpandCorpusResult = {
@@ -334,6 +345,7 @@ const EMPTY_RESULT: ExpandCorpusResult = {
   attempted: 0,
   rateLimitErrors: 0,
   brandFiltered: 0,
+  rawTermCount: 0,
 };
 
 /**
@@ -373,6 +385,9 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
   const seen = new Set<string>();
   let attempted = 0;
   let rateLimitErrors = 0;
+  // B2 flatline: total raw terms Apple returned this pass, summed BEFORE the
+  // junk/length/dedup filter — see `ExpandCorpusResult.rawTermCount`.
+  let rawTermCount = 0;
 
   for (const seed of seeds) {
     // Prefix fan-out (2026-07-21 audit item D fix): the bare seed, plus up
@@ -395,6 +410,10 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
           error: getErrorMessage(err),
         });
       }
+      // B2: count raw terms BEFORE junk-filtering (`buildCandidatesFromHints`
+      // below), so an all-junk response is still distinguishable from a
+      // dead-endpoint (zero-term) one.
+      rawTermCount += terms.length;
 
       const queryCandidates = buildCandidatesFromHints(terms, seed.genreZone, opts.perSeed);
       for (const c of queryCandidates) {
@@ -434,8 +453,16 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
       attempted,
       rateLimitErrors,
       brandFiltered: 0,
+      rawTermCount,
     });
-    return { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors, brandFiltered: 0 };
+    return {
+      added: 0,
+      seedsUsed: seeds.length,
+      attempted,
+      rateLimitErrors,
+      brandFiltered: 0,
+      rawTermCount,
+    };
   }
 
   const existing = await keywordsExist(candidates.map((c) => c.keyword));
@@ -448,8 +475,16 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
       attempted,
       rateLimitErrors,
       brandFiltered: 0,
+      rawTermCount,
     });
-    return { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors, brandFiltered: 0 };
+    return {
+      added: 0,
+      seedsUsed: seeds.length,
+      attempted,
+      rateLimitErrors,
+      brandFiltered: 0,
+      rawTermCount,
+    };
   }
 
   // Insert-time brand-navigational filter (Batch A budget rescue,
@@ -474,8 +509,16 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
       attempted,
       rateLimitErrors,
       brandFiltered,
+      rawTermCount,
     });
-    return { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors, brandFiltered };
+    return {
+      added: 0,
+      seedsUsed: seeds.length,
+      attempted,
+      rateLimitErrors,
+      brandFiltered,
+      rawTermCount,
+    };
   }
 
   const newRows: readonly KeywordSeedRow[] = newCandidates.map((c) => ({
@@ -491,6 +534,7 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
     attempted,
     rateLimitErrors,
     brandFiltered,
+    rawTermCount,
     // A small sample for observability — real user queries vs mined
     // fragments should be visually obvious in these (multi-word, natural
     // phrasing) vs the miner's n-grams.
@@ -502,5 +546,6 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
     attempted,
     rateLimitErrors,
     brandFiltered,
+    rawTermCount,
   };
 }

@@ -16,6 +16,20 @@
 /** A sweep whose rate-limit error rate is at or above this fraction trips the throttle-down. */
 export const THROTTLE_ERROR_RATE_THRESHOLD = 0.05; // ~5%
 
+/**
+ * Minimum requests a tick must have ATTEMPTED before its error rate is
+ * allowed to TRIP the throttle-down (B1 fix). Without this gate a lane that
+ * attempted a single request and hit one 429 yields `errorRate === 1.0` and
+ * instantly halves the SHARED multiplier for every lane — including the main
+ * SERP sweep — on one anecdotal failure. Below this floor a tick can never
+ * trip (it may still count toward recovery, treated as an under-threshold
+ * sweep). Set alongside end-of-tick aggregation in `scraper.ts`, which sums
+ * every lane's `(rateLimitErrors, attempted)` into ONE `advanceThrottle`
+ * call per tick, so `attempted` here is the whole tick's real request volume,
+ * not a single low-volume lane's.
+ */
+export const MIN_ATTEMPTED_FOR_TRIP = 8;
+
 /** Multiplier applied to the current rate each time the throttle (re-)trips. */
 export const THROTTLE_BACKOFF_FACTOR = 0.5;
 
@@ -63,19 +77,38 @@ export function computeErrorRate(rateLimitErrors: number, attempted: number): nu
 }
 
 /**
- * Advances the throttle state machine by one sweep's outcome.
+ * One tick's aggregated Apple-endpoint outcome — the SUMMED rate-limit errors
+ * and attempted requests across every lane on that tick (see `scraper.ts`'s
+ * per-tick accumulator). `advanceThrottle` derives the error rate from these
+ * so the rate is weighted by real request volume, and gates the trip on the
+ * total `attempted` (see `MIN_ATTEMPTED_FOR_TRIP`).
+ */
+export interface ThrottleOutcome {
+  readonly rateLimitErrors: number;
+  readonly attempted: number;
+}
+
+/**
+ * Advances the throttle state machine by one tick's aggregated outcome.
  *
- * - `errorRate >= THROTTLE_ERROR_RATE_THRESHOLD`: (re-)trip — halve the
+ * - `attempted >= MIN_ATTEMPTED_FOR_TRIP` AND
+ *   `errorRate >= THROTTLE_ERROR_RATE_THRESHOLD`: (re-)trip — halve the
  *   CURRENT multiplier (so repeated trips keep backing off further, floored
- *   at `MIN_THROTTLE_MULTIPLIER`) and reset the hold counter.
+ *   at `MIN_THROTTLE_MULTIPLIER`) and reset the hold counter. Below the
+ *   min-attempted floor a tick can NEVER trip, however high its ratio — a
+ *   one-request 429 is anecdote, not signal.
  * - Otherwise, while already throttled: once `THROTTLE_HOLD_SWEEPS`
- *   consecutive sweeps have stayed under threshold, take one
- *   `THROTTLE_RECOVERY_STEP` step back toward 1.0 (clamped), resetting the
- *   hold counter; reaching exactly 1.0 clears `throttled`.
+ *   consecutive sweeps have stayed under threshold (a below-floor tick counts
+ *   as one such sweep), take one `THROTTLE_RECOVERY_STEP` step back toward
+ *   1.0 (clamped), resetting the hold counter; reaching exactly 1.0 clears
+ *   `throttled`.
  * - Otherwise (not throttled, under threshold): just tick the hold counter.
  */
-export function advanceThrottle(state: ThrottleState, errorRate: number): ThrottleState {
-  if (errorRate >= THROTTLE_ERROR_RATE_THRESHOLD) {
+export function advanceThrottle(state: ThrottleState, outcome: ThrottleOutcome): ThrottleState {
+  const errorRate = computeErrorRate(outcome.rateLimitErrors, outcome.attempted);
+  const canTrip = outcome.attempted >= MIN_ATTEMPTED_FOR_TRIP;
+
+  if (canTrip && errorRate >= THROTTLE_ERROR_RATE_THRESHOLD) {
     return {
       multiplier: Math.max(MIN_THROTTLE_MULTIPLIER, state.multiplier * THROTTLE_BACKOFF_FACTOR),
       sweepsSinceChange: 0,

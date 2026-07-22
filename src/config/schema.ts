@@ -944,6 +944,42 @@ export const appstoreKeywordGapConfigSchema = z
     // `minedExploration`'s doc comment above), so its fetches stay shallow
     // (topN) unless an operator opts in.
     deepScanMined: z.boolean().default(false),
+    // ─── Keyword-scans retention (B3, 2026-07-22) ──────────────────────────
+    // The `appstore_keyword_scans` history table (~234k rows / ~407MB, growing
+    // ~17k rows/day) had ZERO production DELETEs. This is an AGE-ONLY, chunked
+    // prune (see `keyword-store.ts`'s `pruneKeywordScans`), wired as a
+    // cadence-gated lane on the keyword-sweep tick (scraper.ts's
+    // `runScansRetentionIfDue`), mirroring the ledger prunes. NOTE: under the
+    // 90d `maxAgeMs` default this logs `pruned: 0` until ~2026-10-07 (the
+    // oldest scan is 2026-07-09) — it's future-proofing, not immediate
+    // hygiene; drop `maxAgeMs` to 45d for earlier cleanup.
+    scansRetention: z
+      .object({
+        // Master switch. Default ON (the prune is conservative — keep-newest
+        // guard + age cutoff — and no-ops when nothing is old enough).
+        enabled: z.boolean().default(true),
+        // Rows scanned longer ago than this are prune candidates. 90d default.
+        maxAgeMs: z.number().int().min(24 * 60 * 60 * 1000).default(90 * 24 * 60 * 60 * 1000),
+        // Keep-newest-per-(keyword, store) guard — hard floor 200 (the history
+        // route reads up to limit=200), enforced again in `pruneKeywordScans`.
+        keepNewestPerKeyword: z.number().int().min(200).max(10_000).default(200),
+        // Rows deleted per chunk DELETE (bounds lock duration on a first run).
+        chunkSize: z.number().int().min(1).max(50_000).default(5_000),
+        // Safety bound on chunk-DELETEs per run — 1000 * 5000 = up to 5M rows
+        // per run, far above the realistic backlog, so a run effectively drains
+        // the whole eligible set while staying bounded.
+        maxChunksPerRun: z.number().int().min(1).max(100_000).default(1_000),
+        // Own cadence gate, decoupled from the ~1min sweep tick. 6h default.
+        minIntervalMs: z.number().int().min(60_000).default(6 * 60 * 60 * 1000),
+      })
+      .default({
+        enabled: true,
+        maxAgeMs: 90 * 24 * 60 * 60 * 1000,
+        keepNewestPerKeyword: 200,
+        chunkSize: 5_000,
+        maxChunksPerRun: 1_000,
+        minIntervalMs: 6 * 60 * 60 * 1000,
+      }),
   })
   .default({
     enabled: true,
@@ -990,6 +1026,14 @@ export const appstoreKeywordGapConfigSchema = z
     },
     serpDepth: 200,
     deepScanMined: false,
+    scansRetention: {
+      enabled: true,
+      maxAgeMs: 90 * 24 * 60 * 60 * 1000,
+      keepNewestPerKeyword: 200,
+      chunkSize: 5_000,
+      maxChunksPerRun: 1_000,
+      minIntervalMs: 6 * 60 * 60 * 1000,
+    },
   });
 export type AppstoreKeywordGapConfig = z.infer<typeof appstoreKeywordGapConfigSchema>;
 
