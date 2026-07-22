@@ -971,15 +971,20 @@ export function createAppStoreScraper(config?: {
 
   // Runs the DE storefront lane (see `keyword-gaps.ts`'s
   // `runDeStorefrontSweep`), gated to `deStorefrontLane.minIntervalMs`
-  // (default 24h) and to the SAME `sweepRateSafety` rails as the scan sweep
-  // and autocomplete expansion above: the hard kill-switch
-  // (`legacyRateOverride`) skips this pass entirely, and any rate-limit
-  // errors it hits feed into the SHARED `sweepThrottleState` — a spike here
-  // backs off the US sweep too, "the shared throttle envelope". Also checks
-  // the rolling 24h `dailyKeywordBudget` ceiling directly (rather than
-  // relying solely on `runKeywordSweep`'s own check) since this pass can run
-  // independently of a US sweep tick. Never allowed to break the sweep tick —
-  // a failure is logged and swallowed, mirroring the other "IfDue" passes.
+  // (default 25min as of the 2026-07-22 Batch A budget rescue — each pass
+  // now only scans one `deStorefrontLane.deChunkSize` chunk of the protected
+  // pool, not the whole thing, so the re-check below runs far more often
+  // than the old 12h/24h cadence, and is what keeps this lane from
+  // overshooting `dailyKeywordBudget` by more than one chunk) and to the
+  // SAME `sweepRateSafety` rails as the scan sweep and autocomplete
+  // expansion above: the hard kill-switch (`legacyRateOverride`) skips this
+  // pass entirely, and any rate-limit errors it hits feed into the SHARED
+  // `sweepThrottleState` — a spike here backs off the US sweep too, "the
+  // shared throttle envelope". Also checks the rolling 24h
+  // `dailyKeywordBudget` ceiling directly (rather than relying solely on
+  // `runKeywordSweep`'s own check) since this pass can run independently of
+  // a US sweep tick. Never allowed to break the sweep tick — a failure is
+  // logged and swallowed, mirroring the other "IfDue" passes.
   async function runDeStorefrontSweepIfDue(): Promise<void> {
     try {
       const cfg = loadConfig().appstoreKeywordGap;
@@ -1002,7 +1007,7 @@ export function createAppStoreScraper(config?: {
 
       lastDeStorefrontRunAt = now;
 
-      const result = await runDeStorefrontSweep({ delayMs: de.delayMs });
+      const result = await runDeStorefrontSweep({ delayMs: de.delayMs, chunkSize: de.deChunkSize });
       log.info("DE storefront lane complete", {
         scanned: result.scanned,
         failed: result.failed,

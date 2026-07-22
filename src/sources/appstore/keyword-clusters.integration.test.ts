@@ -93,6 +93,7 @@ function makeScan(seed: Seed, now: number): KeywordGapProfile {
     topApps: [makeTopApp()],
     scannedAt: now,
     lowConfidence: false,
+    brandNavigational: false,
   };
 }
 

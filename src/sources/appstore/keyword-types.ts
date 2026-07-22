@@ -50,6 +50,17 @@ export interface KeywordGapProfile {
    */
   readonly lowConfidence: boolean;
   /**
+   * True iff this scan's field looks brand-navigational — the rank-1 app's
+   * title matches the keyword AND that app holds a dominant share of the
+   * top-N field's reviews (Batch A budget rescue, 2026-07-22 — see
+   * `keyword-brand.ts`'s `isBrandNavigationalScan` and migration 050).
+   * Consumed by `keyword-deactivation.ts` (a keyword whose last several
+   * scans are all brand-navigational is eligible for deactivation even on
+   * `source: 'autocomplete'`) and excluded from `getTopOpportunities` by
+   * default — see `format-gap-profile.ts`.
+   */
+  readonly brandNavigational: boolean;
+  /**
    * Deep-SERP-only (migration 044, serp-rank Stage 1): the compact
    * `{id, rank}` tail of a fetch deeper than `topN` — entries at position
    * `>= topN`, up to the fetched depth. `undefined` for a plain (non-deep)

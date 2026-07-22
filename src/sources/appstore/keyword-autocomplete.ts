@@ -26,9 +26,11 @@
 import { getErrorMessage } from "../../lib/error-serialization";
 import { createLogger } from "../../logger";
 import { RateLimitError, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
+import { buildBrandSegmentSet, isBrandNavigationalCandidate } from "./keyword-brand";
 import { isJunkKeyword } from "./keyword-junk";
 import {
   getExpansionSeeds,
+  getScannedAppNames,
   insertAutocompleteHints,
   keywordsExist,
   markSeedsExpanded,
@@ -51,6 +53,15 @@ const HINTS_FETCH_TIMEOUT_MS = 10_000;
 // `ExpandCorpusOptions` doc comment and `appstoreKeywordGap
 // .autocompleteExpansion.prefixFanOut` in src/config/schema.ts.
 const PREFIX_FAN_OUT_LETTERS: readonly string[] = "abcdefghijklmnopqrstuvwxyz".split("");
+
+/**
+ * How many recently-scanned app names (`getScannedAppNames`) to pull when
+ * building this pass's brand-segment set (Batch A budget rescue,
+ * 2026-07-22) — see `keyword-brand.ts`'s `buildBrandSegmentSet`. Matches
+ * `keyword-miner.ts`'s `DEFAULT_SCANNED_APPS_LIMIT`, the same pool size
+ * already proven sufficient for that module's own brand/artist filtering.
+ */
+const BRAND_SEGMENT_APP_NAME_LIMIT = 2000;
 
 // ---------------------------------------------------------------------------
 // Plist parsing
@@ -307,6 +318,14 @@ export interface ExpandCorpusResult {
   readonly attempted: number;
   /** Count of requests whose hint fetch hit an exhausted rate-limit retry. */
   readonly rateLimitErrors: number;
+  /**
+   * Count of otherwise-new candidates dropped by the insert-time
+   * brand-navigational filter (Batch A budget rescue, 2026-07-22 — see
+   * `keyword-brand.ts`'s `isBrandNavigationalCandidate`), mirroring the
+   * `evaluated`/`deactivated` observability `keyword-store.ts`'s
+   * `deactivateJunkKeywords` call site logs for junk deactivation.
+   */
+  readonly brandFiltered: number;
 }
 
 const EMPTY_RESULT: ExpandCorpusResult = {
@@ -314,6 +333,7 @@ const EMPTY_RESULT: ExpandCorpusResult = {
   seedsUsed: 0,
   attempted: 0,
   rateLimitErrors: 0,
+  brandFiltered: 0,
 };
 
 /**
@@ -378,7 +398,13 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
 
       const queryCandidates = buildCandidatesFromHints(terms, seed.genreZone, opts.perSeed);
       for (const c of queryCandidates) {
-        hintRows.push({ seed: query, term: c.keyword, rank: c.rank, seenAt: nowSeconds, storefront: market });
+        hintRows.push({
+          seed: query,
+          term: c.keyword,
+          rank: c.rank,
+          seenAt: nowSeconds,
+          storefront: market,
+        });
         if (seen.has(c.keyword)) continue;
         seen.add(c.keyword);
         candidates.push(c);
@@ -402,16 +428,54 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
   if (hintRows.length > 0) await insertAutocompleteHints(hintRows);
 
   if (candidates.length === 0) {
-    log.info("Autocomplete corpus expansion", { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors });
-    return { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors };
+    log.info("Autocomplete corpus expansion", {
+      added: 0,
+      seedsUsed: seeds.length,
+      attempted,
+      rateLimitErrors,
+      brandFiltered: 0,
+    });
+    return { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors, brandFiltered: 0 };
   }
 
   const existing = await keywordsExist(candidates.map((c) => c.keyword));
-  const newCandidates = candidates.filter((c) => !existing.has(c.keyword));
+  const nonExisting = candidates.filter((c) => !existing.has(c.keyword));
+
+  if (nonExisting.length === 0) {
+    log.info("Autocomplete corpus expansion", {
+      added: 0,
+      seedsUsed: seeds.length,
+      attempted,
+      rateLimitErrors,
+      brandFiltered: 0,
+    });
+    return { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors, brandFiltered: 0 };
+  }
+
+  // Insert-time brand-navigational filter (Batch A budget rescue,
+  // 2026-07-22 — see `keyword-brand.ts` module doc, layer 1): applied AFTER
+  // the corpus-existence check (no point classifying a candidate that's
+  // already excluded) but BEFORE `upsertKeywords` — a candidate dropped here
+  // never occupies a corpus/tier-1 slot in the first place. The brand
+  // segment set is built ONCE per pass from the same broad, continuously-
+  // refreshed `getScannedAppNames` pool `keyword-miner.ts` already mines
+  // from, not re-fetched per candidate.
+  const scannedAppNames = await getScannedAppNames(BRAND_SEGMENT_APP_NAME_LIMIT);
+  const brandSegments = buildBrandSegmentSet(scannedAppNames);
+  const newCandidates = nonExisting.filter(
+    (c) => !isBrandNavigationalCandidate(c.keyword, brandSegments),
+  );
+  const brandFiltered = nonExisting.length - newCandidates.length;
 
   if (newCandidates.length === 0) {
-    log.info("Autocomplete corpus expansion", { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors });
-    return { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors };
+    log.info("Autocomplete corpus expansion", {
+      added: 0,
+      seedsUsed: seeds.length,
+      attempted,
+      rateLimitErrors,
+      brandFiltered,
+    });
+    return { added: 0, seedsUsed: seeds.length, attempted, rateLimitErrors, brandFiltered };
   }
 
   const newRows: readonly KeywordSeedRow[] = newCandidates.map((c) => ({
@@ -426,10 +490,17 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
     seedsUsed: seeds.length,
     attempted,
     rateLimitErrors,
+    brandFiltered,
     // A small sample for observability — real user queries vs mined
     // fragments should be visually obvious in these (multi-word, natural
     // phrasing) vs the miner's n-grams.
     sample: newCandidates.slice(0, 5).map((c) => c.keyword),
   });
-  return { added: newRows.length, seedsUsed: seeds.length, attempted, rateLimitErrors };
+  return {
+    added: newRows.length,
+    seedsUsed: seeds.length,
+    attempted,
+    rateLimitErrors,
+    brandFiltered,
+  };
 }

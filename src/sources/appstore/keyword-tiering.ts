@@ -15,22 +15,38 @@
 //   Tier 1 — "priority, daily-guaranteed": ALL active seed/manual/
 //   autocomplete keywords, or any keyword with a row in
 //   `appstore_signature_hits` (any status), that haven't been scanned in
-//   `tier1StaleThresholdMs` (config, default 12h — see
-//   `appstoreKeywordGapConfigSchema` in `src/config/schema.ts`; this used to
-//   be a hardcoded `TIER1_STALE_THRESHOLD_MS` constant here, lifted into
-//   config as part of the 2026-07-21 audit's NOW-tier fixes). UNCAPPED as of
-//   the 2026-07-21 scan-budget retune (previously capped at
-//   `TIER1_MAX_BATCH_FRACTION` of the batch) — these are the keywords an
-//   operator actually cares about, and the whole point of the retune is that
-//   they get scanned EVERY day, not merely prioritized within a shrinking
-//   slice. This is safe without an explicit cap because tier 1 is
-//   self-limiting: once every eligible keyword has been scanned within the
-//   threshold window, the staleness gate empties tier 1 out until something
-//   goes stale again, so across a full day tier 1 can never consume more
-//   than (tier-1 pool size) scans total — bounded by the corpus's own
-//   seed/manual/autocomplete/signature-hit count, which is a small fraction
-//   of the overall corpus by design (mined keywords are explicitly NOT
-//   tier-1-eligible on their own).
+//   their OWN EFFECTIVE staleness threshold (config base
+//   `tier1StaleThresholdMs`, default 6h — see `appstoreKeywordGapConfigSchema`
+//   in `src/config/schema.ts`; this used to be a hardcoded
+//   `TIER1_STALE_THRESHOLD_MS` constant here, lifted into config as part of
+//   the 2026-07-21 audit's NOW-tier fixes). UNCAPPED as of the 2026-07-21
+//   scan-budget retune (previously capped at `TIER1_MAX_BATCH_FRACTION` of
+//   the batch) — these are the keywords an operator actually cares about,
+//   and the whole point of the retune is that they get scanned EVERY day,
+//   not merely prioritized within a shrinking slice. This is safe without an
+//   explicit cap because tier 1 is self-limiting: once every eligible
+//   keyword has been scanned within its own threshold window, the staleness
+//   gate empties tier 1 out until something goes stale again, so across a
+//   full day tier 1 can never consume more than (tier-1 pool size) scans
+//   total — bounded by the corpus's own seed/manual/autocomplete/
+//   signature-hit count, which is a small fraction of the overall corpus by
+//   design (mined keywords are explicitly NOT tier-1-eligible on their own).
+//
+//   PROMISE-TIERED CADENCE (Batch A budget rescue, 2026-07-22): "self-
+//   limiting" above assumed every tier-1 keyword deserved the SAME cadence —
+//   live measurement on 2026-07-21/22 found the tier-1 pool had grown to
+//   ~4,175 keywords (83% autocomplete), with 89% sitting at opportunity <
+//   0.1 (i.e. proven, repeatedly, to be dead brand/navigational terms), yet
+//   still consuming the SAME `tier1StaleThresholdMs` cadence as the rare
+//   real opportunity. `computeEffectiveStaleThreshold` bands each keyword's
+//   OWN threshold by its own recent opportunity: high-opportunity keywords
+//   keep the fast base cadence, low-opportunity ones back off (2x, then 8x
+//   once repeatedly proven dead), and a never-scanned keyword stays
+//   immediately eligible (exploration). This SQL-mirrors into
+//   `keyword-store.ts`'s `getStaleKeywordsTiered` (same convention as
+//   `isTier1Eligible` below — a pure, unit-tested TS function documenting
+//   the intended semantics, hand-mirrored as a CASE expression in SQL, since
+//   SQL cannot call back into TS at query time).
 //
 //   Mined exploration — capped by BOTH its own rolling daily quota
 //   (`minedExploration.dailyQuota` in config, tracked via
@@ -104,7 +120,6 @@ export function isTier1Eligible(
   return TIER1_ELIGIBLE_SOURCES.has(input.source) || input.hasActiveSignatureHit;
 }
 
-
 /**
  * This sweep's slice of the mined-exploration daily quota — see module doc
  * comment, "Mined exploration". Spreads `dailyQuota` evenly across the
@@ -130,4 +145,67 @@ export function computeMineSlots(
   perSweepCap: number,
 ): number {
   return Math.max(0, Math.min(remainingBatch, mineQuotaRemaining, perSweepCap));
+}
+
+// ---------------------------------------------------------------------------
+// Promise-tiered rescan cadence (Batch A budget rescue, 2026-07-22) — see
+// module doc comment above. Bands a tier-1 keyword's effective staleness
+// threshold by its own recent opportunity, instead of one flat
+// `tier1StaleThresholdMs` for the whole pool.
+// ---------------------------------------------------------------------------
+
+/** Opportunity at/above this keeps the FAST (base) band. */
+export const TIER1_HIGH_OPPORTUNITY = 0.4;
+
+/** Opportunity at/above this (but below `TIER1_HIGH_OPPORTUNITY`) gets the MID band (2x base). */
+export const TIER1_MID_OPPORTUNITY = 0.1;
+
+/** Multiplier applied to `baseMs` for the MID opportunity band. */
+export const TIER1_MID_MULTIPLIER = 2;
+
+/** Multiplier applied to `baseMs` for the SLOW (proven-dead) opportunity band — ~2 days at the 6h config default. */
+export const TIER1_SLOW_MULTIPLIER = 8;
+
+/** A keyword needs at least this many scans before it can be demoted to the SLOW band — one weak reading is not enough evidence. */
+export const TIER1_SLOW_BAND_MIN_SCANS = 2;
+
+/**
+ * A tier-1 keyword's effective staleness threshold (ms), banded by its own
+ * recent `opportunity` and `scanCount` against `baseMs`
+ * (`appstoreKeywordGap.tier1StaleThresholdMs`, the fast/base cadence):
+ *
+ *   - never scanned (`scanCount === 0`) -> `0` (immediately eligible —
+ *     exploration; the caller's own `last_scanned_at IS NULL` staleness
+ *     check already treats a never-scanned keyword as due regardless, so
+ *     this only matters for callers that read the threshold value itself).
+ *   - `opportunity >= TIER1_HIGH_OPPORTUNITY` -> `baseMs` (fast band,
+ *     regardless of scan count — a keyword that's ALREADY proven itself
+ *     doesn't need extra scans to earn the fast cadence).
+ *   - `opportunity >= TIER1_MID_OPPORTUNITY` -> `baseMs * TIER1_MID_MULTIPLIER`
+ *     (mid band).
+ *   - `opportunity < TIER1_MID_OPPORTUNITY` AND `scanCount >= TIER1_SLOW_BAND_MIN_SCANS`
+ *     -> `baseMs * TIER1_SLOW_MULTIPLIER` (slow band — repeatedly proven
+ *     weak, most of the tier-1 pool in practice; see module doc comment).
+ *   - `opportunity < TIER1_MID_OPPORTUNITY` but `scanCount < TIER1_SLOW_BAND_MIN_SCANS`
+ *     -> `baseMs * TIER1_MID_MULTIPLIER` (grace band — one weak reading
+ *     alone is not enough evidence to demote all the way to slow).
+ *
+ * Pure — no I/O, no Date. Callers apply two further adjustments this
+ * function does NOT know about on its own (see `keyword-store.ts`'s
+ * `getStaleKeywordsTiered` SQL, which hand-mirrors both): (a) a keyword with
+ * an active `appstore_signature_hits` row keeps the fast band regardless of
+ * opportunity, and (b) when the latest scan is `low_confidence`, the caller
+ * passes the RECENT-MAX opportunity instead of the latest reading, so one
+ * degraded read can't demote a real opportunity.
+ */
+export function computeEffectiveStaleThreshold(
+  opportunity: number,
+  scanCount: number,
+  baseMs: number,
+): number {
+  if (scanCount === 0) return 0;
+  if (opportunity >= TIER1_HIGH_OPPORTUNITY) return baseMs;
+  if (opportunity >= TIER1_MID_OPPORTUNITY) return baseMs * TIER1_MID_MULTIPLIER;
+  if (scanCount >= TIER1_SLOW_BAND_MIN_SCANS) return baseMs * TIER1_SLOW_MULTIPLIER;
+  return baseMs * TIER1_MID_MULTIPLIER;
 }

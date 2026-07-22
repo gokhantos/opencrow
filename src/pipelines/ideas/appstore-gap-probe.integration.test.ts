@@ -72,6 +72,7 @@ describe("appstoreGapProbe", () => {
       ],
       scannedAt: NOW,
       lowConfidence: false,
+      brandNavigational: false,
     });
 
     const out = await appstoreGapProbe.probe([KEYWORD], OPTS);
@@ -117,6 +118,7 @@ describe("appstoreGapProbe", () => {
       ],
       scannedAt: NOW - 3600 * 24 * 30, // 30 days older
       lowConfidence: false,
+      brandNavigational: false,
     });
 
     // Newer scan: above threshold, with different demand + a different
@@ -145,6 +147,7 @@ describe("appstoreGapProbe", () => {
       ],
       scannedAt: NOW,
       lowConfidence: false,
+      brandNavigational: false,
     });
 
     const out = await appstoreGapProbe.probe([DEDUP_KEYWORD], OPTS);
@@ -175,6 +178,7 @@ describe("appstoreGapProbe", () => {
       topApps: [],
       scannedAt: NOW,
       lowConfidence: false,
+      brandNavigational: false,
     });
 
     const out = await appstoreGapProbe.probe([KEYWORD], OPTS);

@@ -52,6 +52,15 @@ export interface DeactivationCandidate {
   readonly topApps: readonly TopApp[];
   /** Latest scan's `topAppReviews` — max reviews across the SERP. */
   readonly topAppReviews: number;
+  /**
+   * True iff the most recent `DEACTIVATION_MIN_SCANS` US-store scans (newest
+   * first) were ALL `brandNavigational` — bundled onto this candidate (the
+   * caller already fetches the same scan-history window for `scanCount`) so
+   * `shouldDeactivateBrandNavigationalKeyword` doesn't need a second DB
+   * round trip. Unused by `shouldDeactivateKeyword` itself; see
+   * `shouldDeactivateBrandNavigationalKeyword`'s own doc comment.
+   */
+  readonly recentScansAllBrandNavigational: boolean;
 }
 
 /**
@@ -119,4 +128,43 @@ export function shouldDeactivateMinedKeyword(candidate: MinedDeactivationCandida
   if (candidate.scanCount < DEACTIVATION_MIN_SCANS) return false;
   if (candidate.maxDemandEver >= MINED_DEACTIVATION_MAX_DEMAND_EVER) return false;
   return !candidate.hasSignatureHit;
+}
+
+// ---------------------------------------------------------------------------
+// Brand-navigational rule (Batch A budget rescue, 2026-07-22) — see
+// `keyword-brand.ts` module doc, layer 2. The general data-hopeless branch
+// above (`shouldDeactivateKeyword`) requires BOTH demand < `DEACTIVATION_MAX_DEMAND`
+// AND the field's biggest incumbent under `DEACTIVATION_MAX_REVIEWS_CEILING`
+// (1000) reviews — a brand-navigational keyword's SERP is dominated by
+// exactly the ONE incumbent the keyword names, so it routinely fails the
+// reviews ceiling (a real, if small, long-tail brand app) even though the
+// keyword itself will never surface a generic-demand opportunity. This rule
+// bypasses that ceiling entirely: it fires once the LAST `DEACTIVATION_MIN_SCANS`
+// US-store scans were ALL brand-navigational, regardless of demand or review
+// count. Applies to any non-protected source (`autocomplete`/`mined`/
+// `pipeline` in practice — `manual`/`seed` stay protected, same
+// `DEACTIVATION_PROTECTED_SOURCES` check as `shouldDeactivateKeyword`).
+// Evaluated in ADDITION to (never instead of) the other two rules — any one
+// firing is enough to deactivate.
+// ---------------------------------------------------------------------------
+
+export interface BrandNavigationalDeactivationCandidate {
+  readonly source: string;
+  /** Count of US-store scans this keyword has ever had (capped at `DEACTIVATION_MIN_SCANS` by the caller's history fetch — see `keyword-gaps.ts`'s `buildDeactivationCandidate`). */
+  readonly scanCount: number;
+  /** True iff the most recent `DEACTIVATION_MIN_SCANS` US-store scans (newest first) were ALL `brandNavigational`. */
+  readonly recentScansAllBrandNavigational: boolean;
+}
+
+/**
+ * True iff `candidate` is a non-protected-source keyword that has been
+ * scanned at least `DEACTIVATION_MIN_SCANS` times and whose most recent
+ * scans were ALL brand-navigational. Pure — no I/O.
+ */
+export function shouldDeactivateBrandNavigationalKeyword(
+  candidate: BrandNavigationalDeactivationCandidate,
+): boolean {
+  if (DEACTIVATION_PROTECTED_SOURCES.has(candidate.source)) return false;
+  if (candidate.scanCount < DEACTIVATION_MIN_SCANS) return false;
+  return candidate.recentScansAllBrandNavigational;
 }

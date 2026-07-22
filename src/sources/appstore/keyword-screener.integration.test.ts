@@ -96,6 +96,7 @@ function makeScan(
     topApps: textbookApps(),
     scannedAt: now,
     lowConfidence: false,
+    brandNavigational: false,
     ...overrides,
   };
 }
