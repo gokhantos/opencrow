@@ -1142,8 +1142,13 @@ export const appstoreKeywordGapConfigSchema = z
     // pool cadence aimed for, just without the wedge.
     deStorefrontLane: z
       .object({
-        // Master switch. Default ON.
-        enabled: z.boolean().default(true),
+        // Master switch. Default OFF (2026-07-23): the DE storefront lane was
+        // a monolithic pass that wedged `keywordSweepRunning` and monopolized
+        // the sweep tick, starving the US high-volume lane and preventing the
+        // adaptive throttle from ever completing a tick to advance — and DE
+        // demand evidence is unused/contaminating (store-predicate defects).
+        // Re-enable per-storefront only with a chunked, non-wedging pass.
+        enabled: z.boolean().default(false),
         // Minimum gap between DE-lane passes — its own cadence, decoupled
         // from the ~1min scan-sweep timer. Was 24h ("a daily pass"), then 12h
         // (2026-07-21 capacity-raise escalation), each time assuming ONE pass
@@ -1343,7 +1348,7 @@ export const appstoreKeywordGapConfigSchema = z
     },
     minedExploration: { dailyQuota: 100_000 },
     deStorefrontLane: {
-      enabled: true,
+      enabled: false,
       minIntervalMs: 25 * 60 * 1000,
       delayMs: 1000,
       deChunkSize: 150,
