@@ -62,8 +62,18 @@ export const MIN_ATTEMPTED_FOR_TRIP = 8;
  */
 export const THROTTLE_BACKOFF_FACTOR = 0.5;
 
-/** Floor on the throttle multiplier — repeated trips can back off at most this far (1/8th rate), never fully stall the sweep. */
-export const MIN_THROTTLE_MULTIPLIER = 0.125;
+/**
+ * Floor on the throttle multiplier — repeated trips can back off at most this
+ * far, never fully stalling the sweep. Lowered 1/8 -> 1/32 (2026-07-23): at
+ * the old 1/8 floor the clamped batch (base 600 -> 75) still exceeded a single
+ * direct Apple IP's sustainable rate, so the AIMD pinned at the floor with
+ * ~50% of every sweep still 403'd for hours — the floor, not the algorithm,
+ * was the binding constraint. 1/32 (batch ~19 at base 600) gives three more
+ * halving steps (75 -> 37 -> 19) to find the clean level. Overridable via
+ * `appstoreKeywordGap.sweepRateSafety.throttleMinMultiplier` so the floor can
+ * be retuned live (e.g. to 1/64) without a redeploy if Apple's ceiling shifts.
+ */
+export const MIN_THROTTLE_MULTIPLIER = 0.03125;
 
 /**
  * Consecutive under-threshold sweeps required before each gradual recovery
@@ -150,6 +160,8 @@ export interface ThrottleParams {
   readonly recoveryStep?: number;
   /** Consecutive clean sweeps required per recovery step. Defaults to `THROTTLE_HOLD_SWEEPS`. */
   readonly holdSweeps?: number;
+  /** Floor the multiplier can back off to on repeated trips. Defaults to `MIN_THROTTLE_MULTIPLIER`. */
+  readonly minMultiplier?: number;
 }
 
 /**
@@ -180,12 +192,13 @@ export function advanceThrottle(
   const backoffFactor = params.backoffFactor ?? THROTTLE_BACKOFF_FACTOR;
   const recoveryStep = params.recoveryStep ?? THROTTLE_RECOVERY_STEP;
   const holdSweeps = params.holdSweeps ?? THROTTLE_HOLD_SWEEPS;
+  const minMultiplier = params.minMultiplier ?? MIN_THROTTLE_MULTIPLIER;
   const errorRate = computeErrorRate(outcome.rateLimitErrors, outcome.attempted);
   const canTrip = outcome.attempted >= MIN_ATTEMPTED_FOR_TRIP;
 
   if (canTrip && errorRate >= THROTTLE_ERROR_RATE_THRESHOLD) {
     return {
-      multiplier: Math.max(MIN_THROTTLE_MULTIPLIER, state.multiplier * backoffFactor),
+      multiplier: Math.max(minMultiplier, state.multiplier * backoffFactor),
       sweepsSinceChange: 0,
       throttled: true,
     };
