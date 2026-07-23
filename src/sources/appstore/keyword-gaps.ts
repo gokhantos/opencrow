@@ -21,7 +21,6 @@ import type {
   MinedDeactivationCandidate,
   AutocompleteHintDeactivationCandidate,
 } from "./keyword-deactivation";
-import { computePerSweepCap } from "./keyword-tiering";
 import {
   classifyTrend,
   computeCompetitiveness,
@@ -944,7 +943,6 @@ export async function runKeywordSweep(opts: {
     minedExploration,
     tier1StaleThresholdMs,
     tier1AutocompleteCap,
-    scanIntervalMs,
     deepScanMined,
     sweepRateSafety,
   } = loadConfig().appstoreKeywordGap;
@@ -972,20 +970,29 @@ export async function runKeywordSweep(opts: {
   const minedScansLast24h = await countMinedScansSince(since);
   const mineQuotaRemaining = Math.max(0, minedExploration.dailyQuota - minedScansLast24h);
 
-  // Per-sweep slice of the mined quota (2026-07-21 audit NOW-tier fix, item
-  // A): without this, `getStaleKeywordsTiered`'s greedy fill lets a single
-  // LIGHT sweep (small hot+tier1 lanes) spend the WHOLE day's remaining
-  // mined quota in one cycle, starving every later sweep of the day of any
-  // mined slots at all. Spreads the quota evenly across the ~86_400_000 /
-  // scanIntervalMs sweeps expected per day instead.
-  const perSweepCap = computePerSweepCap(minedExploration.dailyQuota, scanIntervalMs);
+  // Continuous fetch (2026-07-23): this used to be a per-sweep PACING slice
+  // of the mined quota (`ceil(dailyQuota * scanIntervalMs / 86_400_000)`,
+  // ~70/sweep at the current default) — see keyword-tiering.ts's module doc,
+  // "Mined exploration", for the full before/after. That pacing was the
+  // actual mechanism producing idle sweeps: with a mined backlog (never-
+  // scanned keywords) far larger than any single sweep's batch, the paced
+  // cap left most of the batch unfilled once hot+tier1 ran out, so the
+  // process idled between sweeps rather than fetching continuously. There is
+  // no daily-quota-derived ceiling here anymore — `perSweepCap` is simply
+  // this cycle's own (already throttle-adjusted) batch limit, i.e. no
+  // ADDITIONAL cap beyond the batch itself. The lanes that actually regulate
+  // volume now are `dailyKeywordBudget` (rolling-24h ceiling, checked above),
+  // `mineQuotaRemaining` (mined's own rolling quota, below), and the adaptive
+  // `sweepThrottleState` upstream in scraper.ts, which shrinks `opts.limit`
+  // itself (and therefore this ceiling too) once Apple starts 429ing.
+  const perSweepCap = opts.limit;
 
   // Priority re-scan lanes (see keyword-tiering.ts): the hot lane (open
   // signature hits, stale >6h) and tier 1 (ALL due seed/manual/autocomplete/
   // signature-hit keywords) fill first (both effectively uncapped by this
   // cycle's batch — hot has its own small fixed cap), then mined exploration
-  // fills whatever's left of the batch, capped by both its own daily quota
-  // and this sweep's `perSweepCap` slice of it.
+  // fills whatever's left of the batch — every cycle, not paced across the
+  // day — capped only by its own rolling daily quota (`mineQuotaRemaining`).
   const tiered = await getStaleKeywordsTiered({
     batchLimit: opts.limit,
     mineQuotaRemaining,

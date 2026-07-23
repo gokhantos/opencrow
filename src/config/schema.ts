@@ -582,22 +582,33 @@ export const redditCorpusConfigSchema = z
 // * 3600 / 360 ≈ 6,000/hour ≈ 144,000/day theoretical ceiling for the
 // combined hot+tier1+mined batch if every sweep filled all 600 slots. Real
 // daily volume is lower than that ceiling in practice — hot/tier1 are
-// self-limiting to their own due-staleness pools (typically well under 600),
-// and mined is separately capped at 70/sweep by its own quota-derived cap
-// regardless of how much batch headroom exists — but both pools are no
-// longer crowded out of the batch the way they were at `keywordsPerSweep` =
-// 75, which is what actually unlocks them. Plus the DE storefront lane's own
-// ~8,640/day (chunked, unchanged by this pass — see `deStorefrontLane`).
-// Net: a multi-x lift over the ~18k/day observed before this pass, still
-// proxy-backed and throttle-guarded (`sweepRateSafety.adaptiveThrottleEnabled`
-// halves the effective batch size on a real Apple 429 spike; the
-// `legacyRateOverride` kill-switch reverts to the pre-throughput-bump 25/2000ms
-// rate unconditionally) — see `sweep-throttle.ts`. Against the ~120k-keyword
-// active corpus at the time of this pass, throughput beyond a roughly daily
-// full-corpus pass buys FASTER RE-OBSERVATION (fresher demand/velocity
-// signal on already-known keywords), not more first-time coverage — there is
-// no more "new" corpus to discover into once a day's sweep volume clears the
-// corpus size.
+// self-limiting to their own due-staleness pools (typically well under 600).
+//
+// ─── CONTINUOUS FETCH (2026-07-23) ──────────────────────────────────────────
+// This pass ALSO derived a per-sweep pacing cap on mined exploration from
+// `minedExploration.dailyQuota`/`scanIntervalMs` (~70/sweep at the defaults
+// above), spreading it evenly across the sweeps a nominal cadence implies.
+// Live measurement found that pacing WAS the idle-sweep mechanism: with a
+// mined backlog (never-scanned keywords, ~120k of them) that vastly exceeds
+// any single sweep's batch, the paced cap left most of a 600-keyword batch
+// unfilled once hot+tier1 ran out — the process fetched a small "due" slice
+// each cycle, then sat idle until keywords went stale again, rather than
+// continuously fetching. `computePerSweepCap` (keyword-tiering.ts) is
+// retired; `keyword-gaps.ts`'s `runKeywordSweep` now passes this cycle's own
+// batch limit as the mined ceiling, so mined exploration fills the WHOLE
+// remaining batch every cycle whenever the backlog supports it (see
+// `minedExploration.dailyQuota`'s own doc comment below). The adaptive
+// throttle (`sweepRateSafety` below, `sweep-throttle.ts`) is now the primary
+// regulator instead of idle gaps: it backs off on a real 429 spike
+// (`throttleBackoffFactor`) and recovers gradually once errors clear
+// (`throttleRecoveryStep`), so the sustained rate settles just under Apple's
+// real ceiling rather than the idle-paced ~18-36k/day observed before this
+// retune. Plus the DE storefront lane's own ~8,640/day (chunked, unchanged —
+// see `deStorefrontLane`). Against the ~120k-keyword active corpus at the
+// time of this pass, throughput beyond a roughly daily full-corpus pass buys
+// FASTER RE-OBSERVATION (fresher demand/velocity signal on already-known
+// keywords), not more first-time coverage — there is no more "new" corpus to
+// discover into once a day's sweep volume clears the corpus size.
 export const appstoreKeywordGapConfigSchema = z
   .object({
     // Master switch. Default ON.
@@ -1001,8 +1012,39 @@ export const appstoreKeywordGapConfigSchema = z
         // for an immediate, unambiguous revert if the higher rate ever
         // causes real trouble with Apple's endpoints. Default OFF.
         legacyRateOverride: z.boolean().default(false),
+        // AIMD tuning (continuous-fetch retune, 2026-07-23): with mined
+        // exploration no longer paced by idle gaps (see `keywordsPerSweep`'s
+        // module doc / keyword-tiering.ts), the adaptive throttle is now the
+        // ONLY thing standing between "continuously fetch" and "continuously
+        // hammer Apple past its real ceiling" — it needs to both back off
+        // hard on a real 429 spike (multiplicative decrease,
+        // `throttleBackoffFactor`) AND climb back up once errors clear
+        // (additive increase, `throttleRecoveryStep`, gated by
+        // `THROTTLE_HOLD_SWEEPS` clean sweeps — see `sweep-throttle.ts`'s
+        // `advanceThrottle`) so the sustained rate settles just under
+        // Apple's actual ceiling instead of staying backed off forever.
+        // Multiplied into the CURRENT multiplier each trip (floored at
+        // `MIN_THROTTLE_MULTIPLIER`), so repeated trips keep backing off
+        // further. 0.5 (unchanged from the pre-AIMD-knob default) halves the
+        // rate per trip.
+        throttleBackoffFactor: z.number().min(0.05).max(0.95).default(0.5),
+        // Added to the multiplier per recovery step once
+        // `THROTTLE_HOLD_SWEEPS` consecutive sweeps have stayed under the
+        // error-rate threshold (clamped at 1.0). Raised from the pre-knob
+        // 0.15 default to 0.25 (alongside `sweep-throttle.ts`'s
+        // `THROTTLE_HOLD_SWEEPS` default dropping 5 -> 3) so a throttled-down
+        // sweep probes back toward the configured rate over a handful of
+        // minutes rather than the ~30min-to-hours it took at the old
+        // defaults once sweeps stopped being idle-paced — see
+        // `sweep-throttle.ts`'s module doc for the recovery-time math.
+        throttleRecoveryStep: z.number().min(0.01).max(1).default(0.25),
       })
-      .default({ adaptiveThrottleEnabled: true, legacyRateOverride: false }),
+      .default({
+        adaptiveThrottleEnabled: true,
+        legacyRateOverride: false,
+        throttleBackoffFactor: 0.5,
+        throttleRecoveryStep: 0.25,
+      }),
     // ─── Mined exploration quota (2026-07-21 scan-budget retune) ───────────
     // Measured 2026-07-21: 97.9% of the ~36k daily SERP scans went to the
     // `source: 'mined'` pool (114,656 keywords), which had produced 304
@@ -1026,32 +1068,40 @@ export const appstoreKeywordGapConfigSchema = z
         // the binding constraint before that one does).
         //
         // IMPORTANT — this quota being large does NOT mean the mined lane
-        // drains 100,000/day on its own; the ACTUAL per-sweep governor is
+        // drains 100,000/day on its own; `dailyKeywordBudget` above is the
+        // real whole-corpus ceiling. Live 2026-07-21/22 diagnosis found the
+        // mined lane's bottleneck wasn't this quota at all — at
+        // `keywordsPerSweep` = 75, the hot lane (≤50) plus tier 1 (uncapped,
+        // and `tier1AutocompleteCap` = 50 alone could exceed the whole
+        // 75-slot batch) routinely crowded mined out of the batch entirely
+        // (observed: ~30,000 quota, only ~1,944 actually spent in a rolling
+        // 24h window — 93% unused). Raising `keywordsPerSweep` to 600 is what
+        // relieves that crowding.
+        //
+        // CONTINUOUS FETCH (2026-07-23): from 2026-07-21 to 2026-07-22 the
+        // per-sweep governor was ADDITIONALLY paced —
         // `computePerSweepCap(dailyQuota, scanIntervalMs)` in
         // `keyword-tiering.ts` (`ceil(dailyQuota * scanIntervalMs /
-        // 86_400_000)`), which spreads the quota evenly across the sweeps a
-        // NOMINAL `scanIntervalMs` cadence implies (86,400,000 / 60,000 =
-        // 1,440/day) — at the new 100,000 quota that's
-        // `ceil(100,000 * 60,000 / 86,400,000)` = 70 mined slots/sweep (was
-        // 21/sweep at the old 30,000 quota — a >3x lift on its own). Live
-        // 2026-07-21/22 diagnosis found the mined lane's REAL bottleneck
-        // wasn't even this cap — at `keywordsPerSweep` = 75, the hot lane
-        // (≤50) plus tier 1 (uncapped, and `tier1AutocompleteCap` = 50 alone
-        // could exceed the whole 75-slot batch) routinely crowded mined out
-        // of the batch entirely before this per-sweep cap ever bound
-        // (observed: ~30,000 quota, only ~1,944 actually spent in a rolling
-        // 24h window — 93% unused). Raising `keywordsPerSweep` to 600 above
-        // is what actually relieves that crowding (600 - hot - tier1 leaves
-        // ample room for a 70-slot mined draw most sweeps); THIS quota raise
-        // is what makes that headroom worth something once it's no longer
-        // starved. Even so, 70/sweep times the real (single-flight-bounded,
-        // not nominal) sweep cadence is very unlikely to fully drain 100,000
-        // in a day — that slack is intentional so `dailyKeywordBudget` stays
-        // the binding ceiling, never this quota. Monitor
+        // 86_400_000)`) spread this quota evenly across the sweeps a nominal
+        // `scanIntervalMs` cadence implies, yielding ~70 mined slots/sweep at
+        // this 100,000 default. That pacing turned out to BE the idle-sweep
+        // mechanism: with a mined backlog (never-scanned keywords) far
+        // larger than any single sweep's batch, the ~70/sweep cap left most
+        // of a 600-keyword batch unfilled once hot+tier1 ran out, so the
+        // process idled between sweeps instead of continuously fetching.
+        // `computePerSweepCap` is retired — `keyword-gaps.ts`'s
+        // `runKeywordSweep` now passes `perSweepCap = opts.limit` (this
+        // cycle's own batch size), so mined exploration fills the WHOLE
+        // remaining batch every cycle whenever the backlog supports it. This
+        // rolling quota (and `dailyKeywordBudget`) remain the real ceilings —
+        // along with `sweepRateSafety`'s adaptive throttle, which now also
+        // AIMD-recovers (see `throttleRecoveryStep`/`throttleBackoffFactor`
+        // above and `sweep-throttle.ts`) so the sustained rate settles just
+        // under Apple's real ceiling rather than staying backed off. Monitor
         // `keywordSweepTick`'s logged `mineQuotaRemaining` after deploy; if
-        // it consistently sits near 100,000 (still mostly unused) the next
-        // lever is `scanIntervalMs`'s role in this formula, not another
-        // blind quota raise.
+        // it consistently sits near 100,000 (mostly unused) even with
+        // continuous fill, the corpus's real never-scanned mined backlog has
+        // likely shrunk below what one day's quota can absorb.
         dailyQuota: z.number().int().min(0).max(100_000).default(100_000),
       })
       .default({ dailyQuota: 100_000 }),
@@ -1273,7 +1323,12 @@ export const appstoreKeywordGapConfigSchema = z
         useProxy: false,
       },
     },
-    sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
+    sweepRateSafety: {
+      adaptiveThrottleEnabled: true,
+      legacyRateOverride: false,
+      throttleBackoffFactor: 0.5,
+      throttleRecoveryStep: 0.25,
+    },
     minedExploration: { dailyQuota: 100_000 },
     deStorefrontLane: {
       enabled: true,

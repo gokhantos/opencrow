@@ -292,8 +292,9 @@ export function createAppStoreScraper(config?: {
   // the end of the tick. This (a) weights the error rate by real request
   // volume — a single low-volume lane's one-off 429 can no longer halve the
   // rate for the main SERP sweep — and (b) makes one "sweep" equal one TICK,
-  // so `THROTTLE_HOLD_SWEEPS` (5) again means ~5 ticks of recovery hold rather
-  // than being burned through by ~10 per-lane advances inside a single tick.
+  // so `THROTTLE_HOLD_SWEEPS` again means that many ticks of recovery hold
+  // rather than being burned through by ~10 per-lane advances inside a
+  // single tick.
   // Reset at the top of each tick; safe as closure-level state because the
   // `keywordSweepRunning` single-flight guard means only one tick runs at a
   // time. Tradeoff (documented, acceptable): lanes read the throttle
@@ -741,6 +742,12 @@ export function createAppStoreScraper(config?: {
           effectiveKeywordsPerSweep: keywordsPerSweep,
           effectiveDelayMs: delayMs,
           mineQuotaRemaining: result.mineQuotaRemaining,
+          // Continuous fetch (2026-07-23): with mined exploration filling the
+          // whole batch every cycle, this multiplier — not idle gaps — is
+          // the thing regulating sustained throughput. Logged every sweep
+          // (not just on a state change) so it's watchable in real time as
+          // it AIMD-probes toward Apple's ceiling.
+          throttleMultiplier: sweepThrottleState.multiplier,
         });
 
         // Adaptive throttle (B1): accumulate this sweep's outcome into the
@@ -839,14 +846,21 @@ export function createAppStoreScraper(config?: {
       // B1: single end-of-tick throttle advance — fold every lane's
       // accumulated (rateLimitErrors, attempted) into the shared throttle
       // ONCE. This weights the error rate by real request volume and makes
-      // one "sweep" = one tick (restoring the ~5-min recovery hold that
-      // THROTTLE_HOLD_SWEEPS assumes). Gated exactly as the old per-lane
-      // blocks were: only under adaptive throttling, and never under the hard
-      // kill-switch (a fixed, known-safe rate with no automation).
+      // one "sweep" = one tick (restoring the multi-minute recovery hold
+      // that THROTTLE_HOLD_SWEEPS assumes). Gated exactly as the old
+      // per-lane blocks were: only under adaptive throttling, and never
+      // under the hard kill-switch (a fixed, known-safe rate with no
+      // automation). AIMD step sizes (continuous-fetch pass, 2026-07-23) are
+      // config-driven — see `sweepRateSafety.throttleBackoffFactor` /
+      // `throttleRecoveryStep` in src/config/schema.ts and
+      // `sweep-throttle.ts`'s `advanceThrottle`.
       if (cfg.sweepRateSafety.adaptiveThrottleEnabled && !cfg.sweepRateSafety.legacyRateOverride) {
         const wasThrottled = sweepThrottleState.throttled;
         const prevMultiplier = sweepThrottleState.multiplier;
-        sweepThrottleState = advanceThrottle(sweepThrottleState, tickThrottle);
+        sweepThrottleState = advanceThrottle(sweepThrottleState, tickThrottle, {
+          backoffFactor: cfg.sweepRateSafety.throttleBackoffFactor,
+          recoveryStep: cfg.sweepRateSafety.throttleRecoveryStep,
+        });
         const errorRate = computeErrorRate(tickThrottle.rateLimitErrors, tickThrottle.attempted);
 
         if (!wasThrottled && sweepThrottleState.throttled) {

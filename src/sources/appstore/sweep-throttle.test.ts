@@ -164,6 +164,54 @@ describe("advanceThrottle", () => {
       });
     });
   });
+
+  // Continuous fetch (2026-07-23): AIMD step sizes are now caller-tunable
+  // (`ThrottleParams`, wired from `appstoreKeywordGap.sweepRateSafety.
+  // throttleBackoffFactor`/`throttleRecoveryStep` in production — see
+  // scraper.ts) so the throttle can be tuned to probe closer to (or further
+  // from) Apple's real ceiling without a code change.
+  describe("ThrottleParams overrides", () => {
+    it("omitted params fall back to the module's own constants (backward compatible)", () => {
+      const tripped = advanceThrottle(INITIAL_THROTTLE_STATE, tick(1, 100), {});
+      expect(tripped.multiplier).toBe(THROTTLE_BACKOFF_FACTOR);
+    });
+
+    it("a custom backoffFactor overrides THROTTLE_BACKOFF_FACTOR on trip", () => {
+      const tripped = advanceThrottle(INITIAL_THROTTLE_STATE, tick(1, 100), {
+        backoffFactor: 0.9,
+      });
+      expect(tripped.multiplier).toBeCloseTo(0.9, 10);
+    });
+
+    it("a custom recoveryStep overrides THROTTLE_RECOVERY_STEP once the hold clears", () => {
+      let state: ThrottleState = advanceThrottle(INITIAL_THROTTLE_STATE, tick(1, 100)); // trip -> 0.5
+      // Custom holdSweeps of 1: the very next clean tick recovers.
+      state = advanceThrottle(state, CLEAN, { recoveryStep: 0.4, holdSweeps: 1 });
+      expect(state.multiplier).toBeCloseTo(0.9, 10);
+      expect(state.sweepsSinceChange).toBe(0);
+    });
+
+    it("a custom holdSweeps shortens (or lengthens) the recovery hold independent of the module default", () => {
+      let state: ThrottleState = advanceThrottle(INITIAL_THROTTLE_STATE, tick(1, 100)); // trip -> 0.5
+      // holdSweeps: 1 means the very next clean sweep recovers, instead of
+      // waiting for THROTTLE_HOLD_SWEEPS (3) clean sweeps.
+      state = advanceThrottle(state, CLEAN, { holdSweeps: 1 });
+      expect(state.multiplier).toBeGreaterThan(0.5);
+      expect(state.sweepsSinceChange).toBe(0);
+    });
+
+    it("a full backoff/recovery cycle with custom params reaches full rate in the expected number of steps", () => {
+      // backoffFactor 0.5 (trip -> 0.5), recoveryStep 0.5, holdSweeps 1: one
+      // clean sweep after the trip should recover exactly to 1.0.
+      let state: ThrottleState = advanceThrottle(INITIAL_THROTTLE_STATE, tick(1, 100), {
+        backoffFactor: 0.5,
+      });
+      expect(state.multiplier).toBeCloseTo(0.5, 10);
+      state = advanceThrottle(state, CLEAN, { recoveryStep: 0.5, holdSweeps: 1 });
+      expect(state.multiplier).toBeCloseTo(1, 10);
+      expect(state.throttled).toBe(false);
+    });
+  });
 });
 
 describe("computeEffectiveSweepRate", () => {
