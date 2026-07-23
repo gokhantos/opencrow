@@ -517,13 +517,16 @@ describe("runKeywordSweep", () => {
   // defaults). 2026-07-21 audit NOW-tier fixes set tier1StaleThresholdMs =
   // 12h, minedExploration.dailyQuota = 20_000. The 2026-07-21 capacity-raise
   // escalation (post PR #328, Webshare proxy now paid/armed) halved
-  // tier1StaleThresholdMs again to 6h and raised dailyQuota to 30_000.
-  // scanIntervalMs = 60_000 (1 min) -> perSweepCap =
-  // ceil(30_000 * 60_000 / 86_400_000) = 21. tier1AutocompleteCap = 50
-  // (Batch A budget rescue, 2026-07-22 structural guard default).
+  // tier1StaleThresholdMs again to 6h and raised dailyQuota to 30_000. The
+  // 2026-07-22 max-throughput pass raised dailyQuota again, 30_000 -> 100_000
+  // (see schema.ts's "MAX-THROUGHPUT PASS" comment). scanIntervalMs = 60_000
+  // (1 min, unchanged) -> perSweepCap = ceil(100_000 * 60_000 / 86_400_000) =
+  // 70 (was 21 at the old 30_000 quota). tier1AutocompleteCap = 50 (Batch A
+  // budget rescue, 2026-07-22 structural guard default, unchanged by the
+  // throughput pass).
   const DEFAULT_TIER1_STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
-  const DEFAULT_MINE_DAILY_QUOTA = 30_000;
-  const DEFAULT_PER_SWEEP_CAP = 21;
+  const DEFAULT_MINE_DAILY_QUOTA = 100_000;
+  const DEFAULT_PER_SWEEP_CAP = 70;
   const DEFAULT_TIER1_AUTOCOMPLETE_CAP = 50;
 
   beforeEach(() => {
@@ -619,9 +622,10 @@ describe("runKeywordSweep", () => {
       markScanned: async (keywords: readonly string[], at: number) => {
         markScannedCalls.push({ keywords, at });
       },
-      // Default config's dailyKeywordBudget is 60_000 — return a count that
-      // already meets it so the sweep must skip.
-      countScansSince: async () => 60_000,
+      // Default config's dailyKeywordBudget is 150_000 (max-throughput pass,
+      // 2026-07-22) — return a count that already meets it so the sweep must
+      // skip.
+      countScansSince: async () => 150_000,
     }));
 
     const { runKeywordSweep } = await import("./keyword-gaps");
@@ -653,8 +657,9 @@ describe("runKeywordSweep", () => {
         staleKeywordsTieredCalls.push(opts);
         return [];
       },
-      // Default config's minedExploration.dailyQuota is 30_000.
-      countMinedScansSince: async () => 29_990,
+      // Default config's minedExploration.dailyQuota is 100_000
+      // (max-throughput pass, 2026-07-22).
+      countMinedScansSince: async () => 99_990,
     }));
 
     const { runKeywordSweep } = await import("./keyword-gaps");

@@ -545,6 +545,59 @@ export const redditCorpusConfigSchema = z
 // per-cycle spend but a rolling 24h safety ceiling: if the corpus has
 // already been scanned that many times in the last 24h, a sweep cycle is
 // skipped rather than spending more lookups.
+//
+// ─── MAX-THROUGHPUT PASS (2026-07-22) ──────────────────────────────────────
+// Diagnosis: prior raises (`dailyKeywordBudget`, `minedExploration.dailyQuota`)
+// lifted CEILINGS while daily keyword-scan volume stayed flat at ~18k/day —
+// live sweep logs showed `effectiveKeywordsPerSweep: 75`,
+// `effectiveDelayMs: 1000`, `mineQuotaRemaining: 28,056/30,000` (93% of the
+// mined quota unused). The ceilings were never the governor; `keywordsPerSweep`
+// / `sweepDelayMs` (this sweep's actual per-cycle batch size + inter-request
+// pace, both consumed by `scraper.ts`'s `keywordSweepTick` via
+// `sweep-throttle.ts`'s `computeEffectiveSweepRate`) were. Root cause of the
+// mined-quota waste specifically: at `keywordsPerSweep` = 75, the hot lane
+// (≤50/sweep) plus tier 1 (uncapped; `tier1AutocompleteCap` alone = 50) could
+// already exceed the whole batch, crowding the mined lane out of most sweeps
+// before its OWN per-sweep cap (`computePerSweepCap` in `keyword-tiering.ts`)
+// ever bound.
+//
+// This pass raises the actual governors: `keywordsPerSweep` 75 -> 600,
+// `sweepDelayMs` 1000ms -> 150ms (safe now that this lane is proxy-backed —
+// per-request IP rotation via the paid Webshare proxy, `useProxy` below,
+// removes the per-IP 429 ceiling that motivated the old conservative pace),
+// `minedExploration.dailyQuota` 30,000 -> 100,000 (which also lifts its
+// derived per-sweep cap from 21 to 70 mined slots/sweep — see that field's
+// own doc comment for the full math), and `dailyKeywordBudget` 60,000 ->
+// 150,000 so the raised governors have ceiling headroom to actually operate
+// under rather than tripping the safety cap. `useProxy` is also flipped ON
+// for `appstoreAppEnrichment` and `appstoreNewbornReobservation` (previously
+// the only two remaining appstore lanes still direct-IP by default) for
+// consistency with every other high-volume lane.
+//
+// Projected math (batch-capacity ceiling, same methodology as
+// `keywordsPerSweep`'s own doc comment): at 600 keywords/sweep and an assumed
+// ~400ms average iTunes latency on top of the 150ms configured delay, one
+// sweep takes 600 * 0.55s ≈ 330s, which the `scanIntervalMs` = 60s
+// single-flight guard rounds up to a 360s (6-minute) effective cadence — 600
+// * 3600 / 360 ≈ 6,000/hour ≈ 144,000/day theoretical ceiling for the
+// combined hot+tier1+mined batch if every sweep filled all 600 slots. Real
+// daily volume is lower than that ceiling in practice — hot/tier1 are
+// self-limiting to their own due-staleness pools (typically well under 600),
+// and mined is separately capped at 70/sweep by its own quota-derived cap
+// regardless of how much batch headroom exists — but both pools are no
+// longer crowded out of the batch the way they were at `keywordsPerSweep` =
+// 75, which is what actually unlocks them. Plus the DE storefront lane's own
+// ~8,640/day (chunked, unchanged by this pass — see `deStorefrontLane`).
+// Net: a multi-x lift over the ~18k/day observed before this pass, still
+// proxy-backed and throttle-guarded (`sweepRateSafety.adaptiveThrottleEnabled`
+// halves the effective batch size on a real Apple 429 spike; the
+// `legacyRateOverride` kill-switch reverts to the pre-throughput-bump 25/2000ms
+// rate unconditionally) — see `sweep-throttle.ts`. Against the ~120k-keyword
+// active corpus at the time of this pass, throughput beyond a roughly daily
+// full-corpus pass buys FASTER RE-OBSERVATION (fresher demand/velocity
+// signal on already-known keywords), not more first-time coverage — there is
+// no more "new" corpus to discover into once a day's sweep volume clears the
+// corpus size.
 export const appstoreKeywordGapConfigSchema = z
   .object({
     // Master switch. Default ON.
@@ -561,23 +614,31 @@ export const appstoreKeywordGapConfigSchema = z
     // hardcoded 2000ms shared with the ranking scraper's own per-app calls
     // (`REQUEST_DELAY_MS` in scraper.ts) — split out so the sweep's rate can
     // be tuned (and adaptively throttled — see `sweepRateSafety` below)
-    // independent of the ranking scraper. Lowered default to 1000ms as part
-    // of the ~3x sweep-throughput increase (see `keywordsPerSweep` below).
-    sweepDelayMs: z.number().int().min(100).max(10_000).default(1000),
+    // independent of the ranking scraper. MAX-THROUGHPUT PASS (2026-07-22):
+    // lowered 1000ms -> 150ms. This lane is now proxy-backed
+    // (`useProxy` below, per-request IP rotation via Webshare — see
+    // `appstore-proxy.ts`), so the per-IP rate-limit ceiling that motivated
+    // the old, conservative 1000ms no longer binds — 150ms is the delay
+    // floor's next-cheapest step (schema `min(100)`) that still leaves a
+    // visible per-request pace for `sweepRateSafety`'s adaptive throttle to
+    // read a meaningful error-rate signal from before backing off further.
+    // See `keywordsPerSweep` below for the full daily-volume projection.
+    sweepDelayMs: z.number().int().min(100).max(10_000).default(150),
     // How many keyword scans may be spent per rolling 24h window — a safety
     // ceiling, not a per-cycle spend. Enforced against a live count of
     // `appstore_keyword_scans` rows from the last 24h (tier1 + mined + the
     // DE storefront lane below all write through the same table, so all
     // three count toward this one ceiling — see `keyword-store.ts`'s
     // `countScansSince`); a sweep cycle is skipped once the ceiling is
-    // reached. Raised (was 40_000/50_000 max) to cover the higher sustained
-    // rate: ~2,250/hr * 24h ≈ 54,000/day theoretical — see `keywordsPerSweep`
-    // below. Left at 60,000 during the 2026-07-21 capacity-raise escalation
-    // (`minedExploration.dailyQuota` 20k->30k + `deStorefrontLane` 24h->12h
-    // cadence): projected new total ≈ 33.4k/day (tier1 ~1,135 + mined 30,000
-    // + DE storefront ~2,270), still ~45% under this ceiling — no need to
-    // raise it yet. Revisit if `countScansSince` starts approaching 60,000.
-    dailyKeywordBudget: z.number().int().min(1).max(100_000).default(60_000),
+    // reached. MAX-THROUGHPUT PASS (2026-07-22): raised 60,000 -> 150,000
+    // (max ceiling 100,000 -> 200,000 to leave headroom above the new
+    // default) alongside `keywordsPerSweep` 75->600 and `sweepDelayMs`
+    // 1000ms->150ms below and `minedExploration.dailyQuota` 30,000->100,000.
+    // This IS a ceiling, not a governor — see those fields' own doc comments
+    // for the real per-sweep/per-day math; this value only needs to sit
+    // above whatever that math projects so it never becomes the binding
+    // constraint. Revisit if `countScansSince` starts approaching 150,000.
+    dailyKeywordBudget: z.number().int().min(1).max(200_000).default(150_000),
     // Throughput wave (2026-07-21), item 1: routes this lane's iTunes
     // Search API calls (tier1 + mined SERP scan, AND the DE storefront lane
     // below — both go through `keyword-gaps.ts`'s `fetchTopApps`) through
@@ -592,19 +653,34 @@ export const appstoreKeywordGapConfigSchema = z
     // rather than waiting for 429s to force the flip.
     useProxy: z.boolean().default(true),
     // How many of the globally stalest active keywords to scan per sweep
-    // cycle. Raised from 25 to 75 (~3x) together with the lowered
-    // `sweepDelayMs` above to target ~2,250 scans/hour (was ~750/hour): at
-    // an assumed ~400ms average iTunes fetch latency on top of the
-    // configured delay, a 75-keyword batch takes ~105s, which the
-    // interval-aligned single-flight guard rounds up to a 120s effective
-    // cadence — 75 * 3600 / 120 ≈ 2,250/hour. Against the ~114k-keyword
-    // corpus (at the time this was written) that's a ~2.1-day full
-    // round-robin cycle; combined with junk deactivation (expected to
-    // roughly halve the active corpus over time — see
-    // `keyword-deactivation.ts`) the target steady-state cadence is ~1 day.
+    // cycle — THE per-sweep governor (not `dailyKeywordBudget`/
+    // `minedExploration.dailyQuota`, which are safety ceilings a sweep only
+    // ever consults, never expands into on their own). MAX-THROUGHPUT PASS
+    // (2026-07-22): raised 75 -> 600 (max ceiling 500 -> 1000) together with
+    // `sweepDelayMs` 1000ms -> 150ms above, now that the whole lane is
+    // proxy-backed (`useProxy` below). Math (same methodology as the prior
+    // 75/1000ms revision's comment, updated for the new values): at the same
+    // assumed ~400ms average iTunes fetch latency on top of the configured
+    // delay, a 600-keyword batch takes 600 * (150ms + 400ms) ≈ 330s, which
+    // the interval-aligned single-flight guard (`scanIntervalMs` = 60s
+    // floor) rounds up to a 360s (6-minute) effective cadence — comfortably
+    // under `keyword-gaps.ts`'s 8-minute `MAX_PASS_DURATION_MS` wall-clock
+    // bail guard, so a sweep completes rather than being cut short. That's
+    // 600 * 3600 / 360 = 6,000/hour, ≈ 144,000/day THEORETICAL ceiling for
+    // this one batch (hot + tier1 + mined combined) if every sweep filled
+    // all 600 slots — in practice hot/tier1 are self-limiting (bounded by
+    // their own due-staleness pools, typically a small fraction of 600), so
+    // real daily volume is governed by whichever pool actually has that many
+    // keywords due, not this number alone; see `minedExploration.dailyQuota`
+    // below for the mined lane's own (tighter) per-sweep math. Against the
+    // corpus (~120k active keywords at the time of this pass) full
+    // round-robin coverage is bound by the SLOWEST-refreshing pool, not raw
+    // sweep throughput, once volume clears the corpus size roughly daily —
+    // beyond that point additional throughput buys faster re-observation
+    // (fresher demand/velocity signal), not more first-time coverage.
     // Real-world latency varies — `sweepRateSafety` below backs the rate off
     // automatically if Apple starts throttling.
-    keywordsPerSweep: z.number().int().min(1).max(500).default(75),
+    keywordsPerSweep: z.number().int().min(1).max(1000).default(600),
     // Priority re-scan lane staleness window (see keyword-tiering.ts): a
     // keyword last scanned longer ago than this (or never scanned) is stale
     // enough to qualify for tier 1. Lifted out of a hardcoded constant
@@ -935,24 +1011,44 @@ export const appstoreKeywordGapConfigSchema = z
       .object({
         // Rolling-24h cap on `source: 'mined'` scans, tracked independently
         // of `dailyKeywordBudget` via `countMinedScansSince`. Raised
-        // 5,000 -> 20,000 (2026-07-21 audit NOW-tier fix): live traffic on
-        // 2026-07-20 held 36.7k/day (36,013 mined + 666 seed scans) with
-        // ZERO rate-limit errors, so the whole-corpus scan engine was
-        // starving itself at ~7k/day steady state while sitting on proven
-        // headroom — 20,000 is a conservative slice of that verified-safe
-        // capacity, still well under the old ~35k/day mined spend that
-        // produced zero validated candidates. Raised again 20,000 -> 30,000
-        // (2026-07-21 capacity-raise escalation): the Webshare proxy is now
-        // armed/paid and `appstoreKeywordGap.useProxy` above defaults ON,
-        // so this lane's traffic routes off this box's direct IP — proactive
-        // headroom, not a reaction to rate-limit pressure. Projected new
-        // total against the 60,000 `dailyKeywordBudget` ceiling (tier1
-        // ~1,135 + mined 30,000 + DE storefront ~2,270 at its new 12h
-        // cadence ≈ ~33.4k/day) still leaves comfortable margin — see the
-        // ceiling's own doc comment.
-        dailyQuota: z.number().int().min(0).max(100_000).default(30_000),
+        // 5,000 -> 20,000 (2026-07-21 audit NOW-tier fix), then 20,000 ->
+        // 30,000 (2026-07-21 capacity-raise escalation, proxy armed/paid).
+        // MAX-THROUGHPUT PASS (2026-07-22): raised 30,000 -> 100,000 (max
+        // ceiling unchanged at 100,000 — the new default sits exactly at it,
+        // deliberately, since `dailyKeywordBudget` above is the real
+        // whole-corpus ceiling and this sub-quota should never itself become
+        // the binding constraint before that one does).
+        //
+        // IMPORTANT — this quota being large does NOT mean the mined lane
+        // drains 100,000/day on its own; the ACTUAL per-sweep governor is
+        // `computePerSweepCap(dailyQuota, scanIntervalMs)` in
+        // `keyword-tiering.ts` (`ceil(dailyQuota * scanIntervalMs /
+        // 86_400_000)`), which spreads the quota evenly across the sweeps a
+        // NOMINAL `scanIntervalMs` cadence implies (86,400,000 / 60,000 =
+        // 1,440/day) — at the new 100,000 quota that's
+        // `ceil(100,000 * 60,000 / 86,400,000)` = 70 mined slots/sweep (was
+        // 21/sweep at the old 30,000 quota — a >3x lift on its own). Live
+        // 2026-07-21/22 diagnosis found the mined lane's REAL bottleneck
+        // wasn't even this cap — at `keywordsPerSweep` = 75, the hot lane
+        // (≤50) plus tier 1 (uncapped, and `tier1AutocompleteCap` = 50 alone
+        // could exceed the whole 75-slot batch) routinely crowded mined out
+        // of the batch entirely before this per-sweep cap ever bound
+        // (observed: ~30,000 quota, only ~1,944 actually spent in a rolling
+        // 24h window — 93% unused). Raising `keywordsPerSweep` to 600 above
+        // is what actually relieves that crowding (600 - hot - tier1 leaves
+        // ample room for a 70-slot mined draw most sweeps); THIS quota raise
+        // is what makes that headroom worth something once it's no longer
+        // starved. Even so, 70/sweep times the real (single-flight-bounded,
+        // not nominal) sweep cadence is very unlikely to fully drain 100,000
+        // in a day — that slack is intentional so `dailyKeywordBudget` stays
+        // the binding ceiling, never this quota. Monitor
+        // `keywordSweepTick`'s logged `mineQuotaRemaining` after deploy; if
+        // it consistently sits near 100,000 (still mostly unused) the next
+        // lever is `scanIntervalMs`'s role in this formula, not another
+        // blind quota raise.
+        dailyQuota: z.number().int().min(0).max(100_000).default(100_000),
       })
-      .default({ dailyQuota: 30_000 }),
+      .default({ dailyQuota: 100_000 }),
     // ─── DE storefront lane (2026-07-21 scan-budget retune; CHUNKED as of ──
     // the 2026-07-22 Batch A budget rescue) ─────────────────────────────────
     // Scans a CHUNK of the active seed/manual/autocomplete keyword pool
@@ -1124,10 +1220,10 @@ export const appstoreKeywordGapConfigSchema = z
   .default({
     enabled: true,
     scanIntervalMs: 60_000,
-    sweepDelayMs: 1000,
-    dailyKeywordBudget: 60_000,
+    sweepDelayMs: 150,
+    dailyKeywordBudget: 150_000,
     useProxy: true,
-    keywordsPerSweep: 75,
+    keywordsPerSweep: 600,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     tier1AutocompleteCap: 50,
     topN: 20,
@@ -1172,7 +1268,7 @@ export const appstoreKeywordGapConfigSchema = z
       },
     },
     sweepRateSafety: { adaptiveThrottleEnabled: true, legacyRateOverride: false },
-    minedExploration: { dailyQuota: 30_000 },
+    minedExploration: { dailyQuota: 100_000 },
     deStorefrontLane: {
       enabled: true,
       minIntervalMs: 25 * 60 * 1000,
@@ -1418,11 +1514,14 @@ export const appstoreAppEnrichmentConfigSchema = z
     // bet on the existing observed headroom, not proxy-enabled capacity.
     dailyRequestBudget: z.number().int().min(0).max(50_000).default(6_000),
     // Throughput wave item 1: routes `/lookup` batch + portfolio requests
-    // through the Webshare proxy when set. Default OFF — this endpoint has
-    // no proven ceiling data point either way; raised via the cap above on
-    // separate headroom grounds instead (see the budget table). Flip on if
-    // this lane starts rate-limiting at the new cap.
-    useProxy: z.boolean().default(false),
+    // through the Webshare proxy when set. Was default OFF ("this endpoint
+    // has no proven ceiling data point either way; raised via the cap above
+    // on separate headroom grounds instead"). MAX-THROUGHPUT PASS
+    // (2026-07-22): flipped OFF -> ON for consistency with every other
+    // high-volume appstore lane now riding the paid rotating proxy — no
+    // reason to leave this one exposed to this box's direct IP while the
+    // keyword-scan/mined/DE lanes above ride rotation at a much higher rate.
+    useProxy: z.boolean().default(true),
     // Developer-portfolio sub-pass (build plan §0.1: sightings recorded with
     // source 'portfolio') — runs as part of the SAME 15-min enrichment pass
     // (no separate timer), gated to its own cadence via `minIntervalMs`.
@@ -1464,7 +1563,7 @@ export const appstoreAppEnrichmentConfigSchema = z
     acceleratingLimit: 50,
     delistMissThreshold: 1,
     dailyRequestBudget: 6_000,
-    useProxy: false,
+    useProxy: true,
     portfolio: {
       enabled: true,
       minIntervalMs: 15 * 60 * 1000,
@@ -1524,9 +1623,10 @@ export const appstoreNewbornReobservationConfigSchema = z
     // for a slower-than-usual upstream.
     delayMs: z.number().int().min(0).max(10_000).default(300),
     // Throughput wave item 1: routes this lane's `/lookup` requests through
-    // the Webshare proxy when set. Default OFF, same endpoint-family
-    // reasoning as `appstoreAppEnrichment.useProxy`.
-    useProxy: z.boolean().default(false),
+    // the Webshare proxy when set. Was default OFF, same endpoint-family
+    // reasoning as `appstoreAppEnrichment.useProxy`. MAX-THROUGHPUT PASS
+    // (2026-07-22): flipped OFF -> ON alongside that field, same rationale.
+    useProxy: z.boolean().default(true),
   })
   .default({
     enabled: true,
@@ -1534,7 +1634,7 @@ export const appstoreNewbornReobservationConfigSchema = z
     batchSize: 200,
     maxAgeDays: 540,
     delayMs: 300,
-    useProxy: false,
+    useProxy: true,
   });
 export type AppstoreNewbornReobservationConfig = z.infer<
   typeof appstoreNewbornReobservationConfigSchema

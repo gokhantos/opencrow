@@ -416,9 +416,15 @@ describe("appstoreKeywordGap config", () => {
     expect(g.enabled).toBe(true);
     expect(g.topN).toBe(20);
     expect(g.scanIntervalMs).toBe(60_000);
-    expect(g.sweepDelayMs).toBe(1000);
-    expect(g.dailyKeywordBudget).toBe(60_000);
-    expect(g.keywordsPerSweep).toBe(75);
+    // Max-throughput pass (2026-07-22): the real per-sweep governors
+    // (keywordsPerSweep/sweepDelayMs), not just the safety ceilings — see
+    // src/config/schema.ts's "MAX-THROUGHPUT PASS" comment on
+    // appstoreKeywordGapConfigSchema for the full before/after math.
+    expect(g.sweepDelayMs).toBe(150);
+    expect(g.dailyKeywordBudget).toBe(150_000);
+    expect(g.keywordsPerSweep).toBe(600);
+    expect(g.useProxy).toBe(true);
+    expect(g.minedExploration.dailyQuota).toBe(100_000);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);
     // ASA popularity manual-import veto (batch E) — OFF by default.
@@ -481,6 +487,26 @@ describe("appstoreKeywordGap config", () => {
     expect(cfg.appstoreKeywordGap.enabled).toBe(false);
     expect(cfg.appstoreKeywordGap.corpusDiscovery.enabled).toBe(false);
     expect(cfg.appstoreKeywordGap.autocompleteExpansion.enabled).toBe(false);
+  });
+});
+
+// ── appstoreAppEnrichment / appstoreNewbornReobservation useProxy ──────────────
+// Max-throughput pass (2026-07-22): these were the last two appstore lanes
+// still direct-IP by default; flipped ON for consistency with the
+// keyword-scan/mined/DE-storefront/review-harvest/app-pages lanes, all of
+// which already rode the paid Webshare rotating proxy.
+
+describe("appstoreAppEnrichment config useProxy", () => {
+  test("defaults to true (max-throughput pass, 2026-07-22)", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    expect(cfg.appstoreAppEnrichment.useProxy).toBe(true);
+  });
+});
+
+describe("appstoreNewbornReobservation config useProxy", () => {
+  test("defaults to true (max-throughput pass, 2026-07-22)", () => {
+    const cfg = opencrowConfigSchema.parse({});
+    expect(cfg.appstoreNewbornReobservation.useProxy).toBe(true);
   });
 });
 
