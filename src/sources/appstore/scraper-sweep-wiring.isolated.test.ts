@@ -19,15 +19,23 @@ import * as RealKeywordMiner from "./keyword-miner";
 // itself, the newborn-velocity screener, autocomplete expansion, and the DE
 // storefront sweep) all fired correctly in production over the same window.
 //
-// `createAppStoreScraper` wires ALL eight lanes onto ONE `keywordSweepTick`
-// (`src/sources/appstore/scraper.ts`), each gated by its own "IfDue"
-// wrapper. This test drives the real `scraper.ts` module (everything it
-// imports is mocked — no network, no DB) and asserts that every wrapper's
-// underlying pass function is actually invoked on the very first tick after
-// `start()`, which is what the process-local `lastXRunAt = 0` cadence
-// trackers are supposed to guarantee (elapsed-since-epoch is always >> any
-// `minIntervalMs`, so nothing should gate the first-ever call of a fresh
-// process).
+// `createAppStoreScraper` wires all deep-scrape lanes onto
+// `auxiliaryLanesTick` (`src/sources/appstore/scraper.ts`), each gated by
+// its own "IfDue" wrapper; the high-value keyword-gap sweep itself lives on
+// the separate, independently-locked `keywordSweepTick`. Both ticks are
+// fired synchronously (fire-and-forget) inside `start()`. This test drives
+// the real `scraper.ts` module (everything it imports is mocked — no
+// network, no DB) and asserts that every wrapper's underlying pass function
+// is actually invoked on the very first tick after `start()`, which is what
+// the process-local `lastXRunAt = 0` cadence trackers are supposed to
+// guarantee (elapsed-since-epoch is always >> any `minIntervalMs`, so
+// nothing should gate the first-ever call of a fresh process).
+//
+// A second describe block below (`independently locked`) covers the
+// throughput fix (2026-07-23) that split the single bundled
+// `keywordSweepTick` into this pair of ticks — it asserts a long-running
+// auxiliary chain can no longer starve the gap-sweep of its own ~60s
+// cadence, which is the production incident this split fixes.
 //
 // Mocks every module `scraper.ts` imports with I/O (network/DB); leaves
 // pure-logic modules (`sweep-throttle`, `review-rss`, `charts`,
@@ -385,7 +393,7 @@ function setUpMocks(): void {
   }));
 }
 
-describe("appstore scraper.ts — keywordSweepTick lane wiring", () => {
+describe("appstore scraper.ts — keyword-gap lane wiring", () => {
   afterEach(() => {
     mock.restore();
   });
@@ -399,9 +407,10 @@ describe("appstore scraper.ts — keywordSweepTick lane wiring", () => {
     try {
       scraper.start();
 
-      // keywordSweepTick() is fired synchronously (fire-and-forget) inside
-      // start(); give its sequential await chain time to settle. All mocked
-      // I/O resolves near-instantly, so this margin is generous, not tuned.
+      // keywordSweepTick() and auxiliaryLanesTick() are both fired
+      // synchronously (fire-and-forget) inside start(); give their
+      // sequential await chains time to settle. All mocked I/O resolves
+      // near-instantly, so this margin is generous, not tuned.
       await new Promise((resolve) => setTimeout(resolve, 500));
 
       // Pre-existing lanes (shipped before PR #326) — sanity check that the
@@ -423,6 +432,84 @@ describe("appstore scraper.ts — keywordSweepTick lane wiring", () => {
       expect(calls.runCohortRefresh).toBeGreaterThan(0);
       expect(calls.runAppPageFetchPass).toBeGreaterThan(0);
       expect(calls.runAppPageSyncPass).toBeGreaterThan(0);
+    } finally {
+      scraper.stop();
+    }
+  });
+});
+
+// Throughput fix regression coverage (2026-07-23): the ~12 auxiliary lanes
+// used to run sequentially, awaited, on `keywordSweepTick` — the SAME tick
+// (and the SAME `keywordSweepRunning` single-flight lock) as the high-value
+// gap-sweep. Post-restart every lane was due at once, so that chain ran
+// 15-20min and the gap-sweep — which should run every `scanIntervalMs`
+// (~60s) — couldn't run again until the whole chain finished. The fix
+// splits the aux lanes onto their own independently-locked
+// `auxiliaryLanesTick` / `auxiliaryLanesRunning`. This suite proves a
+// permanently-stuck auxiliary chain can no longer block the gap-sweep tick.
+describe("appstore scraper.ts — gap-sweep tick and auxiliary tick are independently locked", () => {
+  afterEach(() => {
+    mock.restore();
+  });
+
+  it("a permanently hung auxiliary tick does not block the gap-sweep tick from re-running on its own cadence", async () => {
+    setUpMocks();
+
+    // Fast cadence so several intervals elapse within the test window.
+    // `start()` drives both `keywordSweepTick` and `auxiliaryLanesTick` off
+    // this same `appstoreKeywordGap.scanIntervalMs` — on independent
+    // timers/locks, which is exactly what this test is verifying.
+    mock.module("../../config/loader", () => {
+      const fast = fakeAppstoreConfig();
+      return {
+        loadConfig: () => ({
+          ...fast,
+          appstoreKeywordGap: { ...fast.appstoreKeywordGap, scanIntervalMs: 20 },
+        }),
+        loadConfigWithOverrides: async () => fakeAppstoreConfig(),
+      };
+    });
+
+    // Make the FIRST auxiliary lane (the screener) hang forever — a stand-in
+    // for the old ~15-20min bundled chain. Before the independent-tick
+    // decouple, this lane shared the gap-sweep's own `keywordSweepRunning`
+    // lock, so a hang here would starve the gap-sweep of any further runs
+    // for the rest of the process's life. After the decouple, it must only
+    // stall the auxiliary chain — the gap-sweep keeps ticking independently.
+    mock.module("./keyword-screener", () => ({
+      runScreener: async () => {
+        calls.runScreener++;
+        return new Promise(() => {
+          // Never resolves — models a wedged/never-returning auxiliary lane.
+        });
+      },
+    }));
+
+    const { createAppStoreScraper } = await import("./scraper");
+    const scraper = createAppStoreScraper({});
+
+    try {
+      scraper.start();
+
+      // Many multiples of the 20ms gap-sweep interval.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // The gap-sweep kept firing repeatedly on its own independent
+      // timer/lock — never blocked by the permanently-stuck auxiliary tick.
+      // (Pre-fix, this would be exactly 1: one tick, then wedged forever
+      // behind the shared lock.)
+      expect(calls.runKeywordSweep).toBeGreaterThan(3);
+
+      // The auxiliary tick's own single-flight lock (`auxiliaryLanesRunning`)
+      // held it to exactly one in-flight run for the whole window — it's
+      // independently locked (no re-entrant overlap with itself), not just
+      // "not blocking because it errored out".
+      expect(calls.runScreener).toBe(1);
+
+      // Nothing later in the auxiliary chain ever ran — confirms the chain
+      // really is wedged at the screener, not silently swallowed/skipped.
+      expect(calls.expandCorpus).toBe(0);
+      expect(calls.runDeStorefrontSweep).toBe(0);
     } finally {
       scraper.stop();
     }
