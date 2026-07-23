@@ -1038,12 +1038,23 @@ export const appstoreKeywordGapConfigSchema = z
         // defaults once sweeps stopped being idle-paced — see
         // `sweep-throttle.ts`'s module doc for the recovery-time math.
         throttleRecoveryStep: z.number().min(0.01).max(1).default(0.25),
+        // Floor the adaptive throttle can back off to on repeated trips (the
+        // MD of AIMD is clamped here). Lowered from the pre-knob 1/8 (0.125)
+        // to 1/32 (2026-07-23): at 1/8 the clamped batch (base
+        // `keywordsPerSweep` 600 -> 75) still exceeded a single direct Apple
+        // IP's sustainable rate, so the throttle pinned at the floor with
+        // ~50% of every sweep 403'd for hours. 1/32 (batch ~19) gives the
+        // AIMD room to reach a clean level; drop it further (e.g. 1/64) live
+        // via this knob if Apple's per-IP ceiling tightens. Min bound 1/128
+        // keeps the sweep from stalling to a trickle.
+        throttleMinMultiplier: z.number().min(0.0078125).max(0.5).default(0.03125),
       })
       .default({
         adaptiveThrottleEnabled: true,
         legacyRateOverride: false,
         throttleBackoffFactor: 0.5,
         throttleRecoveryStep: 0.25,
+        throttleMinMultiplier: 0.03125,
       }),
     // ─── Mined exploration quota (2026-07-21 scan-budget retune) ───────────
     // Measured 2026-07-21: 97.9% of the ~36k daily SERP scans went to the
@@ -1328,6 +1339,7 @@ export const appstoreKeywordGapConfigSchema = z
       legacyRateOverride: false,
       throttleBackoffFactor: 0.5,
       throttleRecoveryStep: 0.25,
+      throttleMinMultiplier: 0.03125,
     },
     minedExploration: { dailyQuota: 100_000 },
     deStorefrontLane: {

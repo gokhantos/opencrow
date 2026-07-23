@@ -860,6 +860,7 @@ export function createAppStoreScraper(config?: {
         sweepThrottleState = advanceThrottle(sweepThrottleState, tickThrottle, {
           backoffFactor: cfg.sweepRateSafety.throttleBackoffFactor,
           recoveryStep: cfg.sweepRateSafety.throttleRecoveryStep,
+          minMultiplier: cfg.sweepRateSafety.throttleMinMultiplier,
         });
         const errorRate = computeErrorRate(tickThrottle.rateLimitErrors, tickThrottle.attempted);
 
