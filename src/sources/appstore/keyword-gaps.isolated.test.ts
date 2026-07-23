@@ -519,14 +519,19 @@ describe("runKeywordSweep", () => {
   // escalation (post PR #328, Webshare proxy now paid/armed) halved
   // tier1StaleThresholdMs again to 6h and raised dailyQuota to 30_000. The
   // 2026-07-22 max-throughput pass raised dailyQuota again, 30_000 -> 100_000
-  // (see schema.ts's "MAX-THROUGHPUT PASS" comment). scanIntervalMs = 60_000
-  // (1 min, unchanged) -> perSweepCap = ceil(100_000 * 60_000 / 86_400_000) =
-  // 70 (was 21 at the old 30_000 quota). tier1AutocompleteCap = 50 (Batch A
-  // budget rescue, 2026-07-22 structural guard default, unchanged by the
-  // throughput pass).
+  // (see schema.ts's "MAX-THROUGHPUT PASS" comment). tier1AutocompleteCap =
+  // 50 (Batch A budget rescue, 2026-07-22 structural guard default,
+  // unchanged by the throughput pass).
+  //
+  // CONTINUOUS FETCH (2026-07-23): `perSweepCap` is no longer derived from
+  // `dailyQuota`/`scanIntervalMs` (the old formula produced ~70/sweep at
+  // these defaults, which paced — and effectively idled — the mined lane;
+  // see keyword-tiering.ts's module doc). `runKeywordSweep` now passes its
+  // OWN `limit` (this cycle's batch size, i.e. whatever `{ limit }` the test
+  // below invokes it with) straight through as `perSweepCap` — no additional
+  // ceiling beyond the batch itself.
   const DEFAULT_TIER1_STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
   const DEFAULT_MINE_DAILY_QUOTA = 100_000;
-  const DEFAULT_PER_SWEEP_CAP = 70;
   const DEFAULT_TIER1_AUTOCOMPLETE_CAP = 50;
 
   beforeEach(() => {
@@ -591,13 +596,37 @@ describe("runKeywordSweep", () => {
         batchLimit: 25,
         mineQuotaRemaining: DEFAULT_MINE_DAILY_QUOTA,
         tier1StaleThresholdMs: DEFAULT_TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: DEFAULT_PER_SWEEP_CAP,
+        // Continuous fetch (2026-07-23): perSweepCap == batchLimit (opts.limit
+        // passed straight through), no longer a daily-quota-paced slice.
+        perSweepCap: 25,
         tier1AutocompleteCap: DEFAULT_TIER1_AUTOCOMPLETE_CAP,
       },
     ]);
     expect(insertScanCalls.length).toBe(1);
     expect(markScannedCalls.length).toBe(1);
     expect(markScannedCalls[0]?.keywords).toEqual(["a"]);
+  });
+
+  // Continuous fetch (2026-07-23): `perSweepCap` must track `opts.limit`
+  // directly, NOT the old `ceil(dailyQuota * scanIntervalMs / 86_400_000)`
+  // formula (~70/sweep at the default 100_000 quota — see
+  // keyword-tiering.ts's module doc). At the real production
+  // `keywordsPerSweep` default (600), the old formula would have kept
+  // capping mined exploration at ~70 regardless of batch size; this proves
+  // the cap now scales with the batch instead, decoupled from dailyQuota.
+  it("computes perSweepCap as this cycle's own batch limit, decoupled from minedExploration.dailyQuota/scanIntervalMs", async () => {
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    await runKeywordSweep({ limit: 600, delayMs: 0 });
+
+    expect(staleKeywordsTieredCalls).toEqual([
+      {
+        batchLimit: 600,
+        mineQuotaRemaining: DEFAULT_MINE_DAILY_QUOTA,
+        tier1StaleThresholdMs: DEFAULT_TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: 600,
+        tier1AutocompleteCap: DEFAULT_TIER1_AUTOCOMPLETE_CAP,
+      },
+    ]);
   });
 
   it("skips the sweep without scanning anything when the rolling 24h budget is reached", async () => {
@@ -670,7 +699,9 @@ describe("runKeywordSweep", () => {
         batchLimit: 25,
         mineQuotaRemaining: 10,
         tier1StaleThresholdMs: DEFAULT_TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: DEFAULT_PER_SWEEP_CAP,
+        // Continuous fetch (2026-07-23): perSweepCap == batchLimit (opts.limit
+        // passed straight through), no longer a daily-quota-paced slice.
+        perSweepCap: 25,
         tier1AutocompleteCap: DEFAULT_TIER1_AUTOCOMPLETE_CAP,
       },
     ]);
@@ -700,7 +731,9 @@ describe("runKeywordSweep", () => {
         batchLimit: 25,
         mineQuotaRemaining: 0,
         tier1StaleThresholdMs: DEFAULT_TIER1_STALE_THRESHOLD_MS,
-        perSweepCap: DEFAULT_PER_SWEEP_CAP,
+        // Continuous fetch (2026-07-23): perSweepCap == batchLimit (opts.limit
+        // passed straight through), no longer a daily-quota-paced slice.
+        perSweepCap: 25,
         tier1AutocompleteCap: DEFAULT_TIER1_AUTOCOMPLETE_CAP,
       },
     ]);

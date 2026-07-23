@@ -451,6 +451,10 @@ describe("appstoreKeywordGap config", () => {
     expect(g.autocompleteExpansion.gbLane.diverseLimit).toBe(10);
     expect(g.sweepRateSafety.adaptiveThrottleEnabled).toBe(true);
     expect(g.sweepRateSafety.legacyRateOverride).toBe(false);
+    // AIMD tuning knobs (continuous-fetch retune, 2026-07-23) — see
+    // sweep-throttle.ts's advanceThrottle.
+    expect(g.sweepRateSafety.throttleBackoffFactor).toBe(0.5);
+    expect(g.sweepRateSafety.throttleRecoveryStep).toBe(0.25);
     // serp-rank Stage 1 (deep-scrape build).
     expect(g.serpDepth).toBe(200);
     expect(g.deepScanMined).toBe(false);

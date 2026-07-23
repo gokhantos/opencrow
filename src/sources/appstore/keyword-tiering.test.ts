@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test";
 import {
   computeEffectiveStaleThreshold,
   computeMineSlots,
-  computePerSweepCap,
   isTier1Eligible,
   TIER1_HIGH_OPPORTUNITY,
   TIER1_MID_MULTIPLIER,
@@ -150,40 +149,21 @@ describe("isTier1Eligible", () => {
   });
 });
 
-// 2026-07-21 audit NOW-tier fix, item A: `runKeywordSweep` previously let a
-// single sweep spend the WHOLE day's `minedExploration.dailyQuota` in one
-// cycle (greedy `min(remainingBatch, quotaRemaining)` fill), starving every
-// later sweep of the day of any mined slots at all. `computePerSweepCap`
-// spreads the quota evenly across the sweeps expected per day instead.
-describe("computePerSweepCap", () => {
-  it("spreads the daily quota evenly across the sweeps expected in 24h", () => {
-    // 1-minute sweep interval -> 1,440 sweeps/day. 20,000 / 1,440 = 13.89 -> 14.
-    expect(computePerSweepCap(20_000, 60_000)).toBe(14);
-  });
-
-  it("rounds up so a nonzero quota always yields at least 1 slot/sweep", () => {
-    // A slow-cadence config (1h sweeps -> 24 sweeps/day) with a small quota
-    // still gets at least 1 slot per sweep rather than rounding to 0.
-    expect(computePerSweepCap(10, 60 * 60 * 1000)).toBeGreaterThanOrEqual(1);
-  });
-
-  it("returns 0 for a zero daily quota", () => {
-    expect(computePerSweepCap(0, 60_000)).toBe(0);
-  });
-
-  it("scales linearly with the sweep interval", () => {
-    // Doubling the interval (half as many sweeps/day) roughly doubles each
-    // sweep's slice of the quota.
-    const oneMinute = computePerSweepCap(20_000, 60_000);
-    const twoMinutes = computePerSweepCap(20_000, 120_000);
-    expect(twoMinutes).toBeGreaterThan(oneMinute);
-  });
-});
-
-// Pure companion to `computePerSweepCap`: the actual per-sweep slot count is
-// the tightest of three independent ceilings (batch room, remaining daily
-// quota, this sweep's per-sweep cap) — see `getStaleKeywordsTiered`
-// (keyword-store.ts).
+// The actual per-sweep slot count is the tightest of three independent
+// ceilings (batch room, remaining daily quota, a caller-supplied per-sweep
+// cap) — see `getStaleKeywordsTiered` (keyword-store.ts). Between
+// 2026-07-21 and 2026-07-22 the third ceiling was itself paced off the daily
+// quota (`computePerSweepCap = ceil(dailyQuota * scanIntervalMs /
+// 86_400_000)`), spreading `minedExploration.dailyQuota` evenly across the
+// sweeps a nominal cadence implies so one light sweep couldn't spend the
+// whole day's quota at once. CONTINUOUS FETCH (2026-07-23): that pacing was
+// found to be the actual mechanism producing idle sweeps — with a mined
+// backlog far larger than any single sweep's batch, the paced cap left most
+// of the batch unfilled once hot/tier1 ran out. `computePerSweepCap` is
+// retired; `keyword-gaps.ts`'s `runKeywordSweep` now passes `perSweepCap =
+// opts.limit` (this cycle's own batch size), so in practice this third
+// ceiling never binds tighter than `remainingBatch` — see the last two tests
+// below.
 describe("computeMineSlots", () => {
   it("never exceeds perSweepCap even when remainingBatch and mineQuotaRemaining are much larger", () => {
     expect(computeMineSlots(10_000, 10_000, 14)).toBe(14);
@@ -211,6 +191,24 @@ describe("computeMineSlots", () => {
     expect(computeMineSlots(0, 10_000, 14)).toBe(0);
     expect(computeMineSlots(10_000, 0, 14)).toBe(0);
     expect(computeMineSlots(10_000, 10_000, 0)).toBe(0);
+  });
+
+  // Continuous-fetch (2026-07-23) production shape: `perSweepCap` set to the
+  // sweep's own batch limit (not a small daily-quota-paced slice) — a large
+  // never-scanned mined backlog (`mineQuotaRemaining` far exceeds
+  // `remainingBatch`) should fill the WHOLE remaining batch, not stall at
+  // the old ~70/sweep pacing figure.
+  it("fills the whole remainingBatch when perSweepCap equals the sweep's own (much larger) batch limit", () => {
+    const keywordsPerSweep = 600;
+    const remainingBatch = 530; // 600 - hot(~50) - tier1(~20), a realistic split
+    expect(computeMineSlots(remainingBatch, 100_000, keywordsPerSweep)).toBe(remainingBatch);
+  });
+
+  it("is no longer capped near ~70/sweep once perSweepCap is decoupled from the daily-quota pacing formula", () => {
+    // Old formula: ceil(100_000 * 60_000 / 86_400_000) = 70. A caller that
+    // instead passes the batch limit itself (600) lets the mined lane draw
+    // far more than that when the batch has room and the backlog supports it.
+    expect(computeMineSlots(530, 100_000, 600)).toBeGreaterThan(70);
   });
 });
 

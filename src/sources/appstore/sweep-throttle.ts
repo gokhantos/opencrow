@@ -7,6 +7,17 @@
 // errors subside. No I/O, no Date.now() — every input (rates, prior state)
 // is caller-supplied, so this is exhaustively unit-testable.
 //
+// This IS an AIMD (additive-increase/multiplicative-decrease) controller:
+// `advanceThrottle` halves the multiplier on a real error-rate spike
+// (`THROTTLE_BACKOFF_FACTOR` / `throttleBackoffFactor` config) and, once
+// `THROTTLE_HOLD_SWEEPS` consecutive sweeps come back clean, steps it back up
+// by `THROTTLE_RECOVERY_STEP` / `throttleRecoveryStep` (config) toward 1.0 —
+// repeating until it either reaches the configured rate or trips again. The
+// intent (continuous-fetch pass, 2026-07-23, once mined exploration stopped
+// being paced by idle sweeps — see keyword-tiering.ts) is for the sustained
+// rate to OSCILLATE just under Apple's real ceiling: back off hard on a real
+// spike, then keep probing back up rather than staying permanently throttled.
+//
 // The scraper process holds ONE `ThrottleState` in memory across sweeps
 // (like `lastScreenerRunAt` in `scraper.ts`) — process-local, not persisted;
 // a restart simply resets to `INITIAL_THROTTLE_STATE`, which is harmless
@@ -30,17 +41,38 @@ export const THROTTLE_ERROR_RATE_THRESHOLD = 0.05; // ~5%
  */
 export const MIN_ATTEMPTED_FOR_TRIP = 8;
 
-/** Multiplier applied to the current rate each time the throttle (re-)trips. */
+/**
+ * Multiplier applied to the current rate each time the throttle (re-)trips
+ * (the "MD" of AIMD — multiplicative decrease). Default, overridable via
+ * `appstoreKeywordGap.sweepRateSafety.throttleBackoffFactor`.
+ */
 export const THROTTLE_BACKOFF_FACTOR = 0.5;
 
 /** Floor on the throttle multiplier — repeated trips can back off at most this far (1/8th rate), never fully stall the sweep. */
 export const MIN_THROTTLE_MULTIPLIER = 0.125;
 
-/** Consecutive under-threshold sweeps required before each gradual recovery step. */
-export const THROTTLE_HOLD_SWEEPS = 5;
+/**
+ * Consecutive under-threshold sweeps required before each gradual recovery
+ * step. Retuned 5 -> 3 (continuous-fetch pass, 2026-07-23): with mined
+ * exploration no longer paced by idle gaps (see keyword-tiering.ts), a
+ * throttled-down sweep's OWN batch is small (and therefore fast), so its
+ * real-world cadence sits close to the `scanIntervalMs` floor while
+ * recovering — 5 hold-sweeps at the old `THROTTLE_RECOVERY_STEP` (0.15) could
+ * still take on the order of half an hour to fully recover from the floor
+ * once sweeps stopped being idle-gapped; 3 hold-sweeps at the new 0.25 step
+ * (see `THROTTLE_RECOVERY_STEP`) gets there in roughly a third of that.
+ */
+export const THROTTLE_HOLD_SWEEPS = 3;
 
-/** Multiplier gained per recovery step, once `THROTTLE_HOLD_SWEEPS` have passed under threshold. */
-export const THROTTLE_RECOVERY_STEP = 0.15;
+/**
+ * Multiplier gained per recovery step, once `THROTTLE_HOLD_SWEEPS` have
+ * passed under threshold (the "AI" of AIMD — additive increase). Raised
+ * 0.15 -> 0.25 alongside `THROTTLE_HOLD_SWEEPS`'s 5 -> 3 retune (continuous-
+ * fetch pass, 2026-07-23) — see that constant's doc comment for the
+ * recovery-time math. Default, overridable via
+ * `appstoreKeywordGap.sweepRateSafety.throttleRecoveryStep`.
+ */
+export const THROTTLE_RECOVERY_STEP = 0.25;
 
 /**
  * Pre-throughput-bump rate, used by the MANDATORY hard kill-switch
@@ -89,6 +121,24 @@ export interface ThrottleOutcome {
 }
 
 /**
+ * Caller-tunable AIMD knobs for `advanceThrottle`, each defaulting to this
+ * module's own constant when omitted — see
+ * `appstoreKeywordGap.sweepRateSafety.throttleBackoffFactor` /
+ * `throttleRecoveryStep` in `src/config/schema.ts`, the config-driven values
+ * `scraper.ts` actually passes in production. `holdSweeps` stays
+ * code-tunable only (not exposed as its own config knob) — see
+ * `THROTTLE_HOLD_SWEEPS`'s doc comment.
+ */
+export interface ThrottleParams {
+  /** Multiplicative-decrease factor on a trip. Defaults to `THROTTLE_BACKOFF_FACTOR`. */
+  readonly backoffFactor?: number;
+  /** Additive-increase step per recovery step. Defaults to `THROTTLE_RECOVERY_STEP`. */
+  readonly recoveryStep?: number;
+  /** Consecutive clean sweeps required per recovery step. Defaults to `THROTTLE_HOLD_SWEEPS`. */
+  readonly holdSweeps?: number;
+}
+
+/**
  * Advances the throttle state machine by one tick's aggregated outcome.
  *
  * - `attempted >= MIN_ATTEMPTED_FOR_TRIP` AND
@@ -97,20 +147,31 @@ export interface ThrottleOutcome {
  *   at `MIN_THROTTLE_MULTIPLIER`) and reset the hold counter. Below the
  *   min-attempted floor a tick can NEVER trip, however high its ratio — a
  *   one-request 429 is anecdote, not signal.
- * - Otherwise, while already throttled: once `THROTTLE_HOLD_SWEEPS`
- *   consecutive sweeps have stayed under threshold (a below-floor tick counts
- *   as one such sweep), take one `THROTTLE_RECOVERY_STEP` step back toward
- *   1.0 (clamped), resetting the hold counter; reaching exactly 1.0 clears
- *   `throttled`.
+ * - Otherwise, while already throttled: once `holdSweeps` consecutive
+ *   sweeps have stayed under threshold (a below-floor tick counts as one
+ *   such sweep), take one `recoveryStep` step back toward 1.0 (clamped),
+ *   resetting the hold counter; reaching exactly 1.0 clears `throttled`.
  * - Otherwise (not throttled, under threshold): just tick the hold counter.
+ *
+ * `params` overrides the AIMD step sizes (see `ThrottleParams`) — omitted
+ * fields fall back to this module's own constants, so every existing
+ * 2-arg caller (and every test written before these knobs existed) keeps
+ * its exact prior behavior.
  */
-export function advanceThrottle(state: ThrottleState, outcome: ThrottleOutcome): ThrottleState {
+export function advanceThrottle(
+  state: ThrottleState,
+  outcome: ThrottleOutcome,
+  params: ThrottleParams = {},
+): ThrottleState {
+  const backoffFactor = params.backoffFactor ?? THROTTLE_BACKOFF_FACTOR;
+  const recoveryStep = params.recoveryStep ?? THROTTLE_RECOVERY_STEP;
+  const holdSweeps = params.holdSweeps ?? THROTTLE_HOLD_SWEEPS;
   const errorRate = computeErrorRate(outcome.rateLimitErrors, outcome.attempted);
   const canTrip = outcome.attempted >= MIN_ATTEMPTED_FOR_TRIP;
 
   if (canTrip && errorRate >= THROTTLE_ERROR_RATE_THRESHOLD) {
     return {
-      multiplier: Math.max(MIN_THROTTLE_MULTIPLIER, state.multiplier * THROTTLE_BACKOFF_FACTOR),
+      multiplier: Math.max(MIN_THROTTLE_MULTIPLIER, state.multiplier * backoffFactor),
       sweepsSinceChange: 0,
       throttled: true,
     };
@@ -120,11 +181,11 @@ export function advanceThrottle(state: ThrottleState, outcome: ThrottleOutcome):
     return { multiplier: 1, sweepsSinceChange: state.sweepsSinceChange + 1, throttled: false };
   }
 
-  if (state.sweepsSinceChange + 1 < THROTTLE_HOLD_SWEEPS) {
+  if (state.sweepsSinceChange + 1 < holdSweeps) {
     return { ...state, sweepsSinceChange: state.sweepsSinceChange + 1 };
   }
 
-  const recovered = Math.min(1, state.multiplier + THROTTLE_RECOVERY_STEP);
+  const recovered = Math.min(1, state.multiplier + recoveryStep);
   return { multiplier: recovered, sweepsSinceChange: 0, throttled: recovered < 1 };
 }
 

@@ -159,6 +159,9 @@ const TEST_KEYWORDS: readonly string[] = [
   "zzz-per-sweep-cap-a",
   "zzz-per-sweep-cap-b",
   "zzz-per-sweep-cap-c",
+  // Continuous-fetch fixtures (2026-07-23) — large never-scanned mined
+  // backlog, proving the fill isn't stuck near the old ~70/sweep pacing cap.
+  ...Array.from({ length: 150 }, (_, i) => `zzz-continuous-fill-mined-${i}`),
   // Hot lane fixtures (2026-07-21 audit item A)
   "zzz-hot-lane-open-hit",
   "zzz-hot-lane-tier1-decoy",
@@ -2097,6 +2100,48 @@ describe("keyword-store", () => {
         "zzz-per-sweep-cap-c",
       ].filter((k) => capped.includes(k)).length;
       expect(capturedCount).toBeLessThanOrEqual(1);
+    });
+
+    // Continuous fetch (2026-07-23): production no longer derives
+    // `perSweepCap` from `minedExploration.dailyQuota`/`scanIntervalMs` (the
+    // old formula yielded ~70/sweep at the live defaults — see
+    // keyword-tiering.ts's module doc) — `keyword-gaps.ts`'s
+    // `runKeywordSweep` now passes the sweep's OWN batch limit instead. This
+    // proves the SQL wiring actually fills up to that larger cap — not
+    // stuck at the old ~70 figure — when a large never-scanned mined
+    // backlog exists to draw from, exactly the scenario (~120k never-
+    // scanned mined keywords live) that motivated the retune.
+    it("mined exploration fills up to a batch-sized perSweepCap from a large never-scanned backlog, not stuck near the old ~70/sweep pacing figure", async () => {
+      const fixtures = Array.from({ length: 150 }, (_, i) => `zzz-continuous-fill-mined-${i}`);
+      await upsertKeywords(
+        fixtures.map((keyword) => ({
+          keyword,
+          genreZone: "zzz-continuous-fill-zone",
+          source: "mined" as const,
+        })),
+      );
+      // Left with last_scanned_at = NULL — genuinely never-scanned, so they
+      // sort first under `ORDER BY last_scanned_at ASC NULLS FIRST`.
+
+      // perSweepCap set to a value that (a) mirrors the new production
+      // wiring (this cycle's own batch limit, e.g. `keywordsPerSweep`'s
+      // ballpark rather than a tiny daily-quota-paced slice) and (b) is
+      // strictly greater than the old ~70/sweep figure, and (c) is
+      // comfortably smaller than the 150-fixture backlog, so the cap itself
+      // — not the backlog size — is what's under test regardless of ambient
+      // corpus rows.
+      const PER_SWEEP_CAP = 120;
+      const result = await getStaleKeywordsTiered({
+        batchLimit: 100_000,
+        mineQuotaRemaining: 100_000,
+        tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+        perSweepCap: PER_SWEEP_CAP,
+        tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
+      });
+      const mined = result.filter((r) => r.lane === "mined");
+
+      expect(mined.length).toBe(PER_SWEEP_CAP);
+      expect(mined.length).toBeGreaterThan(70);
     });
 
     it("hot lane (open signature hit, stale >6h) preempts plain tier-1/mined slots in output ordering (2026-07-21 audit item A)", async () => {

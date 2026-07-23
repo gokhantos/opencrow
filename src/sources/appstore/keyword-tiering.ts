@@ -48,22 +48,38 @@
 //   the intended semantics, hand-mirrored as a CASE expression in SQL, since
 //   SQL cannot call back into TS at query time).
 //
-//   Mined exploration — capped by BOTH its own rolling daily quota
-//   (`minedExploration.dailyQuota` in config, tracked via
-//   `keyword-store.ts`'s `countMinedScansSince`) AND a per-sweep cap
-//   (`perSweepCap = ceil(dailyQuota * scanIntervalMs / 86_400_000)`,
-//   computed by the caller — `keyword-gaps.ts`'s `runKeywordSweep` — and
-//   passed in) so a single sweep can never greedily spend the WHOLE day's
-//   mined quota in one cycle when tier 1/hot are light that cycle (2026-07-21
-//   audit NOW-tier fix, item A: this greedy-fill was silently starving later
-//   sweeps of the day of any mined slots at all). Drawn from `source:
-//   'mined'` keywords, never-scanned first then oldest-scanned. Replaces the
-//   old "tier 2 = everything else, stalest-first" round robin: once the
-//   mined pool's own daily quota (or this sweep's slice of it) is spent,
-//   `getStaleKeywordsTiered` returns only hot + tier 1 for the rest of the
-//   cycle — freed sweep capacity is not silently reabsorbed into more mined
-//   scans, it funds the DE storefront lane instead (see `scraper.ts`'s
-//   `runDeStorefrontSweepIfDue`).
+//   Mined exploration — fills whatever's left of the batch after hot + tier
+//   1, capped by its own rolling daily quota (`minedExploration.dailyQuota`
+//   in config, tracked via `keyword-store.ts`'s `countMinedScansSince`) and
+//   by `perSweepCap`, a caller-supplied ceiling (see `computeMineSlots`
+//   below). Drawn from `source: 'mined'` keywords, never-scanned first then
+//   oldest-scanned — see `getStaleKeywordsTiered`'s `ORDER BY
+//   last_scanned_at ASC NULLS FIRST`.
+//
+//   CONTINUOUS FETCH (2026-07-23): from 2026-07-21 to 2026-07-22 this cap was
+//   deliberately paced — `perSweepCap = ceil(dailyQuota * scanIntervalMs /
+//   86_400_000)`, spreading `dailyQuota` evenly across the sweeps a nominal
+//   cadence implies — so a light hot+tier1 cycle couldn't greedily spend the
+//   whole day's mined quota in one sweep. Live measurement found that pacing
+//   was itself the mechanism producing IDLE sweeps: with a mined backlog
+//   (never-scanned keywords, ~120k of them) that vastly exceeds any single
+//   sweep's batch, the paced cap (~70/sweep at the time) left most of every
+//   600-keyword batch (`keywordsPerSweep`) unfilled once hot+tier1 ran out,
+//   so the process sat idle between sweeps instead of continuously fetching.
+//   `keyword-gaps.ts`'s `runKeywordSweep` now passes `perSweepCap =
+//   opts.limit` (this cycle's own, already throttle-adjusted batch size) —
+//   i.e. no additional pacing beyond the batch itself, so mined exploration
+//   fills the ENTIRE remaining batch every cycle whenever the backlog
+//   supports it. The real regulators are no longer the per-sweep pacing
+//   formula but (a) `dailyKeywordBudget`, the rolling-24h whole-corpus
+//   ceiling checked in `runKeywordSweep` before any lane runs, (b)
+//   `mineQuotaRemaining`, mined's own rolling-24h quota, and (c) the adaptive
+//   `sweepThrottleState` (`sweep-throttle.ts`) upstream, which shrinks
+//   `opts.limit` itself (and therefore this ceiling too) once Apple starts
+//   429ing. `computeMineSlots` keeps its general 3-ceiling shape so a caller
+//   can still supply a tighter `perSweepCap` if per-sweep pacing is ever
+//   wanted again — production just no longer derives one from the daily
+//   quota.
 //
 // Why ~daily for tier 1: an operator watching tier 1 (including a signature
 // hit) wants ~daily trend resolution — a scan cadence coarser than that
@@ -123,23 +139,20 @@ export function isTier1Eligible(
 }
 
 /**
- * This sweep's slice of the mined-exploration daily quota — see module doc
- * comment, "Mined exploration". Spreads `dailyQuota` evenly across the
- * sweeps expected in a rolling 24h window (`86_400_000 / scanIntervalMs`),
- * rounding up so a slow-cadence config still gets at least 1 mined slot per
- * sweep when the quota is nonzero. Pure — both inputs are already-loaded
- * config values, no I/O.
- */
-export function computePerSweepCap(dailyQuota: number, scanIntervalMs: number): number {
-  return Math.ceil((dailyQuota * scanIntervalMs) / 86_400_000);
-}
-
-/**
  * How many mined-exploration keywords may fill this sweep's batch — the
  * tightest of three independent ceilings: what's left of the batch after
- * hot lane + tier 1, what's left of the rolling daily mined quota, and this
- * sweep's own `perSweepCap` slice of that quota (see `computePerSweepCap`).
+ * hot lane + tier 1 (`remainingBatch`), what's left of the rolling daily
+ * mined quota (`mineQuotaRemaining`), and a caller-supplied `perSweepCap`.
  * Pure, never negative.
+ *
+ * CONTINUOUS FETCH (2026-07-23): `perSweepCap` no longer means "this sweep's
+ * paced slice of the daily quota" (see module doc comment, "Mined
+ * exploration") — `keyword-gaps.ts`'s `runKeywordSweep` now passes this
+ * cycle's own batch limit, which is always `>= remainingBatch`, so in
+ * practice this third ceiling never binds; `remainingBatch` and
+ * `mineQuotaRemaining` are the two ceilings that actually govern the fill.
+ * The parameter stays generic (rather than being dropped) so a caller can
+ * still supply a tighter value if per-sweep pacing is ever needed again.
  */
 export function computeMineSlots(
   remainingBatch: number,
