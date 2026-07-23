@@ -651,7 +651,13 @@ export const appstoreKeywordGapConfigSchema = z
     // quota and `deStorefrontLane`'s cadence below — spreading the
     // highest-volume lane's traffic across rotating IPs before it needs to,
     // rather than waiting for 429s to force the flip.
-    useProxy: z.boolean().default(true),
+    // REVERTED to direct 2026-07-23: Apple's iTunes JSON search API returns
+    // HTTP 403 on Webshare datacenter exit IPs (intermittent — pool is partly
+    // Apple-blocklisted), so proxying this lane broke scans (scanned:0/failed:5
+    // at the higher rate). Direct is 100% clean (Apple never 403s the box IP)
+    // and the adaptive throttle self-regulates against direct 429s. Proxy stays
+    // ON only for the bot-sensitive app-pages HTML lane, where it belongs.
+    useProxy: z.boolean().default(false),
     // How many of the globally stalest active keywords to scan per sweep
     // cycle — THE per-sweep governor (not `dailyKeywordBudget`/
     // `minedExploration.dailyQuota`, which are safety ceilings a sweep only
@@ -1222,7 +1228,7 @@ export const appstoreKeywordGapConfigSchema = z
     scanIntervalMs: 60_000,
     sweepDelayMs: 150,
     dailyKeywordBudget: 150_000,
-    useProxy: true,
+    useProxy: false,
     keywordsPerSweep: 600,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     tier1AutocompleteCap: 50,
@@ -1521,7 +1527,7 @@ export const appstoreAppEnrichmentConfigSchema = z
     // high-volume appstore lane now riding the paid rotating proxy — no
     // reason to leave this one exposed to this box's direct IP while the
     // keyword-scan/mined/DE lanes above ride rotation at a much higher rate.
-    useProxy: z.boolean().default(true),
+    useProxy: z.boolean().default(false),
     // Developer-portfolio sub-pass (build plan §0.1: sightings recorded with
     // source 'portfolio') — runs as part of the SAME 15-min enrichment pass
     // (no separate timer), gated to its own cadence via `minIntervalMs`.
@@ -1563,7 +1569,7 @@ export const appstoreAppEnrichmentConfigSchema = z
     acceleratingLimit: 50,
     delistMissThreshold: 1,
     dailyRequestBudget: 6_000,
-    useProxy: true,
+    useProxy: false,
     portfolio: {
       enabled: true,
       minIntervalMs: 15 * 60 * 1000,
@@ -1626,7 +1632,7 @@ export const appstoreNewbornReobservationConfigSchema = z
     // the Webshare proxy when set. Was default OFF, same endpoint-family
     // reasoning as `appstoreAppEnrichment.useProxy`. MAX-THROUGHPUT PASS
     // (2026-07-22): flipped OFF -> ON alongside that field, same rationale.
-    useProxy: z.boolean().default(true),
+    useProxy: z.boolean().default(false),
   })
   .default({
     enabled: true,
@@ -1634,7 +1640,7 @@ export const appstoreNewbornReobservationConfigSchema = z
     batchSize: 200,
     maxAgeDays: 540,
     delayMs: 300,
-    useProxy: true,
+    useProxy: false,
   });
 export type AppstoreNewbornReobservationConfig = z.infer<
   typeof appstoreNewbornReobservationConfigSchema
@@ -1701,7 +1707,7 @@ export const appstoreReviewHarvestConfigSchema = z
     // cap today, so the extra volume goes out over rotating IPs rather than
     // this box's direct one. Gracefully falls back to direct fetch if the
     // proxy is unconfigured (see `appstore-proxy.ts`).
-    useProxy: z.boolean().default(true),
+    useProxy: z.boolean().default(false),
     // Cohort-refresh sub-pass (build plan §0.4 slot 6 inner pass:
     // "runCohortRefreshIfDue 6h") — re-scans the 3 candidate sources (open
     // signature hits, accelerating newborns, chart-sourced newborns) and
@@ -1741,7 +1747,7 @@ export const appstoreReviewHarvestConfigSchema = z
     maxConsecutiveEmptyHarvests: 5,
     memoryIndexing: "low-star-only",
     dailyRequestBudget: 30_000,
-    useProxy: true,
+    useProxy: false,
     cohortRefresh: {
       enabled: true,
       minIntervalMs: 6 * 60 * 60 * 1000,

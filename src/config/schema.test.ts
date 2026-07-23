@@ -423,7 +423,7 @@ describe("appstoreKeywordGap config", () => {
     expect(g.sweepDelayMs).toBe(150);
     expect(g.dailyKeywordBudget).toBe(150_000);
     expect(g.keywordsPerSweep).toBe(600);
-    expect(g.useProxy).toBe(true);
+    expect(g.useProxy).toBe(false);
     expect(g.minedExploration.dailyQuota).toBe(100_000);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);
@@ -499,14 +499,14 @@ describe("appstoreKeywordGap config", () => {
 describe("appstoreAppEnrichment config useProxy", () => {
   test("defaults to true (max-throughput pass, 2026-07-22)", () => {
     const cfg = opencrowConfigSchema.parse({});
-    expect(cfg.appstoreAppEnrichment.useProxy).toBe(true);
+    expect(cfg.appstoreAppEnrichment.useProxy).toBe(false);
   });
 });
 
 describe("appstoreNewbornReobservation config useProxy", () => {
   test("defaults to true (max-throughput pass, 2026-07-22)", () => {
     const cfg = opencrowConfigSchema.parse({});
-    expect(cfg.appstoreNewbornReobservation.useProxy).toBe(true);
+    expect(cfg.appstoreNewbornReobservation.useProxy).toBe(false);
   });
 });
 
@@ -642,7 +642,7 @@ describe("appstoreReviewHarvest config", () => {
     // just a bigger number). See the budget-table comment on
     // appstoreAppEnrichmentConfigSchema.
     expect(rh.dailyRequestBudget).toBe(30_000);
-    expect(rh.useProxy).toBe(true);
+    expect(rh.useProxy).toBe(false);
   });
 
   test("has NO tickIntervalMs — replaced by minIntervalMs (build plan §0.2/§0.4: no new timer)", () => {
