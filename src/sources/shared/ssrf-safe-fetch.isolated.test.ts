@@ -240,34 +240,26 @@ describe("ssrfSafeFetch rate-limit retry", () => {
     expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
   });
 
-  it("retries a bare 403 (no Retry-After) when treat403AsRateLimit is set", async () => {
-    mockFetchWithTimeout
-      .mockImplementationOnce(async () => makeResponse(403, {}))
-      .mockImplementationOnce(async () => makeResponse(200, {}, "ok"));
-
-    const res = await ssrfSafeFetch("https://example.com/search", {
-      ...FAST_RETRY_OPTS,
-      treat403AsRateLimit: true,
-    });
-
-    expect(res.status).toBe(200);
-    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(2);
-  });
-
-  it("throws a distinct RateLimitError once bare-403 retries (treat403AsRateLimit) are exhausted", async () => {
+  // A bare 403 recognized via treat403AsRateLimit is Apple's per-IP burst
+  // ceiling: worth COUNTING (thrown as RateLimitError so the sweep tallies it
+  // and the adaptive throttle backs off batch size across ticks) but NOT
+  // worth RETRYING — retrying wastes 4× requests on an endpoint that will 403
+  // again and stalls a 600-keyword sweep. So it throws IMMEDIATELY, no retry.
+  it("throws RateLimitError immediately (no retry) on a bare 403 when treat403AsRateLimit is set", async () => {
     mockFetchWithTimeout.mockImplementation(async () => makeResponse(403, {}));
 
     const err = await ssrfSafeFetch("https://example.com/search", {
       ...FAST_RETRY_OPTS,
       treat403AsRateLimit: true,
-      maxRetries: 2,
+      maxRetries: 3,
     }).catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(RateLimitError);
     expect((err as InstanceType<typeof RateLimitError>).code).toBe("RATE_LIMITED");
     expect((err as InstanceType<typeof RateLimitError>).status).toBe(403);
-    // initial try + 2 retries = 3 calls
-    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(3);
+    expect((err as InstanceType<typeof RateLimitError>).retryable).toBe(false);
+    // Fast-failed after a single fetch despite maxRetries: 3 — never retried.
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
   });
 
   it("throws a distinct RateLimitError once retries are exhausted", async () => {
