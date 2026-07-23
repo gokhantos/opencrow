@@ -172,6 +172,16 @@ export function createAppStoreScraper(config?: {
   // faster cadence (`appstoreKeywordGap.scanIntervalMs`, default 5 min).
   let keywordSweepTimer: ReturnType<typeof setInterval> | null = null;
   let keywordSweepRunning = false;
+  // Independent timer for the ~12 auxiliary keyword-gap lanes (screener,
+  // alerts, autocomplete expansion, GB hints, newborn re-observation, DE
+  // storefront, mined backfill, intl charts, review harvest, app/app-page
+  // enrichment, scans retention) — decoupled from the gap-sweep timer above
+  // (throughput fix, 2026-07-23) so a long-running auxiliary chain (all
+  // lanes due at once post-restart, ~15-20min) can no longer block the
+  // high-value gap-sweep from running on its own ~60s cadence. See
+  // `auxiliaryLanesTick`.
+  let auxiliaryLanesTimer: ReturnType<typeof setInterval> | null = null;
+  let auxiliaryLanesRunning = false;
   // Soft cadence gate for the newborn-velocity screener (`keyword-screener.ts`):
   // process-local, not persisted — a restart simply lets the next due tick run
   // it again, which is harmless (the screener is idempotent and cheap). Keeps
@@ -280,26 +290,29 @@ export function createAppStoreScraper(config?: {
   // Adaptive-throttle state for the keyword-gap sweep's scan rate (see
   // sweep-throttle.ts) — process-local like `lastScreenerRunAt` above; a
   // restart resets to full rate, which is harmless (the state machine
-  // re-detects a real problem within one sweep). SHARED with autocomplete
-  // expansion below: both hit an Apple search endpoint on the same
-  // corpus-scan cadence, so a rate-limit spike from either source trips this
-  // one throttle and backs off both.
+  // re-detects a real problem within one sweep).
+  // Throttle ownership (throughput fix, 2026-07-23 — independent-tick
+  // decouple): OWNED EXCLUSIVELY by the gap-sweep tick (`keywordSweepTick`)
+  // now. The auxiliary lanes (autocomplete expansion, GB hints, etc.) used
+  // to feed this same throttle, but now that the gap-sweep and the
+  // auxiliary lanes run on separate timers under separate single-flight
+  // locks (`keywordSweepRunning` / `auxiliaryLanesRunning`), a shared writer
+  // would race the gap-sweep's own reset/read of `tickThrottle` below. The
+  // gap-sweep is >95% of Apple request volume anyway, so it now drives this
+  // throttle from its own errors only; the auxiliary lanes self-protect via
+  // `ssrfSafeFetch`'s `retryOnRateLimit` backoff instead of the shared AIMD
+  // multiplier.
   let sweepThrottleState: ThrottleState = INITIAL_THROTTLE_STATE;
-  // Per-tick throttle accumulator (B1): every Apple-endpoint lane on a
-  // keyword-sweep tick adds its (rateLimitErrors, attempted) here instead of
-  // advancing the shared throttle itself; `keywordSweepTick` then folds the
-  // summed totals into `sweepThrottleState` via ONE `advanceThrottle` call at
-  // the end of the tick. This (a) weights the error rate by real request
-  // volume — a single low-volume lane's one-off 429 can no longer halve the
-  // rate for the main SERP sweep — and (b) makes one "sweep" equal one TICK,
-  // so `THROTTLE_HOLD_SWEEPS` again means that many ticks of recovery hold
-  // rather than being burned through by ~10 per-lane advances inside a
-  // single tick.
-  // Reset at the top of each tick; safe as closure-level state because the
-  // `keywordSweepRunning` single-flight guard means only one tick runs at a
-  // time. Tradeoff (documented, acceptable): lanes read the throttle
-  // multiplier as it stood at the START of the tick, so intra-tick shrinkage
-  // for later lanes is gone.
+  // Per-tick throttle accumulator (B1): the gap-sweep is the ONLY
+  // contributor now (see the throttle-ownership note above) —
+  // `keywordSweepTick` folds its own outcome into `sweepThrottleState` via
+  // ONE `advanceThrottle` call at the end of the tick. This still (a)
+  // weights the error rate by real request volume within the sweep itself
+  // and (b) makes one "sweep" equal one TICK, so `THROTTLE_HOLD_SWEEPS`
+  // means that many gap-sweep ticks of recovery hold.
+  // Reset at the top of each gap-sweep tick; safe as closure-level state
+  // because the `keywordSweepRunning` single-flight guard means only one
+  // gap-sweep tick runs at a time.
   let tickThrottle: ThrottleOutcome = { rateLimitErrors: 0, attempted: 0 };
   function accumulateThrottle(rateLimitErrors: number, attempted: number): void {
     tickThrottle = {
@@ -714,8 +727,10 @@ export function createAppStoreScraper(config?: {
 
     keywordSweepRunning = true;
     try {
-      // B1: fresh per-tick throttle accumulator — every Apple-endpoint lane
-      // below adds into this; the single end-of-tick advance folds it in.
+      // B1: fresh per-tick throttle accumulator — the gap-sweep is the only
+      // contributor now (see the throttle-ownership note above
+      // `sweepThrottleState`); the single end-of-tick advance below folds it
+      // in.
       tickThrottle = { rateLimitErrors: 0, attempted: 0 };
       const cfg = loadConfig().appstoreKeywordGap;
       if (!cfg.enabled) {
@@ -752,9 +767,9 @@ export function createAppStoreScraper(config?: {
 
         // Adaptive throttle (B1): accumulate this sweep's outcome into the
         // per-tick accumulator rather than advancing the shared throttle here.
-        // The single end-of-tick advance (below) folds every lane's totals in
-        // at once. Accumulated unconditionally — the end-of-tick advance is
-        // what's gated on adaptiveThrottleEnabled/legacyRateOverride.
+        // The single end-of-tick advance (below) folds it in. Accumulated
+        // unconditionally — the end-of-tick advance is what's gated on
+        // adaptiveThrottleEnabled/legacyRateOverride.
         const sweepAttempted = result.scanned + result.failed;
         accumulateThrottle(result.rateLimitErrors, sweepAttempted);
 
@@ -780,80 +795,20 @@ export function createAppStoreScraper(config?: {
         }
       }
 
-      // Screener runs after each sweep batch (whether or not this particular
-      // cycle scanned anything new — it evaluates the corpus's LATEST scans,
-      // not just this cycle's), gated to its own cadence internally.
-      await runSignatureScreenerIfDue();
-
-      // New-hit / first-crossing alert digest (Batch F4) — runs after the
-      // screener so a fresh signature hit from THIS cycle is eligible to be
-      // included, gated to its own (default 24h) cadence internally, same
-      // pattern as every other lane on this tick.
-      await runGapAlertsIfDue();
-
-      // Autocomplete corpus expansion (PRIMARY discovery source — see
-      // keyword-autocomplete.ts) also runs off this tick, gated to its own
-      // slower cadence internally, same pattern as the screener above.
-      await runAutocompleteExpansionIfDue();
-
-      // GB hints lane (throughput wave 2026-07-21, item 3) — a second
-      // autocomplete-expansion pass against the GB App Store, gated to its
-      // own cadence internally, same pattern as the US lane above.
-      await runGbHintsLaneIfDue();
-
-      // Newborn re-observation lane (throughput wave 2026-07-21, item 2,
-      // audit NEXT item F) — daily batched-lookup re-observation of every
-      // tracked newborn app, gated to its own cadence internally, same
-      // pattern as every other lane above.
-      await runNewbornReobservationIfDue();
-
-      // DE storefront lane (2026-07-21 scan-budget retune) — daily pass over
-      // the tier-1-protected corpus against the German App Store, gated to
-      // its own cadence internally, same pattern as the screener/autocomplete
-      // passes above.
-      await runDeStorefrontSweepIfDue();
-
-      // One-shot mined-pool deactivation backfill — see `minedBackfillDone`'s
-      // doc comment. Runs at most once, off this tick so it never blocks
-      // scraper startup.
-      await runMinedBackfillOnce();
-
-      // International storefront chart sweep (deep-scrape build Stage 3,
-      // build plan §0.4 slot 5) — gated to its own cadence internally, same
-      // pattern as the screener/autocomplete/DE-storefront passes above.
-      await runIntlChartsIfDue();
-
-      // Review-text harvester (deep-scrape build Stage 4, build plan §0.4
-      // slot 6) — gated to its own cadence internally, same pattern as the
-      // screener/autocomplete/DE-storefront/intl-charts passes above.
-      await runReviewHarvestIfDue();
-
-      // App-meta registry Lookup-API enrichment (deep-scrape build Stage 2,
-      // build plan §0.4 slot 7) — gated to its own cadence internally, same
-      // pattern as the screener/autocomplete/DE-storefront passes above.
-      await runAppEnrichmentIfDue();
-
-      // App-page HTML enrichment (deep-scrape build Stage 5, build plan
-      // §0.4 slot 8) — gated to its own cadence internally, same pattern as
-      // every other pass above.
-      await runAppPageEnrichmentIfDue();
-
-      // Keyword-scans retention prune (B3) — DB-only (no Apple requests, so
-      // it feeds nothing into the throttle), gated to its own ~6h cadence,
-      // same log-and-swallow pattern as the ledger prunes above.
-      await runScansRetentionIfDue();
-
-      // B1: single end-of-tick throttle advance — fold every lane's
-      // accumulated (rateLimitErrors, attempted) into the shared throttle
-      // ONCE. This weights the error rate by real request volume and makes
-      // one "sweep" = one tick (restoring the multi-minute recovery hold
-      // that THROTTLE_HOLD_SWEEPS assumes). Gated exactly as the old
-      // per-lane blocks were: only under adaptive throttling, and never
-      // under the hard kill-switch (a fixed, known-safe rate with no
-      // automation). AIMD step sizes (continuous-fetch pass, 2026-07-23) are
-      // config-driven — see `sweepRateSafety.throttleBackoffFactor` /
+      // B1: single end-of-tick throttle advance — folds the gap-sweep's own
+      // (rateLimitErrors, attempted) into the shared throttle ONCE. Gated
+      // exactly as before: only under adaptive throttling, and never under
+      // the hard kill-switch (a fixed, known-safe rate with no automation).
+      // AIMD step sizes (continuous-fetch pass, 2026-07-23) are config-driven
+      // — see `sweepRateSafety.throttleBackoffFactor` /
       // `throttleRecoveryStep` in src/config/schema.ts and
       // `sweep-throttle.ts`'s `advanceThrottle`.
+      //
+      // Independent-tick decouple (throughput fix, 2026-07-23): this used to
+      // also fold in every auxiliary lane's totals from later in this same
+      // tick. Those lanes now run on their own independently-locked
+      // `auxiliaryLanesTick` and no longer write into `tickThrottle` — see
+      // the throttle-ownership note above `sweepThrottleState`.
       if (cfg.sweepRateSafety.adaptiveThrottleEnabled && !cfg.sweepRateSafety.legacyRateOverride) {
         const wasThrottled = sweepThrottleState.throttled;
         const prevMultiplier = sweepThrottleState.multiplier;
@@ -893,6 +848,105 @@ export function createAppStoreScraper(config?: {
       log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
     } finally {
       keywordSweepRunning = false;
+    }
+  }
+
+  // Runs the ~12 auxiliary keyword-gap lanes on their own independent timer
+  // + single-flight lock, decoupled from the gap-sweep tick above
+  // (throughput fix, 2026-07-23): post-restart every lane below is due at
+  // once, and sequentially awaiting all of them under the gap-sweep's own
+  // lock used to block the high-value gap-sweep — which should run every
+  // `scanIntervalMs` (~60s) — for the whole 15-20min chain. Each lane below
+  // is still self-gated to its own `...IfDue` cadence internally, so this
+  // tick only needs to run often enough to check due-ness (see
+  // `auxiliaryLanesTimer` in `start()`). Guarded by `auxiliaryLanesRunning`
+  // so this tick can never overlap itself; independent of
+  // `keywordSweepRunning` so a long-running auxiliary chain can never block
+  // a gap-sweep tick (or vice versa). Never allowed to break the scraper —
+  // a failure is logged and swallowed here, mirroring `keywordSweepTick`.
+  async function auxiliaryLanesTick(): Promise<void> {
+    if (auxiliaryLanesRunning) {
+      log.debug("Auxiliary keyword-gap lanes already running, skipping");
+      return;
+    }
+
+    auxiliaryLanesRunning = true;
+    try {
+      const cfg = loadConfig().appstoreKeywordGap;
+      if (!cfg.enabled) {
+        log.debug("Auxiliary keyword-gap lanes skipped — feature disabled");
+        return;
+      }
+
+      // Screener runs each tick (whether or not the gap-sweep scanned
+      // anything new this cycle — it evaluates the corpus's LATEST scans,
+      // not just the gap-sweep's most recent cycle), gated to its own
+      // cadence internally.
+      await runSignatureScreenerIfDue();
+
+      // New-hit / first-crossing alert digest (Batch F4) — runs after the
+      // screener so a fresh signature hit is eligible to be included, gated
+      // to its own (default 24h) cadence internally, same pattern as every
+      // other lane on this tick.
+      await runGapAlertsIfDue();
+
+      // Autocomplete corpus expansion (PRIMARY discovery source — see
+      // keyword-autocomplete.ts) also runs off this tick, gated to its own
+      // slower cadence internally, same pattern as the screener above.
+      await runAutocompleteExpansionIfDue();
+
+      // GB hints lane (throughput wave 2026-07-21, item 3) — a second
+      // autocomplete-expansion pass against the GB App Store, gated to its
+      // own cadence internally, same pattern as the US lane above.
+      await runGbHintsLaneIfDue();
+
+      // Newborn re-observation lane (throughput wave 2026-07-21, item 2,
+      // audit NEXT item F) — daily batched-lookup re-observation of every
+      // tracked newborn app, gated to its own cadence internally, same
+      // pattern as every other lane above.
+      await runNewbornReobservationIfDue();
+
+      // DE storefront lane (2026-07-21 scan-budget retune) — daily pass over
+      // the tier-1-protected corpus against the German App Store, gated to
+      // its own cadence internally, same pattern as the screener/autocomplete
+      // passes above. A no-op by default (`deStorefrontLane.enabled` is
+      // `false`) — kept here regardless so re-enabling it doesn't require
+      // re-wiring the tick.
+      await runDeStorefrontSweepIfDue();
+
+      // One-shot mined-pool deactivation backfill — see `minedBackfillDone`'s
+      // doc comment. Runs at most once, off the gap-sweep tick so it never
+      // blocks scraper startup.
+      await runMinedBackfillOnce();
+
+      // International storefront chart sweep (deep-scrape build Stage 3,
+      // build plan §0.4 slot 5) — gated to its own cadence internally, same
+      // pattern as the screener/autocomplete/DE-storefront passes above.
+      await runIntlChartsIfDue();
+
+      // Review-text harvester (deep-scrape build Stage 4, build plan §0.4
+      // slot 6) — gated to its own cadence internally, same pattern as the
+      // screener/autocomplete/DE-storefront/intl-charts passes above.
+      await runReviewHarvestIfDue();
+
+      // App-meta registry Lookup-API enrichment (deep-scrape build Stage 2,
+      // build plan §0.4 slot 7) — gated to its own cadence internally, same
+      // pattern as the screener/autocomplete/DE-storefront passes above.
+      await runAppEnrichmentIfDue();
+
+      // App-page HTML enrichment (deep-scrape build Stage 5, build plan
+      // §0.4 slot 8) — gated to its own cadence internally, same pattern as
+      // every other pass above.
+      await runAppPageEnrichmentIfDue();
+
+      // Keyword-scans retention prune (B3) — DB-only (no Apple requests, so
+      // it feeds nothing into the throttle), gated to its own ~6h cadence,
+      // same log-and-swallow pattern as the ledger prunes above.
+      await runScansRetentionIfDue();
+    } catch (err) {
+      log.warn("Auxiliary keyword-gap lanes failed", { error: getErrorMessage(err) });
+    } finally {
+      auxiliaryLanesRunning = false;
     }
   }
 
@@ -958,9 +1012,11 @@ export function createAppStoreScraper(config?: {
         maxPrefixesPerSeed,
       });
 
-      // B1: fold this lane's outcome into the per-tick accumulator (the
-      // single end-of-tick advance applies it).
-      accumulateThrottle(result.rateLimitErrors, result.attempted);
+      // Throttle ownership (independent-tick decouple, 2026-07-23): this
+      // lane no longer feeds the gap-sweep's `tickThrottle` — it now runs
+      // on the independently-locked `auxiliaryLanesTick` and self-protects
+      // via `ssrfSafeFetch`'s `retryOnRateLimit` backoff instead. See the
+      // throttle-ownership note above `sweepThrottleState`.
 
       // B2 flatline: a pass that fetched (attempted>0) but Apple returned
       // ZERO raw suggestions (rawTermCount===0, pre-junk-filter) means the
@@ -1056,8 +1112,9 @@ export function createAppStoreScraper(config?: {
         maxPrefixesPerSeed,
       });
 
-      // B1: fold into the per-tick accumulator (see the US lane above).
-      accumulateThrottle(result.rateLimitErrors, result.attempted);
+      // Throttle ownership: no longer feeds the gap-sweep's `tickThrottle`
+      // (see the throttle-ownership note above `sweepThrottleState`) — self-
+      // protects via `retryOnRateLimit` like every other auxiliary lane.
 
       // B2 flatline: same rawTermCount===0 heartbeat as the US lane, tracked
       // on its own GB streak counter.
@@ -1134,8 +1191,9 @@ export function createAppStoreScraper(config?: {
         bailed: result.bailed,
       });
 
-      // B1: fold into the per-tick accumulator (single end-of-tick advance).
-      accumulateThrottle(result.rateLimitErrors, result.attempted);
+      // Throttle ownership: no longer feeds the gap-sweep's `tickThrottle`
+      // (see the throttle-ownership note above `sweepThrottleState`) — self-
+      // protects via `retryOnRateLimit` like every other auxiliary lane.
     } catch (err) {
       log.warn("Newborn re-observation failed", { error: getErrorMessage(err) });
     }
@@ -1187,8 +1245,9 @@ export function createAppStoreScraper(config?: {
         rateLimitErrors: result.rateLimitErrors,
       });
 
-      // B1: fold into the per-tick accumulator (single end-of-tick advance).
-      accumulateThrottle(result.rateLimitErrors, result.scanned + result.failed);
+      // Throttle ownership: no longer feeds the gap-sweep's `tickThrottle`
+      // (see the throttle-ownership note above `sweepThrottleState`) — self-
+      // protects via `retryOnRateLimit` like every other auxiliary lane.
     } catch (err) {
       log.warn("DE storefront lane failed", { error: getErrorMessage(err) });
     }
@@ -1241,8 +1300,9 @@ export function createAppStoreScraper(config?: {
         throttleMultiplier: multiplier,
       });
 
-      // B1: fold into the per-tick accumulator (single end-of-tick advance).
-      accumulateThrottle(result.rateLimitErrors, result.scanned + result.failed);
+      // Throttle ownership: no longer feeds the gap-sweep's `tickThrottle`
+      // (see the throttle-ownership note above `sweepThrottleState`) — self-
+      // protects via `retryOnRateLimit` like every other auxiliary lane.
     } catch (err) {
       log.warn("Intl charts lane failed", { error: getErrorMessage(err) });
     }
@@ -1362,8 +1422,10 @@ export function createAppStoreScraper(config?: {
             effectiveAppsPerTick,
           });
 
-          // B1: fold into the per-tick accumulator (single end-of-tick advance).
-          accumulateThrottle(result.rateLimitErrors, result.attempted);
+          // Throttle ownership: no longer feeds the gap-sweep's
+          // `tickThrottle` (see the throttle-ownership note above
+          // `sweepThrottleState`) — self-protects via `retryOnRateLimit`
+          // like every other auxiliary lane.
         }
       }
 
@@ -1445,8 +1507,10 @@ export function createAppStoreScraper(config?: {
             effectiveMaxBatches,
           });
 
-          // B1: fold into the per-tick accumulator (single end-of-tick advance).
-          accumulateThrottle(result.rateLimitErrors, result.attempted);
+          // Throttle ownership: no longer feeds the gap-sweep's
+          // `tickThrottle` (see the throttle-ownership note above
+          // `sweepThrottleState`) — self-protects via `retryOnRateLimit`
+          // like every other auxiliary lane.
         }
       }
 
@@ -1468,8 +1532,10 @@ export function createAppStoreScraper(config?: {
           bailed: portfolioResult.bailed,
         });
 
-        // B1: fold into the per-tick accumulator (single end-of-tick advance).
-        accumulateThrottle(portfolioResult.rateLimitErrors, portfolioResult.attempted);
+        // Throttle ownership: no longer feeds the gap-sweep's `tickThrottle`
+        // (see the throttle-ownership note above `sweepThrottleState`) —
+        // self-protects via `retryOnRateLimit` like every other auxiliary
+        // lane.
       }
 
       // Lookup-request ledger prune — its own cadence gate.
@@ -1558,8 +1624,10 @@ export function createAppStoreScraper(config?: {
             effectivePagesPerBatch,
           });
 
-          // B1: fold into the per-tick accumulator (single end-of-tick advance).
-          accumulateThrottle(result.rateLimitErrors, result.attempted);
+          // Throttle ownership: no longer feeds the gap-sweep's
+          // `tickThrottle` (see the throttle-ownership note above
+          // `sweepThrottleState`) — self-protects via `retryOnRateLimit`
+          // like every other auxiliary lane.
         }
       }
     } catch (err) {
@@ -1693,6 +1761,21 @@ export function createAppStoreScraper(config?: {
           log.error("Keyword-gap sweep first tick error", { error: err }),
         );
       }
+
+      // Independent-tick decouple (throughput fix, 2026-07-23): the
+      // auxiliary lanes get their own timer + single-flight lock so a long
+      // auxiliary chain can never block the gap-sweep above. Each lane is
+      // self-gated to its own `...IfDue` cadence internally, so reusing the
+      // gap-sweep's `scanIntervalMs` here is just a due-ness check
+      // frequency, not a request-volume driver.
+      if (!auxiliaryLanesTimer) {
+        const sweepIntervalMs = loadConfig().appstoreKeywordGap.scanIntervalMs;
+        auxiliaryLanesTimer = setInterval(auxiliaryLanesTick, sweepIntervalMs);
+        log.info("Auxiliary keyword-gap lanes timer started", { sweepIntervalMs });
+        auxiliaryLanesTick().catch((err) =>
+          log.error("Auxiliary keyword-gap lanes first tick error", { error: err }),
+        );
+      }
     },
 
     stop() {
@@ -1705,6 +1788,11 @@ export function createAppStoreScraper(config?: {
         clearInterval(keywordSweepTimer);
         keywordSweepTimer = null;
         log.info("Keyword-gap sweep timer stopped");
+      }
+      if (auxiliaryLanesTimer) {
+        clearInterval(auxiliaryLanesTimer);
+        auxiliaryLanesTimer = null;
+        log.info("Auxiliary keyword-gap lanes timer stopped");
       }
     },
 
