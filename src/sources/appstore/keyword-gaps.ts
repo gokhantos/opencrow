@@ -239,7 +239,12 @@ export async function fetchTopApps(
   // scanner must honor iTunes 429/503 instead of hammering. On exhausted
   // retries ssrfSafeFetch throws RateLimitError — the sweep's consecutive-throw
   // bail already handles repeated throws generically (no type import needed).
-  const res = await ssrfSafeFetch(url, { retryOnRateLimit: true, useProxy });
+  // `treat403AsRateLimit: true` (2026-07-23 — live sweep evidence: 51+ 403s
+  // in a 10-min window, adaptive throttle stuck at multiplier 1.0) because
+  // Apple enforces THIS endpoint's per-IP burst ceiling with a bare 403, not
+  // 429/503, and never sends `Retry-After` — see `rate-limit-error.ts`'s
+  // `RateLimitStatusOptions.treat403AsRateLimit` for the full rationale.
+  const res = await ssrfSafeFetch(url, { retryOnRateLimit: true, treat403AsRateLimit: true, useProxy });
   if (!res.ok) {
     throw new Error(`iTunes search failed for "${keyword}": HTTP ${res.status}`);
   }

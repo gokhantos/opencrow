@@ -279,7 +279,16 @@ export async function harvestDueApps(opts: {
         const url = buildReviewFeedUrl(enrollment.appId, page, opts.storefront);
         let res: Response;
         try {
-          res = await ssrfSafeFetch(url, { retryOnRateLimit: true, useProxy: opts.useProxy ?? false });
+          // `treat403AsRateLimit: true` — the review-RSS feed is the same
+          // `itunes.apple.com` host/burst-ceiling as the other direct iTunes
+          // JSON lanes, signaled with a bare 403 (no `Retry-After`) rather
+          // than 429/503. See `rate-limit-error.ts`'s
+          // `RateLimitStatusOptions.treat403AsRateLimit`.
+          res = await ssrfSafeFetch(url, {
+            retryOnRateLimit: true,
+            treat403AsRateLimit: true,
+            useProxy: opts.useProxy ?? false,
+          });
         } catch (err) {
           if (isRateLimitError(err)) rateLimitErrors++;
           if (pagesFetched === 0) itemFailed = true;

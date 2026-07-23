@@ -336,6 +336,29 @@ describe("scanKeyword", () => {
     expect(p.store).toBe("DE");
     expect(requestedUrl).toContain("country=de");
   });
+
+  // Live-sweep gap this fix closes (2026-07-23): Apple burst-throttles the
+  // iTunes search endpoint with a bare 403 (no Retry-After), which the
+  // adaptive throttle never saw as a rate-limit signal. `fetchTopApps` must
+  // opt `ssrfSafeFetch` into `treat403AsRateLimit` so a bare 403 becomes a
+  // `RateLimitError` that feeds `sweep-throttle.ts`'s AIMD backoff — see
+  // `rate-limit-error.ts`'s `RateLimitStatusOptions.treat403AsRateLimit`.
+  it("opts fetchTopApps's ssrfSafeFetch call into retryOnRateLimit AND treat403AsRateLimit", async () => {
+    let capturedOpts: Record<string, unknown> = {};
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (_url: string, opts: Record<string, unknown>) => {
+        capturedOpts = opts;
+        return { ok: true, json: async () => sample };
+      },
+    }));
+
+    const { scanKeyword } = await import("./keyword-gaps");
+    await scanKeyword("fatty liver diet");
+
+    expect(capturedOpts.retryOnRateLimit).toBe(true);
+    expect(capturedOpts.treat403AsRateLimit).toBe(true);
+  });
 });
 
 // 2026-07-21 audit item C fix: kill the zero-title-match whole-SERP demand

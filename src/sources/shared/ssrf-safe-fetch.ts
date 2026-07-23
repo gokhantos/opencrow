@@ -8,7 +8,8 @@
  *   ssrfSafeFetch   — fetch helper that follows redirects MANUALLY, re-validating
  *                     each hop URL before connecting so redirect-to-private attacks
  *                     are blocked even after the initial check. Optionally retries
- *                     rate-limit-shaped responses (429/503/403+Retry-After) with
+ *                     rate-limit-shaped responses (429/503/403+Retry-After, or ANY
+ *                     403 for callers that opt into `treat403AsRateLimit`) with
  *                     backoff via `retryOnRateLimit` — see SsrfSafeFetchOptions.
  *   RateLimitError  — re-exported from ./rate-limit-error; thrown by ssrfSafeFetch
  *                     when rate-limit retries are exhausted. Detect via
@@ -208,6 +209,22 @@ export interface SsrfSafeFetchOptions {
    * or `err.code === "RATE_LIMITED"`).
    */
   readonly retryOnRateLimit?: boolean;
+  /**
+   * Only meaningful alongside `retryOnRateLimit`. When `true`, a bare HTTP
+   * 403 (no `Retry-After` header) is ALSO treated as a rate-limit signal —
+   * see `rate-limit-error.ts`'s `RateLimitStatusOptions.treat403AsRateLimit`
+   * for the full rationale (Apple's iTunes JSON endpoints burst-throttle
+   * with 403, not 429/503, and never send `Retry-After`). Default `false`:
+   * every non-iTunes-JSON caller must leave this unset, since a bare 403
+   * elsewhere usually means "blocked", not "slow down". Callers that DO set
+   * this: `keyword-gaps.ts` (search), `app-lookup.ts` (lookup),
+   * `keyword-autocomplete.ts` (search-hints), `review-harvester.ts` (review
+   * RSS) — all direct (non-proxied-by-default) fetches to
+   * `itunes.apple.com` / `search.itunes.apple.com`. The proxied
+   * `apps.apple.com` HTML product-pages lane (`app-pages.ts`) keeps its own
+   * handling and does NOT set this.
+   */
+  readonly treat403AsRateLimit?: boolean;
   /** Max retry attempts after the initial try. Default 3 (4 total tries). */
   readonly maxRetries?: number;
   /** Backoff delay bounds in ms for computed (non-`Retry-After`) waits. */
@@ -283,7 +300,11 @@ async function fetchHop(
 
       const response = await fetchOnce(url, opts, timeoutMs);
       const retryAfterHeader = response.headers.get("retry-after");
-      if (isRateLimitStatus(response.status, retryAfterHeader)) {
+      if (
+        isRateLimitStatus(response.status, retryAfterHeader, {
+          treat403AsRateLimit: opts.treat403AsRateLimit,
+        })
+      ) {
         throw new RateLimitError(
           `Rate limited (HTTP ${response.status}) fetching ${url}`,
           response.status,

@@ -153,7 +153,11 @@ async function fetchAndParse(
   logLabel: string,
   useProxy: boolean = false,
 ): Promise<readonly LookupApp[]> {
-  const res = await ssrfSafeFetch(url, { retryOnRateLimit: true, useProxy });
+  // `treat403AsRateLimit: true` — this hits the SAME `itunes.apple.com`
+  // per-IP burst ceiling as `keyword-gaps.ts`'s search endpoint, enforced
+  // with a bare 403 (no `Retry-After`) rather than 429/503. See
+  // `rate-limit-error.ts`'s `RateLimitStatusOptions.treat403AsRateLimit`.
+  const res = await ssrfSafeFetch(url, { retryOnRateLimit: true, treat403AsRateLimit: true, useProxy });
   if (!res.ok) {
     throw new Error(`iTunes lookup failed (${logLabel}): HTTP ${res.status}`);
   }
