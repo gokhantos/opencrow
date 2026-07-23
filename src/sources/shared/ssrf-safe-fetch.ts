@@ -37,7 +37,12 @@ import { getErrorMessage } from "../../lib/error-serialization";
 import { retryAsync } from "../../infra/retry";
 import { getAppstoreProxyUrl } from "./appstore-proxy";
 import { fetchWithTimeout } from "./fetch-with-timeout";
-import { RateLimitError, isRateLimitStatus, parseRetryAfterMs } from "./rate-limit-error";
+import {
+  RateLimitError,
+  isRateLimitStatus,
+  isRetryableRateLimitStatus,
+  parseRetryAfterMs,
+} from "./rate-limit-error";
 
 export { RateLimitError } from "./rate-limit-error";
 
@@ -309,6 +314,7 @@ async function fetchHop(
           `Rate limited (HTTP ${response.status}) fetching ${url}`,
           response.status,
           parseRetryAfterMs(retryAfterHeader),
+          isRetryableRateLimitStatus(response.status, retryAfterHeader),
         );
       }
       return response;
@@ -319,7 +325,12 @@ async function fetchHop(
       maxDelayMs,
       signal: opts.signal,
       label: "ssrfSafeFetch:rateLimit",
-      shouldRetry: (err) => err instanceof RateLimitError && elapsedWaitMs < maxTotalWaitMs,
+      // A bare-403 burst signal (retryable === false) is thrown so callers
+      // count it, but NOT retried in-place — retrying Apple's per-IP ceiling
+      // wastes requests and stalls the sweep. 429/503 + 403+Retry-After still
+      // back off here.
+      shouldRetry: (err) =>
+        err instanceof RateLimitError && err.retryable && elapsedWaitMs < maxTotalWaitMs,
       retryAfterMs: (err) => (err instanceof RateLimitError ? err.retryAfterMs : undefined),
       onRetry: (info) => {
         elapsedWaitMs += info.delayMs;

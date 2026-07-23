@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { RateLimitError, isRateLimitStatus, parseRetryAfterMs } from "./rate-limit-error";
+import {
+  RateLimitError,
+  isRateLimitStatus,
+  isRetryableRateLimitStatus,
+  parseRetryAfterMs,
+} from "./rate-limit-error";
 
 describe("isRateLimitStatus", () => {
   it("treats 429 as rate-limited regardless of Retry-After", () => {
@@ -41,6 +46,29 @@ describe("isRateLimitStatus", () => {
   });
 });
 
+describe("isRetryableRateLimitStatus", () => {
+  it("treats 429 and 503 as retryable (server-signalled bounded backoff)", () => {
+    expect(isRetryableRateLimitStatus(429, null)).toBe(true);
+    expect(isRetryableRateLimitStatus(503, null)).toBe(true);
+  });
+
+  it("treats 403 WITH a Retry-After header as retryable", () => {
+    expect(isRetryableRateLimitStatus(403, "5")).toBe(true);
+  });
+
+  // The core of this fix: a bare 403 (Apple's per-IP burst ceiling) is a
+  // rate-limit signal worth COUNTING but not worth RETRYING — retrying it
+  // wastes requests on an endpoint that will 403 again and stalls the sweep.
+  it("does NOT treat a bare 403 (no Retry-After) as retryable", () => {
+    expect(isRetryableRateLimitStatus(403, null)).toBe(false);
+  });
+
+  it("does NOT treat non-rate-limit statuses as retryable", () => {
+    expect(isRetryableRateLimitStatus(200, null)).toBe(false);
+    expect(isRetryableRateLimitStatus(500, null)).toBe(false);
+  });
+});
+
 describe("parseRetryAfterMs", () => {
   it("returns undefined for a missing header", () => {
     expect(parseRetryAfterMs(null)).toBeUndefined();
@@ -73,5 +101,15 @@ describe("RateLimitError", () => {
   it("allows an undefined retryAfterMs", () => {
     const err = new RateLimitError("rate limited", 429);
     expect(err.retryAfterMs).toBeUndefined();
+  });
+
+  it("defaults retryable to true (preserves 429/503 backoff behavior)", () => {
+    expect(new RateLimitError("rate limited", 429).retryable).toBe(true);
+  });
+
+  it("carries an explicit retryable=false for bare-403 burst signals", () => {
+    const err = new RateLimitError("rate limited", 403, undefined, false);
+    expect(err.retryable).toBe(false);
+    expect(err.status).toBe(403);
   });
 });

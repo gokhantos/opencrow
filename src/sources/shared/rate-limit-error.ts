@@ -13,12 +13,25 @@ export class RateLimitError extends Error {
   readonly code = "RATE_LIMITED" as const;
   readonly status: number;
   readonly retryAfterMs: number | undefined;
+  /**
+   * Whether backing off and re-issuing this request is worthwhile. True for
+   * 429/503 and 403+Retry-After (the server signalled a bounded backoff).
+   * FALSE for a bare-403 recognized only via `treat403AsRateLimit`: that is
+   * Apple's per-IP burst ceiling, which does NOT clear inside the retry
+   * budget — retrying it wastes 4× requests on an endpoint that will 403
+   * again AND stalls the caller (a 600-keyword sweep of ~20s-capped retries
+   * per 403 cannot finish inside its tick). Such errors are still THROWN
+   * (so callers count them and the adaptive throttle backs off batch size
+   * across ticks), just never retried in-place. Default true.
+   */
+  readonly retryable: boolean;
 
-  constructor(message: string, status: number, retryAfterMs?: number) {
+  constructor(message: string, status: number, retryAfterMs?: number, retryable = true) {
     super(message);
     this.name = "RateLimitError";
     this.status = status;
     this.retryAfterMs = retryAfterMs;
+    this.retryable = retryable;
   }
 }
 
@@ -61,6 +74,24 @@ export function isRateLimitStatus(
   if (RATE_LIMIT_STATUSES.has(status)) return true;
   if (status === 403 && retryAfterHeader !== null) return true;
   if (status === 403 && opts.treat403AsRateLimit) return true;
+  return false;
+}
+
+/**
+ * Whether a rate-limit response is worth RETRYING in-place (as opposed to
+ * merely counting + throwing). True for 429/503 and 403+Retry-After, where
+ * the server signalled a bounded backoff. False for a bare-403 recognized
+ * only via `treat403AsRateLimit` — that is a burst ceiling that will not
+ * clear inside the retry budget, so retrying wastes requests and stalls the
+ * caller. See `RateLimitError.retryable`. Callers should only consult this
+ * for statuses that already passed `isRateLimitStatus`.
+ */
+export function isRetryableRateLimitStatus(
+  status: number,
+  retryAfterHeader: string | null,
+): boolean {
+  if (RATE_LIMIT_STATUSES.has(status)) return true;
+  if (status === 403 && retryAfterHeader !== null) return true;
   return false;
 }
 
