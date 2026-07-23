@@ -226,6 +226,50 @@ describe("ssrfSafeFetch rate-limit retry", () => {
     expect(mockFetchWithTimeout).toHaveBeenCalledTimes(2);
   });
 
+  // The gap this fix closes: Apple's iTunes JSON endpoints (search, lookup,
+  // review RSS, search-hints) burst-throttle with a bare 403 and never send
+  // Retry-After, so those callers opt in via `treat403AsRateLimit: true` —
+  // see rate-limit-error.ts's `RateLimitStatusOptions.treat403AsRateLimit`.
+  it("does NOT retry a bare 403 when treat403AsRateLimit is unset — unchanged default", async () => {
+    mockFetchWithTimeout.mockImplementationOnce(async () => makeResponse(403, {}));
+    const res = await ssrfSafeFetch("https://example.com/search", {
+      ...FAST_RETRY_OPTS,
+      treat403AsRateLimit: false,
+    });
+    expect(res.status).toBe(403);
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a bare 403 (no Retry-After) when treat403AsRateLimit is set", async () => {
+    mockFetchWithTimeout
+      .mockImplementationOnce(async () => makeResponse(403, {}))
+      .mockImplementationOnce(async () => makeResponse(200, {}, "ok"));
+
+    const res = await ssrfSafeFetch("https://example.com/search", {
+      ...FAST_RETRY_OPTS,
+      treat403AsRateLimit: true,
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws a distinct RateLimitError once bare-403 retries (treat403AsRateLimit) are exhausted", async () => {
+    mockFetchWithTimeout.mockImplementation(async () => makeResponse(403, {}));
+
+    const err = await ssrfSafeFetch("https://example.com/search", {
+      ...FAST_RETRY_OPTS,
+      treat403AsRateLimit: true,
+      maxRetries: 2,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect((err as InstanceType<typeof RateLimitError>).code).toBe("RATE_LIMITED");
+    expect((err as InstanceType<typeof RateLimitError>).status).toBe(403);
+    // initial try + 2 retries = 3 calls
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(3);
+  });
+
   it("throws a distinct RateLimitError once retries are exhausted", async () => {
     mockFetchWithTimeout.mockImplementation(async () => makeResponse(429, { "retry-after": "0" }));
 

@@ -23,6 +23,20 @@
 // a restart simply resets to `INITIAL_THROTTLE_STATE`, which is harmless
 // (worst case: one sweep's-worth of unthrottled rate before the state machine
 // re-detects a real problem).
+//
+// Reality check on the ceiling this oscillates under (2026-07-23): Apple
+// enforces the iTunes JSON endpoints' (search/lookup/review-RSS/hints) per-IP
+// burst limit with a bare HTTP 403 (no `Retry-After` — see `ssrf-safe-fetch.ts`
+// / `rate-limit-error.ts`'s `treat403AsRateLimit`), NOT 429/503. On a SINGLE
+// direct IP that puts the sustainable sweep rate this AIMD loop converges to
+// at roughly the ~15,000-35,000 requests/day range (empirically observed —
+// varies with time of day / Apple-side load, hence the range, not a fixed
+// number). Going meaningfully higher than that requires spreading requests
+// across residential proxies, NOT just more aggressive local pacing — the
+// `fix/serp-lanes-direct` history already burned this once for datacenter
+// proxies (Webshare): datacenter exit IPs get 403'd by Apple same as a single
+// direct IP does on burst, so a datacenter proxy pool doesn't actually raise
+// the ceiling, only a residential one would.
 
 /** A sweep whose rate-limit error rate is at or above this fraction trips the throttle-down. */
 export const THROTTLE_ERROR_RATE_THRESHOLD = 0.05; // ~5%

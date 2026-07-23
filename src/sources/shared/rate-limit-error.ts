@@ -24,15 +24,43 @@ export class RateLimitError extends Error {
 
 const RATE_LIMIT_STATUSES: ReadonlySet<number> = new Set([429, 503]);
 
+export interface RateLimitStatusOptions {
+  /**
+   * Treat ANY bare HTTP 403 (no `Retry-After` header) as a rate-limit
+   * signal, not just 403+Retry-After. Default `false` — DO NOT flip this on
+   * for a general-purpose caller: most 403s really do mean "blocked" (ToS/
+   * ban/auth failure) and blindly retrying one just hammers a dead endpoint.
+   *
+   * Scoped opt-in for Apple's iTunes JSON endpoints (search, lookup, review
+   * RSS, search-hints — see `ssrf-safe-fetch.ts`'s `treat403AsRateLimit`
+   * caller doc): live traffic showed Apple enforcing its per-IP burst
+   * ceiling on these endpoints with a bare 403 (no `Retry-After`), not
+   * 429/503 — single requests return 200, but a sustained fetch rate got
+   * 51+ 403s in a 10-minute window while the adaptive throttle (see
+   * `sweep-throttle.ts`) stayed at multiplier 1.0 because those 403s never
+   * matched `RATE_LIMIT_STATUSES` or the 403+Retry-After case. Every OTHER
+   * `ssrfSafeFetch` caller (HN, Reddit, GitHub, news, the App Store HTML
+   * product-pages lane) leaves this unset and keeps today's "bare 403 is a
+   * block" behavior.
+   */
+  readonly treat403AsRateLimit?: boolean;
+}
+
 /**
  * Returns true if `status` indicates upstream throttling that is worth
- * backing off for. 403 only counts when a `Retry-After` header is present —
- * a bare 403 usually means "blocked" (ToS/ban), not "slow down", so
- * retrying it blind would just hammer a dead endpoint.
+ * backing off for. 403 counts when a `Retry-After` header is present, OR
+ * (only for callers that opt in via `opts.treat403AsRateLimit`) as a bare
+ * 403 with no header — see `RateLimitStatusOptions.treat403AsRateLimit`'s
+ * doc comment for why that opt-in exists and is scoped, not global.
  */
-export function isRateLimitStatus(status: number, retryAfterHeader: string | null): boolean {
+export function isRateLimitStatus(
+  status: number,
+  retryAfterHeader: string | null,
+  opts: RateLimitStatusOptions = {},
+): boolean {
   if (RATE_LIMIT_STATUSES.has(status)) return true;
   if (status === 403 && retryAfterHeader !== null) return true;
+  if (status === 403 && opts.treat403AsRateLimit) return true;
   return false;
 }
 

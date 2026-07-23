@@ -317,12 +317,18 @@ async function fetchHintsForSeed(
   useProxy: boolean,
 ): Promise<readonly string[]> {
   const url = `${HINTS_BASE_URL}?clientApplication=Software&term=${encodeURIComponent(term)}`;
+  // `treat403AsRateLimit: true` — `search.itunes.apple.com` is the same
+  // Apple-enforced per-IP burst ceiling as the other direct iTunes JSON
+  // lanes, signaled with a bare 403 (no `Retry-After`) rather than
+  // 429/503. See `rate-limit-error.ts`'s
+  // `RateLimitStatusOptions.treat403AsRateLimit`.
   const res = await ssrfSafeFetch(url, {
     headers: {
       "X-Apple-Store-Front": storefront,
       "User-Agent": "OpenCrow/1.0 (App Store Scraper)",
     },
     retryOnRateLimit: true,
+    treat403AsRateLimit: true,
     timeoutMs: HINTS_FETCH_TIMEOUT_MS,
     useProxy,
   });
