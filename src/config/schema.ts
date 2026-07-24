@@ -1086,9 +1086,10 @@ export const appstoreKeywordGapConfigSchema = z
     // hence default OFF + the breaker.
     proxyStream: z
       .object({
-        // Master switch. Default OFF — an operator arms this deliberately,
-        // after confirming the Webshare pool's current health.
-        enabled: z.boolean().default(false),
+        // Master switch. Armed 2026-07-24 on the operator's call after the
+        // 1500-request soak (100% HTTP 200 across ≥5 exit subnets); the
+        // circuit breaker below is the safety net if pool health regresses.
+        enabled: z.boolean().default(true),
         // This stream's own per-sweep batch governor — deliberately smaller
         // than the direct stream's `keywordsPerSweep` (600): at ~0.5s median
         // proxied latency + `sweepDelayMs` below, a 300-keyword batch takes
@@ -1412,7 +1413,7 @@ export const appstoreKeywordGapConfigSchema = z
       throttleMinMultiplier: 0.03125,
     },
     proxyStream: {
-      enabled: false,
+      enabled: true,
       keywordsPerSweep: 300,
       sweepDelayMs: 500,
       breakerFailureThreshold: 5,
