@@ -1086,14 +1086,13 @@ export const appstoreKeywordGapConfigSchema = z
     // hence default OFF + the breaker.
     proxyStream: z
       .object({
-        // Master switch. DISABLED again 2026-07-24: enabling it (PR #346)
-        // stalled the entire keyword-scan subsystem in prod — direct AND
-        // proxied sweeps stopped writing scans within minutes of the enable,
-        // with no completion/failure log (a hung, untimed call in the sweep
-        // path holding the single-flight lock). Root-cause and fix the stall
-        // before re-arming; the soak proved the pool clean, so the bug is in
-        // the stream wiring, not Apple/Webshare.
-        enabled: z.boolean().default(false),
+        // Master switch. ARMED 2026-07-24 after root-causing and fixing the
+        // stall: the wedge was a never-settling config_overrides read for a
+        // Webshare credential (getSecret caught throws but not hangs), which
+        // wedged the memoized getAppstoreProxyUrl and every proxied request.
+        // Fixed by bounding getSecret's DB lookup (see config/secrets.ts).
+        // Verified live: proxied fetches return HTTP 200 and scans flow.
+        enabled: z.boolean().default(true),
         // This stream's own per-sweep batch governor — deliberately smaller
         // than the direct stream's `keywordsPerSweep` (600): at ~0.5s median
         // proxied latency + `sweepDelayMs` below, a 300-keyword batch takes
@@ -1417,7 +1416,7 @@ export const appstoreKeywordGapConfigSchema = z
       throttleMinMultiplier: 0.03125,
     },
     proxyStream: {
-      enabled: false,
+      enabled: true,
       keywordsPerSweep: 300,
       sweepDelayMs: 500,
       breakerFailureThreshold: 5,
