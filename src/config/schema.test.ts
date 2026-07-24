@@ -453,8 +453,8 @@ describe("appstoreKeywordGap config", () => {
     expect(g.sweepRateSafety.legacyRateOverride).toBe(false);
     // AIMD tuning knobs (continuous-fetch retune, 2026-07-23) — see
     // sweep-throttle.ts's advanceThrottle.
-    expect(g.sweepRateSafety.throttleBackoffFactor).toBe(0.5);
-    expect(g.sweepRateSafety.throttleRecoveryStep).toBe(0.25);
+    expect(g.sweepRateSafety.throttleBackoffFactor).toBe(0.7);
+    expect(g.sweepRateSafety.throttleRecoveryStep).toBe(0.1);
     // Proxied second scan stream (2026-07-24 throughput pass) — ARMED after
     // the stall was root-caused and fixed (never-settling proxy-credential DB
     // read wedged getAppstoreProxyUrl; getSecret's DB lookup is now bounded).

@@ -1027,7 +1027,7 @@ export const appstoreKeywordGapConfigSchema = z
         // `MIN_THROTTLE_MULTIPLIER`), so repeated trips keep backing off
         // further. 0.5 (unchanged from the pre-AIMD-knob default) halves the
         // rate per trip.
-        throttleBackoffFactor: z.number().min(0.05).max(0.95).default(0.5),
+        throttleBackoffFactor: z.number().min(0.05).max(0.95).default(0.7),
         // Added to the multiplier per recovery step once
         // `THROTTLE_HOLD_SWEEPS` consecutive sweeps have stayed under the
         // error-rate threshold (clamped at 1.0). Raised from the pre-knob
@@ -1037,7 +1037,7 @@ export const appstoreKeywordGapConfigSchema = z
         // minutes rather than the ~30min-to-hours it took at the old
         // defaults once sweeps stopped being idle-paced — see
         // `sweep-throttle.ts`'s module doc for the recovery-time math.
-        throttleRecoveryStep: z.number().min(0.01).max(1).default(0.25),
+        throttleRecoveryStep: z.number().min(0.01).max(1).default(0.1),
         // Floor the adaptive throttle can back off to on repeated trips (the
         // MD of AIMD is clamped here). Lowered from the pre-knob 1/8 (0.125)
         // to 1/32 (2026-07-23): at 1/8 the clamped batch (base
@@ -1047,14 +1047,14 @@ export const appstoreKeywordGapConfigSchema = z
         // AIMD room to reach a clean level; drop it further (e.g. 1/64) live
         // via this knob if Apple's per-IP ceiling tightens. Min bound 1/128
         // keeps the sweep from stalling to a trickle.
-        throttleMinMultiplier: z.number().min(0.0078125).max(0.5).default(0.03125),
+        throttleMinMultiplier: z.number().min(0.0078125).max(0.5).default(0.0625),
       })
       .default({
         adaptiveThrottleEnabled: true,
         legacyRateOverride: false,
-        throttleBackoffFactor: 0.5,
-        throttleRecoveryStep: 0.25,
-        throttleMinMultiplier: 0.03125,
+        throttleBackoffFactor: 0.7,
+        throttleRecoveryStep: 0.1,
+        throttleMinMultiplier: 0.0625,
       }),
     // ─── Proxied second scan stream (2026-07-24 throughput pass) ───────────
     // A SECOND, parallel keyword-scan stream that routes its iTunes Search
@@ -1411,9 +1411,9 @@ export const appstoreKeywordGapConfigSchema = z
     sweepRateSafety: {
       adaptiveThrottleEnabled: true,
       legacyRateOverride: false,
-      throttleBackoffFactor: 0.5,
-      throttleRecoveryStep: 0.25,
-      throttleMinMultiplier: 0.03125,
+      throttleBackoffFactor: 0.7,
+      throttleRecoveryStep: 0.1,
+      throttleMinMultiplier: 0.0625,
     },
     proxyStream: {
       enabled: true,
