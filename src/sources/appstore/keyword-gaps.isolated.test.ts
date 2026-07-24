@@ -45,6 +45,10 @@ function keywordStoreMockBase() {
   return {
     getStaleKeywords: async () => [],
     getStaleKeywordsTiered: async () => [],
+    // Proxied second scan stream (2026-07-24) — `runProxyKeywordSweep`'s
+    // mined-only selection; inert default, overridden by its own describe
+    // block below.
+    getStaleMinedKeywords: async () => [],
     getScannedAppNames: async () => [],
     keywordsExist: async () => new Set<string>(),
     upsertKeywords: async (rows: readonly unknown[]) => rows.length,
@@ -72,6 +76,16 @@ function keywordStoreMockBase() {
     // scan — default to "no evidence" (neutral multiplier, never a penalty)
     // so pre-existing tests that don't exercise this path are unaffected.
     getHintEvidence: async () => new Map(),
+    // Not read by keyword-gaps.ts itself, but `scraper.ts` (imported by the
+    // sibling scraper-sweep-wiring.isolated.test.ts, which the pre-commit
+    // hook can batch into the SAME bun process as this file) imports these
+    // from "./keyword-store" — a missing name here is a load-time ESM
+    // SyntaxError for THAT file if this mock wins the cross-file race (the
+    // "isolated lane mock leak" convention, same reasoning as
+    // `getScannedAppNames` above).
+    pruneKeywordScans: async () => ({ pruned: 0 }),
+    pruneAutocompleteHints: async () => 0,
+    backfillMinedDeactivation: async () => 0,
   };
 }
 
@@ -1136,6 +1150,241 @@ describe("scanAndRecord brand-navigational deactivation (via runKeywordSweep)", 
     await runKeywordSweep({ limit: 25, delayMs: 0 });
 
     expect(deactivateCalls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Proxied second scan stream (2026-07-24 throughput pass) — see
+// `runProxyKeywordSweep`'s doc comment in keyword-gaps.ts and
+// proxy-stream.ts's module doc. These tests cover the stream's sweep
+// function: mined-only selection, forced proxy routing, shared
+// budget/quota skips, 403 accounting, re-queue-on-failure semantics, and
+// the two-stream partition slot.
+// ---------------------------------------------------------------------------
+
+describe("runProxyKeywordSweep", () => {
+  let insertScanCalls: unknown[];
+  let markScannedCalls: Array<{ keywords: readonly string[]; at: number }>;
+  let minedSelectionCalls: Array<{ limit: number; excludeKeywords: readonly string[] }>;
+  let fetchInvocations: Array<{ url: string; opts: Record<string, unknown> }>;
+
+  function mockStores(overrides: Record<string, unknown> = {}): void {
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getStaleMinedKeywords: async (opts: {
+        limit: number;
+        excludeKeywords: readonly string[];
+      }) => {
+        minedSelectionCalls.push({ limit: opts.limit, excludeKeywords: [...opts.excludeKeywords] });
+        return ["mined-a", "mined-b"];
+      },
+      insertScan: async (p: unknown) => {
+        insertScanCalls.push(p);
+      },
+      markScanned: async (keywords: readonly string[], at: number) => {
+        markScannedCalls.push({ keywords, at });
+      },
+      ...overrides,
+    }));
+  }
+
+  beforeEach(() => {
+    insertScanCalls = [];
+    markScannedCalls = [];
+    minedSelectionCalls = [];
+    fetchInvocations = [];
+
+    // Schema-derived config mock, (re-)installed in the execution phase so
+    // it wins over any OTHER file's module-load-time `../../config/loader`
+    // stub still active in the shared bun process (the "Isolated lane mock
+    // leak" convention — same technique as the deep-scan lane-wiring block
+    // below). `parse({})` yields exactly the production defaults, including
+    // `proxyStream` (enabled OFF is irrelevant here — `runProxyKeywordSweep`
+    // itself is flag-agnostic; the flag gates the TICK in scraper.ts).
+    mock.module("../../config/loader", () => ({
+      loadConfig: () => opencrowConfigSchema.parse({}),
+    }));
+    // Another file's trips-after-N `isPassOverBudget` stub can leak into
+    // this shared bun process (same convention note as above) — re-install
+    // the never-trips behavior these tests assume.
+    mock.module("../shared/pass-deadline", () => ({
+      isPassOverBudget: () => false,
+    }));
+
+    mockStores();
+    mock.module("./app-velocity-store", () => ({
+      recordVelocityObservationsForScan: async () => ({ recorded: 0 }),
+    }));
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string, opts: Record<string, unknown>) => {
+        fetchInvocations.push({ url, opts });
+        return { ok: true, json: async () => sample };
+      },
+    }));
+  });
+
+  it("scans the stale mined slice with useProxy: true on every fetch (403 accounting flows through ssrfSafeFetch's treat403AsRateLimit path)", async () => {
+    const { runProxyKeywordSweep } = await import("./keyword-gaps");
+    const result = await runProxyKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(result.scanned).toBe(2);
+    expect(result.skipped).toBe(false);
+    expect(minedSelectionCalls).toEqual([{ limit: 25, excludeKeywords: [] }]);
+    expect(fetchInvocations.length).toBe(2);
+    for (const { opts } of fetchInvocations) {
+      // The proxied stream forces proxy routing regardless of the direct
+      // lane's `appstoreKeywordGap.useProxy` flag (default false)...
+      expect(opts.useProxy).toBe(true);
+      // ...and keeps the iTunes-JSON bare-403 rate-signal semantics
+      // (#340/#341: counted, non-retryable).
+      expect(opts.retryOnRateLimit).toBe(true);
+      expect(opts.treat403AsRateLimit).toBe(true);
+    }
+    expect(insertScanCalls.length).toBe(2);
+    expect(markScannedCalls[0]?.keywords).toEqual(["mined-a", "mined-b"]);
+  });
+
+  it("counts rate-limit failures in rateLimitErrors and does NOT markScanned failed keywords (they stay stale and re-queue for a later pass)", async () => {
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async () => {
+        const err = new Error("Rate limited (HTTP 403)");
+        (err as { code?: string }).code = "RATE_LIMITED";
+        throw err;
+      },
+    }));
+
+    const { runProxyKeywordSweep } = await import("./keyword-gaps");
+    const result = await runProxyKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(result.scanned).toBe(0);
+    expect(result.failed).toBe(2);
+    expect(result.rateLimitErrors).toBe(2);
+    // No success -> no last_scanned_at update -> both keywords remain the
+    // stalest candidates for a later pass (the re-queue semantics).
+    expect(markScannedCalls.length).toBe(0);
+    expect(insertScanCalls.length).toBe(0);
+  });
+
+  it("skips without selecting anything when the shared rolling 24h budget is reached", async () => {
+    mockStores({ countScansSince: async () => 150_000 });
+
+    const { runProxyKeywordSweep } = await import("./keyword-gaps");
+    const result = await runProxyKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(result).toEqual({
+      scanned: 0,
+      failed: 0,
+      skipped: true,
+      bailed: false,
+      rateLimitErrors: 0,
+    });
+    expect(minedSelectionCalls.length).toBe(0);
+    expect(fetchInvocations.length).toBe(0);
+  });
+
+  it("skips without selecting anything when the mined daily quota is exhausted", async () => {
+    mockStores({ countMinedScansSince: async () => 999_999 });
+
+    const { runProxyKeywordSweep } = await import("./keyword-gaps");
+    const result = await runProxyKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(result.skipped).toBe(true);
+    expect(minedSelectionCalls.length).toBe(0);
+    expect(fetchInvocations.length).toBe(0);
+  });
+
+  it("clamps the draw to the remaining mined quota", async () => {
+    // 100_000 default quota minus 99_990 spent -> only 10 slots left.
+    mockStores({ countMinedScansSince: async () => 99_990 });
+
+    const { runProxyKeywordSweep } = await import("./keyword-gaps");
+    await runProxyKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(minedSelectionCalls).toEqual([{ limit: 10, excludeKeywords: [] }]);
+  });
+
+  it("passes the sibling stream's in-flight keywords into selection AND drops raced overlaps via the claim, releasing its own claim afterwards", async () => {
+    const { createSweepPartition } = await import("./proxy-stream");
+    const partition = createSweepPartition();
+    // The direct stream currently has "mined-a" in flight...
+    const directClaim = partition.direct.claim(["mined-a"]);
+
+    const { runProxyKeywordSweep } = await import("./keyword-gaps");
+    const result = await runProxyKeywordSweep({
+      limit: 25,
+      delayMs: 0,
+      slot: partition.proxied,
+    });
+
+    // ...so selection was told to exclude it, and — because the mock
+    // selection returned it anyway (modeling a raced snapshot) — the claim
+    // dropped it post-select: only "mined-b" was scanned.
+    expect(minedSelectionCalls).toEqual([{ limit: 25, excludeKeywords: ["mined-a"] }]);
+    expect(result.scanned).toBe(1);
+    expect(markScannedCalls[0]?.keywords).toEqual(["mined-b"]);
+
+    // The proxied stream's own claim was released once the sweep finished.
+    directClaim.release();
+    expect(partition.direct.claim(["mined-b"]).keywords).toEqual(["mined-b"]);
+  });
+});
+
+describe("runKeywordSweep — two-stream partition slot (proxied second scan stream)", () => {
+  beforeEach(() => {
+    // Schema-derived config + never-trips pass-deadline mocks — same
+    // leak-insulation rationale as the runProxyKeywordSweep block above.
+    mock.module("../../config/loader", () => ({
+      loadConfig: () => opencrowConfigSchema.parse({}),
+    }));
+    mock.module("../shared/pass-deadline", () => ({
+      isPassOverBudget: () => false,
+    }));
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async () => ({ ok: true, json: async () => sample }),
+    }));
+    mock.module("./app-velocity-store", () => ({
+      recordVelocityObservationsForScan: async () => ({ recorded: 0 }),
+    }));
+  });
+
+  it("excludes the proxied stream's in-flight keywords from selection and drops raced overlaps from the batch, releasing its claim afterwards", async () => {
+    const tieredCalls: Array<{ excludeKeywords?: readonly string[] }> = [];
+    const markScannedCalls: Array<readonly string[]> = [];
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async (opts: { excludeKeywords?: readonly string[] }) => {
+        tieredCalls.push({
+          ...(opts.excludeKeywords ? { excludeKeywords: [...opts.excludeKeywords] } : {}),
+        });
+        // Returns an overlap ("kw-a") anyway, modeling a raced snapshot.
+        return [
+          { keyword: "kw-a", lane: "tier1" as const },
+          { keyword: "kw-b", lane: "tier1" as const },
+        ];
+      },
+      markScanned: async (keywords: readonly string[]) => {
+        markScannedCalls.push([...keywords]);
+      },
+    }));
+
+    const { createSweepPartition } = await import("./proxy-stream");
+    const partition = createSweepPartition();
+    const proxiedClaim = partition.proxied.claim(["kw-a"]);
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    const result = await runKeywordSweep({ limit: 25, delayMs: 0, slot: partition.direct });
+
+    expect(tieredCalls).toEqual([{ excludeKeywords: ["kw-a"] }]);
+    expect(result.scanned).toBe(1);
+    expect(markScannedCalls).toEqual([["kw-b"]]);
+
+    // Claim released: after the proxied stream also releases, the keyword is
+    // claimable again.
+    proxiedClaim.release();
+    expect(partition.proxied.claim(["kw-b"]).keywords).toEqual(["kw-b"]);
   });
 });
 

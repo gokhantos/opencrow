@@ -1056,6 +1056,71 @@ export const appstoreKeywordGapConfigSchema = z
         throttleRecoveryStep: 0.25,
         throttleMinMultiplier: 0.03125,
       }),
+    // ─── Proxied second scan stream (2026-07-24 throughput pass) ───────────
+    // A SECOND, parallel keyword-scan stream that routes its iTunes Search
+    // fetches through the Webshare rotating proxy (`appstore-proxy.ts`),
+    // scanning ONLY the mined-exploration backlog (see `keyword-gaps.ts`'s
+    // `runProxyKeywordSweep` + `proxy-stream.ts`) so total scan throughput
+    // roughly doubles WITHOUT touching the direct lanes: the primary
+    // gap-sweep keeps its proven direct fetch path, its own AIMD throttle,
+    // and its hot/tier1 priority work; this stream drains the low-priority
+    // mined pool through a separate request identity, with its OWN throttle
+    // instance (a proxied 403 spike never slows the direct stream, and vice
+    // versa) and a circuit breaker that self-disables the stream on the
+    // dead-pool pattern (scanned:0/failed:N — the 2026-07-23 morning
+    // incident that forced commit 7b6b5e5's proxy revert), backing off
+    // exponentially on repeated trips.
+    //
+    // COMPLETELY separate from `useProxy` above (which routes the DIRECT
+    // stream's own fetches through the proxy — the 9b69aa6 overreach,
+    // reverted in 7b6b5e5, default OFF forever) and from the app-pages HTML
+    // lane's `appstoreAppPages.useProxy`. Enabling this stream changes
+    // NOTHING about primary-lane behavior beyond the intended work
+    // partition (the two streams never scan the same keyword concurrently).
+    //
+    // Evidence basis (2026-07-24 soak): 1,500 proxied requests to
+    // itunes.apple.com/search at production pacing returned 100% HTTP 200
+    // across >= 5 exit subnets, median latency 0.48s (vs ~0.1-0.2s direct)
+    // — hence this stream's own, slower `sweepDelayMs` below. But pool
+    // health is time-varying (see the 2026-07-23 counter-evidence above),
+    // hence default OFF + the breaker.
+    proxyStream: z
+      .object({
+        // Master switch. Default OFF — an operator arms this deliberately,
+        // after confirming the Webshare pool's current health.
+        enabled: z.boolean().default(false),
+        // This stream's own per-sweep batch governor — deliberately smaller
+        // than the direct stream's `keywordsPerSweep` (600): at ~0.5s median
+        // proxied latency + `sweepDelayMs` below, a 300-keyword batch takes
+        // ~300 * (500ms + 500ms) ≈ 5min — under `keyword-gaps.ts`'s
+        // 8-minute `MAX_PASS_DURATION_MS` wall-clock bail, mirroring the
+        // direct stream's sizing math.
+        keywordsPerSweep: z.number().int().min(1).max(1000).default(300),
+        // This stream's own inter-request delay. The proxied path is
+        // latency-bound (~0.48s median vs ~0.1-0.2s direct — 2026-07-24
+        // soak), so it gets its own, more conservative knob rather than
+        // inheriting the direct lane's 150ms; the global rate levers
+        // (`sweepDelayMs`/`keywordsPerSweep` above) are NOT raised for this.
+        sweepDelayMs: z.number().int().min(100).max(10_000).default(500),
+        // Circuit breaker (see `proxy-stream.ts`): consecutive proxied-scan
+        // failures (403/429/network), with zero interleaved successes, that
+        // disable the stream. 5 matches `keyword-gaps.ts`'s
+        // MAX_CONSECUTIVE_FAILURES batch bail — i.e. one fully-dead sweep
+        // (the observed scanned:0/failed:5 signature) trips it.
+        breakerFailureThreshold: z.number().int().min(1).max(100).default(5),
+        // Cool-off after the first trip; doubles per consecutive trip.
+        breakerCooloffMs: z.number().int().min(60_000).default(15 * 60 * 1000),
+        // Ceiling on the exponential cool-off.
+        breakerMaxCooloffMs: z.number().int().min(60_000).default(6 * 60 * 60 * 1000),
+      })
+      .default({
+        enabled: false,
+        keywordsPerSweep: 300,
+        sweepDelayMs: 500,
+        breakerFailureThreshold: 5,
+        breakerCooloffMs: 15 * 60 * 1000,
+        breakerMaxCooloffMs: 6 * 60 * 60 * 1000,
+      }),
     // ─── Mined exploration quota (2026-07-21 scan-budget retune) ───────────
     // Measured 2026-07-21: 97.9% of the ~36k daily SERP scans went to the
     // `source: 'mined'` pool (114,656 keywords), which had produced 304
@@ -1345,6 +1410,14 @@ export const appstoreKeywordGapConfigSchema = z
       throttleBackoffFactor: 0.5,
       throttleRecoveryStep: 0.25,
       throttleMinMultiplier: 0.03125,
+    },
+    proxyStream: {
+      enabled: false,
+      keywordsPerSweep: 300,
+      sweepDelayMs: 500,
+      breakerFailureThreshold: 5,
+      breakerCooloffMs: 15 * 60 * 1000,
+      breakerMaxCooloffMs: 6 * 60 * 60 * 1000,
     },
     minedExploration: { dailyQuota: 100_000 },
     deStorefrontLane: {

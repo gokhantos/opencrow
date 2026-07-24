@@ -45,6 +45,7 @@ import * as RealKeywordMiner from "./keyword-miner";
 
 interface CallLog {
   runKeywordSweep: number;
+  runProxyKeywordSweep: number;
   runDeStorefrontSweep: number;
   runScreener: number;
   expandCorpus: number;
@@ -63,6 +64,7 @@ interface CallLog {
 function freshCallLog(): CallLog {
   return {
     runKeywordSweep: 0,
+    runProxyKeywordSweep: 0,
     runDeStorefrontSweep: 0,
     runScreener: 0,
     expandCorpus: 0,
@@ -129,6 +131,16 @@ function fakeAppstoreConfig() {
       },
       deStorefrontLane: { enabled: true, minIntervalMs: 0, delayMs: 0 },
       sweepRateSafety: { legacyRateOverride: false, adaptiveThrottleEnabled: true },
+      // Proxied second scan stream (2026-07-24) — matches the production
+      // schema default (OFF); the dedicated wiring tests below flip it on.
+      proxyStream: {
+        enabled: false,
+        keywordsPerSweep: 300,
+        sweepDelayMs: 0,
+        breakerFailureThreshold: 5,
+        breakerCooloffMs: 15 * 60 * 1000,
+        breakerMaxCooloffMs: 6 * 60 * 60 * 1000,
+      },
     },
     appstoreJunkDeactivation: { enabled: true, minedBackfillEnabled: true },
     appstoreSignatureScreener: { enabled: true, minRunIntervalMs: 0 },
@@ -214,6 +226,15 @@ function setUpMocks(): void {
       calls.runKeywordSweep++;
       return { scanned: 0, failed: 0, rateLimitErrors: 0, skipped: false, mineQuotaRemaining: 0 };
     },
+    // Proxied second scan stream (2026-07-24): scraper.ts imports this from
+    // "./keyword-gaps" — must be present in the mock or the import throws a
+    // missing-named-export ESM SyntaxError (see this file's module-mocking
+    // convention). Healthy-by-default result so the breaker never trips in
+    // suites that aren't specifically exercising it.
+    runProxyKeywordSweep: async () => {
+      calls.runProxyKeywordSweep++;
+      return { scanned: 1, failed: 0, skipped: false, bailed: false, rateLimitErrors: 0 };
+    },
     runDeStorefrontSweep: async () => {
       calls.runDeStorefrontSweep++;
       return { scanned: 0, failed: 0, bailed: false, rateLimitErrors: 0 };
@@ -281,6 +302,12 @@ function setUpMocks(): void {
     // present or that call throws (caught/swallowed, but keep it real so the
     // lane behaves as production does for any suite sharing this process).
     pruneAutocompleteHints: async () => 0,
+    // B3 scans-retention lane — `scraper.ts` imports this from
+    // "./keyword-store" too; must be present or the import throws a
+    // missing-named-export ESM SyntaxError when another file's
+    // "./keyword-store" mock has already won the cross-file race (see this
+    // file's module-mocking convention).
+    pruneKeywordScans: async () => ({ pruned: 0 }),
   }));
 
   mock.module("./app-enrichment", () => ({
@@ -432,6 +459,83 @@ describe("appstore scraper.ts — keyword-gap lane wiring", () => {
       expect(calls.runCohortRefresh).toBeGreaterThan(0);
       expect(calls.runAppPageFetchPass).toBeGreaterThan(0);
       expect(calls.runAppPageSyncPass).toBeGreaterThan(0);
+
+      // Proxied second scan stream: default OFF — its tick fired (the timer
+      // always starts) but must have no-oped without ever invoking the
+      // sweep. Enabling it must be an explicit operator act.
+      expect(calls.runProxyKeywordSweep).toBe(0);
+    } finally {
+      scraper.stop();
+    }
+  });
+});
+
+// Proxied second scan stream (2026-07-24) — flag-gating wiring: the stream's
+// tick lives on its own timer + single-flight lock in scraper.ts
+// (`proxyStreamTick`), gated per-tick by `appstoreKeywordGap.proxyStream
+// .enabled` (default OFF, asserted in the first suite above) and by the
+// shared `legacyRateOverride` hard kill-switch. These tests prove the flag
+// actually arms/disarms the stream without touching any direct lane.
+describe("appstore scraper.ts — proxied second scan stream flag gating", () => {
+  afterEach(() => {
+    mock.restore();
+  });
+
+  function withProxyStreamConfig(overrides: {
+    readonly enabled: boolean;
+    readonly legacyRateOverride?: boolean;
+  }): void {
+    mock.module("../../config/loader", () => {
+      const base = fakeAppstoreConfig();
+      const cfg = {
+        ...base,
+        appstoreKeywordGap: {
+          ...base.appstoreKeywordGap,
+          sweepRateSafety: {
+            ...base.appstoreKeywordGap.sweepRateSafety,
+            legacyRateOverride: overrides.legacyRateOverride ?? false,
+          },
+          proxyStream: {
+            ...base.appstoreKeywordGap.proxyStream,
+            enabled: overrides.enabled,
+          },
+        },
+      };
+      return { loadConfig: () => cfg, loadConfigWithOverrides: async () => cfg };
+    });
+  }
+
+  it("fires runProxyKeywordSweep on the first tick when proxyStream.enabled is true — and the direct sweep still runs (streams are additive, not substitutive)", async () => {
+    setUpMocks();
+    withProxyStreamConfig({ enabled: true });
+
+    const { createAppStoreScraper } = await import("./scraper");
+    const scraper = createAppStoreScraper({});
+    try {
+      scraper.start();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      expect(calls.runProxyKeywordSweep).toBeGreaterThan(0);
+      expect(calls.runKeywordSweep).toBeGreaterThan(0);
+    } finally {
+      scraper.stop();
+    }
+  });
+
+  it("never fires runProxyKeywordSweep when the flag is on but the legacyRateOverride hard kill-switch is active", async () => {
+    setUpMocks();
+    withProxyStreamConfig({ enabled: true, legacyRateOverride: true });
+
+    const { createAppStoreScraper } = await import("./scraper");
+    const scraper = createAppStoreScraper({});
+    try {
+      scraper.start();
+      await new Promise((resolve) => setTimeout(resolve, 500));
+
+      expect(calls.runProxyKeywordSweep).toBe(0);
+      // The kill-switch does not stop the direct sweep itself (it only
+      // clamps its rate, inside runKeywordSweep's own machinery).
+      expect(calls.runKeywordSweep).toBeGreaterThan(0);
     } finally {
       scraper.stop();
     }

@@ -6,6 +6,7 @@ import {
   getStaleKeywords,
   getStaleKeywordsAcrossZones,
   getStaleKeywordsTiered,
+  getStaleMinedKeywords,
   markScanned,
   insertScan,
   getLatestScan,
@@ -162,6 +163,11 @@ const TEST_KEYWORDS: readonly string[] = [
   // Continuous-fetch fixtures (2026-07-23) — large never-scanned mined
   // backlog, proving the fill isn't stuck near the old ~70/sweep pacing cap.
   ...Array.from({ length: 150 }, (_, i) => `zzz-continuous-fill-mined-${i}`),
+  // Proxied second scan stream fixtures (2026-07-24) — excludeKeywords on
+  // getStaleKeywordsTiered + getStaleMinedKeywords
+  "zzz-proxy-excl-manual",
+  "zzz-proxy-excl-mined-a",
+  "zzz-proxy-excl-mined-b",
   // Hot lane fixtures (2026-07-21 audit item A)
   "zzz-hot-lane-open-hit",
   "zzz-hot-lane-tier1-decoy",
@@ -1970,6 +1976,52 @@ describe("keyword-store", () => {
       expect(withQuota).toContain("zzz-tier2-mined-stale");
     });
 
+    // Proxied second scan stream (2026-07-24): the sibling stream's
+    // in-flight keywords are excluded from EVERY lane's selection — see
+    // proxy-stream.ts's StreamSlot and keyword-store.ts's excludeKeywords.
+    it("excludes excludeKeywords from both the tier-1 and mined lanes", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-proxy-excl-manual", genreZone: "zzz-proxy-zone", source: "manual" },
+        { keyword: "zzz-proxy-excl-mined-a", genreZone: "zzz-proxy-zone", source: "mined" },
+        { keyword: "zzz-proxy-excl-mined-b", genreZone: "zzz-proxy-zone", source: "mined" },
+      ]);
+      // Ancient timestamps so all three reliably sort at the front of their
+      // lanes regardless of ambient corpus size (see the ancient-vs-large-
+      // limit note on the getStaleKeywordsAcrossZones test above).
+      await markScanned(
+        ["zzz-proxy-excl-manual", "zzz-proxy-excl-mined-a", "zzz-proxy-excl-mined-b"],
+        now - 100_000_000,
+      );
+
+      const withoutExclusion = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 100_000,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
+        }),
+      );
+      expect(withoutExclusion).toContain("zzz-proxy-excl-manual");
+      expect(withoutExclusion).toContain("zzz-proxy-excl-mined-a");
+
+      const withExclusion = keywordsOf(
+        await getStaleKeywordsTiered({
+          batchLimit: 100_000,
+          mineQuotaRemaining: 100_000,
+          tier1StaleThresholdMs: TIER1_STALE_THRESHOLD_MS,
+          perSweepCap: UNLIMITED_PER_SWEEP_CAP,
+          tier1AutocompleteCap: UNLIMITED_TIER1_AUTOCOMPLETE_CAP,
+          excludeKeywords: ["zzz-proxy-excl-manual", "zzz-proxy-excl-mined-a"],
+        }),
+      );
+      expect(withExclusion).not.toContain("zzz-proxy-excl-manual");
+      expect(withExclusion).not.toContain("zzz-proxy-excl-mined-a");
+      // A non-excluded sibling fixture still surfaces normally.
+      expect(withExclusion).toContain("zzz-proxy-excl-mined-b");
+    });
+
     it("tier 1 is UNCAPPED (2026-07-21 retune): every eligible keyword fits, even in a batch smaller than the old fraction cap would have allowed", async () => {
       const now = Math.floor(Date.now() / 1000);
       await upsertKeywords([
@@ -2500,6 +2552,43 @@ describe("keyword-store", () => {
 
     it("is a no-op for an empty keyword list", async () => {
       await expect(markDeScanned([], Math.floor(Date.now() / 1000))).resolves.toBeUndefined();
+    });
+  });
+
+  // Proxied second scan stream (2026-07-24) — the stream's mined-only
+  // selection (see keyword-gaps.ts's runProxyKeywordSweep).
+  describe("getStaleMinedKeywords", () => {
+    it("returns stale mined-pool keywords, honors excludeKeywords, and never returns non-mined sources", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      await upsertKeywords([
+        { keyword: "zzz-proxy-excl-manual", genreZone: "zzz-proxy-zone", source: "manual" },
+        { keyword: "zzz-proxy-excl-mined-a", genreZone: "zzz-proxy-zone", source: "mined" },
+        { keyword: "zzz-proxy-excl-mined-b", genreZone: "zzz-proxy-zone", source: "mined" },
+      ]);
+      // Ancient timestamps so the fixtures reliably sort at the very front
+      // of the stalest-first ordering regardless of ambient corpus size.
+      await markScanned(
+        ["zzz-proxy-excl-manual", "zzz-proxy-excl-mined-a", "zzz-proxy-excl-mined-b"],
+        now - 100_000_000,
+      );
+
+      const unfiltered = await getStaleMinedKeywords({ limit: 100_000, excludeKeywords: [] });
+      expect(unfiltered).toContain("zzz-proxy-excl-mined-a");
+      expect(unfiltered).toContain("zzz-proxy-excl-mined-b");
+      // manual is not a mined/review source — structurally excluded.
+      expect(unfiltered).not.toContain("zzz-proxy-excl-manual");
+
+      const filtered = await getStaleMinedKeywords({
+        limit: 100_000,
+        excludeKeywords: ["zzz-proxy-excl-mined-a"],
+      });
+      expect(filtered).not.toContain("zzz-proxy-excl-mined-a");
+      expect(filtered).toContain("zzz-proxy-excl-mined-b");
+    });
+
+    it("returns an empty list for a non-positive limit without querying", async () => {
+      expect(await getStaleMinedKeywords({ limit: 0, excludeKeywords: [] })).toEqual([]);
+      expect(await getStaleMinedKeywords({ limit: -5, excludeKeywords: [] })).toEqual([]);
     });
   });
 

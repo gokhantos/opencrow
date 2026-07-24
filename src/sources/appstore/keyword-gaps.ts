@@ -47,6 +47,7 @@ import {
   getScanHistory,
   getStaleKeywords,
   getStaleKeywordsTiered,
+  getStaleMinedKeywords,
   getTier1ProtectedKeywords,
   insertScan,
   markDeScanned,
@@ -54,6 +55,7 @@ import {
   setKeywordZone,
 } from "./keyword-store";
 import { isPassOverBudget } from "../shared/pass-deadline";
+import type { StreamSlot } from "./proxy-stream";
 
 const log = createLogger("appstore:keyword-gaps");
 
@@ -685,9 +687,20 @@ async function scanAndRecord(
      * deliberately separate from `markCorpusScanned`'s `last_scanned_at`.
      */
     readonly markDeScanned?: boolean;
+    /**
+     * Route this batch's iTunes Search fetches through the Webshare proxy.
+     * Default: the direct lane's own `appstoreKeywordGap.useProxy` config
+     * flag (unchanged behavior for every pre-existing caller). The proxied
+     * second scan stream (`runProxyKeywordSweep`, 2026-07-24) sets this
+     * `true` explicitly — its routing is governed by
+     * `appstoreKeywordGap.proxyStream.enabled`, never by the direct lane's
+     * flag.
+     */
+    readonly useProxy?: boolean;
   },
 ): Promise<{ scanned: number; failed: number; bailed: boolean; rateLimitErrors: number }> {
   const { appstoreVelocity, appstoreJunkDeactivation, appstoreKeywordGap } = loadConfig();
+  const useProxy = opts.useProxy ?? appstoreKeywordGap.useProxy;
   const store = opts.store ?? "app";
   const country = opts.country;
   const runBookkeeping = opts.runBookkeeping ?? true;
@@ -728,7 +741,7 @@ async function scanAndRecord(
           topN: opts.topN,
           store,
           depth: appstoreKeywordGap.serpDepth,
-          useProxy: appstoreKeywordGap.useProxy,
+          useProxy,
           ...(country ? { country } : {}),
         });
         profile = result.profile;
@@ -737,7 +750,7 @@ async function scanAndRecord(
         profile = await scanKeyword(keyword, {
           topN: opts.topN,
           store,
-          useProxy: appstoreKeywordGap.useProxy,
+          useProxy,
           ...(country ? { country } : {}),
         });
         rankedSerp = profile.topApps;
@@ -933,6 +946,15 @@ export async function runScanSlice(opts: {
 export async function runKeywordSweep(opts: {
   readonly limit: number;
   readonly delayMs: number;
+  /**
+   * Two-stream work partition slot (proxied second scan stream, 2026-07-24
+   * — see `proxy-stream.ts`): when provided, keywords currently in flight
+   * on the sibling (proxied) stream are excluded from selection, and this
+   * sweep's own batch is claimed for its duration so the sibling can't scan
+   * the same keyword concurrently. Optional — omitted (existing callers/
+   * tests) keeps behavior byte-identical.
+   */
+  readonly slot?: StreamSlot;
 }): Promise<{
   scanned: number;
   failed: number;
@@ -1004,20 +1026,121 @@ export async function runKeywordSweep(opts: {
     tier1StaleThresholdMs,
     perSweepCap,
     tier1AutocompleteCap,
+    // Conditional spread so slot-less callers pass the EXACT pre-existing
+    // opts shape (behavior-identical, and existing call-shape assertions in
+    // keyword-gaps.isolated.test.ts stay valid).
+    ...(opts.slot ? { excludeKeywords: opts.slot.excluded() } : {}),
   });
 
-  // Deep-fetch eligibility (serp-rank Stage 1): hot + tier 1 always deep-scan
-  // (`appstoreKeywordGap.serpDepth`); mined only if `deepScanMined` opts in.
-  // `legacyRateOverride` wins unconditionally — the hard kill-switch forces
-  // EVERY lane back to a plain `topN` fetch, mirroring how it already forces
-  // the legacy batch size/delay in `computeEffectiveSweepRate` (see §0.4 of
-  // the deep-scrape build plan: "Stage 1 forces fetchLimit = topN everywhere").
-  const targets: readonly ScanTarget[] = tiered.map((t) => ({
-    keyword: t.keyword,
-    deep: !sweepRateSafety.legacyRateOverride && (t.lane !== "mined" || deepScanMined),
-  }));
-  const result = await scanAndRecord(targets, { topN, delayMs: opts.delayMs });
-  return { ...result, skipped: false, mineQuotaRemaining };
+  // Two-stream partition (see `proxy-stream.ts`'s `StreamSlot` doc): the
+  // SQL-level exclusion above is a stale snapshot, so re-check-and-reserve
+  // synchronously post-select; released in `finally` below.
+  const claim = opts.slot?.claim(tiered.map((t) => t.keyword));
+  const claimedSet = claim ? new Set(claim.keywords) : undefined;
+  const eligible = claimedSet ? tiered.filter((t) => claimedSet.has(t.keyword)) : tiered;
+
+  try {
+    // Deep-fetch eligibility (serp-rank Stage 1): hot + tier 1 always deep-scan
+    // (`appstoreKeywordGap.serpDepth`); mined only if `deepScanMined` opts in.
+    // `legacyRateOverride` wins unconditionally — the hard kill-switch forces
+    // EVERY lane back to a plain `topN` fetch, mirroring how it already forces
+    // the legacy batch size/delay in `computeEffectiveSweepRate` (see §0.4 of
+    // the deep-scrape build plan: "Stage 1 forces fetchLimit = topN everywhere").
+    const targets: readonly ScanTarget[] = eligible.map((t) => ({
+      keyword: t.keyword,
+      deep: !sweepRateSafety.legacyRateOverride && (t.lane !== "mined" || deepScanMined),
+    }));
+    const result = await scanAndRecord(targets, { topN, delayMs: opts.delayMs });
+    return { ...result, skipped: false, mineQuotaRemaining };
+  } finally {
+    claim?.release();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Proxied second scan stream (2026-07-24 throughput pass) — a parallel,
+// Webshare-proxy-backed sweep over ONLY the mined-exploration backlog, so
+// total scan throughput roughly doubles without touching the direct lanes.
+// Work-partition rationale: hot/tier1 are the high-value, self-limiting
+// priority lanes and stay exclusive to the proven direct stream; the mined
+// pool is the huge, lowest-signal backlog — ideal for the riskier proxied
+// identity, since a proxy-pool outage (see `proxy-stream.ts`'s module doc)
+// then costs only low-priority re-observation, never priority coverage.
+// Shares the SAME rolling ceilings as the direct stream (`dailyKeywordBudget`
+// and `minedExploration.dailyQuota` — both are enforced against live scan
+// counts in the shared scans table, so the two streams' combined volume can
+// never exceed them), but has its OWN AIMD throttle + circuit breaker in
+// `scraper.ts`'s `proxyStreamTick`. Failed keywords are NOT `markScanned`
+// (only successes are), so a 403'd keyword's `last_scanned_at` stays stale
+// and it is naturally re-queued for a later pass — bare-403 semantics per
+// #340/#341: counted as a rate signal, never retried in-band.
+// ---------------------------------------------------------------------------
+
+export async function runProxyKeywordSweep(opts: {
+  readonly limit: number;
+  readonly delayMs: number;
+  /** Two-stream partition slot — see `runKeywordSweep.opts.slot`. */
+  readonly slot?: StreamSlot;
+}): Promise<{
+  scanned: number;
+  failed: number;
+  skipped: boolean;
+  bailed: boolean;
+  rateLimitErrors: number;
+}> {
+  const { topN, dailyKeywordBudget, minedExploration, deepScanMined, sweepRateSafety } =
+    loadConfig().appstoreKeywordGap;
+
+  const skipped = { scanned: 0, failed: 0, skipped: true, bailed: false, rateLimitErrors: 0 };
+
+  // Same rolling-24h whole-corpus ceiling as the direct sweep — this stream
+  // adds throughput under the shared cap, never beyond it.
+  const since = Math.floor(Date.now() / 1000) - 86_400;
+  const scansLast24h = await countScansSince(since);
+  if (scansLast24h >= dailyKeywordBudget) {
+    log.debug("Proxied scan stream skipped — rolling 24h budget reached", {
+      scansLast24h,
+      dailyKeywordBudget,
+    });
+    return skipped;
+  }
+
+  // This stream scans mined-pool keywords only, so it also respects the
+  // mined lane's own rolling quota (shared with the direct stream's mined
+  // fill via the same `countMinedScansSince` ledger).
+  const minedScansLast24h = await countMinedScansSince(since);
+  const mineQuotaRemaining = Math.max(0, minedExploration.dailyQuota - minedScansLast24h);
+  const drawLimit = Math.min(opts.limit, mineQuotaRemaining);
+  if (drawLimit <= 0) {
+    log.debug("Proxied scan stream skipped — mined daily quota exhausted", { minedScansLast24h });
+    return skipped;
+  }
+
+  const candidates = await getStaleMinedKeywords({
+    limit: drawLimit,
+    excludeKeywords: opts.slot?.excluded() ?? [],
+  });
+  const claim = opts.slot?.claim(candidates);
+  const keywords = claim ? claim.keywords : candidates;
+
+  try {
+    // Mined-lane deep-scan policy matches the direct stream's exactly:
+    // shallow unless `deepScanMined` opts in; `legacyRateOverride` (the
+    // hard kill-switch) forces shallow unconditionally.
+    const targets: readonly ScanTarget[] = keywords.map((keyword) => ({
+      keyword,
+      deep: !sweepRateSafety.legacyRateOverride && deepScanMined,
+    }));
+    const result = await scanAndRecord(targets, {
+      topN,
+      delayMs: opts.delayMs,
+      useProxy: true,
+      logContext: { lane: "proxy-stream" },
+    });
+    return { ...result, skipped: false };
+  } finally {
+    claim?.release();
+  }
 }
 
 // ---------------------------------------------------------------------------

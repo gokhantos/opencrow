@@ -1,7 +1,15 @@
 import { loadConfig } from "../../config/loader";
 import { createLogger } from "../../logger";
 import type { MemoryManager, AppReviewForIndex, AppRankingForIndex } from "../../memory/types";
-import { runKeywordSweep, runDeStorefrontSweep } from "./keyword-gaps";
+import { runKeywordSweep, runDeStorefrontSweep, runProxyKeywordSweep } from "./keyword-gaps";
+import {
+  advanceProxyBreaker,
+  computeBreakerCooloffMs,
+  createSweepPartition,
+  INITIAL_PROXY_BREAKER_STATE,
+  isProxyBreakerOpen,
+} from "./proxy-stream";
+import type { ProxyBreakerParams, ProxyBreakerState } from "./proxy-stream";
 import { runScreener } from "./keyword-screener";
 import { runGapAlerts } from "./gap-alerts";
 import { expandCorpus } from "./keyword-autocomplete";
@@ -182,6 +190,30 @@ export function createAppStoreScraper(config?: {
   // `auxiliaryLanesTick`.
   let auxiliaryLanesTimer: ReturnType<typeof setInterval> | null = null;
   let auxiliaryLanesRunning = false;
+  // Independent timer for the proxied SECOND scan stream (2026-07-24
+  // throughput pass — see `proxy-stream.ts`'s module doc and
+  // `keyword-gaps.ts`'s `runProxyKeywordSweep`): a parallel, Webshare-backed
+  // sweep over the mined backlog, on its own timer + single-flight lock so
+  // it can never block (or be blocked by) the direct gap-sweep tick. Gated
+  // per-tick by `appstoreKeywordGap.proxyStream.enabled` (default OFF).
+  let proxyStreamTimer: ReturnType<typeof setInterval> | null = null;
+  let proxyStreamRunning = false;
+  // The proxied stream's OWN adaptive-throttle state — a wholly separate
+  // instance from `sweepThrottleState` below (same `sweep-throttle.ts` state
+  // machine, same config-driven AIMD step sizes, separate STATE): the
+  // proxied stream's 403/429s must never shrink the direct stream's batch,
+  // and vice versa — the two request identities (Webshare exits vs the box
+  // IP) hit entirely different per-IP ceilings at Apple.
+  let proxyThrottleState: ThrottleState = INITIAL_THROTTLE_STATE;
+  // Circuit-breaker state for the proxied stream (see `proxy-stream.ts`):
+  // process-local like the throttle; a restart resets it, which is harmless
+  // (a dead pool re-trips within one small sweep's worth of failures).
+  let proxyBreakerState: ProxyBreakerState = INITIAL_PROXY_BREAKER_STATE;
+  // Two-stream work-partition registry (see `proxy-stream.ts`'s
+  // `createSweepPartition`): guarantees the direct gap-sweep and the proxied
+  // stream never scan the same keyword concurrently. Both ticks pass their
+  // slot into their sweep call; claims are released when each batch ends.
+  const sweepPartition = createSweepPartition();
   // Soft cadence gate for the newborn-velocity screener (`keyword-screener.ts`):
   // process-local, not persisted — a restart simply lets the next due tick run
   // it again, which is harmless (the screener is idempotent and cheap). Keeps
@@ -745,7 +777,15 @@ export function createAppStoreScraper(config?: {
         throttleMultiplier: sweepThrottleState.multiplier,
       });
 
-      const result = await runKeywordSweep({ limit: keywordsPerSweep, delayMs });
+      const result = await runKeywordSweep({
+        limit: keywordsPerSweep,
+        delayMs,
+        // Two-stream partition (proxied second scan stream, 2026-07-24):
+        // excludes any keyword the proxied stream currently has in flight
+        // and claims this batch for the sweep's duration. A no-op while
+        // `proxyStream.enabled` is off (the proxied slot never claims).
+        slot: sweepPartition.direct,
+      });
 
       if (result.skipped) {
         log.debug("Keyword-gap sweep skipped this cycle — rolling 24h budget reached");
@@ -848,6 +888,147 @@ export function createAppStoreScraper(config?: {
       log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
     } finally {
       keywordSweepRunning = false;
+    }
+  }
+
+  // Runs the proxied SECOND scan stream on its own timer + single-flight
+  // lock (2026-07-24 throughput pass): a parallel sweep over the mined
+  // backlog through the Webshare rotating proxy — see
+  // `runProxyKeywordSweep`'s doc comment for the work-partition rationale
+  // and `config/schema.ts`'s `appstoreKeywordGap.proxyStream` for the
+  // evidence basis. Self-protective by design (the Webshare pool's health is
+  // time-varying — 100% clean on the 2026-07-24 soak, scanned:0/failed:5 on
+  // the 2026-07-23 morning): its own AIMD throttle instance scales its batch
+  // on partial 403/429 spikes, and its circuit breaker disables the stream
+  // entirely (exponentially longer per consecutive trip) on the dead-pool
+  // pattern. The direct stream is never affected either way. Never allowed
+  // to break the scraper — a failure is logged and swallowed, mirroring
+  // `keywordSweepTick`.
+  async function proxyStreamTick(): Promise<void> {
+    if (proxyStreamRunning) {
+      log.debug("Proxied scan stream already running, skipping");
+      return;
+    }
+
+    proxyStreamRunning = true;
+    try {
+      const cfg = loadConfig().appstoreKeywordGap;
+      const ps = cfg.proxyStream;
+      if (!cfg.enabled || !ps.enabled) {
+        return;
+      }
+      // The hard kill-switch means "go fully conservative on Apple's
+      // endpoints" — that operator intent must suppress this stream too,
+      // same as every other Apple-endpoint lane.
+      if (cfg.sweepRateSafety.legacyRateOverride) {
+        log.debug("Proxied scan stream skipped — legacy rate override active");
+        return;
+      }
+
+      const breakerParams: ProxyBreakerParams = {
+        failureThreshold: ps.breakerFailureThreshold,
+        cooloffMs: ps.breakerCooloffMs,
+        maxCooloffMs: ps.breakerMaxCooloffMs,
+      };
+
+      if (isProxyBreakerOpen(proxyBreakerState, Date.now())) {
+        log.debug("Proxied scan stream skipped — circuit breaker open", {
+          openUntilMs: proxyBreakerState.openUntilMs,
+          consecutiveTrips: proxyBreakerState.consecutiveTrips,
+        });
+        return;
+      }
+
+      // This stream's OWN rate knobs + throttle multiplier — the direct
+      // lane's `keywordsPerSweep`/`sweepDelayMs`/`sweepThrottleState` are
+      // never read here. `legacyRateOverride: false` is structural: the
+      // kill-switch already skipped this tick entirely above.
+      const { keywordsPerSweep, delayMs } = computeEffectiveSweepRate({
+        configuredKeywordsPerSweep: ps.keywordsPerSweep,
+        configuredDelayMs: ps.sweepDelayMs,
+        legacyRateOverride: false,
+        throttleMultiplier: proxyThrottleState.multiplier,
+      });
+
+      const result = await runProxyKeywordSweep({
+        limit: keywordsPerSweep,
+        delayMs,
+        slot: sweepPartition.proxied,
+      });
+
+      if (result.skipped) {
+        log.debug("Proxied scan stream skipped this cycle — shared budget/quota reached");
+        return;
+      }
+
+      log.info("Proxied scan stream sweep complete", {
+        scanned: result.scanned,
+        failed: result.failed,
+        rateLimitErrors: result.rateLimitErrors,
+        bailed: result.bailed,
+        effectiveKeywordsPerSweep: keywordsPerSweep,
+        effectiveDelayMs: delayMs,
+        throttleMultiplier: proxyThrottleState.multiplier,
+      });
+
+      // Own AIMD throttle advance — same tick-level accounting as the direct
+      // sweep's, but into this stream's SEPARATE state. Same config-driven
+      // step sizes (`sweepRateSafety.throttle*`) — they tune the controller,
+      // not the ceiling; the STATE (and therefore the effective rate) is
+      // fully isolated per stream.
+      if (cfg.sweepRateSafety.adaptiveThrottleEnabled) {
+        const wasThrottled = proxyThrottleState.throttled;
+        const attempted = result.scanned + result.failed;
+        proxyThrottleState = advanceThrottle(
+          proxyThrottleState,
+          { rateLimitErrors: result.rateLimitErrors, attempted },
+          {
+            backoffFactor: cfg.sweepRateSafety.throttleBackoffFactor,
+            recoveryStep: cfg.sweepRateSafety.throttleRecoveryStep,
+            minMultiplier: cfg.sweepRateSafety.throttleMinMultiplier,
+          },
+        );
+        if (!wasThrottled && proxyThrottleState.throttled) {
+          log.warn("Proxied scan stream adaptive throttle TRIPPED — halving effective rate", {
+            errorRate: computeErrorRate(result.rateLimitErrors, attempted),
+            attempted,
+            rateLimitErrors: result.rateLimitErrors,
+            newMultiplier: proxyThrottleState.multiplier,
+          });
+        } else if (wasThrottled && !proxyThrottleState.throttled) {
+          log.info("Proxied scan stream adaptive throttle fully recovered", {
+            multiplier: proxyThrottleState.multiplier,
+          });
+        }
+      }
+
+      // Circuit breaker advance (see `proxy-stream.ts`): a healthy tick
+      // resets it; accumulated success-free failures trip it. Logged LOUDLY
+      // on a trip — structured, presence-only (no URLs/credentials in
+      // scope, only counts and durations).
+      const wasOpen = isProxyBreakerOpen(proxyBreakerState, Date.now());
+      proxyBreakerState = advanceProxyBreaker(
+        proxyBreakerState,
+        { scanned: result.scanned, failed: result.failed },
+        Date.now(),
+        breakerParams,
+      );
+      const nowOpen = isProxyBreakerOpen(proxyBreakerState, Date.now());
+      if (!wasOpen && nowOpen) {
+        log.error("Proxied scan stream circuit breaker TRIPPED — stream disabled for cool-off", {
+          consecutiveTrips: proxyBreakerState.consecutiveTrips,
+          cooloffMs: computeBreakerCooloffMs(proxyBreakerState.consecutiveTrips, breakerParams),
+          openUntilMs: proxyBreakerState.openUntilMs,
+          lastTickScanned: result.scanned,
+          lastTickFailed: result.failed,
+          lastTickRateLimitErrors: result.rateLimitErrors,
+          hint: "Webshare pool likely unhealthy (Apple 403s on datacenter exits — see 2026-07-23 incident); the direct stream is unaffected",
+        });
+      }
+    } catch (err) {
+      log.warn("Proxied scan stream tick failed", { error: getErrorMessage(err) });
+    } finally {
+      proxyStreamRunning = false;
     }
   }
 
@@ -1776,6 +1957,24 @@ export function createAppStoreScraper(config?: {
           log.error("Auxiliary keyword-gap lanes first tick error", { error: err }),
         );
       }
+
+      // Proxied second scan stream (2026-07-24): its own timer + lock,
+      // same due-ness cadence as the gap-sweep. The timer always runs; the
+      // tick itself no-ops until `appstoreKeywordGap.proxyStream.enabled`
+      // is flipped on (config is re-read per tick, so arming the stream
+      // needs no restart) — matching how `keywordSweepTick` gates on
+      // `cfg.enabled`.
+      if (!proxyStreamTimer) {
+        const sweepIntervalMs = loadConfig().appstoreKeywordGap.scanIntervalMs;
+        proxyStreamTimer = setInterval(proxyStreamTick, sweepIntervalMs);
+        log.info("Proxied scan stream timer started", {
+          sweepIntervalMs,
+          enabled: loadConfig().appstoreKeywordGap.proxyStream.enabled,
+        });
+        proxyStreamTick().catch((err) =>
+          log.error("Proxied scan stream first tick error", { error: err }),
+        );
+      }
     },
 
     stop() {
@@ -1793,6 +1992,11 @@ export function createAppStoreScraper(config?: {
         clearInterval(auxiliaryLanesTimer);
         auxiliaryLanesTimer = null;
         log.info("Auxiliary keyword-gap lanes timer stopped");
+      }
+      if (proxyStreamTimer) {
+        clearInterval(proxyStreamTimer);
+        proxyStreamTimer = null;
+        log.info("Proxied scan stream timer stopped");
       }
     },
 
