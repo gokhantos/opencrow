@@ -455,13 +455,12 @@ describe("appstoreKeywordGap config", () => {
     // sweep-throttle.ts's advanceThrottle.
     expect(g.sweepRateSafety.throttleBackoffFactor).toBe(0.5);
     expect(g.sweepRateSafety.throttleRecoveryStep).toBe(0.25);
-    // Proxied second scan stream (2026-07-24 throughput pass) — DISABLED
-    // again after enabling it stalled the keyword-scan subsystem in prod
-    // (see schema.ts's proxyStream doc comment); re-arm only after the stall
-    // is root-caused and fixed. Own pacing knobs (proxied path is
-    // latency-bound at ~0.5s median), breaker tuned to the observed
-    // scanned:0/failed:5 dead-pool signature.
-    expect(g.proxyStream.enabled).toBe(false);
+    // Proxied second scan stream (2026-07-24 throughput pass) — ARMED after
+    // the stall was root-caused and fixed (never-settling proxy-credential DB
+    // read wedged getAppstoreProxyUrl; getSecret's DB lookup is now bounded).
+    // Own pacing knobs (proxied path is latency-bound at ~0.5s median),
+    // breaker tuned to the observed scanned:0/failed:5 dead-pool signature.
+    expect(g.proxyStream.enabled).toBe(true);
     expect(g.proxyStream.keywordsPerSweep).toBe(300);
     expect(g.proxyStream.sweepDelayMs).toBe(500);
     expect(g.proxyStream.breakerFailureThreshold).toBe(5);
