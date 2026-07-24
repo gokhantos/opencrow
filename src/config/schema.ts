@@ -649,7 +649,7 @@ export const appstoreKeywordGapConfigSchema = z
     // for the real per-sweep/per-day math; this value only needs to sit
     // above whatever that math projects so it never becomes the binding
     // constraint. Revisit if `countScansSince` starts approaching 150,000.
-    dailyKeywordBudget: z.number().int().min(1).max(200_000).default(150_000),
+    dailyKeywordBudget: z.number().int().min(1).max(1_000_000).default(400_000),
     // Throughput wave (2026-07-21), item 1: routes this lane's iTunes
     // Search API calls (tier1 + mined SERP scan, AND the DE storefront lane
     // below — both go through `keyword-gaps.ts`'s `fetchTopApps`) through
@@ -1099,13 +1099,13 @@ export const appstoreKeywordGapConfigSchema = z
         // ~300 * (500ms + 500ms) ≈ 5min — under `keyword-gaps.ts`'s
         // 8-minute `MAX_PASS_DURATION_MS` wall-clock bail, mirroring the
         // direct stream's sizing math.
-        keywordsPerSweep: z.number().int().min(1).max(1000).default(300),
+        keywordsPerSweep: z.number().int().min(1).max(1000).default(1000),
         // This stream's own inter-request delay. The proxied path is
         // latency-bound (~0.48s median vs ~0.1-0.2s direct — 2026-07-24
         // soak), so it gets its own, more conservative knob rather than
         // inheriting the direct lane's 150ms; the global rate levers
         // (`sweepDelayMs`/`keywordsPerSweep` above) are NOT raised for this.
-        sweepDelayMs: z.number().int().min(100).max(10_000).default(500),
+        sweepDelayMs: z.number().int().min(100).max(10_000).default(200),
         // Circuit breaker (see `proxy-stream.ts`): consecutive proxied-scan
         // failures (403/429/network), with zero interleaved successes, that
         // disable the stream. 5 matches `keyword-gaps.ts`'s
@@ -1182,9 +1182,9 @@ export const appstoreKeywordGapConfigSchema = z
         // it consistently sits near 100,000 (mostly unused) even with
         // continuous fill, the corpus's real never-scanned mined backlog has
         // likely shrunk below what one day's quota can absorb.
-        dailyQuota: z.number().int().min(0).max(100_000).default(100_000),
+        dailyQuota: z.number().int().min(0).max(1_000_000).default(400_000),
       })
-      .default({ dailyQuota: 100_000 }),
+      .default({ dailyQuota: 400_000 }),
     // ─── DE storefront lane (2026-07-21 scan-budget retune; CHUNKED as of ──
     // the 2026-07-22 Batch A budget rescue) ─────────────────────────────────
     // Scans a CHUNK of the active seed/manual/autocomplete keyword pool
@@ -1362,7 +1362,7 @@ export const appstoreKeywordGapConfigSchema = z
     enabled: true,
     scanIntervalMs: 60_000,
     sweepDelayMs: 150,
-    dailyKeywordBudget: 150_000,
+    dailyKeywordBudget: 400_000,
     useProxy: false,
     keywordsPerSweep: 600,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
@@ -1417,13 +1417,13 @@ export const appstoreKeywordGapConfigSchema = z
     },
     proxyStream: {
       enabled: true,
-      keywordsPerSweep: 300,
-      sweepDelayMs: 500,
+      keywordsPerSweep: 1000,
+      sweepDelayMs: 200,
       breakerFailureThreshold: 5,
       breakerCooloffMs: 15 * 60 * 1000,
       breakerMaxCooloffMs: 6 * 60 * 60 * 1000,
     },
-    minedExploration: { dailyQuota: 100_000 },
+    minedExploration: { dailyQuota: 400_000 },
     deStorefrontLane: {
       enabled: false,
       minIntervalMs: 25 * 60 * 1000,

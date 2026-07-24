@@ -421,10 +421,10 @@ describe("appstoreKeywordGap config", () => {
     // src/config/schema.ts's "MAX-THROUGHPUT PASS" comment on
     // appstoreKeywordGapConfigSchema for the full before/after math.
     expect(g.sweepDelayMs).toBe(150);
-    expect(g.dailyKeywordBudget).toBe(150_000);
+    expect(g.dailyKeywordBudget).toBe(400_000);
     expect(g.keywordsPerSweep).toBe(600);
     expect(g.useProxy).toBe(false);
-    expect(g.minedExploration.dailyQuota).toBe(100_000);
+    expect(g.minedExploration.dailyQuota).toBe(400_000);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);
     // ASA popularity manual-import veto (batch E) — OFF by default.
@@ -461,8 +461,8 @@ describe("appstoreKeywordGap config", () => {
     // Own pacing knobs (proxied path is latency-bound at ~0.5s median),
     // breaker tuned to the observed scanned:0/failed:5 dead-pool signature.
     expect(g.proxyStream.enabled).toBe(true);
-    expect(g.proxyStream.keywordsPerSweep).toBe(300);
-    expect(g.proxyStream.sweepDelayMs).toBe(500);
+    expect(g.proxyStream.keywordsPerSweep).toBe(1000);
+    expect(g.proxyStream.sweepDelayMs).toBe(200);
     expect(g.proxyStream.breakerFailureThreshold).toBe(5);
     expect(g.proxyStream.breakerCooloffMs).toBe(15 * 60 * 1000);
     expect(g.proxyStream.breakerMaxCooloffMs).toBe(6 * 60 * 60 * 1000);
