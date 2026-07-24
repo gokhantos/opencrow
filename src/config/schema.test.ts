@@ -455,12 +455,11 @@ describe("appstoreKeywordGap config", () => {
     // sweep-throttle.ts's advanceThrottle.
     expect(g.sweepRateSafety.throttleBackoffFactor).toBe(0.5);
     expect(g.sweepRateSafety.throttleRecoveryStep).toBe(0.25);
-    // Proxied second scan stream (2026-07-24 throughput pass) — default OFF
-    // (an operator arms it deliberately; pool health is time-varying — see
-    // schema.ts's proxyStream doc comment), own pacing knobs (proxied path
-    // is latency-bound at ~0.5s median), breaker tuned to the observed
-    // scanned:0/failed:5 dead-pool signature.
-    expect(g.proxyStream.enabled).toBe(false);
+    // Proxied second scan stream (2026-07-24 throughput pass) — armed by the
+    // operator 2026-07-24 after the clean 1500-request soak; own pacing knobs
+    // (proxied path is latency-bound at ~0.5s median), breaker tuned to the
+    // observed scanned:0/failed:5 dead-pool signature.
+    expect(g.proxyStream.enabled).toBe(true);
     expect(g.proxyStream.keywordsPerSweep).toBe(300);
     expect(g.proxyStream.sweepDelayMs).toBe(500);
     expect(g.proxyStream.breakerFailureThreshold).toBe(5);
