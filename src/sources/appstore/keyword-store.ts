@@ -649,16 +649,27 @@ export async function getStaleKeywordsTiered(opts: {
    * config, computed by the caller so this module stays config-free.
    */
   readonly tier1AutocompleteCap: number;
+  /**
+   * Keywords to exclude from EVERY lane's selection (proxied second scan
+   * stream, 2026-07-24 — see `proxy-stream.ts`'s `StreamSlot.excluded`):
+   * the sibling stream's currently-in-flight keywords, so this batch's
+   * slots aren't wasted on keywords already being scanned concurrently.
+   * Optional; omitted/empty keeps behavior identical to before.
+   */
+  readonly excludeKeywords?: readonly string[];
 }): Promise<readonly TieredKeyword[]> {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   const hotStaleThresholdAt = now - Math.floor(HOT_LANE_STALE_THRESHOLD_MS / 1000);
+  const excludeKeywords = opts.excludeKeywords ?? [];
 
   // Hot lane — open signature-hit watchlist entries, stale by the SHORTER
   // hot-lane threshold, pulled ahead of tier 1 so they never lose a slot to
   // a merely-stale tier-1 keyword (see keyword-tiering.ts module doc).
   // Capped (unlike tier 1) since an unbounded watchlist could otherwise
-  // crowd out everything else.
+  // crowd out everything else. (`keyword = ANY('{}')` is always FALSE in
+  // Postgres, so an empty exclusion list is a no-op — same convention as
+  // the mined exclusion below.)
   const hotRows =
     opts.batchLimit > 0
       ? await db`
@@ -666,6 +677,7 @@ export async function getStaleKeywordsTiered(opts: {
           JOIN appstore_signature_hits h ON h.keyword = k.keyword
           WHERE k.active = TRUE
             AND h.status IN ('new', 'active')
+            AND NOT (k.keyword = ANY(${db.array([...excludeKeywords], "text")}))
             AND (k.last_scanned_at IS NULL OR k.last_scanned_at < ${hotStaleThresholdAt})
           ORDER BY k.last_scanned_at ASC NULLS FIRST
           LIMIT ${Math.min(HOT_LANE_MAX_BATCH, opts.batchLimit)}
@@ -699,7 +711,7 @@ export async function getStaleKeywordsTiered(opts: {
   const guaranteedKeywords = await selectTier1Slice(db, {
     now,
     sourceConditionSql: GUARANTEED_TIER1_SOURCE_CONDITION_SQL,
-    excludeKeywords: hotKeywords,
+    excludeKeywords: [...excludeKeywords, ...hotKeywords],
     thresholdCaseSql: tier1ThresholdCaseSql,
     limit: remainingAfterHot,
   });
@@ -712,7 +724,7 @@ export async function getStaleKeywordsTiered(opts: {
   const autocompleteKeywords = await selectTier1Slice(db, {
     now,
     sourceConditionSql: AUTOCOMPLETE_TIER1_SOURCE_CONDITION_SQL,
-    excludeKeywords: [...hotKeywords, ...guaranteedKeywords],
+    excludeKeywords: [...excludeKeywords, ...hotKeywords, ...guaranteedKeywords],
     thresholdCaseSql: tier1ThresholdCaseSql,
     limit: autocompleteLimit,
   });
@@ -738,7 +750,7 @@ export async function getStaleKeywordsTiered(opts: {
     SELECT keyword FROM appstore_keywords
     WHERE active = TRUE
       AND source IN ('mined', 'review')
-      AND NOT (keyword = ANY(${db.array(claimedKeywords, "text")}))
+      AND NOT (keyword = ANY(${db.array([...excludeKeywords, ...claimedKeywords], "text")}))
     ORDER BY last_scanned_at ASC NULLS FIRST
     LIMIT ${mineSlots}
   `;
@@ -750,6 +762,32 @@ export async function getStaleKeywordsTiered(opts: {
       lane: "mined" as const,
     })),
   ];
+}
+
+/**
+ * Stalest active mined/review-pool keywords, excluding `excludeKeywords`
+ * (the sibling stream's in-flight claims — see `proxy-stream.ts`). Backs the
+ * proxied second scan stream's mined-only sweep (`keyword-gaps.ts`'s
+ * `runProxyKeywordSweep`, 2026-07-24 throughput pass): the SAME
+ * never-scanned-first / oldest-scanned-next ordering as
+ * `getStaleKeywordsTiered`'s mined lane, just without the hot/tier1 tiers —
+ * those stay exclusive to the direct stream.
+ */
+export async function getStaleMinedKeywords(opts: {
+  readonly limit: number;
+  readonly excludeKeywords: readonly string[];
+}): Promise<readonly string[]> {
+  if (opts.limit <= 0) return [];
+  const db = getDb();
+  const rows = await db`
+    SELECT keyword FROM appstore_keywords
+    WHERE active = TRUE
+      AND source IN ('mined', 'review')
+      AND NOT (keyword = ANY(${db.array([...opts.excludeKeywords], "text")}))
+    ORDER BY last_scanned_at ASC NULLS FIRST
+    LIMIT ${opts.limit}
+  `;
+  return (rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword);
 }
 
 export async function markScanned(keywords: readonly string[], at: number): Promise<void> {
