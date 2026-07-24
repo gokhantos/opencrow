@@ -1086,10 +1086,14 @@ export const appstoreKeywordGapConfigSchema = z
     // hence default OFF + the breaker.
     proxyStream: z
       .object({
-        // Master switch. Armed 2026-07-24 on the operator's call after the
-        // 1500-request soak (100% HTTP 200 across ≥5 exit subnets); the
-        // circuit breaker below is the safety net if pool health regresses.
-        enabled: z.boolean().default(true),
+        // Master switch. DISABLED again 2026-07-24: enabling it (PR #346)
+        // stalled the entire keyword-scan subsystem in prod — direct AND
+        // proxied sweeps stopped writing scans within minutes of the enable,
+        // with no completion/failure log (a hung, untimed call in the sweep
+        // path holding the single-flight lock). Root-cause and fix the stall
+        // before re-arming; the soak proved the pool clean, so the bug is in
+        // the stream wiring, not Apple/Webshare.
+        enabled: z.boolean().default(false),
         // This stream's own per-sweep batch governor — deliberately smaller
         // than the direct stream's `keywordsPerSweep` (600): at ~0.5s median
         // proxied latency + `sweepDelayMs` below, a 300-keyword batch takes
@@ -1413,7 +1417,7 @@ export const appstoreKeywordGapConfigSchema = z
       throttleMinMultiplier: 0.03125,
     },
     proxyStream: {
-      enabled: true,
+      enabled: false,
       keywordsPerSweep: 300,
       sweepDelayMs: 500,
       breakerFailureThreshold: 5,
