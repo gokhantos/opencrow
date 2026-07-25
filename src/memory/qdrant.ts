@@ -1,8 +1,30 @@
 import { createLogger } from "../logger";
+import { fetchWithTimeout } from "../sources/shared/fetch-with-timeout";
 
 const log = createLogger("qdrant");
 
 const HEALTH_CHECK_INTERVAL_MS = 30_000; // Re-probe every 30s when down
+
+/**
+ * Per-request timeout for every Qdrant call.
+ *
+ * WHY THIS EXISTS (2026-07-25): `request()` used to be a bare `fetch` with no
+ * timeout, no abort signal and no retry — the only bounded call in this file
+ * was the `/healthz` probe (3s). On 2026-07-25 the App Store scraper's hourly
+ * chain parked on a Qdrant call at 10:36 UTC and never returned: it held its
+ * lane's single-flight lock for 2.5h+ and `appstore_ranking_history` went
+ * stale, while Qdrant itself stayed perfectly healthy the whole time (658-833
+ * requests/hour served for other clients, all 200s, ~0.33s search latency, 0%
+ * CPU). The client simply had no way to give up, so a transient socket stall
+ * became a permanent outage.
+ *
+ * Generous relative to observed latency (searches ~0.33s, upserts ~0.005s) —
+ * this is a stall backstop, not a latency budget. `fetchWithTimeout` also
+ * carries the hard-deadline race, which matters here: the failure mode
+ * observed was connections stuck in `SYN_SENT`, i.e. a fetch that may never
+ * settle even once its abort fires.
+ */
+const QDRANT_REQUEST_TIMEOUT_MS = 30_000;
 
 // Qdrant's default `indexing_threshold`. A segment must hold at least this many
 // vectors before its HNSW index is built; below it, search falls back to an
@@ -195,11 +217,15 @@ export async function createQdrantClient(
     body?: unknown,
   ): Promise<T> {
     const url = `${baseUrl}${path}`;
-    const resp = await fetch(url, {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    const resp = await fetchWithTimeout(
+      url,
+      {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      },
+      QDRANT_REQUEST_TIMEOUT_MS,
+    );
 
     if (!resp.ok) {
       const text = await resp.text();
@@ -285,7 +311,11 @@ export async function createQdrantClient(
 
       try {
         // Check if collection exists
-        const resp = await fetch(`${baseUrl}/collections/${name}`, { headers });
+        const resp = await fetchWithTimeout(
+          `${baseUrl}/collections/${name}`,
+          { headers },
+          QDRANT_REQUEST_TIMEOUT_MS,
+        );
         const collectionExists = resp.ok;
 
         if (!collectionExists) {
