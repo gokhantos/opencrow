@@ -634,7 +634,7 @@ export const appstoreKeywordGapConfigSchema = z
     // visible per-request pace for `sweepRateSafety`'s adaptive throttle to
     // read a meaningful error-rate signal from before backing off further.
     // See `keywordsPerSweep` below for the full daily-volume projection.
-    sweepDelayMs: z.number().int().min(100).max(10_000).default(400),
+    sweepDelayMs: z.number().int().min(100).max(10_000).default(500),
     // How many keyword scans may be spent per rolling 24h window — a safety
     // ceiling, not a per-cycle spend. Enforced against a live count of
     // `appstore_keyword_scans` rows from the last 24h (tier1 + mined + the
@@ -676,7 +676,7 @@ export const appstoreKeywordGapConfigSchema = z
     // Apple's per-IP limit decays. Reversible: flip back if the pool degrades
     // — the per-lane AIMD throttle and the proxied stream's circuit breaker
     // still guard it either way.
-    useProxy: z.boolean().default(true),
+    useProxy: z.boolean().default(false),
     // How many of the globally stalest active keywords to scan per sweep
     // cycle — THE per-sweep governor (not `dailyKeywordBudget`/
     // `minedExploration.dailyQuota`, which are safety ceilings a sweep only
@@ -1580,9 +1580,9 @@ export const appstoreKeywordGapConfigSchema = z
   .default({
     enabled: true,
     scanIntervalMs: 60_000,
-    sweepDelayMs: 400,
+    sweepDelayMs: 500,
     dailyKeywordBudget: 400_000,
-    useProxy: true,
+    useProxy: false,
     keywordsPerSweep: 300,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     tier1AutocompleteCap: 50,
