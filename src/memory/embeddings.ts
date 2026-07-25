@@ -1,11 +1,27 @@
 import type { EmbeddingProvider } from "./types";
 import type { EmbeddingsConfig } from "../config/schema";
 import { createLogger } from "../logger";
+import { fetchWithTimeout } from "../sources/shared/fetch-with-timeout";
 
 const log = createLogger("embeddings");
 
 const MAX_RETRIES = 3;
 const MAX_CONCURRENT_BATCHES = 4;
+
+/**
+ * Per-request timeout for an embedding batch.
+ *
+ * Same 2026-07-25 lesson as `qdrant.ts`'s `QDRANT_REQUEST_TIMEOUT_MS`: this
+ * call was a bare `fetch` with no timeout, sitting INSIDE a retry loop — so a
+ * single stalled request never reached the retry that was meant to rescue it,
+ * and hung its caller forever. Embedding is the other half of the memory-
+ * indexing step that wedged the App Store scraper's hourly lane.
+ *
+ * Larger than the Qdrant budget on purpose: a local CPU-bound model (Ollama
+ * `nomic-embed-text`) legitimately takes seconds per batch, and batches run
+ * `MAX_CONCURRENT_BATCHES` at a time.
+ */
+const EMBEDDING_REQUEST_TIMEOUT_MS = 120_000;
 
 interface EmbeddingApiResponse {
   readonly data: readonly { readonly embedding: readonly number[] }[];
@@ -65,20 +81,24 @@ function createOpenAICompatibleEmbeddingProvider(
 
   async function embedBatch(texts: readonly string[]): Promise<Float32Array[]> {
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          // Local servers (Ollama) need no auth — omit the header entirely.
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      const response = await fetchWithTimeout(
+        url,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            // Local servers (Ollama) need no auth — omit the header entirely.
+            ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          },
+          body: JSON.stringify({
+            input: texts,
+            model,
+            // Only OpenRouter/OpenAI accept a custom output size; local models don't.
+            ...(dimensions ? { dimensions } : {}),
+          }),
         },
-        body: JSON.stringify({
-          input: texts,
-          model,
-          // Only OpenRouter/OpenAI accept a custom output size; local models don't.
-          ...(dimensions ? { dimensions } : {}),
-        }),
-      });
+        EMBEDDING_REQUEST_TIMEOUT_MS,
+      );
 
       if (response.status === 429) {
         const backoffMs = Math.pow(2, attempt) * 1000;
