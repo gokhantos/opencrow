@@ -17,9 +17,11 @@ export function getDb(): InstanceType<typeof SQL> {
 /**
  * Fallback pool ceiling, applied only when a caller omits { max }. Every
  * spawned process passes its own `dbPoolSize` explicitly (see bootstrap.ts:
- * cron 10, web/agent/sige 5, scraper 2, core 3), so this governs only the
- * stragglers: CLI setup, the secrets lazy fallback, and tests. Kept small so
- * those paths don't add idle connections to pg_stat_activity.
+ * cron 10, web/agent/sige 5, core 3, scrapers per-scraper via
+ * `entries/scraper-pool-size.ts` — 2 by default, 8 for appstore), so this
+ * governs only the stragglers: CLI setup, the secrets lazy fallback, and
+ * tests. Kept small so those paths don't add idle connections to
+ * pg_stat_activity.
  */
 const DEFAULT_POOL_MAX = 3;
 

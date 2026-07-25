@@ -6,6 +6,7 @@
  */
 import { loadConfig, loadConfigWithOverrides } from "../config/loader";
 import { bootstrap } from "../process/bootstrap";
+import { scraperDbPoolSize } from "./scraper-pool-size";
 import { createProcessSupervisor } from "../process/supervisor";
 import { createLogger } from "../logger";
 import type { ProcessName } from "../process/types";
@@ -35,7 +36,10 @@ async function main(): Promise<void> {
     processName,
     skipObservations: true,
     skipMemory: !needsMemory,
-    dbPoolSize: 2,
+    // Sized to this scraper's CONCURRENT lane count, not to a flat "scrapers
+    // are simple" assumption — see scraper-pool-size.ts for the rule and the
+    // 2026-07-24/25 App Store outage that motivated it.
+    dbPoolSize: scraperDbPoolSize(scraperId!),
   });
 
   // Reload with DB overrides now that DB is initialized
