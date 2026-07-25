@@ -737,6 +737,41 @@ export const appstoreKeywordGapConfigSchema = z
     tier1AutocompleteCap: z.number().int().min(0).max(500).default(50),
     // How many top-ranked gap candidates to surface per scan.
     topN: z.number().int().min(5).max(50).default(20),
+    // Tunable weights of the opportunity model (2026-07-26 sign fix). The
+    // numbers below are restated LITERALLY from `keyword-scoring.ts`'s
+    // `DEFAULT_SCORING_WEIGHTS` so this config module never imports a scanner
+    // module; a unit test in `keyword-scoring.test.ts` drift-guards the two
+    // copies against each other. See `ScoringWeights` (keyword-scoring.ts) for
+    // what each knob means and the corpus measurement each default came from.
+    scoring: z
+      .object({
+        weaknessBeatableReviews: z.number().int().min(0).max(100_000).default(200),
+        weaknessEntrenchedReviews: z.number().int().min(1).max(10_000_000).default(200_000),
+        weaknessSecondaryLift: z.number().min(0).max(1).default(0.35),
+        weaknessRatingShare: z.number().min(0).max(1).default(0.6),
+        crowdingWeight: z.number().min(0).max(1).default(1),
+        beatabilityExponent: z.number().min(0.1).max(5).default(2),
+        demandRef: z.number().min(1).max(1_000_000).default(400),
+        rankTopDemand: z.number().min(0).max(10_000).default(40),
+        rankDecay: z.number().min(0).max(1).default(0.74),
+        rankSeedFull: z.number().min(0).max(100).default(3),
+        rankAxisWeight: z.number().min(0).max(1).default(0.6),
+        hintAbsencePenalty: z.number().min(0).max(1).default(0.7),
+      })
+      .default({
+        weaknessBeatableReviews: 200,
+        weaknessEntrenchedReviews: 200_000,
+        weaknessSecondaryLift: 0.35,
+        weaknessRatingShare: 0.6,
+        crowdingWeight: 1,
+        beatabilityExponent: 2,
+        demandRef: 400,
+        rankTopDemand: 40,
+        rankDecay: 0.74,
+        rankSeedFull: 3,
+        rankAxisWeight: 0.6,
+        hintAbsencePenalty: 0.7,
+      }),
     // Weight applied to the `appstore_gap` demand-evidence kind when
     // aggregating a candidate's demand artifact (see `demand-probes.ts`'s
     // `enrichDemand`, which resolves this field into `aggregateDemand`'s
@@ -1376,6 +1411,20 @@ export const appstoreKeywordGapConfigSchema = z
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     tier1AutocompleteCap: 50,
     topN: 20,
+    scoring: {
+      weaknessBeatableReviews: 200,
+      weaknessEntrenchedReviews: 200_000,
+      weaknessSecondaryLift: 0.35,
+      weaknessRatingShare: 0.6,
+      crowdingWeight: 1,
+      beatabilityExponent: 2,
+      demandRef: 400,
+      rankTopDemand: 40,
+      rankDecay: 0.74,
+      rankSeedFull: 3,
+      rankAxisWeight: 0.6,
+      hintAbsencePenalty: 0.7,
+    },
     demandWeight: 1,
     opportunityThresholdForSeed: 0.15,
     excludeKnownZeroVolume: false,

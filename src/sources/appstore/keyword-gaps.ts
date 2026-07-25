@@ -25,12 +25,13 @@ import {
   classifyTrend,
   computeCompetitiveness,
   computeDemand,
-  computeDemandConfidenceMultiplier,
   computeIncumbentWeakness,
   computeOpportunity,
   computeVelocityCap,
+  DEFAULT_SCORING_WEIGHTS,
   winsorizeRatingsPerDayAtP90,
 } from "./keyword-scoring";
+import type { ScoringWeights } from "./keyword-scoring";
 import { isBrandNavigationalScan } from "./keyword-brand";
 import { buildSerpTail } from "./serp-tail";
 import type { SerpTailEntry } from "./serp-tail";
@@ -402,6 +403,25 @@ export async function scanKeywordDeep(
  * (only ever non-empty from `scanKeywordDeep`) is attached to the returned
  * profile verbatim for `insertScan` to persist.
  */
+/**
+ * Opportunity-model weights from config (`appstoreKeywordGap.scoring`), layered
+ * over `keyword-scoring.ts`'s canonical defaults.
+ *
+ * Defensive on purpose: the pure scoring module owns the defaults, so a missing
+ * or partial config subtree must degrade to them rather than break a scan —
+ * exactly like the hint-evidence lookup below. (It also keeps the isolated test
+ * lane, where `loadConfig` is mocked with partial configs, from turning a
+ * config-shape detail into a scoring crash.)
+ */
+function resolveScoringWeights(): ScoringWeights {
+  try {
+    return { ...DEFAULT_SCORING_WEIGHTS, ...loadConfig().appstoreKeywordGap.scoring };
+  } catch (err) {
+    log.warn("Scoring-weights config unavailable — using module defaults", { error: err });
+    return DEFAULT_SCORING_WEIGHTS;
+  }
+}
+
 async function computeGapProfile(input: {
   readonly keyword: string;
   readonly store: "app" | "play" | "DE";
@@ -475,24 +495,29 @@ async function computeGapProfile(input: {
   // affect `topApps`/`incumbentWeakness`, and is NOT persisted back onto the
   // stored `topApps` payload — see `winsorizeRatingsPerDayAtP90`'s doc
   // comment for why median was tried and rejected).
-  const rawDemand = computeDemand(winsorizeRatingsPerDayAtP90(relevant));
+  // 2026-07-26 sign fix: `demand` is now a PURE measurement (ratings/day) —
+  // the autocomplete hint signal no longer multiplies into it. It was
+  // previously baked into this stored column, which contaminated every
+  // downstream consumer of `demand` (`computeBuildability`, `BUILDABILITY_SQL`,
+  // the trend series, the screener) with a scoring judgement. The hint signal
+  // is now a first-class demand AXIS inside `computeOpportunity` instead — see
+  // `computeSearcherDemandAxis`.
+  const demand = computeDemand(winsorizeRatingsPerDayAtP90(relevant));
 
-  // Batch D item D1: coverage-conditioned demand-confidence multiplier from
-  // this keyword's autocomplete hint evidence (the one giant-free, typed
-  // demand signal in the system — see `keyword-store.ts`'s
+  // This keyword's autocomplete hint evidence (the one giant-free, searcher-
+  // derived demand signal in the system — see `keyword-store.ts`'s
   // `getHintEvidence`). Graceful: a lookup failure (DB hiccup, etc.) must
-  // never break a scan, so it degrades to "no evidence" (neutral
-  // multiplier, never a penalty) rather than throwing.
+  // never break a scan, so it degrades to "no evidence", which
+  // `computeSearcherDemandAxis` treats as exactly neutral — never a penalty.
   let hintEvidence: HintEvidence | undefined;
   try {
     hintEvidence = (await getHintEvidence([keyword])).get(keyword);
   } catch (err) {
     log.warn("Hint evidence lookup failed — treating as unavailable", { keyword, error: err });
   }
-  const demandConfidenceMultiplier = computeDemandConfidenceMultiplier(hintEvidence);
-  const demand = rawDemand * demandConfidenceMultiplier;
+  const scoringWeights = resolveScoringWeights();
   const competitiveness = computeCompetitiveness(topApps);
-  const incumbentWeakness = computeIncumbentWeakness(relevant);
+  const incumbentWeakness = computeIncumbentWeakness(relevant, scoringWeights);
 
   // Oldest → newest demand series (prior scans, newest-first from the
   // store), with the current demand appended, so momentum reflects this
@@ -512,7 +537,10 @@ async function computeGapProfile(input: {
     : [...confidentHistory.map((h) => h.demand).reverse(), demand];
   const trend = classifyTrend(demandSeries);
 
-  const opportunity = computeOpportunity({ demand, competitiveness, incumbentWeakness, trend });
+  const opportunity = computeOpportunity(
+    { demand, competitiveness, incumbentWeakness, trend, hint: hintEvidence },
+    scoringWeights,
+  );
 
   const topAppReviews = topApps.reduce((max, a) => Math.max(max, a.reviews), 0);
   const avgRating = mean(topApps.map((a) => a.rating));

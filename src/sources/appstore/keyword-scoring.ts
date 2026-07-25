@@ -34,10 +34,14 @@ export const VELOCITY_WEIGHT = 1.0;
 // discriminating (the opposite failure of the older everything-saturates model).
 //
 // The blended baseline spreads well over the real corpus (mean lifetime
-// ratings/day per keyword: p25≈0.6, p50≈6, p75≈19, p90≈48). Anchoring the log
-// reference at 80 ratings/day keeps that whole range on the responsive part of
-// the curve (norm(6)≈0.45, norm(19)≈0.68, norm(48)≈0.89, norm(80)=1.0), so
-// demand normalizes to a ~[0.1..0.9] spread instead of pinning to 0 or 1.
+// ratings/day per keyword: p25≈0.6, p50≈6, p75≈19, p90≈48).
+//
+// SUPERSEDED as the live value by `ScoringWeights.demandRef` (2026-07-26 sign
+// fix, default 400). This constant is kept as the historical anchor and is no
+// longer read by `computeOpportunity`: at 80, `norm` PINNED every keyword at or
+// above 80 ratings/day to exactly 1.0, so `real claw machine` (125.6/day) and
+// `clawee - real claw machines` (319.4/day) were indistinguishable at the top of
+// the demand axis. See `DEFAULT_SCORING_WEIGHTS`.
 export const DEMAND_REF = 80;
 
 // Update-staleness window (days since the leader's currentVersionReleaseDate):
@@ -141,57 +145,132 @@ export function computeVelocityCap(apps: readonly TopApp[], floorPerDay: number)
 }
 
 // ---------------------------------------------------------------------------
-// Autocomplete hint demand-confidence (Batch D item D1) — a multiplier
-// applied to `computeDemand`'s output, COVERAGE-CONDITIONED so a merely
-// under-sampled keyword (the overwhelming majority — ~25-40 rotated seeds
-// against a 100k+ corpus) is never confused with a confirmed-zero-volume
-// one. See `HintEvidence`'s doc comment (keyword-types.ts) for the
-// `covered`/`seedCount` contract this reads.
+// Tunable scoring weights (2026-07-26 sign fix). Lifted out of hardcoded
+// constants so the operator can retune the corrected model from config
+// (`appstoreKeywordGap.scoring` in `src/config/schema.ts`) without a code
+// change. This module stays PURE: it never reads config itself — the caller
+// (`keyword-gaps.ts`) resolves the config object and passes it in, and every
+// function defaults to `DEFAULT_SCORING_WEIGHTS` so tests and any other
+// caller keep working unchanged.
+//
+// `src/config/schema.ts` restates these numbers as literal zod defaults (so
+// the config module never imports a scanner module); a unit test in
+// `keyword-scoring.test.ts` drift-guards the two copies against each other.
 // ---------------------------------------------------------------------------
 
-/** Applied when the term was actually queried (covered) in the window but never resurfaced as a hint — a real, confirmed absence signal. */
-export const HINT_ABSENCE_PENALTY = 0.7;
-/** Applied on strong presence (see `computeDemandConfidenceMultiplier`) — a small boost, never allowed to dominate the score. */
-export const HINT_PRESENCE_BOOST = 1.1;
-/** Extra multiplicative bump on top of `HINT_PRESENCE_BOOST` when the term corroborates across 2+ storefronts (e.g. US + GB). */
-export const HINT_CROSS_STOREFRONT_BOOST = 1.05;
-/** "Strong presence" requires the best observed rank to be at or above (numerically <=) this position. */
-const HINT_BOOST_MAX_RANK = 2;
-/** "Strong presence" requires at least this many distinct seeds to have surfaced the term. */
-const HINT_BOOST_MIN_SEED_COUNT = 2;
+export interface ScoringWeights {
+  /**
+   * Leader review count at or below which the field's leader reads as fully
+   * beatable (`computeLeaderScaleOpening` → 1). Roughly what a solo app
+   * accrues in its first months — an incumbent this small is displaceable
+   * regardless of how well it is rated.
+   */
+  readonly weaknessBeatableReviews: number;
+  /**
+   * Leader review count at or above which the leader reads as fully
+   * entrenched (`computeLeaderScaleOpening` → 0) — a category-defining
+   * incumbent no solo entrant out-ranks by shipping a better app.
+   */
+  readonly weaknessEntrenchedReviews: number;
+  /**
+   * How much of the headroom left by the review-mass term rating/staleness may
+   * add back. Bounded well below 1 so the SECONDARY signals can never turn an
+   * entrenched incumbent into an open field (the old model's defect A: a
+   * 737,897-review leader scored weakness 0.40 on staleness alone).
+   */
+  readonly weaknessSecondaryLift: number;
+  /** Share of the secondary lift carried by a weak leader rating; the rest comes from update staleness. */
+  readonly weaknessRatingShare: number;
+  /** How much a maximally crowded field (competitiveness 100) discounts beatability. 0.5 keeps a crowded field scoreable but never competitive with an open one. */
+  readonly crowdingWeight: number;
+  /**
+   * Exponent on the beatability axis. THE knob that fixes the model's sign:
+   * `d ln(beatability^k) = k * d ln(beatability)`, so it scales the whole
+   * incumbent-scale path's slope in log-review-mass without touching the
+   * demand axis's range. Must exceed ~1.5 for the mass penalty to out-weigh
+   * the mass leak the ratings/day demand proxy inevitably carries — see
+   * `DEFAULT_SCORING_WEIGHTS`.
+   */
+  readonly beatabilityExponent: number;
+  /**
+   * Log reference (ratings/day) the demand axis normalizes against. Raising it
+   * FLATTENS demand's slope in log-review-mass relative to the beatability
+   * path, which is what makes the incumbent-scale axis — not raw market size —
+   * the dominant discriminator. See `computeSearcherDemandAxis`.
+   */
+  readonly demandRef: number;
+  /** Implied searcher demand (ratings/day) of a rank-0 autocomplete suggestion. See `computeSearcherDemandAxis`. */
+  readonly rankTopDemand: number;
+  /** Per-rank geometric decay of that implied demand. */
+  readonly rankDecay: number;
+  /** Distinct seeds at which a hint sighting counts as fully corroborated (fewer seeds scale the lift down linearly). */
+  readonly rankSeedFull: number;
+  /** How much of the gap between the rank axis and the incumbent-mass demand proxy a fully-corroborated hint sighting may close (0 disables the axis). */
+  readonly rankAxisWeight: number;
+  /** Multiplier applied when the term WAS probed and Apple suggested nothing — a confirmed absence, not a sampling gap. */
+  readonly hintAbsencePenalty: number;
+}
 
 /**
- * Demand-confidence multiplier from a keyword's autocomplete hint evidence.
- * Pure; `evidence === undefined` (evidence lookup unavailable/failed) is
- * always neutral (1) — this signal is additive, never a hard requirement.
+ * Defaults derived from the 2026-07-26 corpus measurement (144,841 keywords,
+ * latest `store='app'` scan each) and verified with
+ * `scripts/backtest-opportunity-scoring.ts`. Full derivation in the PR body.
  *
- *  - Strong presence (best rank 0..`HINT_BOOST_MAX_RANK`, from at least
- *    `HINT_BOOST_MIN_SEED_COUNT` distinct seeds): a small boost
- *    (`HINT_PRESENCE_BOOST`), amplified further (`* HINT_CROSS_STOREFRONT_BOOST`)
- *    when 2+ storefronts corroborate it.
- *  - Any other presence (`seedCount > 0` but not "strong"): neutral (1) — a
- *    single weak/late-rank sighting isn't confident enough to boost, but IS
- *    confident enough to prove the term isn't hopeless, so no penalty either.
- *  - Zero presence AND `covered` (the term/a prefix was actually queried in
- *    the window, so absence is a real signal, not a sampling gap):
+ *  - `weaknessBeatableReviews` / `weaknessEntrenchedReviews` (200 / 200,000):
+ *    a log ramp across the real leader-review-mass range. Puts the measured
+ *    "old model said 0.000" cases (`block shorts` leader 2,973; `peptide
+ *    tracker` leader 2,959) at ~0.61 and Clawee (737,897) at 0.
+ *  - `weaknessSecondaryLift` 0.35: rating+staleness together can lift weakness
+ *    by at most 35% of the remaining headroom.
+ *  - `weaknessRatingShare` 0.6: preserves the old 0.6/0.4 rating/staleness
+ *    blend inside the secondary term.
+ *  - `crowdingWeight` 1.0: field crowding enters as the straight complement
+ *    `(1 - competitiveness/100)`, the same linear form the old model used —
+ *    deliberately the natural value rather than a fitted decimal.
+ *  - `beatabilityExponent` 2: SELECTED BY THE SIGN CRITERION, not fitted to any
+ *    keyword. Fixing defects A and B alone does NOT flip the sign — measured
+ *    `corr(opportunity, competitiveness)` was still +0.352 with the corrected
+ *    weakness and the multiplicative composition, because `demand` (mean
+ *    incumbent ratings/day) is unavoidably monotone in incumbent review mass
+ *    and its slope in log-mass (1/ln(1+demandRef)) exceeded the entire
+ *    beatability path's. The algebraic condition for a non-positive sign is
+ *    `(dD/D) <= k * (dB/B)`; measured over the corpus that needs `k >= ~1.5`,
+ *    so k = 2 is the nearest safe integer. Interpretation: difficulty
+ *    COMPOUNDS — you must out-rank the leader AND survive the field behind it.
+ *  - `demandRef` 400 (was a hardcoded `DEMAND_REF` = 80): 80 PINNED every
+ *    keyword at or above 80 ratings/day to exactly 1.0, so `real claw machine`
+ *    (125.6) and `clawee - real claw machines` (319.4) were indistinguishable
+ *    at the top of the demand axis. 400 keeps the corpus's real range
+ *    (p25≈0.6, p50≈6, p75≈19, p90≈48) on the responsive part of the curve
+ *    while restoring discrimination above 80.
+ *  - `rankTopDemand` 40: the measured p90 demand of the rank-0 hint bucket
+ *    (40.20 ratings/day) — "Apple's top suggestion implies demand at the level
+ *    the strongest rank-0 terms actually exhibit".
+ *  - `rankDecay` 0.74: reproduces the measured 8.5x median-demand ratio between
+ *    the rank-0 bucket (1.207 ratings/day) and the rank-7 bucket (0.107),
+ *    i.e. 0.74^7 ≈ 1/8.5.
+ *  - `rankSeedFull` 3, `rankAxisWeight` 0.6: `HintEvidence.bestRank` is
+ *    explicitly "loosely ordinal only" (ranks mix bare-seed and prefix-fan-out
+ *    responses), so a single-seed rank-0 sighting is weak evidence; the lift
+ *    scales linearly with distinct-seed corroboration up to 3 seeds and may
+ *    then close 60% of the gap.
+ *  - `hintAbsencePenalty` 0.7: unchanged from the retired
  *    `HINT_ABSENCE_PENALTY`.
- *  - Zero presence AND NOT covered (never sampled): neutral (1) — absence of
- *    evidence is not evidence of absence here.
  */
-export function computeDemandConfidenceMultiplier(evidence: HintEvidence | undefined): number {
-  if (!evidence) return 1;
-  if (evidence.seedCount > 0) {
-    const strongPresence =
-      evidence.bestRank !== null &&
-      evidence.bestRank <= HINT_BOOST_MAX_RANK &&
-      evidence.seedCount >= HINT_BOOST_MIN_SEED_COUNT;
-    if (!strongPresence) return 1;
-    return evidence.storefrontCount >= 2
-      ? HINT_PRESENCE_BOOST * HINT_CROSS_STOREFRONT_BOOST
-      : HINT_PRESENCE_BOOST;
-  }
-  return evidence.covered ? HINT_ABSENCE_PENALTY : 1;
-}
+export const DEFAULT_SCORING_WEIGHTS: ScoringWeights = {
+  weaknessBeatableReviews: 200,
+  weaknessEntrenchedReviews: 200_000,
+  weaknessSecondaryLift: 0.35,
+  weaknessRatingShare: 0.6,
+  crowdingWeight: 1,
+  beatabilityExponent: 2,
+  demandRef: 400,
+  rankTopDemand: 40,
+  rankDecay: 0.74,
+  rankSeedFull: 3,
+  rankAxisWeight: 0.6,
+  hintAbsencePenalty: 0.7,
+};
 
 export function computeCompetitiveness(apps: readonly TopApp[]): number {
   if (apps.length === 0) return 0;
@@ -212,17 +291,72 @@ function updateStaleness(lastUpdatedDays: number | undefined): number {
 }
 
 /**
- * How beatable the field's LEADER is — genuine incumbent quality/staleness,
- * with no competitiveness term (competitiveness enters opportunity exactly once,
- * directly). Blends a weak leader rating (primary) with a stale last-update
- * (secondary). An empty field is maximally beatable (1).
+ * How much room the leader's REVIEW MASS leaves a new entrant, in 0..1 — a log
+ * ramp from `weaknessBeatableReviews` (→1) to `weaknessEntrenchedReviews` (→0).
+ *
+ * This is the term the old model was missing entirely (defect A, 2026-07-26):
+ * `computeIncumbentWeakness` looked only at the leader's rating and update
+ * staleness, so a leader rated ≥4.5 and shipped recently scored weakness
+ * EXACTLY 0.000 no matter its size. Measured consequences: `block shorts`
+ * (incumbents at 2,973 / 128 / 26 / 14 / 1 reviews) and `peptide tracker`
+ * (1,029 / 2,959 / 445 / 2,483 / 0) both scored 0.000 — a one-review incumbent
+ * was scored unbeatable — while `real claw machine` scored 0.40 purely because
+ * Clawee (737,897 reviews) was 622 days stale. 32% of all scans sat at exactly
+ * 0.00 and 41% below 0.05.
+ *
+ * A log ramp rather than `1 - norm(reviews, ref)` because the log-normalised
+ * form is far too flat at the bottom of the range (a 26-review leader reads
+ * only ~0.61 against a 5,000-review ref), which is precisely where the
+ * discrimination has to live.
  */
-export function computeIncumbentWeakness(apps: readonly TopApp[]): number {
+export function computeLeaderScaleOpening(
+  reviews: number,
+  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS,
+): number {
+  const beatable = Math.log1p(Math.max(0, weights.weaknessBeatableReviews));
+  const entrenched = Math.log1p(Math.max(0, weights.weaknessEntrenchedReviews));
+  if (entrenched <= beatable) return reviews <= weights.weaknessBeatableReviews ? 1 : 0;
+  return clamp01((entrenched - Math.log1p(Math.max(0, reviews))) / (entrenched - beatable));
+}
+
+/**
+ * How beatable the field's LEADER is, in 0..1 — with incumbent REVIEW MASS as
+ * the first-class term and rating/staleness as bounded secondary modifiers:
+ *
+ *   `scale     = computeLeaderScaleOpening(leader.reviews)`
+ *   `secondary = ratingShare * ratingWeakness + (1 - ratingShare) * staleness`
+ *   `weakness  = scale + secondaryLift * (1 - scale) * secondary`
+ *
+ * Properties this composition guarantees (all unit-tested):
+ *  - A tiny incumbent is near-maximally weak *independent of* its rating and
+ *    update recency (`scale` → 1 leaves no headroom for the secondary term to
+ *    matter). A 26-review, 4.9-rated, freshly-shipped leader scores ~1.0.
+ *  - A mega incumbent is near-zero weak *independent of* how stale/mediocre it
+ *    is: the secondary term can only ever reach `weaknessSecondaryLift`, so
+ *    Clawee-at-622-days-stale scores ≈0.14, not 0.40.
+ *  - Weakness is STRICTLY DECREASING in leader review mass: the derivative is
+ *    `dscale * (1 - secondaryLift * secondary)`, and
+ *    `secondaryLift * secondary ≤ 0.35 < 1`, so the review-mass term can never
+ *    be out-voted by the modifiers.
+ *  - Rating/staleness only ever RAISE weakness, never lower it.
+ *
+ * Competitiveness is deliberately absent — field crowding enters opportunity
+ * exactly once, via `computeBeatability`. An empty field is maximally beatable (1).
+ */
+export function computeIncumbentWeakness(
+  apps: readonly TopApp[],
+  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS,
+): number {
   const top = leader(apps);
   if (!top) return 1;
+  const scale = computeLeaderScaleOpening(top.reviews, weights);
   const ratingWeakness = clamp01((4.5 - top.rating) / 2); // 4.5+→0, 2.5→1
   const staleness = updateStaleness(top.lastUpdatedDays);
-  return clamp01(0.6 * ratingWeakness + 0.4 * staleness);
+  const secondary = clamp01(
+    weights.weaknessRatingShare * ratingWeakness +
+      (1 - weights.weaknessRatingShare) * staleness,
+  );
+  return clamp01(scale + weights.weaknessSecondaryLift * (1 - scale) * secondary);
 }
 
 const TREND_MULT: Record<GapTrend, number> = {
@@ -265,24 +399,148 @@ export function classifyTrend(series: readonly number[]): GapTrend {
 }
 
 /**
- * Whitespace / opportunity in 0..1 = real demand × genuine beatability × trend.
+ * SEARCHER-demand axis in 0..1 — the first of opportunity's two axes.
  *
- * Competitiveness is NOT double-counted: it enters ONLY through `beatability`
- * (as the field-crowding term), blended with the independent leader-weakness
- * signal. The old model multiplied by `(1 - competitiveness/100)` AND by
- * `(0.5 + 0.5 * incumbentWeakness)` where weakness itself embedded
- * `(1 - competitiveness/100)`, so competitiveness entered ~squared and
- * dominated demand.
+ * The incumbent-mass proxy (`norm(demand, DEMAND_REF)`, where `demand` is mean
+ * incumbent ratings/day) is the ONLY demand estimate the old model had, and it
+ * is monotone in incumbent review mass — the same underlying quantity
+ * `computeCompetitiveness` measures. Measured over 144,841 keywords it alone
+ * explained R²=0.725 of `opportunity`, which is why crowding net-RAISED the
+ * score (defect C).
+ *
+ * `appstore_autocomplete_hints` is the one signal in the system derived from
+ * SEARCHER behaviour rather than incumbent mass: Apple's own suggestion
+ * ordering. Measured per-rank median demand over the corpus — 1.207 (rank 0),
+ * 0.908 (1), 0.521 (2), 0.269 (3) … 0.107 (7) ratings/day, an 8.5x monotone
+ * spread, against 0.142 for the 129,446 keywords with no rank at all — says
+ * rank carries real, orthogonal demand information. The old model spent it as a
+ * ±30% multiplier (`HINT_PRESENCE_BOOST` 1.1 / `HINT_ABSENCE_PENALTY` 0.7),
+ * hopeless against a term carrying R²=0.725; here it becomes a real axis, in
+ * the SAME units as the proxy so the two are directly comparable:
+ *
+ *   `proxy    = norm(demand, demandRef)`
+ *   `implied  = rankTopDemand * rankDecay ^ bestRank`      // ratings/day
+ *   `corrob   = min(1, seedCount / rankSeedFull)`
+ *   `axis     = proxy + rankAxisWeight * corrob * max(0, norm(implied, demandRef) - proxy)`
+ *
+ * i.e. a hint sighting pulls the estimate TOWARD Apple's own ordering, but only
+ * UPWARD. That asymmetry is deliberate and load-bearing: hint coverage is only
+ * 12.8% of the corpus, so a late-rank sighting must stay weak POSITIVE evidence
+ * and never score below a term that was never probed at all.
+ *
+ * The corroboration factor exists because `HintEvidence.bestRank` is documented
+ * as "loosely ordinal only" — a rank-0 sighting from a single prefix-fan-out
+ * query is much weaker evidence than one several distinct seeds agree on, and
+ * without this factor the axis promotes single-seed junk handles to the top of
+ * the corpus (observed in the backtest).
+ *
+ * Absence is TRI-STATE by design, because it is genuinely ambiguous:
+ *  - present with a rank → the axis above;
+ *  - PROBED and absent (`covered && seedCount === 0`) → `hintAbsencePenalty`,
+ *    a confirmed "Apple does not suggest this";
+ *  - NEVER probed (or `evidence === undefined`, e.g. the lookup failed) →
+ *    exactly neutral. `peptide tracker`, `card grading` and `block shorts` are
+ *    all in this bucket today, so neutrality here is what keeps the fix from
+ *    destroying the very niches it exists to surface.
+ * `HintEvidence.covered` is today's two-state discriminator for the last two
+ * branches; when a persisted probe-state lands, only that branch changes.
  */
-export function computeOpportunity(a: {
-  readonly demand: number;
-  readonly competitiveness: number;
-  readonly incumbentWeakness: number;
-  readonly trend: GapTrend;
-}): number {
-  const demandNorm = norm(a.demand, DEMAND_REF);
-  const beatability = clamp01(0.5 * (1 - a.competitiveness / 100) + 0.5 * a.incumbentWeakness);
-  return clamp01(demandNorm * beatability * TREND_MULT[a.trend]);
+export function computeSearcherDemandAxis(
+  demand: number,
+  hint: HintEvidence | undefined,
+  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS,
+): number {
+  const proxy = norm(demand, weights.demandRef);
+  if (!hint) return proxy;
+  if (hint.seedCount > 0) {
+    // Presence with no usable rank still counts as presence (never a penalty),
+    // it simply earns no lift.
+    if (hint.bestRank === null) return proxy;
+    const impliedDemand = weights.rankTopDemand * weights.rankDecay ** Math.max(0, hint.bestRank);
+    const rankProxy = norm(impliedDemand, weights.demandRef);
+    const corroboration =
+      weights.rankSeedFull <= 0 ? 1 : clamp01(hint.seedCount / weights.rankSeedFull);
+    return clamp01(
+      proxy + weights.rankAxisWeight * corroboration * Math.max(0, rankProxy - proxy),
+    );
+  }
+  return clamp01(hint.covered ? proxy * weights.hintAbsencePenalty : proxy);
+}
+
+/**
+ * INCUMBENT-SCALE axis in 0..1 — how beatable the field is, as a product of the
+ * leader's own beatability and a field-crowding discount:
+ *
+ *   `beatability = (incumbentWeakness * (1 - crowdingWeight * competitiveness/100)) ^ beatabilityExponent`
+ *
+ * Multiplicative, not the old `0.5 * (1 - comp/100) + 0.5 * incumbentWeakness`
+ * blend, for two reasons:
+ *
+ *  1. **The old form had a structural ceiling (defect B).** With weakness 0 —
+ *     32% of all scans, and 41% below 0.05 — beatability could not exceed 0.5,
+ *     capping opportunity at ~0.575 theoretically and ~0.431 at a realistic
+ *     competitiveness of 30. Measured `max(opportunity) where weakness = 0` was
+ *     0.5158 across 88,408 scans, so any "0.50 threshold" was unreachable for
+ *     exactly the open niches it was meant to select. Multiplying lets a
+ *     genuinely open field (weakness ~1, low crowding) reach ~0.9.
+ *  2. **It makes crowding structurally unable to net-raise the score.** Both
+ *     factors are monotone NON-INCREASING in incumbent review mass, so the
+ *     whole beatability path carries a strictly non-positive sign in mass —
+ *     the sign error at the heart of the old model.
+ *
+ * The two factors are not a double count: `incumbentWeakness` asks "can I beat
+ * the ONE app at the top", `competitiveness` asks "how much strength is in the
+ * field behind it". Leader entrenchment gates first; field crowding discounts.
+ *
+ * The product is then raised to `beatabilityExponent`. That exponent is not
+ * cosmetic: `demand` (mean incumbent ratings/day) is unavoidably monotone in
+ * incumbent review mass, so the corrected weakness term and the multiplicative
+ * composition ALONE still left `corr(opportunity, competitiveness)` at +0.352
+ * over the corpus. Because `d ln(B^k) = k * d ln B`, the exponent scales the
+ * whole incumbent-scale path's slope in log-review-mass until it out-weighs
+ * that leak, WITHOUT compressing the demand axis's range (which is what makes
+ * the alternative — a much larger `demandRef` — put the 0.50 threshold back out
+ * of reach). See `DEFAULT_SCORING_WEIGHTS` for the algebra and the sweep.
+ */
+export function computeBeatability(
+  competitiveness: number,
+  incumbentWeakness: number,
+  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS,
+): number {
+  const crowdDiscount = clamp01(1 - weights.crowdingWeight * clamp01(competitiveness / 100));
+  const raw = clamp01(clamp01(incumbentWeakness) * crowdDiscount);
+  return clamp01(raw ** weights.beatabilityExponent);
+}
+
+/**
+ * Whitespace / opportunity in 0..1 — a two-axis product:
+ *
+ *   `opportunity = searcherDemandAxis × beatability × trendMultiplier`
+ *
+ * Axis 1 (`computeSearcherDemandAxis`) is the demand a SEARCHER expresses;
+ * axis 2 (`computeBeatability`) is the scale of the incumbents in the way.
+ * Splitting them is the fix for the 2026-07-26 sign defect: incumbent review
+ * mass now enters opportunity with a strictly non-positive sign (only through
+ * axis 2), while the rate-shaped demand proxy and Apple's suggestion ordering
+ * carry the positive sign (only through axis 1).
+ *
+ * `hint` is optional and always safe to omit — omitting it is exactly
+ * equivalent to a never-probed term (neutral), never a penalty.
+ */
+export function computeOpportunity(
+  a: {
+    /** Mean incumbent ratings/day (`computeDemand`) — a PURE measurement; no hint multiplier baked in. */
+    readonly demand: number;
+    readonly competitiveness: number;
+    readonly incumbentWeakness: number;
+    readonly trend: GapTrend;
+    readonly hint?: HintEvidence | undefined;
+  },
+  weights: ScoringWeights = DEFAULT_SCORING_WEIGHTS,
+): number {
+  const demandAxis = computeSearcherDemandAxis(a.demand, a.hint, weights);
+  const beatability = computeBeatability(a.competitiveness, a.incumbentWeakness, weights);
+  return clamp01(demandAxis * beatability * TREND_MULT[a.trend]);
 }
 
 // The "beatable solo" review ceiling for `computeBuildability`'s reviewOpening
