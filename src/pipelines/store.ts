@@ -358,6 +358,39 @@ export async function findResumableRuns(): Promise<readonly ResumableRun[]> {
   }));
 }
 
+/** One `status = 'running'` run, for the scheduler's in-flight check. */
+export interface RunningRun {
+  readonly id: string;
+  /** Epoch seconds, or null when the row never recorded one. */
+  readonly startedAt: number | null;
+}
+
+/**
+ * Every run still marked `'running'` for ONE pipeline. Backs the scheduled
+ * `pipelineRun` cron job's in-flight guard (`src/cron/pipeline-run-guard.ts`) —
+ * `acquirePipelineLock` deliberately does not lock, so an unattended schedule
+ * needs this to avoid stacking a second ~14-minute run on an overrunning one.
+ *
+ * Deliberately narrower than {@link findResumableRuns} (which is pipeline-
+ * agnostic and also parses the full config): the guard only needs the id and
+ * the start time, and must not pay to deserialize a config it will not read.
+ */
+export async function getRunningRunsForPipeline(
+  pipelineId: string,
+): Promise<readonly RunningRun[]> {
+  const db = getDb();
+  const rows = (await db`
+    SELECT id, started_at
+    FROM pipeline_runs
+    WHERE status = 'running' AND pipeline_id = ${pipelineId}
+    ORDER BY started_at DESC NULLS FIRST
+  `) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({
+    id: r.id as string,
+    startedAt: r.started_at === null || r.started_at === undefined ? null : Number(r.started_at),
+  }));
+}
+
 /** Increment a run's resume attempt counter. Returns the new count. */
 export async function incrementResumeAttempts(id: string): Promise<number> {
   const db = getDb();

@@ -195,7 +195,11 @@ export default function ScreenerTab() {
         { method: "PATCH", body: JSON.stringify({ status }) },
       );
       if (res.success) {
-        toast.success(status === "active" ? `Acknowledged "${keyword}"` : `Dismissed "${keyword}"`);
+        toast.success(
+          status === "active"
+            ? `Acknowledged "${keyword}"`
+            : `Dismissed "${keyword}" — downweighted, still eligible as a seed`,
+        );
         refetch();
       } else {
         toast.error(res.error ?? "Failed to update signature hit");

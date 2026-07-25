@@ -53,6 +53,7 @@
     "memory:facet-backfill": "bun run src/memory/facet-backfill/cli.ts",
     "appstore:cluster-keywords": "bun run scripts/cluster-appstore-keywords.ts",
     "appstore:corpus-hygiene": "bun run scripts/backfill-corpus-hygiene.ts",
+    "ideas:eval": "bun run scripts/run-idea-eval.ts",
     "lint": "biome lint src",
     "format:check": "biome format src",
     "test:isolated": "bun test --timeout 30000 $(find src -name '*.isolated.test.ts')",

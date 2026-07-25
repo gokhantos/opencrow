@@ -48,8 +48,20 @@ export const KEYWORD_SCANS_TABLE = "appstore_keyword_scans";
  * consumed-id filters still leave a full `limit` of fresh seeds to choose from.
  */
 const FETCH_MULTIPLIER = 4;
-/** Floor on the fetch bound so a tiny `limit` still samples a useful window. */
-const MIN_FETCH = 100;
+/**
+ * Floor on the fetch bound so a tiny `limit` still samples a useful window.
+ *
+ * Raised 100 -> 400 on 2026-07-25 because two new post-fetch filters now run
+ * against this pool (the leader-review ceiling in `filterByLeaderReviews`, plus
+ * the buildability-blended re-ranking), and the SQL fetch is ordered by raw
+ * `opportunity`. Measured against the live corpus at `minBuildability: 20` with
+ * a 100,000-review ceiling: of the top 100 by opportunity only 36 survive the
+ * ceiling, whereas 123 of the top 400 do. 100 was leaving the selector with too
+ * few post-filter candidates to fill `seedLimit` once cross-run consumption
+ * dedup also took its cut. The three-stage query in `getTopOpportunities` only
+ * materializes the fat columns for the paged rows, so 400 is still cheap.
+ */
+const MIN_FETCH = 400;
 
 /**
  * A market SIGNAL derived from an App Store keyword gap — not an idea. Carries
@@ -91,6 +103,18 @@ export interface SelectGapSeedsOptions {
    * unit-test call).
    */
   readonly killDownweightStrength?: number;
+  /**
+   * How strongly `buildability` (0..100 — the solo-indie "can I win this?"
+   * score, see `computeBuildability`) blends into the SORT key alongside
+   * `opportunity`. Threaded from
+   * `appstoreKeywordGap.buildabilityRankWeight`; defaults to
+   * {@link DEFAULT_BUILDABILITY_RANK_WEIGHT} when omitted.
+   *
+   * `0` reproduces the legacy pure-opportunity ordering exactly; `1` makes the
+   * sort key `opportunity * buildability/100`. See {@link selectGapSeeds} for
+   * why this is a blend rather than a replacement.
+   */
+  readonly buildabilityRankWeight?: number;
 }
 
 export interface ZeroVolumeVetoOptions {
@@ -123,6 +147,42 @@ export function filterKnownZeroVolume(
     if (s.asaPopularityCheckedAt < freshnessFloorSec) return true; // stale — ignore veto
     return s.asaPopularity > opts.threshold;
   });
+}
+
+/**
+ * HARD leader-review ceiling on seed selection (2026-07-25). PURE: drops scans
+ * whose SERP leader has more than `maxTopAppReviews` ratings.
+ *
+ * Why this exists ALONGSIDE `minBuildability` rather than being folded into it:
+ * `computeBuildability` is `demandFactor * (0.65*reviewOpening +
+ * 0.35*ratingOpening)`, and `reviewOpening` saturates to ZERO once the leader
+ * passes its 5,000-review reference. Above that point the review count stops
+ * mattering entirely and a badly-rated mega-app can still reach buildability 35
+ * on the rating term alone. Measured examples that clear a floor of 20 today:
+ * `access control` (leader 2,402,851 reviews, buildability 35) and `abpv`
+ * (leader 133,415, buildability 35). That is the same failure mode as
+ * `incumbent_weakness` letting a giant through on staleness.
+ *
+ * So the composite cannot be trusted to encode "a solo indie cannot beat a
+ * 2.4M-review incumbent" — a separate, blunt, directly-legible gate can. It is
+ * a VETO on seed selection only, never a scoring multiplier, and applies only to
+ * the auto-selected pool: explicit `seedKeywords`/starred picks bypass it, the
+ * same way they bypass `filterKnownZeroVolume`.
+ *
+ * A non-positive / non-finite / undefined ceiling is a true no-op.
+ */
+export function filterByLeaderReviews<T extends { readonly topAppReviews: number }>(
+  scans: readonly T[],
+  maxTopAppReviews: number | undefined,
+): readonly T[] {
+  if (
+    maxTopAppReviews === undefined ||
+    !Number.isFinite(maxTopAppReviews) ||
+    maxTopAppReviews <= 0
+  ) {
+    return scans;
+  }
+  return scans.filter((s) => s.topAppReviews <= maxTopAppReviews);
 }
 
 /** {@link collectKeywordGaps}'s options — {@link SelectGapSeedsOptions} plus the DB-backed fetch knobs. */
@@ -172,6 +232,20 @@ const DOWNWEIGHT_SORT_FACTOR = 0.5;
 const DEFAULT_KILL_DOWNWEIGHT_STRENGTH = 0.35;
 
 /**
+ * Default `buildability` weight in {@link selectGapSeeds}'s sort key when the
+ * caller doesn't supply `opts.buildabilityRankWeight` (e.g. a direct unit-test
+ * call). Matches the `appstoreKeywordGap.buildabilityRankWeight` config default
+ * (`schema.ts`) so the two never drift silently out of sync.
+ */
+const DEFAULT_BUILDABILITY_RANK_WEIGHT = 0.5;
+
+/**
+ * Buildability's 0..100 range, used to normalize it into the 0..1 space
+ * `opportunity` already lives in before blending.
+ */
+const BUILDABILITY_MAX = 100;
+
+/**
  * Pure seed selection: drop scans below `minOpportunity`, drop scans whose
  * `keyword` is already consumed, sort by (downweight-adjusted) opportunity
  * DESC, cap at `limit`, and map to {@link GapSeed}. Never mutates `scans`.
@@ -194,6 +268,25 @@ const DEFAULT_KILL_DOWNWEIGHT_STRENGTH = 0.35;
  * (rather than `downweightedKeywords`'s flat halving) since it is a continuous
  * magnitude, not a boolean flag — a keyword killed across many exposed runs
  * sinks further than one killed once.
+ *
+ * `opts.buildabilityRankWeight` (2026-07-25) adds a THIRD sort-only modifier:
+ * the rank is scaled by `(1 - w) + w * buildability/100`. Rationale — measured
+ * over the 20,341 keywords above the seed opportunity threshold, ranking by
+ * pure `opportunity` reliably selects keywords whose SERP leader has millions
+ * of reviews (`opportunity` never looks at the leader's review count at all:
+ * `dispute` scores 0.603 against a 2,673,304-review incumbent), which is
+ * exactly the population a solo builder cannot win. `buildability` DOES gate on
+ * `top_app_reviews`, so blending it in pushes the selector toward keywords that
+ * are both wanted and winnable.
+ *
+ * It is deliberately a BLEND and not a replacement: sorting by buildability
+ * alone is worse than the status quo, because buildability rewards a low review
+ * count without requiring real demand — the corpus's buildability leaders are
+ * near-zero-demand fragments (`mvshort`, `flsie`, `abpv`). Opportunity supplies
+ * the demand signal, buildability supplies the winnability signal, and neither
+ * is sufficient alone. As with the other two modifiers, this only ever affects
+ * SORT ORDER — a returned {@link GapSeed}'s `opportunity` is always the real
+ * measured value.
  */
 export function selectGapSeeds(
   scans: readonly KeywordScanRow[],
@@ -206,8 +299,20 @@ export function selectGapSeeds(
   if (limit === 0) return [];
 
   const killStrength = opts.killDownweightStrength ?? DEFAULT_KILL_DOWNWEIGHT_STRENGTH;
+  const rawWeight = opts.buildabilityRankWeight ?? DEFAULT_BUILDABILITY_RANK_WEIGHT;
+  // Clamp rather than trust: an out-of-range weight must degrade to one of the
+  // two sane endpoints, never invert or negate the ranking.
+  const buildWeight = Number.isFinite(rawWeight) ? Math.min(1, Math.max(0, rawWeight)) : 0;
+
   const sortRank = (s: KeywordScanRow): number => {
     let rank = downweightedKeywords.has(s.keyword) ? s.opportunity * DOWNWEIGHT_SORT_FACTOR : s.opportunity;
+    // Buildability blend (2026-07-25): scale the opportunity-derived rank by a
+    // buildability factor in [1 - w, 1]. At w = 0 this is a no-op (legacy pure
+    // opportunity); at w = 1 the key becomes opportunity * buildability/100.
+    if (buildWeight > 0) {
+      const normalized = Math.min(1, Math.max(0, s.buildability / BUILDABILITY_MAX));
+      rank = rank * (1 - buildWeight + buildWeight * normalized);
+    }
     const killed = killedWeights.get(s.keyword);
     if (killed !== undefined && killed > 0) {
       rank = rank / (1 + killed * killStrength);
@@ -310,6 +415,13 @@ export interface CollectKeywordGapsOptions extends SelectGapSeedsOptions {
   readonly excludeKnownZeroVolume?: boolean;
   readonly zeroVolumeThreshold?: number;
   readonly zeroVolumeFreshnessDays?: number;
+  /**
+   * HARD ceiling on the SERP leader's review count for AUTO-selected seeds —
+   * see {@link filterByLeaderReviews} for why this is a separate gate rather
+   * than a buildability term. Threaded from
+   * `appstoreKeywordGap.pipelineMaxTopAppReviews`. Undefined/0 = no ceiling.
+   */
+  readonly maxTopAppReviews?: number;
 }
 
 const DEFAULT_ZERO_VOLUME_THRESHOLD = 1;
@@ -367,6 +479,7 @@ export async function collectKeywordGaps(
 
     let autoSeeds: readonly GapSeed[] = [];
     let fetchedCount = 0;
+    let eligibleCount = 0;
     if (remaining > 0) {
       const fetchLimit = Math.max(remaining * FETCH_MULTIPLIER, MIN_FETCH);
       const { rows: scans } = await getTopOpportunities({
@@ -381,13 +494,17 @@ export async function collectKeywordGaps(
       // auto-fetch pool before ranking/selection (see `filterKnownZeroVolume`'s
       // doc comment). `opts.seedKeywords`/`starred` priority picks bypass this
       // veto entirely — they're an explicit request, not a ranking result.
-      const eligibleScans = opts.excludeKnownZeroVolume
+      const zeroVolumeFiltered = opts.excludeKnownZeroVolume
         ? filterKnownZeroVolume(scans, {
             threshold: opts.zeroVolumeThreshold ?? DEFAULT_ZERO_VOLUME_THRESHOLD,
             freshnessDays: opts.zeroVolumeFreshnessDays ?? DEFAULT_ZERO_VOLUME_FRESHNESS_DAYS,
             nowEpochSeconds: Math.floor(Date.now() / 1000),
           })
         : scans;
+      // Leader-review ceiling — see `filterByLeaderReviews`. Applied AFTER the
+      // ASA veto and BEFORE ranking, on the auto-fetch pool only.
+      const eligibleScans = filterByLeaderReviews(zeroVolumeFiltered, opts.maxTopAppReviews);
+      eligibleCount = eligibleScans.length;
       const consumedKeywords = ctx.consumed.get(KEYWORD_SCANS_TABLE) ?? new Set<string>();
       autoSeeds = selectGapSeeds(
         eligibleScans.filter(
@@ -398,6 +515,7 @@ export async function collectKeywordGaps(
           limit: remaining,
           minOpportunity: opts.minOpportunity,
           killDownweightStrength: opts.killDownweightStrength,
+          buildabilityRankWeight: opts.buildabilityRankWeight,
         },
         verdicts.downweighted,
         verdicts.killedWeights,
@@ -417,10 +535,13 @@ export async function collectKeywordGaps(
 
     log.info("Collected keyword-gap seeds", {
       fetched: fetchedCount,
+      afterLeaderReviewCeiling: eligibleCount,
       priority: priority.length,
       selected: seeds.length,
       minOpportunity: opts.minOpportunity,
       minBuildability: opts.minBuildability,
+      maxTopAppReviews: opts.maxTopAppReviews,
+      buildabilityRankWeight: opts.buildabilityRankWeight,
       limit: opts.limit,
     });
     return seeds;

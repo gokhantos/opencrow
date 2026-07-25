@@ -287,6 +287,21 @@ await mock.module("../../lib/useChart", () => ({
   useChart: mockUseChart,
 }));
 
+// Mock Toast so useToast doesn't require a <ToastProvider> in a headless render
+// (the tab calls it for the per-row exclude action). Same shape as
+// ScreenerTab.isolated.test.ts's mock.
+const mockToastSuccess = mock(() => {});
+const mockToastError = mock(() => {});
+await mock.module("../../components/Toast", () => ({
+  useToast: () => ({
+    success: mockToastSuccess,
+    error: mockToastError,
+    warning: mock(() => {}),
+    info: mock(() => {}),
+  }),
+  ToastProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 // ─── Import component after mocks are set up ─────────────────────────────────
 import OpportunitiesTab, { keywordVerdict } from "./OpportunitiesTab";
 import { mount, typeIntoInput } from "../../test-helpers";

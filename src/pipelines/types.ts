@@ -6,7 +6,21 @@
 
 import type { ModelProvider } from "../store/model-routing";
 
-export type PipelineStatus = "pending" | "running" | "completed" | "failed";
+/**
+ * `"empty"` is a TERMINAL status distinct from both `"completed"` and
+ * `"failed"`: the run executed cleanly end-to-end but produced zero ideas (see
+ * `src/pipelines/ideas/zero-yield.ts`). It exists because a zero-yield run used
+ * to record `"completed"` and render green — run `2f00f949` (2026-07-19) burned
+ * 824,914ms, emitted 0 ideas, and was indistinguishable from a good day. It is
+ * NOT `"failed"`, so a genuine crash stays separable from a clean no-op run;
+ * `"failed"` remains reserved for thrown errors and reaped runs.
+ *
+ * There is no CHECK constraint on `pipeline_runs.status`, so no migration is
+ * needed to store it. Anything that switches on status must treat `"empty"` as
+ * terminal — `findResumableRuns` only looks for `'running'`, so it is already
+ * correct by construction.
+ */
+export type PipelineStatus = "pending" | "running" | "completed" | "failed" | "empty";
 export type StepStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "interrupted";
 
 export type IdeaCategory =
