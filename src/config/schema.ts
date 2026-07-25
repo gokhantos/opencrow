@@ -676,7 +676,7 @@ export const appstoreKeywordGapConfigSchema = z
     // Apple's per-IP limit decays. Reversible: flip back if the pool degrades
     // — the per-lane AIMD throttle and the proxied stream's circuit breaker
     // still guard it either way.
-    useProxy: z.boolean().default(false),
+    useProxy: z.boolean().default(true),
     // How many of the globally stalest active keywords to scan per sweep
     // cycle — THE per-sweep governor (not `dailyKeywordBudget`/
     // `minedExploration.dailyQuota`, which are safety ceilings a sweep only
@@ -1582,7 +1582,7 @@ export const appstoreKeywordGapConfigSchema = z
     scanIntervalMs: 60_000,
     sweepDelayMs: 1500,
     dailyKeywordBudget: 400_000,
-    useProxy: false,
+    useProxy: true,
     keywordsPerSweep: 200,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     tier1AutocompleteCap: 50,
