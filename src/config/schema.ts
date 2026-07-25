@@ -889,7 +889,21 @@ export const appstoreKeywordGapConfigSchema = z
         // rationale as the diversity guard elsewhere in the funnel. Raised
         // 10 -> 24 (throughput wave item 3): winnerLimit(36) + diverseLimit(24)
         // = 60 total seeds/pass, up from 25.
-        diverseLimit: z.number().int().min(0).max(200).default(24),
+        // Coverage wave (2026-07-26): raised 24 -> 48, so 84 total seeds/pass.
+        // The extra breadth deliberately goes to the DIVERSE half, not the
+        // winner half: winners re-till ground that already scores well (and
+        // `getWinnerKeywords` draws from a pool of only ~1.4k keywords that
+        // ever cleared the seed threshold), whereas the diverse round-robin is
+        // the only seed source that reaches under-covered zones — the
+        // structural reason `peptide tracker` / `card grading` / `block shorts`
+        // had no hint at all after five days of running. Request cost:
+        // 84 seeds x 6 queries x 24 passes/day = ~12.1k/day, up from ~8.6k.
+        // Cadence is deliberately left at 1h rather than also being halved:
+        // the box IP is already 403-blocked on the sibling iTunes-search host
+        // (see `useProxy` above), so this lane's DIRECT budget is raised only
+        // modestly, and the bulk of the new coverage volume goes to the
+        // proxied `directProbe` lane below instead.
+        diverseLimit: z.number().int().min(0).max(200).default(48),
         // Upper bound on GOOD (post-`isJunkKeyword`) suggestions kept per
         // seed. Apple returns suggestions in popularity order, so this keeps
         // the top-N most-popular per seed rather than an arbitrary slice.
@@ -973,12 +987,110 @@ export const appstoreKeywordGapConfigSchema = z
             prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
             useProxy: false,
           }),
+        // Coverage wave (2026-07-26), the DIRECT CORPUS-PROBE lane — see
+        // `hint-probe-pass.ts`'s module doc and migration 057.
+        //
+        // WHY. The two lanes above are DISCOVERY lanes: hint coverage of the
+        // corpus is a side effect of fanning out from a few dozen seeds, so a
+        // keyword only gets a rank if it happens to fall out of somebody
+        // else's query. Measured 2026-07-26 after five days of running: only
+        // 18,455 of 145,351 corpus keywords (12.7%) had ANY hint, and the
+        // signal was missing at precisely the keywords decisions get made
+        // about. This lane inverts the direction — it asks Apple about the
+        // corpus keywords we care about BY NAME, so one request yields a
+        // definitive answer for that keyword instead of a lottery ticket.
+        //
+        // READ-ONLY w.r.t. the corpus: it writes the hint log and the probe
+        // ledger and never calls `upsertKeywords`, so `expandCorpus` remains
+        // the sole autocomplete admission path and its brand/junk filters
+        // remain the only gate. Growing coverage cannot flood the corpus.
+        //
+        // BUDGET. `keywordsPerPass` (120) x 96 passes/day = ~11.5k requests/day
+        // at the 15min cadence. The eligible pool is ~23k keywords (every
+        // active non-mined keyword, plus every mined keyword that ever cleared
+        // `opportunityFloor` — measured 2026-07-26), so the initial backfill
+        // completes in ~2 days and then the lane SELF-THROTTLES: with a 30-day
+        // re-probe cadence, steady state is ~23k/30 ≈ 800 requests/day, ~7% of
+        // the cap, because `selectProbeTargets` simply returns fewer targets
+        // once nothing is stale. The cap is a backfill rate, not a standing
+        // cost.
+        directProbe: z
+          .object({
+            enabled: z.boolean().default(true),
+            // 15min — 4x the expansion lanes' cadence, because this lane's
+            // per-pass work is bounded by a hard request cap rather than by a
+            // seed fan-out, and the backfill wants to finish in days not weeks.
+            minIntervalMs: z.number().int().min(60_000).default(900_000),
+            // Hard cap on requests per pass. Scaled by the same shared
+            // adaptive-throttle multiplier as the expansion lanes' seed limits
+            // (see scraper.ts's `runHintProbeLaneIfDue`), so Apple pushing
+            // back on any lane shrinks this one in lockstep.
+            keywordsPerPass: z.number().int().min(0).max(2000).default(120),
+            // Cap on GOOD (junk-filtered) terms marked `kept` per response, in
+            // the hint log. Mirrors `perSeed` above; nothing here is admitted
+            // to the corpus regardless.
+            perSeed: z.number().int().min(1).max(20).default(8),
+            // Pacing within a pass. Tighter than the expansion lanes' 1000ms
+            // because this lane runs through the proxy (rotating exit IPs, so
+            // the per-IP burst ceiling is spread) and needs to move ~23k
+            // keywords through a backfill.
+            delayMs: z.number().int().min(100).max(10_000).default(400),
+            // Raw `X-Apple-Store-Front` header value + matching lowercase cc.
+            // US only for now: the US storefront is where the scanner's
+            // decisions are made, and a second market would double the budget
+            // for corroboration we don't yet act on.
+            storefront: z.string().min(1).default("143441-1,29"),
+            market: z.string().min(2).max(2).default("us"),
+            // DEFAULT ON, unlike the two expansion lanes above — the one
+            // deliberate divergence in this change, for three reasons.
+            // (1) Protect the signal: Apple has ALREADY rate-limited the box IP
+            //     on `itunes.apple.com/search` (2026-07-25, see `useProxy`
+            //     above — 10/10 direct probes 403'd). The hints host has so far
+            //     been spared, and it carries the only incumbent-independent
+            //     demand signal in the system; adding ~11.5k requests/day of
+            //     NEW box-IP volume to it is the single most likely way to lose
+            //     that. (2) The proxy is already proven on the same Apple
+            //     search-endpoint family at much higher volume (the keyword
+            //     SERP lane). (3) Blast radius: leaving the two EXISTING lanes
+            //     direct means that if the Webshare pool degrades, only this
+            //     new lane fails while the established hint flow continues —
+            //     the failure modes stay independent. Flip to false to fall
+            //     back to the box IP.
+            useProxy: z.boolean().default(true),
+            // How long a probe result stays fresh. 30 days matches
+            // `getHintEvidence`'s evidence window, so a keyword's tri-state
+            // never goes stale relative to the window that reads it.
+            reprobeAfterDays: z.number().int().min(1).max(365).default(30),
+            // A `source: 'mined'` keyword (81% of the active corpus, mostly
+            // app-title n-gram fragments no human would type) is only worth a
+            // request once it has actually scored. NOT a rounding error: of the
+            // 1,362 keywords that ever scored >= 0.35, 1,030 are mined — the
+            // high scorers live in the mined pool. Floor 0.25 puts the eligible
+            // pool at ~23k (vs ~18.9k at 0.35, ~28k at 0.20).
+            opportunityFloor: z.number().min(0).max(1).default(0.25),
+            // How far back a qualifying scan may be. 90d matches the hint
+            // log's own retention.
+            opportunityLookbackDays: z.number().int().min(1).max(365).default(90),
+          })
+          .default({
+            enabled: true,
+            minIntervalMs: 900_000,
+            keywordsPerPass: 120,
+            perSeed: 8,
+            delayMs: 400,
+            storefront: "143441-1,29",
+            market: "us",
+            useProxy: true,
+            reprobeAfterDays: 30,
+            opportunityFloor: 0.25,
+            opportunityLookbackDays: 90,
+          }),
       })
       .default({
         enabled: true,
         minIntervalMs: 3_600_000,
         winnerLimit: 36,
-        diverseLimit: 24,
+        diverseLimit: 48,
         perSeed: 8,
         delayMs: 1000,
         storefront: "143441-1,29",
@@ -994,6 +1106,19 @@ export const appstoreKeywordGapConfigSchema = z
           storefront: "143444-1,29",
           prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
           useProxy: false,
+        },
+        directProbe: {
+          enabled: true,
+          minIntervalMs: 900_000,
+          keywordsPerPass: 120,
+          perSeed: 8,
+          delayMs: 400,
+          storefront: "143441-1,29",
+          market: "us",
+          useProxy: true,
+          reprobeAfterDays: 30,
+          opportunityFloor: 0.25,
+          opportunityLookbackDays: 90,
         },
       }),
     // Safety rails for the higher sweep rate above — see `sweep-throttle.ts`.
@@ -1398,7 +1523,7 @@ export const appstoreKeywordGapConfigSchema = z
       enabled: true,
       minIntervalMs: 3_600_000,
       winnerLimit: 36,
-      diverseLimit: 24,
+      diverseLimit: 48,
       perSeed: 8,
       delayMs: 1000,
       storefront: "143441-1,29",
@@ -1414,6 +1539,19 @@ export const appstoreKeywordGapConfigSchema = z
         storefront: "143444-1,29",
         prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
         useProxy: false,
+      },
+      directProbe: {
+        enabled: true,
+        minIntervalMs: 900_000,
+        keywordsPerPass: 120,
+        perSeed: 8,
+        delayMs: 400,
+        storefront: "143441-1,29",
+        market: "us",
+        useProxy: true,
+        reprobeAfterDays: 30,
+        opportunityFloor: 0.25,
+        opportunityLookbackDays: 90,
       },
     },
     sweepRateSafety: {

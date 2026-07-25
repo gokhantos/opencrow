@@ -49,6 +49,7 @@ interface CallLog {
   runDeStorefrontSweep: number;
   runScreener: number;
   expandCorpus: number;
+  probeCorpusKeywords: number;
   mineKeywords: number;
   backfillMinedDeactivation: number;
   runRegistryBackfillOnce: number;
@@ -68,6 +69,7 @@ function freshCallLog(): CallLog {
     runDeStorefrontSweep: 0,
     runScreener: 0,
     expandCorpus: 0,
+    probeCorpusKeywords: 0,
     mineKeywords: 0,
     backfillMinedDeactivation: 0,
     runRegistryBackfillOnce: 0,
@@ -128,6 +130,20 @@ function fakeAppstoreConfig() {
         storefront: "us",
         delayMs: 0,
         prefixFanOut: { enabled: true, maxPrefixesPerSeed: 5 },
+        // Coverage wave (2026-07-26): the direct corpus hint-probe lane.
+        directProbe: {
+          enabled: true,
+          minIntervalMs: 0,
+          keywordsPerPass: 5,
+          perSeed: 5,
+          delayMs: 0,
+          storefront: "us",
+          market: "us",
+          useProxy: true,
+          reprobeAfterDays: 30,
+          opportunityFloor: 0.25,
+          opportunityLookbackDays: 90,
+        },
       },
       deStorefrontLane: { enabled: true, minIntervalMs: 0, delayMs: 0 },
       sweepRateSafety: { legacyRateOverride: false, adaptiveThrottleEnabled: true },
@@ -258,6 +274,45 @@ function setUpMocks(): void {
         rateLimitErrors: 0,
         brandFiltered: 0,
         rawTermCount: 0,
+        probesRecorded: 0,
+        emptyResponses: 0,
+      };
+    },
+    // Coverage wave (2026-07-26): `hint-probe-pass.ts` imports these three
+    // from `keyword-autocomplete.ts`. Even though `hint-probe-pass` is itself
+    // mocked below, this factory REPLACES the module for every importer, so a
+    // missing name here is a hard ESM SyntaxError at import time rather than a
+    // silent `undefined`.
+    buildProbeWrite: () => ({
+      query: "",
+      storefront: "us",
+      probedAt: 0,
+      returnedAny: false,
+      termCount: 0,
+      selfRank: null,
+    }),
+    classifyHintTerms: () => [],
+    fetchHintTerms: async () => ({ ok: false, rateLimited: false }),
+  }));
+
+  // Coverage wave (2026-07-26): the DIRECT corpus hint-probe lane — a real
+  // network+DB lane on `auxiliaryLanesTick`, so it is stubbed here like every
+  // other pass function and counted so the wiring regression this suite exists
+  // for covers it too.
+  mock.module("./hint-probe-pass", () => ({
+    probeCorpusKeywords: async () => {
+      calls.probeCorpusKeywords++;
+      return {
+        targeted: 0,
+        attempted: 0,
+        probesRecorded: 0,
+        emptyResponses: 0,
+        selfSuggested: 0,
+        rateLimitErrors: 0,
+        rawTermCount: 0,
+        hintRowsWritten: 0,
+        ledgerTotal: 0,
+        bailedOnBudget: false,
       };
     },
   }));
@@ -446,6 +501,7 @@ describe("appstore scraper.ts — keyword-gap lane wiring", () => {
       expect(calls.runKeywordSweep).toBeGreaterThan(0);
       expect(calls.runScreener).toBeGreaterThan(0);
       expect(calls.expandCorpus).toBeGreaterThan(0);
+      expect(calls.probeCorpusKeywords).toBeGreaterThan(0);
       expect(calls.runDeStorefrontSweep).toBeGreaterThan(0);
       expect(calls.backfillMinedDeactivation).toBeGreaterThan(0);
 
@@ -613,6 +669,8 @@ describe("appstore scraper.ts — gap-sweep tick and auxiliary tick are independ
       // Nothing later in the auxiliary chain ever ran — confirms the chain
       // really is wedged at the screener, not silently swallowed/skipped.
       expect(calls.expandCorpus).toBe(0);
+      // The direct-probe lane honors the same hard kill-switch.
+      expect(calls.probeCorpusKeywords).toBe(0);
       expect(calls.runDeStorefrontSweep).toBe(0);
     } finally {
       scraper.stop();

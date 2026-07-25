@@ -1,5 +1,7 @@
 import { getDb } from "../../store/db";
 import { createLogger } from "../../logger";
+import { getErrorMessage } from "../../lib/error-serialization";
+import { getLastProbedAt } from "./hint-probe-store";
 import { JUNK_KEYWORDS } from "./keyword-junk";
 import {
   computeMineSlots,
@@ -1760,7 +1762,7 @@ export async function getHintEvidence(
     for (const c of candidates) allCandidates.add(c);
   }
 
-  const [presenceRows, coveredSeedRows] = await Promise.all([
+  const [presenceRows, coveredSeedRows, probedAtByKeyword] = await Promise.all([
     db`
       SELECT
         term AS keyword,
@@ -1779,6 +1781,22 @@ export async function getHintEvidence(
       WHERE seen_at >= ${windowStart}
         AND seed = ANY(${db.array([...allCandidates], "text")})
     `,
+    // Coverage wave (2026-07-26, migration 057): the probe ledger answers "was
+    // this EXACT phrase ever asked AND answered" directly, instead of the
+    // prefix-shaped inference of query 2. It also closes that heuristic's blind
+    // spot: a query Apple answered with an EMPTY list writes no hint row at
+    // all, so its `seed` never appears in query 2 — the single most informative
+    // negative observation was the one the schema could not represent. Issued
+    // in the SAME `Promise.all` as the two above (this runs on the hot
+    // scan-scoring path, so it must not add a serial round trip), and read
+    // best-effort: a ledger failure degrades `probedAt` to `undefined`
+    // ("unknown"), never breaks a scan.
+    getLastProbedAt(dedupedKeywords).catch((err) => {
+      logger.warn("Hint probe-ledger lookup failed, degrading to unknown probe state", {
+        error: getErrorMessage(err),
+      });
+      return null;
+    }),
   ]);
 
   const coveredSeeds = new Set(
@@ -1807,8 +1825,11 @@ export async function getHintEvidence(
     // (`candidateSeedPrefixes`) exists specifically for the ZERO-presence
     // case, to distinguish "queried, confirmed nothing" from "never
     // sampled".
-    const covered = presence !== undefined || candidates.some((c) => coveredSeeds.has(c));
+    const probedAt = probedAtByKeyword?.get(keyword) ?? null;
+    const covered =
+      presence !== undefined || probedAt !== null || candidates.some((c) => coveredSeeds.has(c));
     evidence.set(keyword, {
+      probedAt: probedAtByKeyword === null ? undefined : probedAt,
       bestRank: presence?.best_rank === null || presence?.best_rank === undefined
         ? null
         : Number(presence.best_rank),

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { buildCandidatesFromHints, buildPrefixFanOutWindow, parseHintTerms } from "./keyword-autocomplete";
+import {
+  buildCandidatesFromHints,
+  buildPrefixFanOutWindow,
+  buildProbeWrite,
+  findSelfRank,
+  parseHintTerms,
+} from "./keyword-autocomplete";
 
 // Fixture modeled on the real Apple MZSearchHints plist-XML response body,
 // captured live 2026-07-20/21 WITH the `X-Apple-Store-Front` header (see
@@ -217,5 +223,86 @@ describe("buildPrefixFanOutWindow", () => {
   it("normalizes an offset >= 26 by wrapping it back into range", () => {
     expect(buildPrefixFanOutWindow(26, 2)).toEqual(["a", "b"]);
     expect(buildPrefixFanOutWindow(27, 2)).toEqual(["b", "c"]);
+  });
+});
+
+// --- Coverage wave (2026-07-26): probe-ledger primitives (migration 057) ---
+
+describe("findSelfRank", () => {
+  it("returns the 0-based position at which the query is suggested back", () => {
+    expect(findSelfRank("budget", ["budget planner", "budget", "budget app"])).toBe(1);
+  });
+
+  it("returns 0 when the query is Apple's top suggestion (not falsy-null)", () => {
+    // The strongest possible self-signal must not be confusable with "absent".
+    expect(findSelfRank("budget", ["budget", "budget planner"])).toBe(0);
+  });
+
+  it("returns null when Apple did not suggest the exact phrase back", () => {
+    // With `returnedAny: true` this is the cleanest negative the endpoint can
+    // give: Apple answered, and the phrase wasn't in the answer.
+    expect(findSelfRank("peptide tracker", ["peptide guide", "peptide calculator"])).toBeNull();
+  });
+
+  it("returns null for an empty response", () => {
+    expect(findSelfRank("peptide tracker", [])).toBeNull();
+  });
+
+  it("matches through casing and whitespace differences in Apple's echo", () => {
+    expect(findSelfRank("Meal   Prep", ["meal prep"])).toBe(0);
+    expect(findSelfRank("meal prep", ["  MEAL PREP  "])).toBe(0);
+  });
+
+  it("returns null for a blank query rather than matching a blank term", () => {
+    expect(findSelfRank("   ", ["", "budget"])).toBeNull();
+  });
+
+  it("returns the FIRST (best) position when Apple repeats the phrase", () => {
+    expect(findSelfRank("budget", ["budget", "budget", "budget app"])).toBe(0);
+  });
+});
+
+describe("buildProbeWrite", () => {
+  it("marks a non-empty response as `returnedAny` with a term count and self rank", () => {
+    expect(
+      buildProbeWrite({
+        query: "budget",
+        storefront: "us",
+        probedAt: 1_800_000_000,
+        terms: ["budget planner", "budget"],
+      }),
+    ).toEqual({
+      query: "budget",
+      storefront: "us",
+      probedAt: 1_800_000_000,
+      returnedAny: true,
+      termCount: 2,
+      selfRank: 1,
+    });
+  });
+
+  it("marks an EMPTY response as `returnedAny: false` — the previously unrepresentable datum", () => {
+    expect(
+      buildProbeWrite({ query: "peptide tracker", storefront: "us", probedAt: 42, terms: [] }),
+    ).toEqual({
+      query: "peptide tracker",
+      storefront: "us",
+      probedAt: 42,
+      returnedAny: false,
+      termCount: 0,
+      selfRank: null,
+    });
+  });
+
+  it("keeps `returnedAny: true` with a null self rank when Apple answered about other phrases", () => {
+    const write = buildProbeWrite({
+      query: "peptide tracker",
+      storefront: "gb",
+      probedAt: 42,
+      terms: ["peptide guide"],
+    });
+    expect(write.returnedAny).toBe(true);
+    expect(write.selfRank).toBeNull();
+    expect(write.storefront).toBe("gb");
   });
 });

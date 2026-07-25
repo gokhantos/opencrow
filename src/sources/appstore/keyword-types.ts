@@ -44,6 +44,23 @@ export interface HintEvidence {
    * only when `covered` is also true.
    */
   readonly covered: boolean;
+  /**
+   * Coverage wave (2026-07-26, migration 057): epoch seconds of the most
+   * recent DIRECT probe of this exact keyword (any storefront) — i.e. a query
+   * where the keyword ITSELF was sent to Apple's search-suggest endpoint and
+   * Apple answered — or `null` if it was never directly probed. `undefined`
+   * only when the probe-ledger lookup itself failed (never allowed to break a
+   * scan).
+   *
+   * Strictly stronger than `covered`, which infers coverage from whether a
+   * plausible PREFIX of the keyword appears in the hint log. Together they form
+   * the tri-state `present(rank)` / `probed-absent` / `never-probed` — see
+   * `hint-coverage.ts`'s `resolveHintCoverage`, which is the intended way to
+   * consume these three fields, and which grades absence evidence as `direct`
+   * (this field) vs `prefix` (`covered` alone). A rule that RETIRES a keyword
+   * on hint absence must require `direct`.
+   */
+  readonly probedAt?: number | null;
 }
 
 /**

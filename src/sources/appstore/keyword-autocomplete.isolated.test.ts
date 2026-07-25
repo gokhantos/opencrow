@@ -8,6 +8,14 @@ import { describe, expect, it, mock, beforeEach } from "bun:test";
 // import time (missing named export), not a silent `undefined` — every mock
 // factory below MUST include it. Mirrors keyword-gaps.isolated.test.ts.
 import { RateLimitError } from "../shared/ssrf-safe-fetch";
+// Real (unmocked) module, spread into the `./hint-probe-store` mock below.
+// `mock.module` replaces a module process-wide, so a PARTIAL factory here
+// strips exports that other modules import — `keyword-store.ts` imports
+// `getLastProbedAt` from this module, and dropping it turns every
+// already-evaluated importer into a hard ESM SyntaxError. That surfaced only in
+// the batched isolated lane (21 unrelated failures), never standalone. Spread
+// first, override second.
+import * as RealHintProbeStore from "./hint-probe-store";
 
 function hintsPlist(terms: readonly string[]): string {
   const dicts = terms.map((t) => `<dict><key>term</key><string>${t}</string></dict>`).join("");
@@ -43,6 +51,21 @@ interface SeedRotationUpdateShape {
   readonly nextPrefixOffset: number;
 }
 
+/**
+ * Coverage wave (2026-07-26): `expandCorpus` now also writes the probe ledger
+ * (`hint-probe-store.ts`'s `recordHintProbes`, migration 057). That module
+ * reaches for `getDb()`, so it MUST be mocked here or every test in this file
+ * would try to open a real DB connection.
+ */
+interface HintProbeWriteShape {
+  readonly query: string;
+  readonly storefront: string;
+  readonly probedAt: number;
+  readonly returnedAny: boolean;
+  readonly termCount: number;
+  readonly selfRank: number | null;
+}
+
 describe("expandCorpus", () => {
   let upsertedRows: unknown[];
   let keywordsExistCalls: Array<readonly string[]>;
@@ -50,6 +73,7 @@ describe("expandCorpus", () => {
   let fetchedHeaders: Array<Record<string, string> | undefined>;
   let markSeedsExpandedCalls: Array<readonly SeedRotationUpdateShape[]>;
   let insertedHintRows: unknown[];
+  let recordedProbes: HintProbeWriteShape[];
 
   beforeEach(() => {
     upsertedRows = [];
@@ -58,6 +82,14 @@ describe("expandCorpus", () => {
     fetchedHeaders = [];
     markSeedsExpandedCalls = [];
     insertedHintRows = [];
+    recordedProbes = [];
+
+    mock.module("./hint-probe-store", () => ({
+      ...RealHintProbeStore,
+      recordHintProbes: async (rows: readonly HintProbeWriteShape[]) => {
+        recordedProbes = [...recordedProbes, ...rows];
+      },
+    }));
 
     mock.module("./keyword-store", () => ({
       ...keywordStoreMockBase(),
@@ -227,8 +259,165 @@ describe("expandCorpus", () => {
       rateLimitErrors: 0,
       brandFiltered: 0,
       rawTermCount: 0,
+      probesRecorded: 0,
+      emptyResponses: 0,
     });
     expect(upsertedRows).toEqual([]);
+    expect(recordedProbes).toEqual([]);
+  });
+
+  // --- Coverage wave (2026-07-26): probe ledger (migration 057) ---
+  //
+  // The whole point of the ledger is that "we asked and Apple said nothing"
+  // and "we never asked" stop being the same observation. These tests pin the
+  // two directions of that invariant, because getting either wrong silently
+  // corrupts the one incumbent-independent demand signal in the system.
+
+  it("records a probe row for EVERY query Apple answered, including the bare seed", async () => {
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    const result = await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143441-1,29",
+      market: "us",
+      delayMs: 0,
+    });
+
+    expect(result.probesRecorded).toBe(2);
+    expect(recordedProbes.map((p) => p.query)).toEqual(["budget", "meal prep"]);
+    expect(recordedProbes.every((p) => p.storefront === "us")).toBe(true);
+    expect(recordedProbes.every((p) => p.returnedAny)).toBe(true);
+  });
+
+  it("records `returnedAny: false` when Apple answers with an EMPTY suggestion list", async () => {
+    // THE critical datum: pre-migration-057 this produced no row anywhere, so
+    // the keyword stayed indistinguishable from one that was never probed.
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        if (url.includes("term=budget")) {
+          return { ok: true, text: async () => hintsPlist([]) };
+        }
+        return { ok: true, text: async () => hintsPlist(["meal prep ideas"]) };
+      },
+    }));
+
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    const result = await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143441-1,29",
+      delayMs: 0,
+    });
+
+    expect(result.emptyResponses).toBe(1);
+    expect(result.probesRecorded).toBe(2);
+    const budgetProbe = recordedProbes.find((p) => p.query === "budget");
+    expect(budgetProbe).toBeDefined();
+    expect(budgetProbe?.returnedAny).toBe(false);
+    expect(budgetProbe?.termCount).toBe(0);
+    expect(budgetProbe?.selfRank).toBeNull();
+  });
+
+  it("records NO probe row for a rate-limited query — a failure is not evidence of absence", async () => {
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        if (url.includes("term=budget")) {
+          throw new RateLimitError("Rate limited", 429, undefined);
+        }
+        return { ok: true, text: async () => hintsPlist(["meal prep ideas"]) };
+      },
+    }));
+
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    const result = await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143441-1,29",
+      delayMs: 0,
+    });
+
+    expect(result.rateLimitErrors).toBe(1);
+    expect(result.attempted).toBe(2);
+    // Two attempts, ONE answer — the rate-limited one leaves no trace in the
+    // ledger, so the keyword correctly stays `never-probed`.
+    expect(result.probesRecorded).toBe(1);
+    expect(recordedProbes.map((p) => p.query)).toEqual(["meal prep"]);
+  });
+
+  it("records NO probe row for a non-OK HTTP status", async () => {
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        if (url.includes("term=budget")) {
+          return { ok: false, status: 500, text: async () => "" };
+        }
+        return { ok: true, text: async () => hintsPlist(["meal prep ideas"]) };
+      },
+    }));
+
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    const result = await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143441-1,29",
+      delayMs: 0,
+    });
+
+    expect(result.probesRecorded).toBe(1);
+    expect(recordedProbes.map((p) => p.query)).toEqual(["meal prep"]);
+  });
+
+  it("captures the query's own rank in its results as `selfRank`", async () => {
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string) => {
+        if (url.includes("term=budget")) {
+          // Apple echoes the exact phrase back at rank 1.
+          return { ok: true, text: async () => hintsPlist(["budget planner", "budget"]) };
+        }
+        return { ok: true, text: async () => hintsPlist(["meal prep ideas"]) };
+      },
+    }));
+
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143441-1,29",
+      delayMs: 0,
+    });
+
+    expect(recordedProbes.find((p) => p.query === "budget")?.selfRank).toBe(1);
+    // "meal prep" was not suggested back by its own query -> null, which with
+    // `returnedAny: true` is the strongest available negative.
+    expect(recordedProbes.find((p) => p.query === "meal prep")?.selfRank).toBeNull();
+  });
+
+  it("tags probe rows with the pass's market, so US and GB ledgers stay independent", async () => {
+    const { expandCorpus } = await import("./keyword-autocomplete");
+    await expandCorpus({
+      minOpportunity: 0.15,
+      winnerLimit: 15,
+      diverseLimit: 10,
+      perSeed: 8,
+      storefront: "143444-1,29",
+      market: "gb",
+      delayMs: 0,
+    });
+
+    expect(recordedProbes.every((p) => p.storefront === "gb")).toBe(true);
   });
 
   it("tolerates a non-OK HTTP status on one seed without throwing", async () => {

@@ -440,7 +440,11 @@ describe("appstoreKeywordGap config", () => {
     // appstoreAppEnrichmentConfigSchema.
     expect(g.autocompleteExpansion.minIntervalMs).toBe(3_600_000);
     expect(g.autocompleteExpansion.winnerLimit).toBe(36);
-    expect(g.autocompleteExpansion.diverseLimit).toBe(24);
+    // Coverage wave (2026-07-26): diverse breadth raised 24 -> 48 (84 total
+    // seeds/pass). The extra breadth goes to the DIVERSE half because that is
+    // the only seed source reaching under-covered zones — see the field's doc
+    // comment in schema.ts.
+    expect(g.autocompleteExpansion.diverseLimit).toBe(48);
     expect(g.autocompleteExpansion.perSeed).toBe(8);
     expect(g.autocompleteExpansion.delayMs).toBe(1000);
     expect(g.autocompleteExpansion.storefront).toBe("143441-1,29");
@@ -448,6 +452,17 @@ describe("appstoreKeywordGap config", () => {
     expect(g.autocompleteExpansion.gbLane.enabled).toBe(true);
     expect(g.autocompleteExpansion.gbLane.storefront).toBe("143444-1,29");
     expect(g.autocompleteExpansion.gbLane.winnerLimit).toBe(15);
+    // Coverage wave (2026-07-26): the direct corpus-probe lane — ON by
+    // default, and the ONE lane that is proxied by default (the box IP is
+    // already 403-blocked on the sibling iTunes-search host, and this lane
+    // adds the most new volume — see the field's doc comment).
+    expect(g.autocompleteExpansion.directProbe.enabled).toBe(true);
+    expect(g.autocompleteExpansion.directProbe.minIntervalMs).toBe(900_000);
+    expect(g.autocompleteExpansion.directProbe.keywordsPerPass).toBe(120);
+    expect(g.autocompleteExpansion.directProbe.useProxy).toBe(true);
+    expect(g.autocompleteExpansion.directProbe.market).toBe("us");
+    expect(g.autocompleteExpansion.directProbe.reprobeAfterDays).toBe(30);
+    expect(g.autocompleteExpansion.directProbe.opportunityFloor).toBe(0.25);
     expect(g.autocompleteExpansion.gbLane.diverseLimit).toBe(10);
     expect(g.sweepRateSafety.adaptiveThrottleEnabled).toBe(true);
     expect(g.sweepRateSafety.legacyRateOverride).toBe(false);
@@ -488,7 +503,7 @@ describe("appstoreKeywordGap config", () => {
     expect(cfg.appstoreKeywordGap.autocompleteExpansion.winnerLimit).toBe(5);
     expect(cfg.appstoreKeywordGap.autocompleteExpansion.storefront).toBe("143441-1,17");
     // Untouched sibling fields keep their defaults.
-    expect(cfg.appstoreKeywordGap.autocompleteExpansion.diverseLimit).toBe(24);
+    expect(cfg.appstoreKeywordGap.autocompleteExpansion.diverseLimit).toBe(48);
   });
 
   test("can be disabled via config", () => {
