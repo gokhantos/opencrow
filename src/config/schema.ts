@@ -1019,7 +1019,7 @@ export const appstoreKeywordGapConfigSchema = z
         // skips `autocompleteExpansion` entirely for the cycle. Flip this on
         // for an immediate, unambiguous revert if the higher rate ever
         // causes real trouble with Apple's endpoints. Default OFF.
-        legacyRateOverride: z.boolean().default(false),
+        legacyRateOverride: z.boolean().default(true),
         // AIMD tuning (continuous-fetch retune, 2026-07-23): with mined
         // exploration no longer paced by idle gaps (see `keywordsPerSweep`'s
         // module doc / keyword-tiering.ts), the adaptive throttle is now the
@@ -1059,7 +1059,7 @@ export const appstoreKeywordGapConfigSchema = z
       })
       .default({
         adaptiveThrottleEnabled: true,
-        legacyRateOverride: false,
+        legacyRateOverride: true,
         throttleBackoffFactor: 0.7,
         throttleRecoveryStep: 0.1,
         throttleMinMultiplier: 0.0625,
@@ -1418,7 +1418,7 @@ export const appstoreKeywordGapConfigSchema = z
     },
     sweepRateSafety: {
       adaptiveThrottleEnabled: true,
-      legacyRateOverride: false,
+      legacyRateOverride: true,
       throttleBackoffFactor: 0.7,
       throttleRecoveryStep: 0.1,
       throttleMinMultiplier: 0.0625,

@@ -450,7 +450,7 @@ describe("appstoreKeywordGap config", () => {
     expect(g.autocompleteExpansion.gbLane.winnerLimit).toBe(15);
     expect(g.autocompleteExpansion.gbLane.diverseLimit).toBe(10);
     expect(g.sweepRateSafety.adaptiveThrottleEnabled).toBe(true);
-    expect(g.sweepRateSafety.legacyRateOverride).toBe(false);
+    expect(g.sweepRateSafety.legacyRateOverride).toBe(true);
     // AIMD tuning knobs (continuous-fetch retune, 2026-07-23) — see
     // sweep-throttle.ts's advanceThrottle.
     expect(g.sweepRateSafety.throttleBackoffFactor).toBe(0.7);
