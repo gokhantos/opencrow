@@ -634,7 +634,7 @@ export const appstoreKeywordGapConfigSchema = z
     // visible per-request pace for `sweepRateSafety`'s adaptive throttle to
     // read a meaningful error-rate signal from before backing off further.
     // See `keywordsPerSweep` below for the full daily-volume projection.
-    sweepDelayMs: z.number().int().min(100).max(10_000).default(150),
+    sweepDelayMs: z.number().int().min(100).max(10_000).default(400),
     // How many keyword scans may be spent per rolling 24h window — a safety
     // ceiling, not a per-cycle spend. Enforced against a live count of
     // `appstore_keyword_scans` rows from the last 24h (tier1 + mined + the
@@ -676,7 +676,7 @@ export const appstoreKeywordGapConfigSchema = z
     // Apple's per-IP limit decays. Reversible: flip back if the pool degrades
     // — the per-lane AIMD throttle and the proxied stream's circuit breaker
     // still guard it either way.
-    useProxy: z.boolean().default(true),
+    useProxy: z.boolean().default(false),
     // How many of the globally stalest active keywords to scan per sweep
     // cycle — THE per-sweep governor (not `dailyKeywordBudget`/
     // `minedExploration.dailyQuota`, which are safety ceilings a sweep only
@@ -705,7 +705,7 @@ export const appstoreKeywordGapConfigSchema = z
     // (fresher demand/velocity signal), not more first-time coverage.
     // Real-world latency varies — `sweepRateSafety` below backs the rate off
     // automatically if Apple starts throttling.
-    keywordsPerSweep: z.number().int().min(1).max(1000).default(600),
+    keywordsPerSweep: z.number().int().min(1).max(1000).default(300),
     // Priority re-scan lane staleness window (see keyword-tiering.ts): a
     // keyword last scanned longer ago than this (or never scanned) is stale
     // enough to qualify for tier 1. Lifted out of a hardcoded constant
@@ -1019,7 +1019,7 @@ export const appstoreKeywordGapConfigSchema = z
         // skips `autocompleteExpansion` entirely for the cycle. Flip this on
         // for an immediate, unambiguous revert if the higher rate ever
         // causes real trouble with Apple's endpoints. Default OFF.
-        legacyRateOverride: z.boolean().default(true),
+        legacyRateOverride: z.boolean().default(false),
         // AIMD tuning (continuous-fetch retune, 2026-07-23): with mined
         // exploration no longer paced by idle gaps (see `keywordsPerSweep`'s
         // module doc / keyword-tiering.ts), the adaptive throttle is now the
@@ -1059,7 +1059,7 @@ export const appstoreKeywordGapConfigSchema = z
       })
       .default({
         adaptiveThrottleEnabled: true,
-        legacyRateOverride: true,
+        legacyRateOverride: false,
         throttleBackoffFactor: 0.7,
         throttleRecoveryStep: 0.1,
         throttleMinMultiplier: 0.0625,
@@ -1107,13 +1107,13 @@ export const appstoreKeywordGapConfigSchema = z
         // ~300 * (500ms + 500ms) ≈ 5min — under `keyword-gaps.ts`'s
         // 8-minute `MAX_PASS_DURATION_MS` wall-clock bail, mirroring the
         // direct stream's sizing math.
-        keywordsPerSweep: z.number().int().min(1).max(1000).default(1000),
+        keywordsPerSweep: z.number().int().min(1).max(1000).default(300),
         // This stream's own inter-request delay. The proxied path is
         // latency-bound (~0.48s median vs ~0.1-0.2s direct — 2026-07-24
         // soak), so it gets its own, more conservative knob rather than
         // inheriting the direct lane's 150ms; the global rate levers
         // (`sweepDelayMs`/`keywordsPerSweep` above) are NOT raised for this.
-        sweepDelayMs: z.number().int().min(100).max(10_000).default(200),
+        sweepDelayMs: z.number().int().min(100).max(10_000).default(600),
         // Circuit breaker (see `proxy-stream.ts`): consecutive proxied-scan
         // failures (403/429/network), with zero interleaved successes, that
         // disable the stream. 5 matches `keyword-gaps.ts`'s
@@ -1369,10 +1369,10 @@ export const appstoreKeywordGapConfigSchema = z
   .default({
     enabled: true,
     scanIntervalMs: 60_000,
-    sweepDelayMs: 150,
+    sweepDelayMs: 400,
     dailyKeywordBudget: 400_000,
-    useProxy: true,
-    keywordsPerSweep: 600,
+    useProxy: false,
+    keywordsPerSweep: 300,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     tier1AutocompleteCap: 50,
     topN: 20,
@@ -1418,15 +1418,15 @@ export const appstoreKeywordGapConfigSchema = z
     },
     sweepRateSafety: {
       adaptiveThrottleEnabled: true,
-      legacyRateOverride: true,
+      legacyRateOverride: false,
       throttleBackoffFactor: 0.7,
       throttleRecoveryStep: 0.1,
       throttleMinMultiplier: 0.0625,
     },
     proxyStream: {
       enabled: true,
-      keywordsPerSweep: 1000,
-      sweepDelayMs: 200,
+      keywordsPerSweep: 300,
+      sweepDelayMs: 600,
       breakerFailureThreshold: 5,
       breakerCooloffMs: 15 * 60 * 1000,
       breakerMaxCooloffMs: 6 * 60 * 60 * 1000,
