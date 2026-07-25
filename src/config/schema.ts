@@ -634,7 +634,7 @@ export const appstoreKeywordGapConfigSchema = z
     // visible per-request pace for `sweepRateSafety`'s adaptive throttle to
     // read a meaningful error-rate signal from before backing off further.
     // See `keywordsPerSweep` below for the full daily-volume projection.
-    sweepDelayMs: z.number().int().min(100).max(10_000).default(500),
+    sweepDelayMs: z.number().int().min(100).max(10_000).default(1500),
     // How many keyword scans may be spent per rolling 24h window — a safety
     // ceiling, not a per-cycle spend. Enforced against a live count of
     // `appstore_keyword_scans` rows from the last 24h (tier1 + mined + the
@@ -705,7 +705,7 @@ export const appstoreKeywordGapConfigSchema = z
     // (fresher demand/velocity signal), not more first-time coverage.
     // Real-world latency varies — `sweepRateSafety` below backs the rate off
     // automatically if Apple starts throttling.
-    keywordsPerSweep: z.number().int().min(1).max(1000).default(300),
+    keywordsPerSweep: z.number().int().min(1).max(1000).default(200),
     // Priority re-scan lane staleness window (see keyword-tiering.ts): a
     // keyword last scanned longer ago than this (or never scanned) is stale
     // enough to qualify for tier 1. Lifted out of a hardcoded constant
@@ -1580,10 +1580,10 @@ export const appstoreKeywordGapConfigSchema = z
   .default({
     enabled: true,
     scanIntervalMs: 60_000,
-    sweepDelayMs: 500,
+    sweepDelayMs: 1500,
     dailyKeywordBudget: 400_000,
     useProxy: false,
-    keywordsPerSweep: 300,
+    keywordsPerSweep: 200,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     tier1AutocompleteCap: 50,
     topN: 20,

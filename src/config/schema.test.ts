@@ -420,9 +420,9 @@ describe("appstoreKeywordGap config", () => {
     // (keywordsPerSweep/sweepDelayMs), not just the safety ceilings — see
     // src/config/schema.ts's "MAX-THROUGHPUT PASS" comment on
     // appstoreKeywordGapConfigSchema for the full before/after math.
-    expect(g.sweepDelayMs).toBe(500);
+    expect(g.sweepDelayMs).toBe(1500);
     expect(g.dailyKeywordBudget).toBe(400_000);
-    expect(g.keywordsPerSweep).toBe(300);
+    expect(g.keywordsPerSweep).toBe(200);
     expect(g.useProxy).toBe(false);
     expect(g.minedExploration.dailyQuota).toBe(400_000);
     expect(g.demandWeight).toBe(1);
