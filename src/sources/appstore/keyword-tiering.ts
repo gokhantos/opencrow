@@ -118,20 +118,39 @@ export interface Tier1Input {
   readonly source: string;
   /** True iff the keyword has a row in `appstore_signature_hits` with `status != 'dismissed'`. */
   readonly hasActiveSignatureHit: boolean;
+  /**
+   * True iff the keyword has been PERMANENTLY RETIRED (`appstore_keywords
+   * .retired_at IS NOT NULL` — migration 057, see `keyword-retirement.ts`).
+   * Optional so existing callers/fixtures stay valid; absent is treated as
+   * not-retired. A retired keyword is disqualified from tier 1 BEFORE any
+   * staleness or source check, and — unlike every other condition here — an
+   * ACTIVE SIGNATURE HIT does NOT rescue it: retirement is the strongest,
+   * operator-auditable statement the corpus can make about a keyword, and a
+   * watchlist row (which may itself predate the retirement) must not be able
+   * to drag a retired keyword back into the highest-priority daily lane.
+   *
+   * SQL-mirrored in `keyword-store.ts`'s `getStaleKeywordsTiered` /
+   * `selectTier1Slice` as `NOT_RETIRED_K_SQL`, same hand-mirroring convention
+   * this function already has with the inline eligibility SQL (a pure,
+   * unit-tested TS function documents the intended semantics; SQL cannot call
+   * back into TS at query time).
+   */
+  readonly retired?: boolean;
 }
 
 /**
- * True iff `input` qualifies for tier 1 of the current sweep: stale enough
- * (`staleThresholdMs`, the caller's `tier1StaleThresholdMs` config value)
- * AND (an eligible source OR an active signature-hit watchlist entry). Pure
- * — `nowSeconds`/`staleThresholdMs` are injected rather than read from
- * `Date.now()`/config so this is deterministic and testable.
+ * True iff `input` qualifies for tier 1 of the current sweep: NOT retired,
+ * stale enough (`staleThresholdMs`, the caller's `tier1StaleThresholdMs`
+ * config value) AND (an eligible source OR an active signature-hit watchlist
+ * entry). Pure — `nowSeconds`/`staleThresholdMs` are injected rather than read
+ * from `Date.now()`/config so this is deterministic and testable.
  */
 export function isTier1Eligible(
   input: Tier1Input,
   nowSeconds: number,
   staleThresholdMs: number,
 ): boolean {
+  if (input.retired === true) return false;
   const isStale =
     input.lastScannedAt === null || (nowSeconds - input.lastScannedAt) * 1000 >= staleThresholdMs;
   if (!isStale) return false;
