@@ -224,6 +224,36 @@ describe("runAppPageFetchPass", () => {
     expect(goneCalls).toEqual(["1000001"]);
   });
 
+  // Scoping guard for the transient-404 fix (2026-07-25): the iTunes SEARCH
+  // lane opts into `treat404AsTransient` so Apple's brief 404 bursts get
+  // retried instead of failing a keyword. THIS lane must NEVER opt in — an
+  // `apps.apple.com` 404 is the delisted/gone signal `recordPageGone`
+  // depends on, and retrying it would waste 4x requests per dead app and
+  // then throw a RateLimitError instead of recording `gone_at`.
+  it("does NOT opt into treat404AsTransient — a 404 here means gone, not transient", async () => {
+    const capturedOpts: Record<string, unknown>[] = [];
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (url: string, opts: Record<string, unknown>) => {
+        fetchedUrls.push(url);
+        capturedOpts.push(opts);
+        return { ok: false, status: 404, text: async () => "" };
+      },
+    }));
+    mock.module("./app-pages-store", () => ({
+      ...appPagesStoreMockBase(),
+      getDueAppPages: async () => [trackedApp()],
+      recordPageGone: async (appId: string) => goneCalls.push(appId),
+    }));
+
+    const { runAppPageFetchPass } = await import("./app-pages");
+    await runAppPageFetchPass(DEFAULT_OPTS);
+
+    expect(capturedOpts.length).toBe(1);
+    expect(capturedOpts[0]?.treat404AsTransient).toBeUndefined();
+    expect(goneCalls).toEqual(["1000001"]);
+  });
+
   it("counts a parse failure as `failed` + `parseFailed`, records it via recordPageFailure", async () => {
     mock.module("../shared/ssrf-safe-fetch", () => ({
       RateLimitError,

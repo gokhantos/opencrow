@@ -246,7 +246,22 @@ export async function fetchTopApps(
   // Apple enforces THIS endpoint's per-IP burst ceiling with a bare 403, not
   // 429/503, and never sends `Retry-After` — see `rate-limit-error.ts`'s
   // `RateLimitStatusOptions.treat403AsRateLimit` for the full rationale.
-  const res = await ssrfSafeFetch(url, { retryOnRateLimit: true, treat403AsRateLimit: true, useProxy });
+  //
+  // `treat404AsTransient: true` (2026-07-25 — live evidence: 10 `HTTP 404`
+  // scan failures ALL inside one ~4-minute burst, zero in the preceding 2h,
+  // and every 404'd keyword returning 200 on retry minutes later on BOTH the
+  // direct IP and the proxy) because THIS endpoint intermittently flaps 404
+  // instead of serving results. Without it a 404 fell through to the `!res.ok`
+  // throw below, and five in a row tripped MAX_CONSECUTIVE_FAILURES and
+  // discarded the rest of the pass. Bounded retries still throw on a
+  // SUSTAINED outage, so the consecutive-failure bail keeps protecting us —
+  // see `rate-limit-error.ts`'s `RateLimitStatusOptions.treat404AsTransient`.
+  const res = await ssrfSafeFetch(url, {
+    retryOnRateLimit: true,
+    treat403AsRateLimit: true,
+    treat404AsTransient: true,
+    useProxy,
+  });
   if (!res.ok) {
     throw new Error(`iTunes search failed for "${keyword}": HTTP ${res.status}`);
   }

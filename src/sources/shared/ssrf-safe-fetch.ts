@@ -8,9 +8,10 @@
  *   ssrfSafeFetch   — fetch helper that follows redirects MANUALLY, re-validating
  *                     each hop URL before connecting so redirect-to-private attacks
  *                     are blocked even after the initial check. Optionally retries
- *                     rate-limit-shaped responses (429/503/403+Retry-After, or ANY
- *                     403 for callers that opt into `treat403AsRateLimit`) with
- *                     backoff via `retryOnRateLimit` — see SsrfSafeFetchOptions.
+ *                     rate-limit-shaped responses (429/503/403+Retry-After, ANY
+ *                     403 for callers that opt into `treat403AsRateLimit`, or a
+ *                     bare 404 for callers that opt into `treat404AsTransient`)
+ *                     with backoff via `retryOnRateLimit` — see SsrfSafeFetchOptions.
  *   RateLimitError  — re-exported from ./rate-limit-error; thrown by ssrfSafeFetch
  *                     when rate-limit retries are exhausted. Detect via
  *                     `err instanceof RateLimitError` or `err.code === "RATE_LIMITED"`.
@@ -230,6 +231,25 @@ export interface SsrfSafeFetchOptions {
    * handling and does NOT set this.
    */
   readonly treat403AsRateLimit?: boolean;
+  /**
+   * Only meaningful alongside `retryOnRateLimit`. When `true`, a bare HTTP
+   * 404 is treated as a TRANSIENT upstream blip and retried with the same
+   * bounded backoff as 429/503 — see `rate-limit-error.ts`'s
+   * `RateLimitStatusOptions.treat404AsTransient` for the live evidence
+   * (2026-07-25: `itunes.apple.com/search` 404'd 10 keywords inside one
+   * ~4-minute window, all of which returned 200 on retry, on both the direct
+   * IP and the proxy). Default `false`: EVERY other caller keeps today's
+   * behavior of returning a 404 response as-is, unretried, because a 404
+   * legitimately means "gone" for them — notably `app-pages.ts`, which maps
+   * an `apps.apple.com` 404 to `recordPageGone` (delisted app).
+   *
+   * The ONLY caller that sets this: `keyword-gaps.ts`'s `fetchTopApps`
+   * (iTunes Search JSON). Unlike a bare 403 this is RETRYABLE — on exhausted
+   * retries it throws `RateLimitError` (status 404, `retryable: true`) so the
+   * caller's rate-limit counting AND its consecutive-failure bail still fire,
+   * which is what keeps a sustained Apple outage from being retried forever.
+   */
+  readonly treat404AsTransient?: boolean;
   /** Max retry attempts after the initial try. Default 3 (4 total tries). */
   readonly maxRetries?: number;
   /** Backoff delay bounds in ms for computed (non-`Retry-After`) waits. */
@@ -305,16 +325,23 @@ async function fetchHop(
 
       const response = await fetchOnce(url, opts, timeoutMs);
       const retryAfterHeader = response.headers.get("retry-after");
-      if (
-        isRateLimitStatus(response.status, retryAfterHeader, {
-          treat403AsRateLimit: opts.treat403AsRateLimit,
-        })
-      ) {
+      const statusOpts = {
+        treat403AsRateLimit: opts.treat403AsRateLimit,
+        treat404AsTransient: opts.treat404AsTransient,
+      };
+      if (isRateLimitStatus(response.status, retryAfterHeader, statusOpts)) {
+        // A 404 only reaches here for callers that opted into
+        // `treat404AsTransient`; label it as the transient blip it is rather
+        // than "rate limited", so operators reading logs aren't misled.
+        const reason =
+          response.status === 404
+            ? "Transient upstream failure (HTTP 404)"
+            : `Rate limited (HTTP ${response.status})`;
         throw new RateLimitError(
-          `Rate limited (HTTP ${response.status}) fetching ${url}`,
+          `${reason} fetching ${url}`,
           response.status,
           parseRetryAfterMs(retryAfterHeader),
-          isRetryableRateLimitStatus(response.status, retryAfterHeader),
+          isRetryableRateLimitStatus(response.status, retryAfterHeader, statusOpts),
         );
       }
       return response;
