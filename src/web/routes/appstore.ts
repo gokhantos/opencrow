@@ -74,6 +74,35 @@ const watchlistListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(500).default(200),
 });
 
+// Human keyword-verdict routes (fixes the dead hard-exclude path: prior to
+// this, the ONLY writers of `appstore_keyword_verdicts` were the watchlist
+// star (`starred`/`human`, below) and the screener's soft-downweight mirror
+// (`dismissed`/`pipeline`, `appstore-signature-hits.ts`) — nothing ever wrote
+// `human` + `dismissed`/`killed`, so `getExcludedKeywords()`'s hard-exclude
+// set for `collectKeywordGaps` seed selection was structurally always empty.
+// This route is what makes that predicate reachable: a human `dismissed` or
+// `killed` verdict is the ONLY thing that hard-excludes a keyword from
+// idea-pipeline seed selection.
+export const verdictKeywordParamSchema = watchlistKeywordParamSchema;
+const humanVerdicts = ["starred", "dismissed", "validated", "killed"] as const;
+export const verdictBodySchema = z.object({
+  verdict: z.enum(humanVerdicts),
+  /**
+   * Free-text operator note. Deliberately NOT character-restricted — a note is
+   * prose and a regex would only frustrate the operator. It is stored via a
+   * parameterized `Bun.sql` template (`upsertKeywordVerdict`), so there is no
+   * SQL surface, and it is returned verbatim in this route's JSON response.
+   *
+   * INVARIANT for any future consumer: render this as React TEXT CHILDREN
+   * only, never through `dangerouslySetInnerHTML`. React escapes text by
+   * default, and the dashboard uses no `dangerouslySetInnerHTML` anywhere
+   * today, so `<script>` in a note is inert — but a future renderer that
+   * reached for raw HTML would turn this into stored self-XSS. Nothing renders
+   * `note` at present.
+   */
+  note: z.string().trim().min(1).max(2000).optional(),
+});
+
 // "New this week" strip (Batch F4) — bounds the lookback window an operator
 // can request via `?days=`. Default (undefined) falls back to
 // `getWhatsNewDigest`'s own `WHATS_NEW_LOOKBACK_MS` (7 days).
@@ -283,6 +312,10 @@ export function createAppStoreRoutes(
     return c.json({ success: true, data: keywords, meta: { count: keywords.length } });
   });
 
+  // Watchlist star is a thin delegation to the shared human-verdict logic
+  // below — same underlying `upsertKeywordVerdict`/`deleteKeywordVerdict`
+  // calls, kept as its own path for backwards compatibility (response shape
+  // and URL are load-bearing for `OpportunitiesTab.tsx`'s existing star).
   app.post("/appstore/watchlist/:keyword", async (c) => {
     const parsedKeyword = watchlistKeywordParamSchema.safeParse(c.req.param("keyword"));
     if (!parsedKeyword.success) {
@@ -298,6 +331,50 @@ export function createAppStoreRoutes(
 
   app.delete("/appstore/watchlist/:keyword", async (c) => {
     const parsedKeyword = watchlistKeywordParamSchema.safeParse(c.req.param("keyword"));
+    if (!parsedKeyword.success) {
+      return c.json({ success: false, error: "Invalid keyword" }, 400);
+    }
+    const deleted = await deleteKeywordVerdict(parsedKeyword.data, "human");
+    return c.json({ success: true, data: { deleted } });
+  });
+
+  // General human keyword-verdict routes — see the doc comment above the
+  // schemas for why this exists: `dismissed`/`killed` here is the only way
+  // to actually populate `getExcludedKeywords()`'s hard-exclude set.
+  app.post("/appstore/verdicts/:keyword", async (c) => {
+    const parsedKeyword = verdictKeywordParamSchema.safeParse(c.req.param("keyword"));
+    if (!parsedKeyword.success) {
+      return c.json({ success: false, error: "Invalid keyword" }, 400);
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ success: false, error: "Invalid JSON body" }, 400);
+    }
+
+    const parsedBody = verdictBodySchema.safeParse(body);
+    if (!parsedBody.success) {
+      const message = parsedBody.error.issues[0]?.message ?? "Invalid request body";
+      return c.json({ success: false, error: message }, 400);
+    }
+
+    const record = await upsertKeywordVerdict({
+      keyword: parsedKeyword.data,
+      verdict: parsedBody.data.verdict,
+      source: "human",
+      note: parsedBody.data.note ?? null,
+    });
+    log.info("Human keyword verdict recorded", {
+      keyword: parsedKeyword.data,
+      verdict: parsedBody.data.verdict,
+    });
+    return c.json({ success: true, data: record });
+  });
+
+  app.delete("/appstore/verdicts/:keyword", async (c) => {
+    const parsedKeyword = verdictKeywordParamSchema.safeParse(c.req.param("keyword"));
     if (!parsedKeyword.success) {
       return c.json({ success: false, error: "Invalid keyword" }, 400);
     }

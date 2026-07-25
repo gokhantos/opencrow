@@ -114,6 +114,11 @@ export async function executeCronJob(
     return executeWorkflowRunJob(job, deps, runId, runningRecord, startedAt, startMs);
   }
 
+  // pipelineRun payloads are handled separately
+  if (job.payload.kind === "pipelineRun") {
+    return executePipelineRunJob(job, deps, runId, runningRecord, startedAt, startMs);
+  }
+
   const agentId = job.payload.agentId ?? deps.agentRegistry.getDefault().id;
 
   // 2. Build progress collector with periodic DB flush
@@ -331,6 +336,161 @@ async function executeWorkflowRunJob(
     progress: null,
   };
 }
+
+/**
+ * Execute a `pipelineRun` cron job: start the ideas pipeline for
+ * `payload.pipelineId`, unless a run for that pipeline is already in flight.
+ *
+ * Two deliberate choices:
+ *
+ *  1. **Dynamic imports.** The pipeline module graph is enormous (synthesis,
+ *     SIGE, Neo4j/mem0 clients, every collector). Importing it statically here
+ *     would pull all of it into the cron process at startup — and into every
+ *     unit test that touches the executor. It is loaded only when a
+ *     `pipelineRun` job actually fires.
+ *  2. **Fire-and-forget, like `workflowRun`.** A run takes ~14 minutes; the
+ *     cron run record completes as soon as the run is *dispatched*, recording
+ *     the pipeline run id in its summary. Blocking the cron tick for 14 minutes
+ *     would stall every other due job. The pipeline writes its own terminal
+ *     status (including the `"empty"` zero-yield status) to `pipeline_runs`,
+ *     which is where run outcomes are actually tracked.
+ *
+ * The in-flight guard is what makes an unattended schedule safe:
+ * `acquirePipelineLock` does NOT lock (it always inserts and returns
+ * `acquired: true`, deliberately, so the dashboard can run concurrent runs), so
+ * without this check an overrunning run would stack a second ~14-minute
+ * LLM-spending run on top of itself. See `pipeline-run-guard.ts` for why
+ * liveness is heartbeat-based rather than a bare `status = 'running'` test.
+ */
+async function executePipelineRunJob(
+  job: CronJob,
+  deps: ExecutorDeps,
+  runId: string,
+  runningRecord: CronRunRecord,
+  startedAt: number,
+  startMs: number,
+): Promise<CronRunRecord> {
+  if (job.payload.kind !== "pipelineRun") {
+    throw new Error("executePipelineRunJob called with non-pipelineRun payload");
+  }
+
+  const { pipelineId, seedKeywords } = job.payload;
+
+  let status: CronRunRecord["status"] = "ok";
+  let resultSummary: string | null = null;
+  let error: string | null = null;
+
+  try {
+    const [{ PIPELINE_DEFINITIONS }, { acquirePipelineLock }, { runIdeasPipeline }, guard] =
+      await Promise.all([
+        import("../pipelines/types"),
+        import("../pipelines/store"),
+        import("../pipelines/ideas/pipeline"),
+        import("./pipeline-run-guard"),
+      ]);
+
+    const def = PIPELINE_DEFINITIONS.find((p) => p.id === pipelineId);
+    if (!def) {
+      throw new Error(`Pipeline not found: ${pipelineId}`);
+    }
+
+    const decision = await resolvePipelineRunDecision(pipelineId, guard.decidePipelineRunStart);
+    if (!decision.shouldRun) {
+      resultSummary = `Skipped — ${decision.reason}`;
+      log.info("Scheduled pipeline run skipped (already in flight)", {
+        pipelineId,
+        jobId: job.id,
+        blockingRunId: decision.blockingRunId,
+        reason: decision.reason,
+      });
+    } else {
+      const lockResult = await acquirePipelineLock(pipelineId);
+      const pipelineRunId = lockResult.runId;
+      if (!pipelineRunId) {
+        throw new Error(`Failed to create a pipeline run record for ${pipelineId}`);
+      }
+
+      const config = {
+        ...def.defaultConfig,
+        ...(seedKeywords && seedKeywords.length > 0 ? { seedKeywords } : {}),
+      };
+
+      // Fire-and-forget — see this function's doc comment.
+      runIdeasPipeline(pipelineId, config, pipelineRunId).catch((err: unknown) => {
+        log.error("Scheduled pipeline run failed", {
+          pipelineId,
+          pipelineRunId,
+          error: getErrorMessage(err),
+        });
+      });
+
+      resultSummary = `Started pipeline run ${pipelineRunId}`;
+      log.info("Scheduled pipeline run started", { pipelineId, pipelineRunId, jobId: job.id });
+    }
+  } catch (err) {
+    const msg = getErrorMessage(err);
+    status = "error";
+    error = msg;
+    log.error("Pipeline cron job failed", { pipelineId, jobId: job.id, error: msg });
+  }
+
+  const endedAt = Math.floor(Date.now() / 1000);
+  const durationMs = Date.now() - startMs;
+
+  await deps.cronStore.updateRunStatus(runId, status, resultSummary, error, durationMs, endedAt);
+  await deps.cronStore.setJobLastRun(job.id, status, error);
+
+  if (job.deleteAfterRun) {
+    await deps.cronStore.removeJob(job.id);
+    log.info("Cron job deleted after run", { jobId: job.id });
+  } else {
+    const nextRunAt = computeNextRunAt(job.schedule, Date.now());
+    await deps.cronStore.setJobNextRun(job.id, nextRunAt ?? null);
+  }
+
+  return {
+    ...runningRecord,
+    status,
+    resultSummary,
+    error,
+    durationMs,
+    startedAt,
+    endedAt,
+    progress: null,
+  };
+}
+
+/**
+ * Query every `running` run for `pipelineId`, resolve each one's heartbeat
+ * liveness, and hand the result to the pure decision function. Split out so the
+ * DB shape stays next to the query and the decision itself stays pure.
+ */
+async function resolvePipelineRunDecision(
+  pipelineId: string,
+  decide: typeof import("./pipeline-run-guard").decidePipelineRunStart,
+): Promise<import("./pipeline-run-guard").PipelineRunStartDecision> {
+  const { getRunningRunsForPipeline, hasFreshHeartbeat } = await import("../pipelines/store");
+
+  const running = await getRunningRunsForPipeline(pipelineId);
+  const inFlight = await Promise.all(
+    running.map(async (r) => ({
+      runId: r.id,
+      startedAt: r.startedAt,
+      hasFreshHeartbeat: await hasFreshHeartbeat(r.id, LIVE_HEARTBEAT_WINDOW_SEC),
+    })),
+  );
+
+  return decide(inFlight, { nowEpochSeconds: Math.floor(Date.now() / 1000) });
+}
+
+/**
+ * Heartbeat freshness window used for the in-flight check. Matches
+ * `resume.ts`'s `LIVE_HEARTBEAT_WINDOW_SEC` — the same "is this run alive in
+ * another process?" question, so it must use the same answer. Duplicated as a
+ * literal rather than imported so this module keeps its zero static dependency
+ * on the (very large) pipeline graph.
+ */
+const LIVE_HEARTBEAT_WINDOW_SEC = 60;
 
 async function deliverResult(
   channelName: string,

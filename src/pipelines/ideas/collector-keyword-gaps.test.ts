@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { filterKnownZeroVolume, selectGapSeeds } from "./collector-keyword-gaps";
+import {
+  filterByLeaderReviews,
+  filterKnownZeroVolume,
+  selectGapSeeds,
+} from "./collector-keyword-gaps";
 import type { KeywordScanRow, OpportunityRow } from "../../sources/appstore/keyword-store";
 
 /**
@@ -461,5 +465,123 @@ describe("filterKnownZeroVolume", () => {
     filterKnownZeroVolume(scans, { threshold: 1, freshnessDays: 45, nowEpochSeconds: NOW });
 
     expect(scans.map((s) => s.keyword)).toEqual(snapshot);
+  });
+});
+
+describe("selectGapSeeds — buildability rank blend", () => {
+  it("defaults to a blend that keeps pure-opportunity order when buildability is uniform", () => {
+    const scans = [
+      makeScan({ id: 1, keyword: "low", opportunity: 0.55, buildability: 20 }),
+      makeScan({ id: 2, keyword: "high", opportunity: 0.95, buildability: 20 }),
+    ];
+    const seeds = selectGapSeeds(scans, new Set(), { limit: 10, minOpportunity: 0.4 });
+    expect(seeds.map((s) => s.keyword)).toEqual(["high", "low"]);
+  });
+
+  it("promotes a more buildable keyword over a marginally higher-opportunity unbuildable one", () => {
+    // Real corpus rows (2026-07-25 measurement, floor 20):
+    //   relations       opp 0.619  buildability 20  (942,483-review leader)
+    //   horizon walker  opp 0.520  buildability 48  (653-review leader)
+    // At the default weight the buildable one must win.
+    const scans = [
+      makeScan({ id: 1, keyword: "relations", opportunity: 0.619, buildability: 20 }),
+      makeScan({ id: 2, keyword: "horizon walker", opportunity: 0.52, buildability: 48 }),
+    ];
+    const seeds = selectGapSeeds(scans, new Set(), { limit: 10, minOpportunity: 0.15 });
+    expect(seeds.map((s) => s.keyword)).toEqual(["horizon walker", "relations"]);
+  });
+
+  it("weight 0 reproduces the legacy pure-opportunity ordering exactly", () => {
+    const scans = [
+      makeScan({ id: 1, keyword: "relations", opportunity: 0.619, buildability: 20 }),
+      makeScan({ id: 2, keyword: "horizon walker", opportunity: 0.52, buildability: 48 }),
+    ];
+    const seeds = selectGapSeeds(scans, new Set(), {
+      limit: 10,
+      minOpportunity: 0.15,
+      buildabilityRankWeight: 0,
+    });
+    expect(seeds.map((s) => s.keyword)).toEqual(["relations", "horizon walker"]);
+  });
+
+  it("never alters the reported opportunity — the blend only affects sort order", () => {
+    const scans = [makeScan({ id: 1, keyword: "kw", opportunity: 0.42, buildability: 90 })];
+    const seeds = selectGapSeeds(scans, new Set(), { limit: 10, minOpportunity: 0.15 });
+    expect(seeds[0]?.opportunity).toBe(0.42);
+  });
+
+  it("composes with the screener soft-downweight rather than replacing it", () => {
+    // Equal opportunity + equal buildability: the downweighted one must sink.
+    const scans = [
+      makeScan({ id: 1, keyword: "flagged", opportunity: 0.6, buildability: 30 }),
+      makeScan({ id: 2, keyword: "clean", opportunity: 0.6, buildability: 30 }),
+    ];
+    const seeds = selectGapSeeds(
+      scans,
+      new Set(),
+      { limit: 10, minOpportunity: 0.15 },
+      new Set(["flagged"]),
+    );
+    expect(seeds.map((s) => s.keyword)).toEqual(["clean", "flagged"]);
+  });
+
+  it("clamps an out-of-range weight instead of inverting the ranking", () => {
+    const scans = [
+      makeScan({ id: 1, keyword: "a", opportunity: 0.9, buildability: 0 }),
+      makeScan({ id: 2, keyword: "b", opportunity: 0.1, buildability: 100 }),
+    ];
+    // weight > 1 clamps to 1 -> rank = opp * buildability/100 -> b (0.1) < a (0.0)... b wins
+    const seeds = selectGapSeeds(scans, new Set(), {
+      limit: 10,
+      minOpportunity: 0.05,
+      buildabilityRankWeight: 99,
+    });
+    expect(seeds.map((s) => s.keyword)).toEqual(["b", "a"]);
+    // negative clamps to 0 -> pure opportunity
+    const seeds2 = selectGapSeeds(scans, new Set(), {
+      limit: 10,
+      minOpportunity: 0.05,
+      buildabilityRankWeight: -5,
+    });
+    expect(seeds2.map((s) => s.keyword)).toEqual(["a", "b"]);
+  });
+});
+
+describe("filterByLeaderReviews", () => {
+  const rows = [
+    makeScan({ id: 1, keyword: "horizon walker", topAppReviews: 653, buildability: 48 }),
+    makeScan({ id: 2, keyword: "abpv", topAppReviews: 133_415, buildability: 35 }),
+    makeScan({ id: 3, keyword: "access control", topAppReviews: 2_402_851, buildability: 35 }),
+    makeScan({ id: 4, keyword: "edge", topAppReviews: 100_000, buildability: 22 }),
+  ];
+
+  it("drops keywords whose SERP leader exceeds the ceiling", () => {
+    // Both `abpv` and `access control` clear a buildability floor of 20 purely on
+    // the rating term — the review term saturates to 0 above ~5k reviews — which
+    // is exactly the hole this ceiling closes.
+    const kept = filterByLeaderReviews(rows, 100_000).map((s) => s.keyword);
+    expect(kept).toEqual(["horizon walker", "edge"]);
+  });
+
+  it("keeps a keyword sitting exactly on the ceiling", () => {
+    expect(filterByLeaderReviews(rows, 100_000).some((s) => s.keyword === "edge")).toBe(true);
+  });
+
+  it("is a no-op for undefined / non-finite / non-positive ceilings", () => {
+    expect(filterByLeaderReviews(rows, undefined)).toHaveLength(4);
+    expect(filterByLeaderReviews(rows, 0)).toHaveLength(4);
+    expect(filterByLeaderReviews(rows, -1)).toHaveLength(4);
+    expect(filterByLeaderReviews(rows, Number.NaN)).toHaveLength(4);
+  });
+
+  it("never mutates the input array", () => {
+    const input = [...rows];
+    filterByLeaderReviews(input, 1000);
+    expect(input).toHaveLength(4);
+    expect(input[0]?.keyword).toBe("horizon walker");
+  });
+
+  it("can return an empty set when every leader is too big", () => {
+    expect(filterByLeaderReviews(rows, 100)).toHaveLength(0);
   });
 });

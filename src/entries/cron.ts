@@ -62,6 +62,34 @@ async function main(): Promise<void> {
     cronScheduler.stop();
   });
 
+  // --- Scheduled ideas-pipeline run (gated, default ON) ---
+  // Closes the App Store intelligence loop: the keyword scanner has always run
+  // 24/7, but the CONSUMPTION side had no trigger at all — `cron_jobs` held zero
+  // rows and `CronPayload` could not express a pipeline run, so the only way to
+  // start one was a human clicking the dashboard's Run button (last actual run:
+  // 2026-07-19). Unlike the two bespoke schedulers below, this IS expressible as
+  // a real cron job now (`kind: "pipelineRun"`), so it goes through the normal
+  // cron scheduler and inherits its persistence, run history, and UI.
+  // Idempotent-ensure: safe on every restart, reconciles a drifted config.
+  const ideasSchedule = config.pipelines.ideas.schedule;
+  try {
+    const { ensureIdeasPipelineJob } = await import("../cron/ideas-pipeline-job");
+    const outcome = await ensureIdeasPipelineJob(cronStore, {
+      enabled: ideasSchedule.enabled,
+      pipelineId: ideasSchedule.pipelineId,
+      cronExpr: ideasSchedule.cronExpr,
+      ...(ideasSchedule.tz !== undefined ? { tz: ideasSchedule.tz } : {}),
+    });
+    log.info("Scheduled ideas-pipeline job ensured", {
+      outcome,
+      enabled: ideasSchedule.enabled,
+      cronExpr: ideasSchedule.cronExpr,
+    });
+  } catch (err) {
+    // Never fatal — a seeding failure must not stop the cron process starting.
+    log.error("Failed to ensure the scheduled ideas-pipeline job", { error: err });
+  }
+
   // --- Deferred outcome re-probe scheduler (Phase 2, gated, default OFF) ---
   // A bespoke (non-CronPayload) scheduler: a CronPayload routes through
   // runAgentIsolated and can only express an AGENT job, but this is a pure data

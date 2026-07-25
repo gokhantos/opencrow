@@ -806,10 +806,61 @@ export const appstoreKeywordGapConfigSchema = z
     // latest US-storefront scan must clear before `collectKeywordGaps`
     // (idea-synthesis pipeline consumer) will draw it as a seed. Additive to
     // the store/low-confidence/junk filters `collectKeywordGaps` always
-    // applies (Batch F, F1) — default 0 (no-op) so this ships without
-    // silently starving the pipeline of seeds; raise once the corpus's real
-    // buildability distribution is understood from the dashboard.
-    pipelineMinBuildability: z.number().int().min(0).max(100).default(0),
+    // applies (Batch F, F1).
+    //
+    // Raised 0 -> 20 on 2026-07-25, now that the corpus's real distribution HAS
+    // been measured (the condition the old default was waiting on). Over the
+    // 20,341 keywords above `opportunityThresholdForSeed`, mean buildability is
+    // 3.7/100 and the corpus MAXIMUM is 48 — so pure-opportunity seed selection
+    // was drawing almost entirely from keywords a solo builder cannot win
+    // (`opportunity` never looks at the leader's review count; `dispute` scored
+    // 0.603 against a 2,673,304-review incumbent, and the top 10 by opportunity
+    // had buildability 1,4,6,7,12,14,16,17,19,20).
+    //
+    // Calibration (measured 2026-07-25 against the live corpus, with the same
+    // store/low-confidence/junk/brand filters `collectKeywordGaps` applies):
+    //   >=  5 -> 5,494 keywords      >= 25 ->   212
+    //   >= 10 -> 2,441               >= 30 ->    89
+    //   >= 15 -> 1,157               >= 40 ->     5
+    //   >= 20 ->   502               >= 50 ->     0
+    // 20 keeps ~500 eligible seeds — 50x the per-run `seedLimit` of 10, so it
+    // cannot starve the pipeline — while excluding the worst offenders. A floor
+    // of 50 would yield ZERO seeds and 30 leaves only ~9 runs' worth, so both
+    // are unsafe as an unattended default. Tune here, not in code.
+    pipelineMinBuildability: z.number().int().min(0).max(100).default(20),
+    // How strongly `buildability` blends into `collectKeywordGaps`'s SEED SORT
+    // key alongside `opportunity` (see `selectGapSeeds`): the rank is scaled by
+    // `(1 - w) + w * buildability/100`. 0 = legacy pure-opportunity ordering,
+    // 1 = `opportunity * buildability/100`. Deliberately a blend, not a
+    // replacement — sorting by buildability ALONE is worse than the status quo,
+    // because buildability rewards a low incumbent review count without
+    // requiring demand, so its corpus leaders are near-zero-demand fragments
+    // (`mvshort`, `flsie`, `abpv`). Opportunity carries demand, buildability
+    // carries winnability. 0.5 weights them evenly.
+    buildabilityRankWeight: z.number().min(0).max(1).default(0.5),
+    // HARD ceiling on the SERP leader's review count for an AUTO-selected seed
+    // (`filterByLeaderReviews`). 0 disables the ceiling.
+    //
+    // This exists BECAUSE `pipelineMinBuildability` cannot do the job alone:
+    // `computeBuildability`'s review term (`1 - ln(1+r)/ln(1+5000)`) saturates
+    // to ZERO once the leader passes ~5,000 reviews, so above that point review
+    // count stops affecting buildability at all and a badly-rated mega-app can
+    // still reach buildability 35 on the 0.35 rating term alone. Measured
+    // examples that clear a floor of 20 today: `access control` (leader
+    // 2,402,851 reviews) and `abpv` (leader 133,415). Same failure mode as
+    // `incumbent_weakness` letting a giant through on staleness.
+    //
+    // Calibration (measured 2026-07-25 within the 502-keyword floor-20 pool):
+    //   <=   5,000 ->  37 keywords     <=  50,000 -> 107
+    //   <=  10,000 ->  48              <= 100,000 -> 154
+    //   <=  25,000 ->  72              <= 200,000 -> 213
+    // 100,000 is chosen deliberately over the larger 200,000: 200,000 would
+    // still admit `abpv` (133,415), i.e. it fails the exact case this gate was
+    // added for. 154 keywords is ~15 days of non-repeating seeds at
+    // `seedLimit` 10, and the pool refreshes continuously as new scans land
+    // while consumption decays via the ledger half-life — so it does not starve.
+    // Raise it if the pool ever does run thin; that is why it is config-driven.
+    pipelineMaxTopAppReviews: z.number().int().min(0).default(100_000),
     // Cap on how many top-opportunity scans `collectKeywordGaps` fetches per
     // pipeline run before ranking/selecting seeds (was a hardcoded `limit: 10`
     // in `pipeline.ts`'s Step 3b). Lifted into config so an operator can widen
@@ -1555,7 +1606,9 @@ export const appstoreKeywordGapConfigSchema = z
     excludeKnownZeroVolume: false,
     zeroVolumeThreshold: 1,
     zeroVolumeFreshnessDays: 45,
-    pipelineMinBuildability: 0,
+    pipelineMinBuildability: 20,
+    buildabilityRankWeight: 0.5,
+    pipelineMaxTopAppReviews: 100_000,
     seedLimit: 10,
     corpusDiscovery: {
       enabled: true,
@@ -3733,22 +3786,69 @@ const SMART_IDEAS_DEFAULTS = {
   synthesisDeadlineMs: 1_500_000,
 } as const;
 
+/**
+ * Unattended schedule for the ideas pipeline (2026-07-25). Until this landed the
+ * consumption side of the App Store intelligence loop had NO trigger at all: the
+ * `cron_jobs` table held zero rows, `CronPayload` could not even express a
+ * pipeline run, and the only way to start one was a human clicking
+ * `POST /api/pipelines/:id/run`. Run history shows 176 runs during the
+ * 2026-06-17→06-25 dev burst, 4 since, and NOTHING after 2026-07-19 — the
+ * scanner kept collecting 24/7 into a queue nobody drained.
+ *
+ * **Default ON.** A scheduler that ships disabled reproduces exactly the failure
+ * it exists to fix, so this is opt-OUT (`enabled: false`) rather than opt-in.
+ * The cost is bounded and known: one ~14-minute run per day.
+ *
+ * Cadence rationale — daily:
+ *   - The scanner refreshes continuously (600 keywords/sweep, 60s tick), so
+ *     there IS new material every day; a weekly cadence would leave most of it
+ *     unconsumed.
+ *   - A run consumes `appstoreKeywordGap.seedLimit` (10) seeds. At the
+ *     `pipelineMinBuildability` floor of 20 the eligible pool is ~500 keywords,
+ *     i.e. ~50 runs' worth of non-repeating seeds — comfortable daily, but an
+ *     hourly cadence would exhaust it in ~2 days and pay 24x the LLM cost for
+ *     signal that does not refresh hourly.
+ *   - It matches the cadence the alert side already assumes
+ *     (`appstoreKeywordGap.alerts.minRunIntervalMs`, 24h), so the "what's new"
+ *     digest and the ideas run stay in step.
+ */
+export const IDEAS_SCHEDULE_DEFAULTS = {
+  enabled: true,
+  pipelineId: "mobile-app-ideas",
+  cronExpr: "0 7 * * *",
+} as const;
+
+export const ideasScheduleConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    /** A `PIPELINE_DEFINITIONS` id. */
+    pipelineId: z.string().min(1).default("mobile-app-ideas"),
+    /** 5-field cron expression, parsed by `croner` (see `cron/schedule.ts`). */
+    cronExpr: z.string().min(1).default("0 7 * * *"),
+    /** IANA timezone. Omit for the host's local time. */
+    tz: z.string().min(1).optional(),
+  })
+  .default({ ...IDEAS_SCHEDULE_DEFAULTS });
+
 export const ideasPipelineConfigSchema = z
   .object({
     smart: smartConfigSchema.default({ ...SMART_IDEAS_DEFAULTS }),
+    schedule: ideasScheduleConfigSchema,
   })
   .default({
     smart: { ...SMART_IDEAS_DEFAULTS },
+    schedule: { ...IDEAS_SCHEDULE_DEFAULTS },
   });
 
 export const pipelinesConfigSchema = z
   .object({
     ideas: ideasPipelineConfigSchema.default({
       smart: { ...SMART_IDEAS_DEFAULTS },
+      schedule: { ...IDEAS_SCHEDULE_DEFAULTS },
     }),
   })
   .default({
-    ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
+    ideas: { smart: { ...SMART_IDEAS_DEFAULTS }, schedule: { ...IDEAS_SCHEDULE_DEFAULTS } },
   });
 
 export const opencrowConfigSchema = z.object({
@@ -3846,7 +3946,7 @@ export const opencrowConfigSchema = z.object({
   // OFF; see appstoreExternalDemandConfigSchema.
   appstoreExternalDemand: appstoreExternalDemandConfigSchema,
   pipelines: pipelinesConfigSchema.default({
-    ideas: { smart: { ...SMART_IDEAS_DEFAULTS } },
+    ideas: { smart: { ...SMART_IDEAS_DEFAULTS }, schedule: { ...IDEAS_SCHEDULE_DEFAULTS } },
   }),
   logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });

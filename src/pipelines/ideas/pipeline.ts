@@ -29,6 +29,8 @@ import type { PipelineConfig, PipelineResultSummary } from "../types";
 import type { CollectorContext } from "./collectors";
 import { analyzeAppLandscape, clusterReviews, scanCapabilities } from "./collectors";
 import { KEYWORD_SCANS_TABLE, type GapSeed, collectKeywordGaps } from "./collector-keyword-gaps";
+import { detectZeroYield } from "./zero-yield";
+import { notifyZeroYield } from "./zero-yield-notify";
 import { getConsumedIds, markConsumed } from "./consumption";
 import type { DemandArtifact } from "./demand";
 import { DEFAULT_DEMAND_PROBES, enrichDemand } from "./demand-probes";
@@ -262,8 +264,60 @@ const EMPTY_RUN_SUMMARY: PipelineResultSummary = {
   durationMs: 0,
 };
 
+/**
+ * Single terminal-status writer for a run that reached the end of the pipeline
+ * without throwing. Applies the zero-yield check (`zero-yield.ts`) so a run
+ * that produced NOTHING records the distinct `"empty"` status with an explicit
+ * `error` message instead of a green `"completed"`, and enqueues an operator
+ * notification. Both no-op terminal paths (the "all sources consumed" early
+ * return and the normal end-of-run finalize) route through here so they can
+ * never drift apart.
+ *
+ * Notification is best-effort and never affects the persisted status — the run
+ * record is the durable signal.
+ */
+async function finalizeRunWithYieldCheck(
+  pipelineId: string,
+  runId: string,
+  summary: PipelineResultSummary,
+): Promise<void> {
+  const verdict = detectZeroYield({
+    totalIdeasGenerated: summary.totalIdeasGenerated,
+    totalIdeasKept: summary.totalIdeasKept,
+    totalSignalsFound: summary.totalSignalsFound,
+    durationMs: summary.durationMs,
+  });
+
+  await updatePipelineRun(runId, {
+    status: verdict.isZeroYield ? "empty" : "completed",
+    resultSummary: summary,
+    ...(verdict.message !== null ? { error: verdict.message } : {}),
+    finishedAt: now(),
+  });
+
+  if (!verdict.isZeroYield) return;
+
+  // Reuse the operator destination the gap-alert digest already uses — the
+  // primary allowed Telegram user — via the shared cron delivery queue.
+  const primaryUserId = loadConfig().channels.telegram.allowedUserIds[0];
+  await notifyZeroYield({
+    pipelineId,
+    runId,
+    verdict,
+    input: {
+      totalIdeasGenerated: summary.totalIdeasGenerated,
+      totalIdeasKept: summary.totalIdeasKept,
+      totalSignalsFound: summary.totalSignalsFound,
+      durationMs: summary.durationMs,
+    },
+    ...(primaryUserId !== undefined
+      ? { channel: "telegram", chatId: String(primaryUserId) }
+      : {}),
+  });
+}
+
 export async function runIdeasPipeline(
-  _pipelineId: string,
+  pipelineId: string,
   config: PipelineConfig,
   runId: string,
   memoryManager?: MemoryManager | null,
@@ -499,6 +553,10 @@ export async function runIdeasPipeline(
           zeroVolumeThreshold: keywordGapCfg.zeroVolumeThreshold,
           zeroVolumeFreshnessDays: keywordGapCfg.zeroVolumeFreshnessDays,
           minBuildability: keywordGapCfg.pipelineMinBuildability,
+          buildabilityRankWeight: keywordGapCfg.buildabilityRankWeight,
+          // Hard leader-review ceiling — the buildability floor cannot encode
+          // this on its own (see `filterByLeaderReviews`).
+          maxTopAppReviews: keywordGapCfg.pipelineMaxTopAppReviews,
           seedKeywords: config.seedKeywords,
           killDownweightStrength: keywordOutcomeCfg.killDownweightStrength,
         })
@@ -578,11 +636,7 @@ export async function runIdeasPipeline(
         durationMs: nowMs() - startTime,
       };
 
-      await updatePipelineRun(runId, {
-        status: "completed",
-        resultSummary: summary,
-        finishedAt: now(),
-      });
+      await finalizeRunWithYieldCheck(pipelineId, runId, summary);
       return { runId, summary };
     }
 
@@ -1232,11 +1286,7 @@ export async function runIdeasPipeline(
       archetypeEntropy: diversityReport.archetypeEntropy,
     };
 
-    await updatePipelineRun(runId, {
-      status: "completed",
-      resultSummary: summary,
-      finishedAt: now(),
-    });
+    await finalizeRunWithYieldCheck(pipelineId, runId, summary);
 
     log.info("Pipeline run complete", {
       runId,

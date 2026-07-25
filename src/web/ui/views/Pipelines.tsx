@@ -15,6 +15,7 @@ import {
   Save,
   Lightbulb,
   RotateCcw,
+  AlertTriangle,
 } from "lucide-react";
 import { apiFetch, resumeRun, resumeInterruptedRuns } from "../api";
 import { usePolledFetch } from "../hooks/usePolledFetch";
@@ -93,6 +94,9 @@ const STATUS_STYLES: Record<string, string> = {
   running: "bg-accent-subtle text-accent border border-accent/20",
   completed: "bg-success-subtle text-success border border-success/20",
   failed: "bg-danger-subtle text-danger border border-danger/20",
+  // A run that executed cleanly but produced ZERO ideas — deliberately styled
+  // as a warning, never as success. See `pipelines/ideas/zero-yield.ts`.
+  empty: "bg-warning-subtle text-warning border border-warning/20",
   interrupted: "bg-warning-subtle text-warning border border-warning/20",
 };
 
@@ -101,6 +105,7 @@ const STATUS_ICONS: Record<string, typeof CheckCircle2> = {
   running: Loader2,
   completed: CheckCircle2,
   failed: XCircle,
+  empty: AlertTriangle,
   interrupted: MinusCircle,
 };
 

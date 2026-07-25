@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { apiFetch } from "../../api";
 import { Button, EmptyState, LoadingState, SearchBar } from "../../components";
+import { useToast } from "../../components/Toast";
 import { usePolledFetch } from "../../hooks/usePolledFetch";
 import { cn } from "../../lib/cn";
 import { formatNumber } from "../../lib/format";
@@ -177,6 +178,20 @@ async function syncWatchlistVerdict(keyword: string, starred: boolean): Promise<
   } catch {
     // Best-effort — see doc comment above.
   }
+}
+
+// Human hard-exclude (kill) — writes `verdict: "killed"`, `source: "human"`
+// via `POST /api/appstore/verdicts/:keyword`. Unlike the star, this is the
+// ONLY thing that populates `getExcludedKeywords()`'s hard-exclude set for
+// `collectKeywordGaps` seed selection (see `keyword-verdict-store.ts`'s
+// module doc and `appstore.ts`'s verdict routes) — so, unlike the star's
+// fire-and-forget mirror, a failure here IS surfaced to the caller so the row
+// state / toast can reflect reality instead of lying about the exclusion.
+async function excludeKeywordVerdict(keyword: string): Promise<void> {
+  await apiFetch(`/api/appstore/verdicts/${encodeURIComponent(keyword)}`, {
+    method: "POST",
+    body: JSON.stringify({ verdict: "killed" }),
+  });
 }
 
 // ─── Columns (single source of truth for both the header row and the cell
@@ -377,6 +392,13 @@ export default function OpportunitiesTab() {
   const debouncedDraft = useDebounce(draft, FILTER_DEBOUNCE_MS);
 
   const [watchlist, setWatchlist] = useState<Set<string>>(() => loadWatchlist());
+  // Local-only/optimistic — no `GET /appstore/verdicts` list endpoint exists
+  // yet, so unlike the star (mirrored from `loadWatchlist()`'s localStorage
+  // cache) this resets on reload. Good enough for immediate feedback on the
+  // action just taken; see the exclude button below.
+  const [excludedKeywords, setExcludedKeywords] = useState<Set<string>>(() => new Set());
+  const [excludingKeyword, setExcludingKeyword] = useState<string | null>(null);
+  const toast = useToast();
   const [expandedKeyword, setExpandedKeyword] = useState<string | null>(null);
   const [history, setHistory] = useState<
     Record<
@@ -509,6 +531,23 @@ export default function OpportunitiesTab() {
       void syncWatchlistVerdict(keyword, nowStarred);
       return next;
     });
+  }
+
+  async function excludeKeyword(keyword: string): Promise<void> {
+    setExcludingKeyword(keyword);
+    try {
+      await excludeKeywordVerdict(keyword);
+      setExcludedKeywords((prev) => {
+        const next = new Set(prev);
+        next.add(keyword);
+        return next;
+      });
+      toast.success(`Excluded "${keyword}" from idea seeding`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : `Failed to exclude "${keyword}"`);
+    } finally {
+      setExcludingKeyword(null);
+    }
   }
 
   function handleSort(key: SortKey): void {
@@ -646,6 +685,7 @@ export default function OpportunitiesTab() {
             <tbody>
               {rows.map((row) => {
                 const starred = watchlist.has(row.keyword);
+                const excluded = excludedKeywords.has(row.keyword);
                 const isExpanded = expandedKeyword === row.keyword;
                 const rowHistory = history[row.keyword];
 
@@ -657,24 +697,50 @@ export default function OpportunitiesTab() {
                       aria-expanded={isExpanded}
                     >
                       <td className="px-2 py-2 text-center">
-                        <button
-                          type="button"
-                          aria-label={
-                            starred
-                              ? `Remove ${row.keyword} from watchlist`
-                              : `Add ${row.keyword} to watchlist`
-                          }
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleStar(row.keyword);
-                          }}
-                          className={cn(
-                            "cursor-pointer bg-transparent border-none p-0.5 text-base leading-none",
-                            starred ? "text-yellow-400" : "text-faint hover:text-muted",
-                          )}
-                        >
-                          {starred ? "★" : "☆"}
-                        </button>
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            aria-label={
+                              starred
+                                ? `Remove ${row.keyword} from watchlist`
+                                : `Add ${row.keyword} to watchlist`
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleStar(row.keyword);
+                            }}
+                            className={cn(
+                              "cursor-pointer bg-transparent border-none p-0.5 text-base leading-none",
+                              starred ? "text-yellow-400" : "text-faint hover:text-muted",
+                            )}
+                          >
+                            {starred ? "★" : "☆"}
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={
+                              excluded
+                                ? `${row.keyword} excluded from idea seeding`
+                                : `Exclude ${row.keyword} from idea seeding`
+                            }
+                            title={
+                              excluded
+                                ? "Excluded from idea seeding"
+                                : "Exclude from idea seeding (hard exclude)"
+                            }
+                            disabled={excluded || excludingKeyword === row.keyword}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void excludeKeyword(row.keyword);
+                            }}
+                            className={cn(
+                              "cursor-pointer bg-transparent border-none p-0.5 text-xs leading-none disabled:cursor-default",
+                              excluded ? "text-red-400" : "text-faint hover:text-red-400",
+                            )}
+                          >
+                            ✕
+                          </button>
+                        </div>
                       </td>
                       {COLUMNS.map((col) => (
                         <td key={col.key} className="px-3 py-2">
