@@ -16,8 +16,21 @@ import {
 
 import { getErrorMessage } from "../../lib/error-serialization";
 import { loadScraperIntervalMs } from "../scraper-config";
+import { MEMORY_INDEXING_DEADLINE_MS, withLaneDeadline } from "../shared/lane-deadline";
 
 const log = createLogger("playstore-scraper");
+
+/** Best-effort memory-indexing step under a hard deadline — see the call site. */
+async function runIndexingStep(label: string, step: () => Promise<void>): Promise<void> {
+  try {
+    await withLaneDeadline(label, MEMORY_INDEXING_DEADLINE_MS, step);
+  } catch (err) {
+    log.warn("Memory indexing step failed or exceeded its deadline", {
+      label,
+      error: getErrorMessage(err),
+    });
+  }
+}
 
 const DEFAULT_INTERVAL_MINUTES = 60;
 const REQUEST_DELAY_MS = 4_000; // 4 seconds between API calls
@@ -522,8 +535,11 @@ export function createPlayStoreScraper(config?: {
         log.warn("Play Store discovery phase failed", { error: getErrorMessage(err) });
       }
 
-      await indexUnindexedReviews();
-      await indexUnindexedRankings();
+      // Deadline-bounded, log-and-swallow — same failure mode the App Store
+      // scraper hit on 2026-07-25 (see `lane-deadline.ts`): a hung Qdrant
+      // connect here would otherwise park the whole Play Store chain.
+      await runIndexingStep("playstore:index-reviews", indexUnindexedReviews);
+      await runIndexingStep("playstore:index-rankings", indexUnindexedRankings);
 
       return { ok: true, rankings: rankingsCount, reviews: totalReviews };
     } catch (err) {

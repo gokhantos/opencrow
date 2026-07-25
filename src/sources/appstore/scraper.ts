@@ -68,8 +68,26 @@ import { getErrorMessage } from "../../lib/error-serialization";
 import { loadScraperIntervalMs } from "../scraper-config";
 import { getAppstoreProxyUrl } from "../shared/appstore-proxy";
 import { fetchWithTimeout } from "../shared/fetch-with-timeout";
+import { MEMORY_INDEXING_DEADLINE_MS, withLaneDeadline } from "../shared/lane-deadline";
+import { createSingleFlight } from "../shared/single-flight";
 
 const log = createLogger("appstore-scraper");
+
+/**
+ * Runs a best-effort memory-indexing step under a hard deadline, swallowing
+ * both failures and timeouts. See the call site in `scrape()` for why these
+ * steps must never be able to stall the hourly chain.
+ */
+async function runIndexingStep(label: string, step: () => Promise<void>): Promise<void> {
+  try {
+    await withLaneDeadline(label, MEMORY_INDEXING_DEADLINE_MS, step);
+  } catch (err) {
+    log.warn("Memory indexing step failed or exceeded its deadline", {
+      label,
+      error: getErrorMessage(err),
+    });
+  }
+}
 
 const DEFAULT_INTERVAL_MINUTES = 60;
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -174,12 +192,45 @@ export function createAppStoreScraper(config?: {
   memoryManager?: MemoryManager;
 }): AppStoreScraper {
   let timer: ReturnType<typeof setInterval> | null = null;
-  let running = false;
+  // Self-healing single-flight guards (2026-07-25). These replaced plain
+  // `let xRunning = false` booleans after two hangs in two days left a lane's
+  // lock held forever — a `config_overrides` read that never settled
+  // (2026-07-24) and a Qdrant connect stuck in SYN_SENT (2026-07-25) — each
+  // silently stopping its lane until the process was restarted by hand. See
+  // `single-flight.ts` for the generation-guard semantics and
+  // `lane-deadline.ts` for the incident detail. Budgets are deliberately far
+  // above each lane's worst LEGITIMATE runtime: superseding a merely-slow lane
+  // would run it twice concurrently, which is worse than a late recovery.
+  const hourlyTickGuard = createSingleFlight({
+    label: "appstore:hourly-tick",
+    // Observed healthy full chain: ~20min (10:16->10:36 on 2026-07-25). The
+    // tick interval itself is 1h, so anything past 45min is wedged, not slow.
+    maxDurationMs: 45 * 60_000,
+    onSkip: () => log.info("App Store scrape already running, skipping"),
+    onStaleRelease: (elapsedMs) =>
+      log.error("App Store scrape lane exceeded its budget — abandoning stale claim", {
+        elapsedMs,
+        hint: "previous hourly chain never returned; superseding it so rankings resume",
+      }),
+  });
   // Independent timer for the keyword-gap sweep — decoupled from the
   // ~hourly ranking `timer`/`tick` above so it can run on its own, much
   // faster cadence (`appstoreKeywordGap.scanIntervalMs`, default 5 min).
   let keywordSweepTimer: ReturnType<typeof setInterval> | null = null;
-  let keywordSweepRunning = false;
+  const keywordSweepGuard = createSingleFlight({
+    label: "appstore:keyword-sweep",
+    // The batch's own wall-clock bail is 8min (`keyword-gaps.ts`'s
+    // MAX_PASS_DURATION_MS), but it is only checked BETWEEN keywords — the
+    // 2026-07-24 wedge ran 56min inside one await. 20min is comfortably past
+    // any healthy sweep and well short of that.
+    maxDurationMs: 20 * 60_000,
+    onSkip: () => log.debug("Keyword-gap sweep already running, skipping"),
+    onStaleRelease: (elapsedMs) =>
+      log.error("Keyword-gap sweep lane exceeded its budget — abandoning stale claim", {
+        elapsedMs,
+        hint: "previous sweep never returned; superseding it so scans resume",
+      }),
+  });
   // Independent timer for the ~12 auxiliary keyword-gap lanes (screener,
   // alerts, autocomplete expansion, GB hints, newborn re-observation, DE
   // storefront, mined backfill, intl charts, review harvest, app/app-page
@@ -189,7 +240,19 @@ export function createAppStoreScraper(config?: {
   // high-value gap-sweep from running on its own ~60s cadence. See
   // `auxiliaryLanesTick`.
   let auxiliaryLanesTimer: ReturnType<typeof setInterval> | null = null;
-  let auxiliaryLanesRunning = false;
+  const auxiliaryLanesGuard = createSingleFlight({
+    label: "appstore:auxiliary-lanes",
+    // ~12 lanes, each self-gated and several with their own ~5min pass
+    // budgets; post-restart every lane is due at once, which legitimately runs
+    // 15-20min. 60min leaves that untouched while still recovering a wedge.
+    maxDurationMs: 60 * 60_000,
+    onSkip: () => log.debug("Auxiliary keyword-gap lanes already running, skipping"),
+    onStaleRelease: (elapsedMs) =>
+      log.error("Auxiliary keyword-gap lanes exceeded their budget — abandoning stale claim", {
+        elapsedMs,
+        hint: "previous auxiliary chain never returned; superseding it",
+      }),
+  });
   // Independent timer for the proxied SECOND scan stream (2026-07-24
   // throughput pass — see `proxy-stream.ts`'s module doc and
   // `keyword-gaps.ts`'s `runProxyKeywordSweep`): a parallel, Webshare-backed
@@ -197,7 +260,18 @@ export function createAppStoreScraper(config?: {
   // it can never block (or be blocked by) the direct gap-sweep tick. Gated
   // per-tick by `appstoreKeywordGap.proxyStream.enabled` (default OFF).
   let proxyStreamTimer: ReturnType<typeof setInterval> | null = null;
-  let proxyStreamRunning = false;
+  const proxyStreamGuard = createSingleFlight({
+    label: "appstore:proxy-stream",
+    // Same reasoning as the direct sweep's guard; the proxied lane is the one
+    // that logged the 56min `elapsedMs` bail on 2026-07-24.
+    maxDurationMs: 20 * 60_000,
+    onSkip: () => log.debug("Proxied scan stream already running, skipping"),
+    onStaleRelease: (elapsedMs) =>
+      log.error("Proxied scan stream lane exceeded its budget — abandoning stale claim", {
+        elapsedMs,
+        hint: "previous proxied sweep never returned; superseding it",
+      }),
+  });
   // The proxied stream's OWN adaptive-throttle state — a wholly separate
   // instance from `sweepThrottleState` below (same `sweep-throttle.ts` state
   // machine, same config-driven AIMD step sizes, separate STATE): the
@@ -702,9 +776,14 @@ export function createAppStoreScraper(config?: {
         log.warn("App Store discovery phase failed", { error: getErrorMessage(err) });
       }
 
-      // Index unindexed content into memory
-      await indexUnindexedReviews();
-      await indexUnindexedRankings();
+      // Index unindexed content into memory. Deadline-bounded and
+      // log-and-swallow (2026-07-25): these two awaits parked the whole hourly
+      // chain for 2.5h+ on Qdrant connects stuck in SYN_SENT while Qdrant
+      // itself was healthy, holding this lane's single-flight claim and
+      // freezing `appstore_ranking_history`. Memory indexing is best-effort
+      // enrichment — never a reason to stop scraping rankings.
+      await runIndexingStep("appstore:index-reviews", indexUnindexedReviews);
+      await runIndexingStep("appstore:index-rankings", indexUnindexedRankings);
 
       // Keyword-gap sweep now runs on its own independent timer
       // (`keywordSweepTimer` below), decoupled from this ~hourly ranking
@@ -752,12 +831,10 @@ export function createAppStoreScraper(config?: {
   // in `runKeywordSweep`. Never allowed to break the scraper — a failure is
   // logged and swallowed here, mirroring `tick()`.
   async function keywordSweepTick(): Promise<void> {
-    if (keywordSweepRunning) {
-      log.debug("Keyword-gap sweep already running, skipping");
-      return;
-    }
+    await keywordSweepGuard.run(runKeywordSweepPass);
+  }
 
-    keywordSweepRunning = true;
+  async function runKeywordSweepPass(): Promise<void> {
     try {
       // B1: fresh per-tick throttle accumulator — the gap-sweep is the only
       // contributor now (see the throttle-ownership note above
@@ -886,8 +963,6 @@ export function createAppStoreScraper(config?: {
       }
     } catch (err) {
       log.warn("Keyword-gap sweep failed", { error: getErrorMessage(err) });
-    } finally {
-      keywordSweepRunning = false;
     }
   }
 
@@ -905,12 +980,10 @@ export function createAppStoreScraper(config?: {
   // to break the scraper — a failure is logged and swallowed, mirroring
   // `keywordSweepTick`.
   async function proxyStreamTick(): Promise<void> {
-    if (proxyStreamRunning) {
-      log.debug("Proxied scan stream already running, skipping");
-      return;
-    }
+    await proxyStreamGuard.run(runProxyStreamPass);
+  }
 
-    proxyStreamRunning = true;
+  async function runProxyStreamPass(): Promise<void> {
     try {
       const cfg = loadConfig().appstoreKeywordGap;
       const ps = cfg.proxyStream;
@@ -1027,8 +1100,6 @@ export function createAppStoreScraper(config?: {
       }
     } catch (err) {
       log.warn("Proxied scan stream tick failed", { error: getErrorMessage(err) });
-    } finally {
-      proxyStreamRunning = false;
     }
   }
 
@@ -1046,12 +1117,10 @@ export function createAppStoreScraper(config?: {
   // a gap-sweep tick (or vice versa). Never allowed to break the scraper —
   // a failure is logged and swallowed here, mirroring `keywordSweepTick`.
   async function auxiliaryLanesTick(): Promise<void> {
-    if (auxiliaryLanesRunning) {
-      log.debug("Auxiliary keyword-gap lanes already running, skipping");
-      return;
-    }
+    await auxiliaryLanesGuard.run(runAuxiliaryLanesPass);
+  }
 
-    auxiliaryLanesRunning = true;
+  async function runAuxiliaryLanesPass(): Promise<void> {
     try {
       const cfg = loadConfig().appstoreKeywordGap;
       if (!cfg.enabled) {
@@ -1126,8 +1195,6 @@ export function createAppStoreScraper(config?: {
       await runScansRetentionIfDue();
     } catch (err) {
       log.warn("Auxiliary keyword-gap lanes failed", { error: getErrorMessage(err) });
-    } finally {
-      auxiliaryLanesRunning = false;
     }
   }
 
@@ -1908,19 +1975,15 @@ export function createAppStoreScraper(config?: {
   }
 
   async function tick(): Promise<void> {
-    if (running) {
-      log.info("App Store scrape already running, skipping");
-      return;
-    }
+    await hourlyTickGuard.run(runHourlyScrapePass);
+  }
 
-    running = true;
+  async function runHourlyScrapePass(): Promise<void> {
     try {
       await scrape();
     } catch (err) {
       const msg = getErrorMessage(err);
       log.error("App Store scrape error", { error: msg });
-    } finally {
-      running = false;
     }
   }
 
@@ -2001,16 +2064,12 @@ export function createAppStoreScraper(config?: {
     },
 
     async scrapeNow(): Promise<ScrapeResult> {
-      if (running) {
-        return { ok: false, error: "Already running" };
-      }
-
-      running = true;
-      try {
-        return await scrape();
-      } finally {
-        running = false;
-      }
+      // Shares the hourly lane's guard, so a manual trigger still can't run
+      // concurrently with the timer — and, since the guard supersedes a claim
+      // past its budget, an operator can now break a wedged lane by hand
+      // instead of restarting the process.
+      const result = await hourlyTickGuard.run(scrape);
+      return result ?? { ok: false, error: "Already running" };
     },
   };
 }
