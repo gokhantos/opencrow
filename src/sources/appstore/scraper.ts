@@ -15,6 +15,7 @@ import { runGapAlerts } from "./gap-alerts";
 import { expandCorpus } from "./keyword-autocomplete";
 import { mineKeywords } from "./keyword-miner";
 import { mineReviewKeywords } from "./keyword-review-miner";
+import { runRetirementPass, runZoneDerivationPass } from "./keyword-hygiene";
 import {
   backfillMinedDeactivation,
   countScansSince,
@@ -437,6 +438,10 @@ export function createAppStoreScraper(config?: {
   let serpSweepZeroStreak = 0;
   // Soft cadence gate for the keyword-scans retention prune (B3, default 6h).
   let lastScansPruneRunAt = 0;
+  // Soft cadence gates for the two corpus-hygiene passes (migration 057,
+  // `keyword-hygiene.ts`) — both DB-only, both default 6h.
+  let lastRetirementRunAt = 0;
+  let lastZoneDerivationRunAt = 0;
 
   async function fetchTopApps(
     url: string,
@@ -1193,6 +1198,14 @@ export function createAppStoreScraper(config?: {
       // it feeds nothing into the throttle), gated to its own ~6h cadence,
       // same log-and-swallow pattern as the ledger prunes above.
       await runScansRetentionIfDue();
+
+      // Corpus hygiene (migration 057, `keyword-hygiene.ts`) — permanent
+      // retirement + honest derived genre zones. DB-only (no Apple requests,
+      // so neither feeds the throttle), each gated to its own ~6h cadence and
+      // bounded by its own batch size + resume cursor, same log-and-swallow
+      // pattern as the prunes above.
+      await runKeywordRetirementIfDue();
+      await runZoneDerivationIfDue();
     } catch (err) {
       log.warn("Auxiliary keyword-gap lanes failed", { error: getErrorMessage(err) });
     }
@@ -1909,6 +1922,71 @@ export function createAppStoreScraper(config?: {
       log.info("Keyword-scans retention prune complete", { pruned });
     } catch (err) {
       log.warn("Keyword-scans retention prune failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // Runs the PERMANENT keyword-retirement pass (migration 057 — see
+  // `keyword-hygiene.ts`'s `runRetirementPass` and `keyword-retirement.ts` for
+  // the rules). DB-only, gated to its own ~6h cadence AND to its `enabled`
+  // flag, which DEFAULTS OFF: this makes a durable, corpus-wide change, so an
+  // operator should review `scripts/backfill-keyword-retirement.ts`'s dry-run
+  // report before switching it on. Bounded by `batchSize` and resumable via
+  // `retirement_checked_at`, so it walks the corpus across passes rather than
+  // in one sitting. Never allowed to break the sweep tick.
+  //
+  // The score-based rule is passed straight through from config and defaults
+  // FALSE — see `keyword-retirement.ts`'s `shouldRetireByScore` for why it
+  // must stay off until the `opportunity`/`demand` model is fixed and
+  // recalibrated.
+  async function runKeywordRetirementIfDue(): Promise<void> {
+    try {
+      const junkCfg = loadConfig().appstoreJunkDeactivation;
+      const cfg = junkCfg.retirement;
+      if (!junkCfg.enabled || !cfg.enabled) return;
+
+      const now = Date.now();
+      if (now - lastRetirementRunAt < cfg.minIntervalMs) return;
+      lastRetirementRunAt = now;
+
+      await runRetirementPass({
+        batchSize: cfg.batchSize,
+        nowSeconds: Math.floor(now / 1000),
+        rules: {
+          structuralJunk: cfg.structuralJunk,
+          brandLexical: cfg.brandLexical,
+          brandSerpShape: cfg.brandSerpShape,
+          autocompleteProbedAbsent: cfg.autocompleteProbedAbsent,
+          scoreBased: cfg.scoreBased,
+        },
+      });
+    } catch (err) {
+      log.warn("Keyword retirement pass failed", { error: getErrorMessage(err) });
+    }
+  }
+
+  // Runs the derived-genre-zone pass (migration 057 — see
+  // `keyword-hygiene.ts`'s `runZoneDerivationPass` and `keyword-zones.ts`).
+  // Re-derives `genre_zone_derived`/`genre_zone_confidence` from the SERP
+  // incumbents' REAL categories, writing NULL for anything it cannot classify
+  // confidently, and NEVER touching the legacy `genre_zone` column. DB-only,
+  // gated to its own ~6h cadence, bounded + resumable via
+  // `genre_zone_derived_at`. Never allowed to break the sweep tick.
+  async function runZoneDerivationIfDue(): Promise<void> {
+    try {
+      const junkCfg = loadConfig().appstoreJunkDeactivation;
+      const cfg = junkCfg.zoneDerivation;
+      if (!cfg.enabled) return;
+
+      const now = Date.now();
+      if (now - lastZoneDerivationRunAt < cfg.minIntervalMs) return;
+      lastZoneDerivationRunAt = now;
+
+      await runZoneDerivationPass({
+        batchSize: cfg.batchSize,
+        nowSeconds: Math.floor(now / 1000),
+      });
+    } catch (err) {
+      log.warn("Keyword zone-derivation pass failed", { error: getErrorMessage(err) });
     }
   }
 

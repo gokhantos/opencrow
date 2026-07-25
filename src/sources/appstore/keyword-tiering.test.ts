@@ -56,6 +56,39 @@ describe("isTier1Eligible", () => {
     expect(isTier1Eligible(input({ source: "mined" }), now, STALE_THRESHOLD_MS)).toBe(false);
   });
 
+  it("is false for a RETIRED keyword that would otherwise be tier-1 eligible", () => {
+    expect(
+      isTier1Eligible(
+        input({ lastScannedAt: null, source: "manual", retired: true }),
+        now,
+        STALE_THRESHOLD_MS,
+      ),
+    ).toBe(false);
+  });
+
+  it("is false for a retired keyword even with an active signature hit — retirement wins", () => {
+    expect(
+      isTier1Eligible(
+        input({ source: "autocomplete", hasActiveSignatureHit: true, retired: true }),
+        now,
+        STALE_THRESHOLD_MS,
+      ),
+    ).toBe(false);
+  });
+
+  it("treats an absent `retired` flag as not retired (back-compat with existing callers)", () => {
+    expect(
+      isTier1Eligible(input({ lastScannedAt: null, source: "seed" }), now, STALE_THRESHOLD_MS),
+    ).toBe(true);
+    expect(
+      isTier1Eligible(
+        input({ lastScannedAt: null, source: "seed", retired: false }),
+        now,
+        STALE_THRESHOLD_MS,
+      ),
+    ).toBe(true);
+  });
+
   it("is false for a manual/seed keyword scanned within the last 24h", () => {
     const freshAt = now - 60; // 1 minute ago
     expect(

@@ -1529,8 +1529,96 @@ export const appstoreJunkDeactivationConfigSchema = z
     // keyword-sweep tick (never blocking startup). Default ON; flip off to
     // rely purely on the inline per-scan check pruning the pool gradually.
     minedBackfillEnabled: z.boolean().default(true),
+    // ─── PERMANENT retirement (migration 057, keyword-retirement.ts) ───────
+    // A second, STRONGER lever than the `active` flag the knobs above drive:
+    // `retired_at`/`retired_reason` are durable and additionally block
+    // re-admission at discovery time (`keyword-store.ts`'s `upsertKeywords`),
+    // including of a retired brand keyword's whole token FAMILY.
+    //
+    // The per-rule flags mirror `keyword-retirement.ts`'s
+    // `DEFAULT_RETIREMENT_RULES` exactly. The three score-INDEPENDENT rules
+    // default ON; the two that depend on something that does not exist yet
+    // default OFF:
+    //   - `autocompleteProbedAbsent` needs the tri-state autocomplete probe
+    //     record (`present(rank)`/`probed-absent`/`never-probed`) that a
+    //     separate change to `keyword-autocomplete.ts` is persisting; until it
+    //     lands every candidate reads as `never-probed`, which can never fire.
+    //   - `scoreBased` MUST stay off until the `opportunity`/`demand` scoring
+    //     model is fixed AND recalibrated. It keys on the broken proxies and
+    //     WOULD retire the owner's own shipped niches (`card grading`,
+    //     `shorts blocker`) — see `shouldRetireByScore`'s doc comment and its
+    //     unit test, which asserts exactly that as a tripwire.
+    retirement: z
+      .object({
+        // Master switch for the retirement sweep. Default OFF for its first
+        // release: it makes a DURABLE, corpus-wide change, so it should be
+        // switched on deliberately after the operator has reviewed the
+        // dry-run report from `scripts/backfill-keyword-retirement.ts`.
+        enabled: z.boolean().default(false),
+        // Own cadence gate, decoupled from the ~1min sweep tick. 6h default,
+        // matching `scansRetention.minIntervalMs` — this is DB-only work (no
+        // Apple requests), so it feeds nothing into the rate throttle.
+        minIntervalMs: z
+          .number()
+          .int()
+          .min(60_000)
+          .default(6 * 60 * 60 * 1000),
+        // Keywords evaluated per sweep pass. The pass walks the corpus via
+        // `retirement_checked_at ASC NULLS FIRST` (its own resume cursor), so
+        // this only bounds per-pass cost, never total coverage.
+        batchSize: z.number().int().min(1).max(20_000).default(2_000),
+        // Per-rule flags — see the block comment above.
+        structuralJunk: z.boolean().default(true),
+        brandLexical: z.boolean().default(true),
+        brandSerpShape: z.boolean().default(true),
+        autocompleteProbedAbsent: z.boolean().default(false),
+        scoreBased: z.boolean().default(false),
+      })
+      .default({
+        enabled: false,
+        minIntervalMs: 6 * 60 * 60 * 1000,
+        batchSize: 2_000,
+        structuralJunk: true,
+        brandLexical: true,
+        brandSerpShape: true,
+        autocompleteProbedAbsent: false,
+        scoreBased: false,
+      }),
+    // ─── Derived genre zones (migration 057, keyword-zones.ts) ─────────────
+    // Re-derives `genre_zone_derived`/`genre_zone_confidence` from the SERP
+    // incumbents' REAL categories, writing NULL when the field is
+    // unclassifiable. Never touches the legacy `genre_zone` column. Default ON
+    // (bookkeeping-only, no network, and the honest label is strictly more
+    // useful than the 76%-fake one it sits beside), with its own cursor
+    // (`genre_zone_derived_at ASC NULLS FIRST`) so a bounded batch walks the
+    // whole corpus across passes.
+    zoneDerivation: z
+      .object({
+        enabled: z.boolean().default(true),
+        minIntervalMs: z
+          .number()
+          .int()
+          .min(60_000)
+          .default(6 * 60 * 60 * 1000),
+        batchSize: z.number().int().min(1).max(20_000).default(2_000),
+      })
+      .default({ enabled: true, minIntervalMs: 6 * 60 * 60 * 1000, batchSize: 2_000 }),
   })
-  .default({ enabled: true, minedBackfillEnabled: true });
+  .default({
+    enabled: true,
+    minedBackfillEnabled: true,
+    retirement: {
+      enabled: false,
+      minIntervalMs: 6 * 60 * 60 * 1000,
+      batchSize: 2_000,
+      structuralJunk: true,
+      brandLexical: true,
+      brandSerpShape: true,
+      autocompleteProbedAbsent: false,
+      scoreBased: false,
+    },
+    zoneDerivation: { enabled: true, minIntervalMs: 6 * 60 * 60 * 1000, batchSize: 2_000 },
+  });
 export type AppstoreJunkDeactivationConfig = z.infer<
   typeof appstoreJunkDeactivationConfigSchema
 >;

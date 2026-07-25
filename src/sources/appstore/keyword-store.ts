@@ -7,6 +7,12 @@ import {
   HOT_LANE_STALE_THRESHOLD_MS,
 } from "./keyword-tiering";
 import { DEACTIVATION_MIN_SCANS, MINED_DEACTIVATION_MAX_DEMAND_EVER } from "./keyword-deactivation";
+import {
+  FAMILY_BLOCKING_REASONS,
+  isFamilyBlocked,
+  RETIREMENT_PROTECTED_SOURCES,
+  tokenPrefixes,
+} from "./keyword-retirement";
 import type { ClusterAssignmentRow, RawCandidate } from "./keyword-clustering";
 import { computeBuildability } from "./keyword-scoring";
 import type {
@@ -343,13 +349,57 @@ function toEpochSecondsOrNull(value: Date | string | number | null | undefined):
  * `genre_zone` (whatever it currently is, corrected or not) is never touched
  * by this function again — only `setKeywordZone` or a fresh row's own INSERT
  * ever sets it.
+ *
+ * ─── DISCOVERY-TIME RETIREMENT GUARD (migration 057, 2026-07-25) ───────────
+ * This is THE choke point for re-admission: `keyword-miner.ts`,
+ * `keyword-autocomplete.ts`, `keyword-review-miner.ts` and the agent tool in
+ * `src/tools/appstore.ts` all admit new corpus rows through here, so enforcing
+ * retirement in this one function covers every discovery path at once —
+ * nothing has to be duplicated into each miner (and no future miner can forget
+ * it). Retirement that only stopped SELECTION would be pointless: the next
+ * expansion cycle would re-discover the same brand hints and re-admit them.
+ *
+ * Two things are refused, both via `keyword-retirement.ts`'s pure family logic:
+ *   1. the retired keyword itself (its own token prefix is itself); and
+ *   2. any descendant of a retired brand FAMILY ROOT — re-admitting
+ *      "spotify premium" the cycle after retiring "spotify" is pointless, since
+ *      the whole token family is navigational for one product.
+ *
+ * `manual`/`seed` rows bypass the guard entirely: a human explicitly asking for
+ * a keyword outranks a heuristic retirement, and that is also the documented
+ * un-retire path for a false positive.
+ *
+ * Cost is ONE extra query per call, not per candidate: every candidate's token
+ * prefixes are collected and probed in a single indexed `keyword = ANY(...)`
+ * primary-key lookup (`getRetiredFamilyRoots`), never a `LIKE 'root %'` scan
+ * over the retired set.
+ *
+ * Returns how many rows were actually admitted (candidates dropped by the guard
+ * are not counted) rather than `rows.length`.
  */
 export async function upsertKeywords(rows: readonly KeywordSeedRow[]): Promise<number> {
   if (rows.length === 0) return 0;
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
+
+  const guardedRows = rows.filter((r) => !RETIREMENT_PROTECTED_SOURCES.has(r.source));
+  const prefixes = [...new Set(guardedRows.flatMap((r) => tokenPrefixes(r.keyword)))];
+  const familyRoots = await getRetiredFamilyRoots(prefixes, [...FAMILY_BLOCKING_REASONS]);
+  const admissible = rows.filter(
+    (r) =>
+      RETIREMENT_PROTECTED_SOURCES.has(r.source) || !isFamilyBlocked(r.keyword, familyRoots),
+  );
+  const blocked = rows.length - admissible.length;
+  if (blocked > 0) {
+    logger.info("Refused retired keywords at discovery", {
+      blocked,
+      candidates: rows.length,
+      familyRoots: familyRoots.size,
+    });
+  }
+
   let n = 0;
-  for (const r of rows) {
+  for (const r of admissible) {
     await db`
       INSERT INTO appstore_keywords (keyword, genre_zone, source, active, created_at)
       VALUES (${r.keyword}, ${r.genreZone}, ${r.source}, TRUE, ${now})
@@ -379,6 +429,24 @@ export async function setKeywordZone(keyword: string, genreZone: string): Promis
   return (rows as ReadonlyArray<{ keyword: string }>).length > 0;
 }
 
+/**
+ * Frozen SQL fragment excluding PERMANENTLY RETIRED keywords (migration 057 —
+ * see `keyword-retirement.ts`), appended to every corpus SELECTION path in
+ * this module. Belt + suspenders, deliberately: `retireKeywords` sets
+ * `active = FALSE` in the SAME statement it stamps `retired_at`, so the
+ * pre-existing `active = TRUE` filters already exclude a retired keyword — but
+ * `active` is a reversible boolean that any future re-admission path could
+ * flip back, and retirement must survive that. A selection path that reads
+ * `active` alone is one `UPDATE ... SET active = TRUE` away from re-scanning
+ * a keyword an operator permanently retired. Same convention as
+ * `deactivateJunkKeywords`'s redundant `source NOT IN ('manual','seed')`
+ * check.
+ */
+const NOT_RETIRED_SQL = "retired_at IS NULL";
+
+/** `NOT_RETIRED_SQL` qualified for queries that alias `appstore_keywords` as `k`. */
+const NOT_RETIRED_K_SQL = "k.retired_at IS NULL";
+
 export async function getStaleKeywords(
   genreZone: string,
   limit: number,
@@ -386,7 +454,7 @@ export async function getStaleKeywords(
   const db = getDb();
   const rows = await db`
     SELECT keyword FROM appstore_keywords
-    WHERE active = TRUE AND genre_zone = ${genreZone}
+    WHERE active = TRUE AND ${db.unsafe(NOT_RETIRED_SQL)} AND genre_zone = ${genreZone}
     ORDER BY last_scanned_at ASC NULLS FIRST
     LIMIT ${limit}
   `;
@@ -403,7 +471,7 @@ export async function getStaleKeywordsAcrossZones(limit: number): Promise<readon
   const db = getDb();
   const rows = await db`
     SELECT keyword FROM appstore_keywords
-    WHERE active = TRUE
+    WHERE active = TRUE AND ${db.unsafe(NOT_RETIRED_SQL)}
     ORDER BY last_scanned_at ASC NULLS FIRST
     LIMIT ${limit}
   `;
@@ -555,6 +623,7 @@ async function selectTier1Slice(
         ) AS has_active_signature_hit
       FROM appstore_keywords k
       WHERE k.active = TRUE
+        AND ${db.unsafe(NOT_RETIRED_K_SQL)}
         AND NOT (k.keyword = ANY(${db.array([...opts.excludeKeywords], "text")}))
         AND ${db.unsafe(opts.sourceConditionSql)}
     ),
@@ -676,6 +745,7 @@ export async function getStaleKeywordsTiered(opts: {
           SELECT k.keyword FROM appstore_keywords k
           JOIN appstore_signature_hits h ON h.keyword = k.keyword
           WHERE k.active = TRUE
+            AND ${db.unsafe(NOT_RETIRED_K_SQL)}
             AND h.status IN ('new', 'active')
             AND NOT (k.keyword = ANY(${db.array([...excludeKeywords], "text")}))
             AND (k.last_scanned_at IS NULL OR k.last_scanned_at < ${hotStaleThresholdAt})
@@ -749,6 +819,7 @@ export async function getStaleKeywordsTiered(opts: {
   const mineRows = await db`
     SELECT keyword FROM appstore_keywords
     WHERE active = TRUE
+      AND ${db.unsafe(NOT_RETIRED_SQL)}
       AND source IN ('mined', 'review')
       AND NOT (keyword = ANY(${db.array([...excludeKeywords, ...claimedKeywords], "text")}))
     ORDER BY last_scanned_at ASC NULLS FIRST
@@ -782,6 +853,7 @@ export async function getStaleMinedKeywords(opts: {
   const rows = await db`
     SELECT keyword FROM appstore_keywords
     WHERE active = TRUE
+      AND ${db.unsafe(NOT_RETIRED_SQL)}
       AND source IN ('mined', 'review')
       AND NOT (keyword = ANY(${db.array([...opts.excludeKeywords], "text")}))
     ORDER BY last_scanned_at ASC NULLS FIRST
@@ -1002,6 +1074,7 @@ function buildFilterClause(db: ReturnType<typeof getDb>, filters: OpportunityFil
       OR ${db.unsafe(BUILDABILITY_SQL)} >= ${filters.minBuildability}
     )
     AND s.brand_navigational = FALSE
+    AND ${db.unsafe(NOT_RETIRED_K_SQL)}
     AND (
       ${filters.hideJunk} = FALSE
       OR (
@@ -1460,7 +1533,10 @@ export async function getWinnerKeywords(
         JOIN appstore_keywords k ON k.keyword = s.keyword
         LEFT JOIN appstore_seed_expansion_state e
           ON e.keyword = s.keyword AND e.storefront = ${market}
-        WHERE s.store = 'app' AND s.opportunity >= ${minOpportunity} AND s.low_confidence = FALSE
+        WHERE s.store = 'app'
+          AND ${tx.unsafe(NOT_RETIRED_K_SQL)}
+          AND s.opportunity >= ${minOpportunity}
+          AND s.low_confidence = FALSE
         ORDER BY e.last_expanded_at ASC NULLS FIRST, s.opportunity DESC
         LIMIT ${limit}
       `;
@@ -1539,7 +1615,7 @@ export async function getDiverseZoneSample(
       FROM appstore_keywords k
       LEFT JOIN appstore_seed_expansion_state e
         ON e.keyword = k.keyword AND e.storefront = ${market}
-      WHERE k.active = TRUE AND k.source <> 'mined'
+      WHERE k.active = TRUE AND ${db.unsafe(NOT_RETIRED_K_SQL)} AND k.source <> 'mined'
     )
     SELECT keyword, genre_zone, next_prefix_offset
     FROM ranked
@@ -2111,7 +2187,9 @@ export async function getTier1ProtectedKeywords(limit: number): Promise<readonly
   const db = getDb();
   const rows = await db`
     SELECT keyword FROM appstore_keywords
-    WHERE active = TRUE AND source IN ('seed', 'manual', 'autocomplete')
+    WHERE active = TRUE
+      AND ${db.unsafe(NOT_RETIRED_SQL)}
+      AND source IN ('seed', 'manual', 'autocomplete')
     ORDER BY last_de_scanned_at ASC NULLS FIRST
     LIMIT ${limit}
   `;
@@ -2130,6 +2208,472 @@ export async function markDeScanned(keywords: readonly string[], at: number): Pr
   if (keywords.length === 0) return;
   const db = getDb();
   await db`UPDATE appstore_keywords SET last_de_scanned_at = ${at} WHERE keyword IN ${db(keywords)}`;
+}
+
+// ===========================================================================
+// PERMANENT retirement (migration 057 + keyword-retirement.ts)
+// ===========================================================================
+//
+// Retirement is strictly stronger than deactivation and never a replacement
+// for it: `retireKeywords` stamps `retired_at`/`retired_reason` AND sets
+// `active = FALSE` in one statement, so a retired keyword drops out of every
+// pre-existing `active = TRUE` selection filter immediately, while the
+// timestamp keeps it out even if something later flips `active` back (every
+// selection path in this module additionally checks `NOT_RETIRED_SQL` — see
+// that constant's doc comment).
+//
+// Discovery-time enforcement lives in `upsertKeywords` (see its doc comment):
+// a retired keyword, or any descendant of a retired brand FAMILY ROOT, is
+// dropped before it can be re-admitted to the corpus.
+
+/**
+ * SQL fragment computing the exact-brand-title test for one SERP incumbent
+ * against its keyword — the score-INDEPENDENT shape signal
+ * `keyword-retirement.ts`'s `isBrandDominatedSerp` consumes. True when the
+ * app's (lowercased, trimmed) title EQUALS the keyword or continues it at a
+ * word/separator boundary: "spotify", "spotify - music", "spotify: podcasts".
+ *
+ * Deliberately NOT `LIKE keyword || ' %'`: a keyword is arbitrary
+ * user/Apple-supplied text and may contain `%` or `_`, which `LIKE` would
+ * silently treat as wildcards (and escaping them correctly through two layers
+ * of quoting is exactly the kind of thing that quietly breaks). `left()` +
+ * `substr()` is literal comparison only, with no pattern semantics at all.
+ * Frozen text, no interpolation — safe for `db.unsafe`.
+ */
+const EXACT_BRAND_TITLE_SQL = `(
+  a.app_name = a.keyword
+  OR (
+    left(a.app_name, char_length(a.keyword)) = a.keyword
+    AND substr(a.app_name, char_length(a.keyword) + 1, 1) IN (' ', ':', '-')
+  )
+)`;
+
+/** One retirement-sweep candidate, shaped for `keyword-retirement.ts`'s `decideRetirement`. */
+export interface RetirementCandidateRow {
+  readonly keyword: string;
+  readonly source: string;
+  /** Field size of the latest US scan, 0 when never scanned. */
+  readonly fieldSize: number;
+  readonly exactBrandTitleCount: number;
+  readonly rankOneExactBrandTitle: boolean;
+  readonly rankOneReviewShare: number;
+  /** Latest US scan's `demand` — read ONLY by the disabled score-based rule. */
+  readonly demand: number;
+  /** Latest US scan's `top_app_reviews` — read ONLY by the disabled score-based rule. */
+  readonly topAppReviews: number;
+  readonly scanCount: number;
+  /** True iff the keyword has ANY `appstore_signature_hits` row, whatever its status. */
+  readonly hasSignatureHit: boolean;
+}
+
+/**
+ * The next `limit` keywords due for a retirement decision, longest-ago-checked
+ * first (`retirement_checked_at ASC NULLS FIRST`, backed by migration 057's
+ * `idx_appstore_keywords_retirement_cursor` partial index). That ordering IS
+ * the sweep's resume cursor — no separate offset state is persisted, and the
+ * caller marks every keyword it evaluated (`markRetirementChecked`) whether or
+ * not the decision fired, so a bounded sweep walks the whole corpus across
+ * passes and then idles instead of re-reading the same head forever. Same
+ * trick as `getTier1ProtectedKeywords`'s `last_de_scanned_at` ordering.
+ *
+ * Restricted to active, not-yet-retired, non-protected (`manual`/`seed` are
+ * excluded HERE as well as in `retireKeywords` and in the pure predicate)
+ * keywords. `top_apps` is DOUBLE-ENCODED jsonb — see `getScannedAppNames`'s
+ * doc comment for why the `LIKE '"[%'` guard must precede the cast, and why
+ * that shape check is a `LIKE` rather than a regex.
+ *
+ * `demand`/`top_app_reviews` are selected but are NOT read by any rule that
+ * ships enabled — see `keyword-retirement.ts`'s module doc on why nothing
+ * enabled may key on the broken `opportunity`/`demand` signals. They are here
+ * so the disabled score-based rule needs no separate query shape when (if) it
+ * is ever enabled behind a fresh calibration.
+ */
+export async function selectRetirementCandidateRows(
+  limit: number,
+): Promise<readonly RetirementCandidateRow[]> {
+  if (limit <= 0) return [];
+  const db = getDb();
+  const rows = await db`
+    WITH due AS (
+      SELECT keyword, source
+      FROM appstore_keywords
+      WHERE active = TRUE
+        AND ${db.unsafe(NOT_RETIRED_SQL)}
+        AND source NOT IN ('manual', 'seed')
+      ORDER BY retirement_checked_at ASC NULLS FIRST
+      LIMIT ${limit}
+    ),
+    latest AS (
+      SELECT d.keyword, d.source, s.top_apps, s.demand, s.top_app_reviews
+      FROM due d
+      LEFT JOIN LATERAL (
+        SELECT top_apps, demand, top_app_reviews
+        FROM appstore_keyword_scans
+        WHERE keyword = d.keyword
+          AND store = 'app'
+          AND top_apps IS NOT NULL
+          AND top_apps::text LIKE '"[%'
+        ORDER BY scanned_at DESC
+        LIMIT 1
+      ) s ON TRUE
+    ),
+    shape AS (
+      SELECT
+        l.keyword,
+        count(*) AS field_size,
+        count(*) FILTER (WHERE ${db.unsafe(EXACT_BRAND_TITLE_SQL)}) AS exact_brand_title_count,
+        bool_or(a.rk = 1 AND ${db.unsafe(EXACT_BRAND_TITLE_SQL)}) AS rank_one_exact_brand_title,
+        COALESCE(max(a.reviews) FILTER (WHERE a.rk = 1), 0) AS rank_one_reviews,
+        COALESCE(sum(a.reviews), 0) AS total_reviews
+      FROM latest l
+      CROSS JOIN LATERAL (
+        SELECT
+          lower(btrim(e->>'name')) AS app_name,
+          lower(btrim(l.keyword)) AS keyword,
+          COALESCE((e->>'reviews')::numeric, 0) AS reviews,
+          ord AS rk
+        FROM jsonb_array_elements((l.top_apps #>> '{}')::jsonb) WITH ORDINALITY AS t(e, ord)
+      ) a
+      WHERE l.top_apps IS NOT NULL
+      GROUP BY l.keyword
+    )
+    SELECT
+      l.keyword,
+      l.source,
+      COALESCE(sh.field_size, 0) AS field_size,
+      COALESCE(sh.exact_brand_title_count, 0) AS exact_brand_title_count,
+      COALESCE(sh.rank_one_exact_brand_title, FALSE) AS rank_one_exact_brand_title,
+      CASE
+        WHEN COALESCE(sh.total_reviews, 0) > 0 THEN sh.rank_one_reviews / sh.total_reviews
+        ELSE 0
+      END AS rank_one_review_share,
+      COALESCE(l.demand, 0) AS demand,
+      COALESCE(l.top_app_reviews, 0) AS top_app_reviews,
+      (SELECT count(*) FROM appstore_keyword_scans sc WHERE sc.keyword = l.keyword) AS scan_count,
+      EXISTS (
+        SELECT 1 FROM appstore_signature_hits h WHERE h.keyword = l.keyword
+      ) AS has_signature_hit
+    FROM latest l
+    LEFT JOIN shape sh ON sh.keyword = l.keyword
+  `;
+  return (
+    rows as ReadonlyArray<{
+      keyword: string;
+      source: string;
+      field_size: number | string;
+      exact_brand_title_count: number | string;
+      rank_one_exact_brand_title: boolean;
+      rank_one_review_share: number | string;
+      demand: number | string;
+      top_app_reviews: number | string;
+      scan_count: number | string;
+      has_signature_hit: boolean;
+    }>
+  ).map((r) => ({
+    keyword: r.keyword,
+    source: r.source,
+    fieldSize: Number(r.field_size),
+    exactBrandTitleCount: Number(r.exact_brand_title_count),
+    rankOneExactBrandTitle: r.rank_one_exact_brand_title === true,
+    rankOneReviewShare: Number(r.rank_one_review_share),
+    demand: Number(r.demand),
+    topAppReviews: Number(r.top_app_reviews),
+    scanCount: Number(r.scan_count),
+    hasSignatureHit: r.has_signature_hit === true,
+  }));
+}
+
+/**
+ * Stamps `retirement_checked_at = at` on every keyword the sweep EVALUATED,
+ * fired or not — the resume cursor `selectRetirementCandidateRows` orders by.
+ * Must be called for the whole evaluated batch, including keywords that were
+ * kept: skipping the kept ones would make the sweep re-read the same head
+ * forever and never reach the rest of the corpus.
+ */
+export async function markRetirementChecked(
+  keywords: readonly string[],
+  at: number,
+): Promise<void> {
+  if (keywords.length === 0) return;
+  const db = getDb();
+  await db`
+    UPDATE appstore_keywords
+    SET retirement_checked_at = ${at}
+    WHERE keyword IN ${db(keywords)}
+  `;
+}
+
+/** One `retireKeywords` entry — the keyword and the auditable reason it was retired. */
+export interface KeywordRetirement {
+  readonly keyword: string;
+  /** Must be a `keyword-retirement.ts` `RetirementReason` — migration 057's CHECK constraint enforces it. */
+  readonly reason: string;
+}
+
+/**
+ * PERMANENTLY retires `entries`, setting `retired_at = at`, `retired_reason`,
+ * and `active = FALSE` together. Returns how many rows actually changed (less
+ * than `entries.length` when some were already retired or are protected).
+ *
+ * `source NOT IN ('manual','seed')` is re-asserted HERE, independent of the
+ * caller's own check and of the pure predicate's `RETIREMENT_PROTECTED_SOURCES`
+ * guard — belt + suspenders, mirroring `deactivateJunkKeywords`: a caller bug
+ * must never be able to retire a keyword a human explicitly seeded.
+ * `retired_at IS NULL` makes it idempotent — a keyword already retired keeps
+ * its ORIGINAL timestamp and reason rather than being restamped by a later
+ * pass, so the audit trail records when it was FIRST retired.
+ *
+ * Reversible: this only ever adds a timestamp + reason (see migration 057's
+ * doc comment for the one-statement un-retire).
+ *
+ * Rows are applied one statement at a time (same shape as `upsertKeywords`)
+ * inside a single transaction, since each carries its own `reason`; batches
+ * are bounded by the caller (`runRetirementSweep`'s `limit`, or the backfill
+ * script's chunk size).
+ */
+export async function retireKeywords(
+  entries: readonly KeywordRetirement[],
+  at: number,
+): Promise<number> {
+  if (entries.length === 0) return 0;
+  const db = getDb();
+  const retired = await db.begin(async (tx) => {
+    let n = 0;
+    for (const entry of entries) {
+      const rows = await tx`
+        UPDATE appstore_keywords
+        SET retired_at = ${at}, retired_reason = ${entry.reason}, active = FALSE
+        WHERE keyword = ${entry.keyword}
+          AND retired_at IS NULL
+          AND source NOT IN ('manual', 'seed')
+        RETURNING keyword
+      `;
+      n += (rows as ReadonlyArray<{ keyword: string }>).length;
+    }
+    return n;
+  });
+  return retired;
+}
+
+/**
+ * Which of `prefixes` are registered retired brand FAMILY ROOTS — an INDEXED
+ * EQUALITY probe (`keyword` is the primary key), never a `LIKE 'root %'` scan
+ * over the whole retired set. The caller passes a candidate's whole-token
+ * prefixes (`keyword-retirement.ts`'s `tokenPrefixes`) and gets back the
+ * subset that are roots, which is exactly what `isFamilyBlocked` needs.
+ *
+ * A root is a keyword retired for one of `FAMILY_BLOCKING_REASONS` (the two
+ * brand reasons). Junk/probe/score retirements are deliberately NOT roots —
+ * see the "Brand-FAMILY resistance" section of `keyword-retirement.ts` for
+ * why only brand-ness generalizes to a token family, and what was deferred.
+ */
+export async function getRetiredFamilyRoots(
+  prefixes: readonly string[],
+  blockingReasons: readonly string[],
+): Promise<ReadonlySet<string>> {
+  if (prefixes.length === 0 || blockingReasons.length === 0) return new Set();
+  const db = getDb();
+  const rows = await db`
+    SELECT keyword FROM appstore_keywords
+    WHERE keyword = ANY(${db.array([...prefixes], "text")})
+      AND retired_at IS NOT NULL
+      AND retired_reason = ANY(${db.array([...blockingReasons], "text")})
+  `;
+  return new Set((rows as ReadonlyArray<{ keyword: string }>).map((r) => r.keyword));
+}
+
+/** Retirement counts by reason — backs the sweep's log line and the backfill script's report. */
+export async function getRetirementStats(): Promise<{
+  readonly total: number;
+  readonly byReason: Readonly<Record<string, number>>;
+}> {
+  const db = getDb();
+  const rows = await db`
+    SELECT retired_reason AS reason, count(*) AS count
+    FROM appstore_keywords
+    WHERE retired_at IS NOT NULL
+    GROUP BY retired_reason
+  `;
+  const byReason: Record<string, number> = {};
+  let total = 0;
+  for (const row of rows as ReadonlyArray<{ reason: string | null; count: number | string }>) {
+    const count = Number(row.count);
+    total += count;
+    byReason[row.reason ?? "unknown"] = count;
+  }
+  return { total, byReason };
+}
+
+// ===========================================================================
+// HONEST derived genre zones (migration 057 + keyword-zones.ts)
+// ===========================================================================
+
+/** One zone-derivation candidate: a keyword plus its SERP incumbents' RAW category labels. */
+export interface ZoneDerivationRow {
+  readonly keyword: string;
+  /** Raw iTunes category labels of the latest US scan's incumbents. Empty when none are resolvable. */
+  readonly genres: readonly string[];
+}
+
+/**
+ * The next `limit` active keywords due for a zone derivation, never-derived
+ * first (`genre_zone_derived_at ASC NULLS FIRST`, backed by migration 057's
+ * `idx_appstore_keywords_zone_derivation_cursor`), each with its latest US
+ * scan's incumbents' RAW category labels.
+ *
+ * Two genre sources are COALESCEd per incumbent, best-available first:
+ *   1. `TopApp.genre` embedded in the scan's own `top_apps` (added 2026-07-22
+ *      — present on newer scans only);
+ *   2. `appstore_app_meta.genre_name` for the same app id, from Lookup
+ *      enrichment.
+ * Neither alone is sufficient in the live corpus: only ~12% of keywords' latest
+ * scans carry an embedded genre, and Lookup enrichment has resolved
+ * `genre_name` for just 3,025 of 651,118 registry rows (0.5%). Together they
+ * resolve at least one incumbent's category for 41,560 of 95,012 scanned
+ * active keywords (measured 2026-07-25).
+ *
+ * Includes keywords whose derivation will come back NULL (no scan, no
+ * resolvable genres): the caller must still stamp `genre_zone_derived_at` for
+ * those, or the cursor never advances past them. `top_apps` double-encoding
+ * caveats are the same as `getScannedAppNames`'s.
+ */
+export async function selectZoneDerivationRows(
+  limit: number,
+): Promise<readonly ZoneDerivationRow[]> {
+  if (limit <= 0) return [];
+  const db = getDb();
+  const rows = await db`
+    WITH due AS (
+      SELECT keyword
+      FROM appstore_keywords
+      WHERE active = TRUE
+      ORDER BY genre_zone_derived_at ASC NULLS FIRST
+      LIMIT ${limit}
+    ),
+    latest AS (
+      SELECT d.keyword, s.top_apps
+      FROM due d
+      LEFT JOIN LATERAL (
+        SELECT top_apps
+        FROM appstore_keyword_scans
+        WHERE keyword = d.keyword
+          AND store = 'app'
+          AND top_apps IS NOT NULL
+          AND top_apps::text LIKE '"[%'
+        ORDER BY scanned_at DESC
+        LIMIT 1
+      ) s ON TRUE
+    ),
+    genres AS (
+      SELECT l.keyword, COALESCE(e->>'genre', m.genre_name) AS genre
+      FROM latest l
+      CROSS JOIN LATERAL jsonb_array_elements((l.top_apps #>> '{}')::jsonb) e
+      LEFT JOIN appstore_app_meta m ON m.id = e->>'id'
+      WHERE l.top_apps IS NOT NULL
+    )
+    SELECT
+      l.keyword,
+      COALESCE(
+        array_agg(g.genre) FILTER (WHERE g.genre IS NOT NULL AND g.genre <> ''),
+        '{}'::text[]
+      ) AS genres
+    FROM latest l
+    LEFT JOIN genres g ON g.keyword = l.keyword
+    GROUP BY l.keyword
+  `;
+  return (rows as ReadonlyArray<{ keyword: string; genres: readonly string[] | null }>).map((r) => ({
+    keyword: r.keyword,
+    genres: r.genres ?? [],
+  }));
+}
+
+/** One `applyDerivedZones` write. `zone === null` means UNCLASSIFIED and is stored AS NULL. */
+export interface DerivedZoneWrite {
+  readonly keyword: string;
+  /** A real `GENRE_ZONES` entry, or `null` for "unclassified" — NEVER a default string. */
+  readonly zone: string | null;
+  /** Share of resolvable incumbents agreeing, or `null` iff `zone` is null. */
+  readonly confidence: number | null;
+}
+
+/**
+ * Writes derived zones to `genre_zone_derived` / `genre_zone_confidence` and
+ * stamps `genre_zone_derived_at = at` for EVERY row in `writes` — including the
+ * ones whose zone is `null`, so the derivation cursor advances past keywords
+ * that genuinely cannot be classified instead of re-deriving them every pass.
+ *
+ * Never touches `genre_zone`. That is the whole design: the legacy column keeps
+ * whatever it holds, so the 704 hand-seeded rows' real, human-assigned zones
+ * survive untouched and each consumer can migrate to the honest column in its
+ * own reviewable diff (see migration 057's doc comment). And it never
+ * substitutes a default for `null` — a low-confidence or incumbent-less keyword
+ * is stored as NULL, which consumers must read as "unclassified".
+ *
+ * Idempotent: re-running with the same inputs rewrites the same values.
+ * Rows are applied one statement at a time inside a single transaction (each
+ * carries its own zone + confidence); batches are bounded by the caller.
+ */
+export async function applyDerivedZones(
+  writes: readonly DerivedZoneWrite[],
+  at: number,
+): Promise<number> {
+  if (writes.length === 0) return 0;
+  const db = getDb();
+  return await db.begin(async (tx) => {
+    let n = 0;
+    for (const write of writes) {
+      const rows = await tx`
+        UPDATE appstore_keywords
+        SET genre_zone_derived = ${write.zone},
+            genre_zone_confidence = ${write.confidence},
+            genre_zone_derived_at = ${at}
+        WHERE keyword = ${write.keyword}
+        RETURNING keyword
+      `;
+      n += (rows as ReadonlyArray<{ keyword: string }>).length;
+    }
+    return n;
+  });
+}
+
+/**
+ * Distribution of the HONEST zone across the active corpus, plus how many rows
+ * are unclassified and how many have never been derived at all. `unclassified`
+ * is a first-class bucket, NOT folded into any zone — reporting it as a zone
+ * would recreate the exact fiction this replaces.
+ */
+export async function getDerivedZoneDistribution(): Promise<{
+  readonly byZone: Readonly<Record<string, number>>;
+  readonly unclassified: number;
+  readonly notYetDerived: number;
+}> {
+  const db = getDb();
+  const rows = await db`
+    SELECT genre_zone_derived AS zone, genre_zone_derived_at IS NULL AS pending, count(*) AS count
+    FROM appstore_keywords
+    WHERE active = TRUE
+    GROUP BY genre_zone_derived, genre_zone_derived_at IS NULL
+  `;
+  const byZone: Record<string, number> = {};
+  let unclassified = 0;
+  let notYetDerived = 0;
+  for (const row of rows as ReadonlyArray<{
+    zone: string | null;
+    pending: boolean;
+    count: number | string;
+  }>) {
+    const count = Number(row.count);
+    if (row.pending) {
+      notYetDerived += count;
+      continue;
+    }
+    if (row.zone === null) {
+      unclassified += count;
+      continue;
+    }
+    byZone[row.zone] = (byZone[row.zone] ?? 0) + count;
+  }
+  return { byZone, unclassified, notYetDerived };
 }
 
 // ===========================================================================
@@ -2159,7 +2703,9 @@ export async function selectClusterCandidateRows(): Promise<readonly RawCandidat
       s.demand AS demand,
       ${db.unsafe(BUILDABILITY_SQL)} AS buildability
     FROM s
+    LEFT JOIN appstore_keywords k ON k.keyword = s.keyword
     WHERE s.demand >= 1
+      AND ${db.unsafe(NOT_RETIRED_K_SQL)}
       AND char_length(btrim(s.keyword)) >= 3
       AND s.keyword !~ '^[0-9[:punct:][:space:]]+$'
     ORDER BY s.demand DESC, s.keyword ASC

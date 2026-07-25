@@ -20,6 +20,28 @@
 // in depth, so this predicate alone is never wrong) AND, independently, in
 // `deactivateJunkKeywords`'s SQL WHERE clause (belt + suspenders — a caller
 // bug here can never touch a manual/seed row).
+//
+// ─── Relationship to PERMANENT retirement (2026-07-25) ─────────────────────
+// `keyword-retirement.ts` adds a second, STRONGER lever — durable
+// `retired_at`/`retired_reason` columns (migration 057) plus discovery-time
+// re-admission blocking. Every predicate in THIS file is unchanged by that
+// change and keeps its exact production behavior. That is deliberate:
+//
+// The obvious "fix" for the immortal-brand-keyword problem is to widen
+// `shouldDeactivateKeyword`'s data-hopeless AND-gate (`demand <
+// DEACTIVATION_MAX_DEMAND` AND `topAppReviews < DEACTIVATION_MAX_REVIEWS_CEILING`)
+// into an OR-gate. That widening was DELIBERATELY NOT APPLIED HERE, and the
+// rule instead lives in `keyword-retirement.ts`'s `shouldRetireByScore`,
+// shipped DISABLED behind `appstoreJunkDeactivation.retirement.scoreBased`.
+// Reason: both halves of the OR are actively hostile to the corpus's purpose.
+// `demand` is the broken proxy (72.5% of the equally-broken `opportunity`
+// score's variance; reads ~0 for the owner's own shipped products), and
+// `topAppReviews < 1000` means "no incumbent has 1000 reviews yet" — the
+// DEFINITION of the early, weakly-defended niche the scanner exists to find.
+// An OR-gate would therefore deactivate exactly the good niches (`card
+// grading`, `shorts blocker`, `stock analysis` all sit in that band) instead
+// of the brand junk. The brand problem is solved score-INDEPENDENTLY instead:
+// see `keyword-retirement.ts`'s `brand-lexical` and `brand-serp-shape` rules.
 
 import { isJunkKeyword } from "./keyword-junk";
 import type { TopApp } from "./keyword-types";
