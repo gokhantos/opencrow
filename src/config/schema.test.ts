@@ -420,10 +420,10 @@ describe("appstoreKeywordGap config", () => {
     // (keywordsPerSweep/sweepDelayMs), not just the safety ceilings — see
     // src/config/schema.ts's "MAX-THROUGHPUT PASS" comment on
     // appstoreKeywordGapConfigSchema for the full before/after math.
-    expect(g.sweepDelayMs).toBe(150);
+    expect(g.sweepDelayMs).toBe(400);
     expect(g.dailyKeywordBudget).toBe(400_000);
-    expect(g.keywordsPerSweep).toBe(600);
-    expect(g.useProxy).toBe(true);
+    expect(g.keywordsPerSweep).toBe(300);
+    expect(g.useProxy).toBe(false);
     expect(g.minedExploration.dailyQuota).toBe(400_000);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);
@@ -450,7 +450,7 @@ describe("appstoreKeywordGap config", () => {
     expect(g.autocompleteExpansion.gbLane.winnerLimit).toBe(15);
     expect(g.autocompleteExpansion.gbLane.diverseLimit).toBe(10);
     expect(g.sweepRateSafety.adaptiveThrottleEnabled).toBe(true);
-    expect(g.sweepRateSafety.legacyRateOverride).toBe(true);
+    expect(g.sweepRateSafety.legacyRateOverride).toBe(false);
     // AIMD tuning knobs (continuous-fetch retune, 2026-07-23) — see
     // sweep-throttle.ts's advanceThrottle.
     expect(g.sweepRateSafety.throttleBackoffFactor).toBe(0.7);
@@ -461,8 +461,8 @@ describe("appstoreKeywordGap config", () => {
     // Own pacing knobs (proxied path is latency-bound at ~0.5s median),
     // breaker tuned to the observed scanned:0/failed:5 dead-pool signature.
     expect(g.proxyStream.enabled).toBe(true);
-    expect(g.proxyStream.keywordsPerSweep).toBe(1000);
-    expect(g.proxyStream.sweepDelayMs).toBe(200);
+    expect(g.proxyStream.keywordsPerSweep).toBe(300);
+    expect(g.proxyStream.sweepDelayMs).toBe(600);
     expect(g.proxyStream.breakerFailureThreshold).toBe(5);
     expect(g.proxyStream.breakerCooloffMs).toBe(15 * 60 * 1000);
     expect(g.proxyStream.breakerMaxCooloffMs).toBe(6 * 60 * 60 * 1000);
