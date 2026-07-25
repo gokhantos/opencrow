@@ -44,6 +44,30 @@ describe("isRateLimitStatus", () => {
   it("still treats 403+Retry-After as rate-limited when treat403AsRateLimit is also set", () => {
     expect(isRateLimitStatus(403, "5", { treat403AsRateLimit: true })).toBe(true);
   });
+
+  // Live evidence 2026-07-25: `itunes.apple.com/search` returned bare HTTP
+  // 404 in a ~4-minute burst (10 scan failures 18:01-18:05Z, zero in the
+  // preceding 2h); every 404'd keyword returned 200 on retry minutes later,
+  // on BOTH the direct box IP and the Webshare proxy. So a 404 from THAT
+  // endpoint is a transient upstream blip, not "not found" — opt-in only.
+  it("treats a bare 404 as a transient (retryable) signal when treat404AsTransient is set", () => {
+    expect(isRateLimitStatus(404, null, { treat404AsTransient: true })).toBe(true);
+  });
+
+  it("does NOT treat 404 as a transient signal by default (404 stays a hard 404)", () => {
+    expect(isRateLimitStatus(404, null)).toBe(false);
+    expect(isRateLimitStatus(404, null, {})).toBe(false);
+    expect(isRateLimitStatus(404, null, { treat404AsTransient: false })).toBe(false);
+    expect(isRateLimitStatus(404, null, { treat403AsRateLimit: true })).toBe(false);
+  });
+
+  it("does NOT widen any OTHER status when treat404AsTransient is set", () => {
+    expect(isRateLimitStatus(200, null, { treat404AsTransient: true })).toBe(false);
+    expect(isRateLimitStatus(400, null, { treat404AsTransient: true })).toBe(false);
+    expect(isRateLimitStatus(403, null, { treat404AsTransient: true })).toBe(false);
+    expect(isRateLimitStatus(410, null, { treat404AsTransient: true })).toBe(false);
+    expect(isRateLimitStatus(500, null, { treat404AsTransient: true })).toBe(false);
+  });
 });
 
 describe("isRetryableRateLimitStatus", () => {
@@ -66,6 +90,21 @@ describe("isRetryableRateLimitStatus", () => {
   it("does NOT treat non-rate-limit statuses as retryable", () => {
     expect(isRetryableRateLimitStatus(200, null)).toBe(false);
     expect(isRetryableRateLimitStatus(500, null)).toBe(false);
+  });
+
+  // Unlike the bare 403, an opted-in transient 404 IS worth retrying: the
+  // SAME url returns 200 moments later (2026-07-25 evidence), so an in-band
+  // bounded retry absorbs the blip instead of failing the keyword.
+  it("treats an opted-in bare 404 as RETRYABLE (unlike a bare 403)", () => {
+    expect(isRetryableRateLimitStatus(404, null, { treat404AsTransient: true })).toBe(true);
+    // ...while the bare-403 burst ceiling stays non-retryable even then.
+    expect(isRetryableRateLimitStatus(403, null, { treat404AsTransient: true })).toBe(false);
+  });
+
+  it("does NOT treat 404 as retryable without the opt-in", () => {
+    expect(isRetryableRateLimitStatus(404, null)).toBe(false);
+    expect(isRetryableRateLimitStatus(404, null, {})).toBe(false);
+    expect(isRetryableRateLimitStatus(404, null, { treat404AsTransient: false })).toBe(false);
   });
 });
 

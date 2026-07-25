@@ -323,6 +323,187 @@ describe("ssrfSafeFetch rate-limit retry", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Transient-404 retry (opt-in via treat404AsTransient), 2026-07-25.
+//
+// Live evidence: `itunes.apple.com/search` returned bare HTTP 404 in a
+// ~4-minute burst (10 production scan failures between 18:01-18:05Z, zero in
+// the preceding two hours). Every keyword that 404'd returned 200 on retry
+// minutes later, on BOTH the direct box IP and through the Webshare proxy —
+// so the 404 was upstream-Apple flapping, not "no such resource". Before
+// this option existed a 404 fell through `isRateLimitStatus` entirely, so
+// `fetchTopApps` threw `HTTP 404`, the sweep logged "Keyword scan failed" and
+// five in a row tripped `MAX_CONSECUTIVE_FAILURES`, throwing away the whole
+// remaining pass. It is OPT-IN because a 404 legitimately means "gone" for
+// other callers (e.g. `app-pages.ts` maps 404 -> `recordPageGone`).
+// ---------------------------------------------------------------------------
+describe("ssrfSafeFetch transient-404 retry (treat404AsTransient)", () => {
+  const FAST_RETRY_OPTS = { retryOnRateLimit: true, minDelayMs: 1, maxDelayMs: 5 } as const;
+
+  // The crux: a 404-then-200 sequence must be absorbed in-band.
+  it("retries a bare 404 and returns the 200 once the upstream recovers", async () => {
+    mockFetchWithTimeout
+      .mockImplementationOnce(async () => makeResponse(404, {}))
+      .mockImplementationOnce(async () => makeResponse(200, {}, "ok"));
+
+    const res = await ssrfSafeFetch("https://itunes.apple.com/search?term=habit+tracker", {
+      ...FAST_RETRY_OPTS,
+      treat404AsTransient: true,
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("ok");
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(2);
+  });
+
+  it("absorbs a 404 burst that clears only on the last allowed attempt", async () => {
+    mockFetchWithTimeout
+      .mockImplementationOnce(async () => makeResponse(404, {}))
+      .mockImplementationOnce(async () => makeResponse(404, {}))
+      .mockImplementationOnce(async () => makeResponse(404, {}))
+      .mockImplementationOnce(async () => makeResponse(200, {}, "ok"));
+
+    const res = await ssrfSafeFetch("https://itunes.apple.com/search?term=mr", {
+      ...FAST_RETRY_OPTS,
+      treat404AsTransient: true,
+      maxRetries: 3,
+    });
+
+    expect(res.status).toBe(200);
+    // initial try + 3 retries = 4 calls (DEFAULT_RATE_LIMIT_MAX_RETRIES budget)
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(4);
+  });
+
+  // A sustained Apple outage must still bail the pass: retries are bounded,
+  // and on exhaustion the throw feeds BOTH `rateLimitErrors` (throttle backs
+  // off) and the caller's consecutive-failure bail.
+  it("throws RateLimitError(404) once retries are exhausted on sustained 404s", async () => {
+    mockFetchWithTimeout.mockImplementation(async () => makeResponse(404, {}));
+
+    const err = await ssrfSafeFetch("https://itunes.apple.com/search?term=tomatos", {
+      ...FAST_RETRY_OPTS,
+      treat404AsTransient: true,
+      maxRetries: 2,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect((err as InstanceType<typeof RateLimitError>).code).toBe("RATE_LIMITED");
+    expect((err as InstanceType<typeof RateLimitError>).status).toBe(404);
+    expect((err as InstanceType<typeof RateLimitError>).retryable).toBe(true);
+    // initial try + 2 retries = 3 calls — bounded, never an open loop.
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(3);
+  });
+
+  it("respects maxTotalWaitMs for transient 404s (bounded total backoff)", async () => {
+    mockFetchWithTimeout.mockImplementation(async () => makeResponse(404, {}));
+
+    const err = await ssrfSafeFetch("https://itunes.apple.com/search?term=creepy", {
+      retryOnRateLimit: true,
+      treat404AsTransient: true,
+      minDelayMs: 5,
+      maxDelayMs: 5,
+      maxTotalWaitMs: 8,
+      maxRetries: 10,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RateLimitError);
+    // 5ms + 5ms = 10ms > 8ms budget, so the 3rd attempt's retry is refused.
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(3);
+  });
+
+  // Scoping guarantee: every caller that does NOT opt in keeps today's
+  // "404 is a hard, immediate 404" behavior — no retry, response returned
+  // as-is (that's what lets `app-pages.ts` map it to `recordPageGone`).
+  it("returns a 404 immediately, unretried, when treat404AsTransient is unset", async () => {
+    mockFetchWithTimeout.mockImplementation(async () => makeResponse(404, {}));
+
+    const res = await ssrfSafeFetch("https://apps.apple.com/us/app/id1", FAST_RETRY_OPTS);
+
+    expect(res.status).toBe(404);
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a 404 immediately when treat404AsTransient is explicitly false", async () => {
+    mockFetchWithTimeout.mockImplementation(async () => makeResponse(404, {}));
+
+    const res = await ssrfSafeFetch("https://apps.apple.com/us/app/id1", {
+      ...FAST_RETRY_OPTS,
+      treat404AsTransient: false,
+    });
+
+    expect(res.status).toBe(404);
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a 404 immediately when retryOnRateLimit is unset, even with treat404AsTransient", async () => {
+    mockFetchWithTimeout.mockImplementation(async () => makeResponse(404, {}));
+
+    const res = await ssrfSafeFetch("https://itunes.apple.com/search?term=level", {
+      treat404AsTransient: true,
+    });
+
+    expect(res.status).toBe(404);
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  // Regression guard for PRs #340/#341: the bare-403 burst ceiling stays
+  // COUNTED-but-NON-RETRYABLE, and enabling the 404 opt-in must not change it.
+  it("keeps a bare 403 non-retryable when treat403AsRateLimit AND treat404AsTransient are both set", async () => {
+    mockFetchWithTimeout.mockImplementation(async () => makeResponse(403, {}));
+
+    const err = await ssrfSafeFetch("https://itunes.apple.com/search?term=balls", {
+      ...FAST_RETRY_OPTS,
+      treat403AsRateLimit: true,
+      treat404AsTransient: true,
+      maxRetries: 3,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(RateLimitError);
+    expect((err as InstanceType<typeof RateLimitError>).status).toBe(403);
+    expect((err as InstanceType<typeof RateLimitError>).retryable).toBe(false);
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not widen 410 Gone or 400 into a transient retry", async () => {
+    mockFetchWithTimeout.mockImplementation(async () => makeResponse(410, {}));
+    const gone = await ssrfSafeFetch("https://itunes.apple.com/search?term=x", {
+      ...FAST_RETRY_OPTS,
+      treat404AsTransient: true,
+    });
+    expect(gone.status).toBe(410);
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  // SSRF guard must hold on EVERY attempt, retries included.
+  it("still blocks a private-IP URL with treat404AsTransient set (SSRF guard intact)", async () => {
+    await expect(
+      ssrfSafeFetch("http://169.254.169.254/latest/meta-data/", {
+        ...FAST_RETRY_OPTS,
+        treat404AsTransient: true,
+      }),
+    ).rejects.toThrow("SSRF blocked");
+    expect(mockFetchWithTimeout).not.toHaveBeenCalled();
+  });
+
+  it("re-validates the URL on every 404 retry attempt (guard is inside the retry loop)", async () => {
+    // A redirect hop to a PUBLIC url that then 404s twice before succeeding:
+    // proves the retried hop went back through validateUrl (no bypass) and
+    // still recovered.
+    mockFetchWithTimeout
+      .mockImplementationOnce(async () => makeResponse(302, { location: "https://cdn.example.com/j" }))
+      .mockImplementationOnce(async () => makeResponse(404, {}))
+      .mockImplementationOnce(async () => makeResponse(200, {}, "ok"));
+
+    const res = await ssrfSafeFetch("https://itunes.apple.com/search?term=y", {
+      ...FAST_RETRY_OPTS,
+      treat404AsTransient: true,
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockFetchWithTimeout).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Proxy seam (throughput wave, item 1). `useProxy` is per-call opt-in; the
 // resolved URL is sourced from the mocked `getAppstoreProxyUrl` above — no
 // real DB/env/secrets access and no real proxy connection anywhere here.

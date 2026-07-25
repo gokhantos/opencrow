@@ -373,6 +373,29 @@ describe("scanKeyword", () => {
     expect(capturedOpts.retryOnRateLimit).toBe(true);
     expect(capturedOpts.treat403AsRateLimit).toBe(true);
   });
+
+  // Live-sweep gap this fix closes (2026-07-25): Apple's iTunes SEARCH
+  // endpoint intermittently returns bare HTTP 404 in short bursts (10
+  // production failures inside a single ~4-min window, all 200 on retry
+  // minutes later, reproduced on both the direct IP and the proxy). Without
+  // the opt-in, `fetchTopApps`'s `!res.ok` branch threw `HTTP 404`, and 5 in
+  // a row tripped MAX_CONSECUTIVE_FAILURES and bailed the whole pass. See
+  // `rate-limit-error.ts`'s `RateLimitStatusOptions.treat404AsTransient`.
+  it("opts fetchTopApps's ssrfSafeFetch call into treat404AsTransient (transient iTunes 404s)", async () => {
+    let capturedOpts: Record<string, unknown> = {};
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async (_url: string, opts: Record<string, unknown>) => {
+        capturedOpts = opts;
+        return { ok: true, json: async () => sample };
+      },
+    }));
+
+    const { scanKeyword } = await import("./keyword-gaps");
+    await scanKeyword("habit tracker");
+
+    expect(capturedOpts.treat404AsTransient).toBe(true);
+  });
 });
 
 // 2026-07-21 audit item C fix: kill the zero-title-match whole-SERP demand
@@ -872,6 +895,64 @@ describe("runKeywordSweep", () => {
     expect(result.rateLimitErrors).toBe(2);
     expect(result.scanned).toBe(0);
   });
+
+  // Throttle accounting for the transient-404 fix (2026-07-25): a 404 that
+  // clears on retry never surfaces here at all (ssrfSafeFetch returns the
+  // 200), so it does NOT poison the AIMD throttle. A 404 whose retries are
+  // EXHAUSTED arrives as a `RateLimitError` (status 404) and MUST count
+  // toward `rateLimitErrors` — sustained upstream 404s are a real failure
+  // signal and the throttle should back off batch size.
+  it("counts an EXHAUSTED transient-404 (RateLimitError status 404) toward rateLimitErrors", async () => {
+    mock.module("./keyword-store", () => ({
+      ...keywordStoreMockBase(),
+      getStaleKeywordsTiered: async (opts: {
+        batchLimit: number;
+        mineQuotaRemaining: number;
+        tier1StaleThresholdMs: number;
+        perSweepCap: number;
+        tier1AutocompleteCap: number;
+      }) => {
+        staleKeywordsTieredCalls.push(opts);
+        return [
+          { keyword: "a", lane: "tier1" as const },
+          { keyword: "b", lane: "tier1" as const },
+        ];
+      },
+      insertScan: async (p: unknown) => {
+        insertScanCalls.push(p);
+      },
+      markScanned: async (keywords: readonly string[], at: number) => {
+        markScannedCalls.push({ keywords, at });
+      },
+    }));
+
+    mock.module("../shared/ssrf-safe-fetch", () => ({
+      RateLimitError,
+      ssrfSafeFetch: async () => {
+        throw new RateLimitError(
+          "Transient upstream failure (HTTP 404) fetching https://itunes.apple.com/search",
+          404,
+          undefined,
+          true,
+        );
+      },
+    }));
+
+    const { runKeywordSweep } = await import("./keyword-gaps");
+    const result = await runKeywordSweep({ limit: 25, delayMs: 0 });
+
+    expect(result.failed).toBe(2);
+    expect(result.rateLimitErrors).toBe(2);
+    expect(result.scanned).toBe(0);
+    // Failed keywords stay stale (never markScanned) so they re-queue.
+    expect(markScannedCalls.length).toBe(0);
+  });
+
+  // The converse — a 404 absorbed by `ssrfSafeFetch`'s in-band retry is
+  // INVISIBLE to this sweep (no throw -> no `failed`, no `rateLimitErrors`,
+  // throttle unpoisoned) — is proven at the fetch seam itself, in
+  // `ssrf-safe-fetch.isolated.test.ts`'s "retries a bare 404 and returns the
+  // 200" case: the sweep only ever counts what `ssrfSafeFetch` THROWS.
 
   // Batch A budget rescue (2026-07-22), PR #327 consistency: `scanAndRecord`
   // now consults the SAME wall-clock pass-deadline guard other deep-scrape
