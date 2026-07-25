@@ -12,6 +12,7 @@ import {
 import type { ProxyBreakerParams, ProxyBreakerState } from "./proxy-stream";
 import { runScreener } from "./keyword-screener";
 import { runGapAlerts } from "./gap-alerts";
+import { probeCorpusKeywords } from "./hint-probe-pass";
 import { expandCorpus } from "./keyword-autocomplete";
 import { mineKeywords } from "./keyword-miner";
 import { mineReviewKeywords } from "./keyword-review-miner";
@@ -319,6 +320,12 @@ export function createAppStoreScraper(config?: {
   // every other lane pair in this file (e.g. `lastDeStorefrontRunAt` vs the
   // US sweep).
   let lastGbHintsRunAt = 0;
+  // Soft cadence gate for the DIRECT corpus hint-probe lane (coverage wave
+  // 2026-07-26 — see `hint-probe-pass.ts`): process-local, own
+  // `autocompleteExpansion.directProbe.minIntervalMs` (default 15min), same
+  // rationale as the two lanes above. Faster than they are because this lane's
+  // per-pass work is bounded by a hard request cap, not by a seed fan-out.
+  let lastHintProbeRunAt = 0;
   // Soft cadence gate for the newborn re-observation lane (throughput wave
   // item 2, audit NEXT item F — see `newborn-reobservation.ts`'s
   // `runNewbornReobservationPass`): process-local, same rationale as
@@ -434,6 +441,7 @@ export function createAppStoreScraper(config?: {
   // `FLATLINE_STREAK_THRESHOLD` consecutive non-empty passes.
   let autocompleteZeroStreak = 0;
   let gbHintsZeroStreak = 0;
+  let hintProbeZeroStreak = 0;
   let serpSweepZeroStreak = 0;
   // Soft cadence gate for the keyword-scans retention prune (B3, default 6h).
   let lastScansPruneRunAt = 0;
@@ -1145,6 +1153,12 @@ export function createAppStoreScraper(config?: {
       // slower cadence internally, same pattern as the screener above.
       await runAutocompleteExpansionIfDue();
 
+      // Direct corpus hint-probe lane (coverage wave 2026-07-26 — see
+      // `hint-probe-pass.ts`): asks Apple about corpus keywords BY NAME so the
+      // hint signal exists where decisions are made, instead of only where a
+      // seed's fan-out happened to land. Own cadence, own request cap.
+      await runHintProbeLaneIfDue();
+
       // GB hints lane (throughput wave 2026-07-21, item 3) — a second
       // autocomplete-expansion pass against the GB App Store, gated to its
       // own cadence internally, same pattern as the US lane above.
@@ -1302,6 +1316,92 @@ export function createAppStoreScraper(config?: {
       } catch (err) {
         log.warn("Autocomplete-hints ledger prune failed", { error: getErrorMessage(err) });
       }
+    }
+  }
+
+  // Runs the DIRECT corpus hint-probe lane (coverage wave 2026-07-26 — see
+  // `hint-probe-pass.ts`'s module doc and migration 057). Complements, rather
+  // than replaces, the two expansion lanes: those DISCOVER keywords and cover
+  // the corpus only as a side effect (12.7% coverage after five days), this one
+  // probes the corpus keywords we already care about by name so the
+  // incumbent-independent hint signal exists at the keywords decisions are made
+  // about.
+  //
+  // Gated on `autocompleteExpansion.directProbe.minIntervalMs` (default 15min)
+  // and on the SAME `sweepRateSafety` rails as every other Apple-endpoint lane:
+  // the hard kill-switch (`legacyRateOverride`) skips it entirely, and its
+  // request cap is scaled by the shared adaptive-throttle multiplier so a
+  // rate-limit spike anywhere shrinks it in lockstep. Never allowed to break
+  // the sweep tick — failures are logged and swallowed, mirroring
+  // `runAutocompleteExpansionIfDue`. Default proxied (see the config field's
+  // doc comment for why this lane diverges from the direct expansion lanes).
+  async function runHintProbeLaneIfDue(): Promise<void> {
+    try {
+      const cfg = loadConfig().appstoreKeywordGap;
+      const dp = cfg.autocompleteExpansion.directProbe;
+      if (!cfg.autocompleteExpansion.enabled || !dp.enabled) return;
+      if (cfg.sweepRateSafety.legacyRateOverride) {
+        log.debug("Direct hint-probe lane skipped — legacy rate override active");
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastHintProbeRunAt < dp.minIntervalMs) return;
+      lastHintProbeRunAt = now;
+
+      const multiplier = cfg.sweepRateSafety.adaptiveThrottleEnabled
+        ? sweepThrottleState.multiplier
+        : 1;
+      const limit = Math.max(0, Math.floor(dp.keywordsPerPass * multiplier));
+      if (limit === 0) {
+        log.debug("Direct hint-probe lane skipped — throttle collapsed the request cap", {
+          multiplier,
+        });
+        return;
+      }
+
+      const result = await probeCorpusKeywords({
+        storefront: dp.storefront,
+        market: dp.market,
+        limit,
+        perSeed: dp.perSeed,
+        delayMs: dp.delayMs,
+        useProxy: dp.useProxy,
+        reprobeAfterSec: dp.reprobeAfterDays * 86_400,
+        opportunityFloor: dp.opportunityFloor,
+        opportunityLookbackSec: dp.opportunityLookbackDays * 86_400,
+      });
+
+      log.info("Direct hint-probe tick", {
+        ...result,
+        throttleMultiplier: multiplier,
+        useProxy: dp.useProxy,
+      });
+
+      // B2 flatline: identical contract to the expansion lanes — a pass that
+      // fetched but got ZERO raw suggestions across every keyword means the
+      // endpoint/header (or, for this lane specifically, the proxy pool) broke.
+      // A corpus with genuinely no demand would still produce SOME terms across
+      // 120 distinct keywords.
+      if (result.attempted > 0) {
+        if (result.rawTermCount === 0) {
+          hintProbeZeroStreak++;
+          if (hintProbeZeroStreak >= FLATLINE_STREAK_THRESHOLD) {
+            log.error("autocomplete lane flatlined", {
+              lane: "direct-probe",
+              consecutivePasses: hintProbeZeroStreak,
+              attempted: result.attempted,
+              rateLimitErrors: result.rateLimitErrors,
+              useProxy: dp.useProxy,
+              hint: "Apple returned zero raw suggestions across consecutive direct probes — endpoint/header change, or (this lane is proxied by default) an Apple-blocklisted Webshare pool; try flipping directProbe.useProxy off",
+            });
+          }
+        } else {
+          hintProbeZeroStreak = 0;
+        }
+      }
+    } catch (err) {
+      log.warn("Direct hint-probe lane failed", { error: getErrorMessage(err) });
     }
   }
 

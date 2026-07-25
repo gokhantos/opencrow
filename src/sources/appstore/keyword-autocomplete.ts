@@ -25,7 +25,10 @@
 
 import { getErrorMessage } from "../../lib/error-serialization";
 import { createLogger } from "../../logger";
+import { isPassOverBudget } from "../shared/pass-deadline";
 import { RateLimitError, ssrfSafeFetch } from "../shared/ssrf-safe-fetch";
+import { recordHintProbes } from "./hint-probe-store";
+import type { HintProbeWrite } from "./hint-probe-store";
 import { buildBrandSegmentSet, isBrandNavigationalCandidate } from "./keyword-brand";
 import { isJunkKeyword } from "./keyword-junk";
 import {
@@ -41,6 +44,22 @@ import type { AutocompleteHintRow, KeywordSeedRow, SeedRotationUpdate } from "./
 const log = createLogger("appstore:keyword-autocomplete");
 
 const HINTS_BASE_URL = "https://search.itunes.apple.com/WebObjects/MZSearchHints.woa/wa/hints";
+
+/**
+ * MANDATORY wall-clock budget for one expansion pass (`pass-deadline.ts` —
+ * see that module's doc comment for the 2026-07-21 incident it exists for).
+ * This lane runs on `scraper.ts`'s shared, single-flight `auxiliaryLanesTick`
+ * alongside ~12 others, so a slow-but-not-failing Apple can wedge every lane
+ * on that tick, not just this one. The risk grew with the 2026-07-26 coverage
+ * wave: raising `diverseLimit` widened the seed set, and requests-per-pass is
+ * `seeds x (1 + maxPrefixesPerSeed)` — at 84 seeds and a 5-letter fan-out
+ * that is 504 sequential requests, so an upstream answering slowly just under
+ * its own 10s per-request timeout could otherwise keep this pass alive for
+ * well over an hour. 8 minutes matches `keyword-gaps.ts`'s scan-batch budget;
+ * the bail is checked BETWEEN queries, so it bounds the pass, not a single
+ * wedged await (the single-flight guard's own 60min budget covers that).
+ */
+const MAX_PASS_DURATION_MS = 8 * 60_000;
 
 // Per-request timeout for a single seed's hint fetch. Short and separate
 // from the SERP-scan timeout — this is a lightweight suggest endpoint, not a
@@ -167,8 +186,37 @@ export function parseHintTerms(body: string): readonly string[] {
 }
 
 /** Lowercase, trim, and collapse internal whitespace to single spaces. */
-function normalizeSuggestion(s: string): string {
+export function normalizeSuggestion(s: string): string {
   return s.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+/**
+ * The 0-based rank at which `query` appears in its OWN suggestion list, or
+ * `null` if Apple did not suggest the exact phrase back. Compared after
+ * `normalizeSuggestion` on both sides so casing/whitespace differences in
+ * Apple's echo don't read as a miss.
+ *
+ * This is the `self_rank` column of the probe ledger (migration 057). For a
+ * DIRECT corpus-keyword probe it is the keyword's own popularity rank —
+ * "Apple treats this exact phrase as a real query, at position N" — and a
+ * `null` alongside a non-empty response is the cleanest negative the endpoint
+ * can give: Apple answered, and the phrase was not in the answer. For a
+ * prefix-fan-out query (`"budget a"`) a self-match is not expected and `null`
+ * carries no such meaning, which is why only the direct-probe pass reads it as
+ * evidence about a keyword.
+ *
+ * Pure; ranks against the RAW parsed terms (pre junk/length/dedup filter) so
+ * the rank is gapless and comparable with `appstore_autocomplete_hints.rank` —
+ * see `classifyHintTerms`.
+ */
+export function findSelfRank(query: string, terms: readonly string[]): number | null {
+  const needle = normalizeSuggestion(query);
+  if (needle.length === 0) return null;
+  for (let i = 0; i < terms.length; i++) {
+    const term = terms[i];
+    if (term !== undefined && normalizeSuggestion(term) === needle) return i;
+  }
+  return null;
 }
 
 export interface HintCandidate {
@@ -237,7 +285,10 @@ export interface HintLogEntry {
  * check — a term that only fits after truncation is still `kept: false`,
  * exactly as `buildCandidatesFromHints` would have dropped it.
  */
-function classifyHintTerms(terms: readonly string[], perSeed: number): readonly HintLogEntry[] {
+export function classifyHintTerms(
+  terms: readonly string[],
+  perSeed: number,
+): readonly HintLogEntry[] {
   const seen = new Set<string>();
   let keptCount = 0;
   const entries: HintLogEntry[] = [];
@@ -303,46 +354,102 @@ function isRateLimitError(err: unknown): boolean {
 }
 
 /**
- * Fetches Apple search-hint suggestions for a single seed keyword. Sends the
+ * The result of one hint fetch. A discriminated union rather than a bare
+ * `readonly string[]` because the coverage wave (2026-07-26) made the
+ * difference between "Apple answered with nothing" and "we never got an
+ * answer" load-bearing, and the old signature collapsed BOTH into `[]`.
+ *
+ * That collapse is exactly how the probe ledger could be poisoned: a
+ * rate-limited or 403'd request recorded as `returned_any = false` would
+ * manufacture a confirmed "Apple has no suggestions for this phrase" out of a
+ * request Apple never served — turning a transport failure into a permanent
+ * false negative in the one incumbent-independent demand signal we have. With
+ * this type the caller CANNOT write a probe row for a failure without first
+ * narrowing on `ok`, so the invariant is enforced by the compiler rather than
+ * by a comment.
+ */
+export type HintFetchOutcome =
+  | { readonly ok: true; readonly terms: readonly string[] }
+  | { readonly ok: false; readonly rateLimited: boolean };
+
+/**
+ * Fetches Apple search-hint suggestions for a single query. Sends the
  * `X-Apple-Store-Front` header the endpoint requires (see module doc) and
  * opts into `ssrfSafeFetch`'s rate-limit-aware retry, mirroring
  * `keyword-gaps.ts`'s `fetchTopApps` — both hit an Apple search endpoint on
- * the same corpus-scan cadence. Never throws on a non-OK HTTP status (logs
- * and returns no terms); DOES rethrow on a rate-limit-exhausted
- * `RateLimitError` so the caller can count it toward the shared throttle.
+ * the same corpus-scan cadence.
+ *
+ * NEVER THROWS. A non-OK status, a transport error, and a rate-limit-exhausted
+ * `RateLimitError` all return `{ ok: false }`, with `rateLimited` set so the
+ * caller can keep counting rate-limit failures into the shared throttle
+ * exactly as before (the old contract rethrew `RateLimitError` for that
+ * purpose; the count is unchanged, only the mechanism differs). Bare-403
+ * semantics are preserved via `treat403AsRateLimit` — counted, and
+ * non-retryable beyond `ssrfSafeFetch`'s own exhausted backoff.
  */
-async function fetchHintsForSeed(
+export async function fetchHintTerms(
   term: string,
   storefront: string,
   useProxy: boolean,
-): Promise<readonly string[]> {
+): Promise<HintFetchOutcome> {
   const url = `${HINTS_BASE_URL}?clientApplication=Software&term=${encodeURIComponent(term)}`;
-  // `treat403AsRateLimit: true` — `search.itunes.apple.com` is the same
-  // Apple-enforced per-IP burst ceiling as the other direct iTunes JSON
-  // lanes, signaled with a bare 403 (no `Retry-After`) rather than
-  // 429/503. See `rate-limit-error.ts`'s
-  // `RateLimitStatusOptions.treat403AsRateLimit`.
-  const res = await ssrfSafeFetch(url, {
-    headers: {
-      "X-Apple-Store-Front": storefront,
-      "User-Agent": "OpenCrow/1.0 (App Store Scraper)",
-    },
-    retryOnRateLimit: true,
-    treat403AsRateLimit: true,
-    timeoutMs: HINTS_FETCH_TIMEOUT_MS,
-    useProxy,
-  });
-
-  if (!res.ok) {
-    log.warn("Autocomplete hints fetch returned non-OK status — skipping seed", {
-      term,
-      status: res.status,
+  try {
+    // `treat403AsRateLimit: true` — `search.itunes.apple.com` is the same
+    // Apple-enforced per-IP burst ceiling as the other direct iTunes JSON
+    // lanes, signaled with a bare 403 (no `Retry-After`) rather than
+    // 429/503. See `rate-limit-error.ts`'s
+    // `RateLimitStatusOptions.treat403AsRateLimit`.
+    const res = await ssrfSafeFetch(url, {
+      headers: {
+        "X-Apple-Store-Front": storefront,
+        "User-Agent": "OpenCrow/1.0 (App Store Scraper)",
+      },
+      retryOnRateLimit: true,
+      treat403AsRateLimit: true,
+      timeoutMs: HINTS_FETCH_TIMEOUT_MS,
+      useProxy,
     });
-    return [];
-  }
 
-  const body = await res.text();
-  return parseHintTerms(body);
+    if (!res.ok) {
+      log.warn("Autocomplete hints fetch returned non-OK status — skipping seed", {
+        term,
+        status: res.status,
+      });
+      return { ok: false, rateLimited: false };
+    }
+
+    const body = await res.text();
+    return { ok: true, terms: parseHintTerms(body) };
+  } catch (err) {
+    const rateLimited = isRateLimitError(err);
+    log.warn("Autocomplete hints fetch failed — skipping seed", {
+      keyword: term,
+      rateLimited,
+      error: getErrorMessage(err),
+    });
+    return { ok: false, rateLimited };
+  }
+}
+
+/**
+ * Builds the probe-ledger row for ONE successful query (migration 057). Pure,
+ * and only reachable from an `ok: true` outcome by construction — see
+ * `HintFetchOutcome`.
+ */
+export function buildProbeWrite(args: {
+  readonly query: string;
+  readonly storefront: string;
+  readonly probedAt: number;
+  readonly terms: readonly string[];
+}): HintProbeWrite {
+  return {
+    query: args.query,
+    storefront: args.storefront,
+    probedAt: args.probedAt,
+    returnedAny: args.terms.length > 0,
+    termCount: args.terms.length,
+    selfRank: findSelfRank(args.query, args.terms),
+  };
 }
 
 function delay(ms: number): Promise<void> {
@@ -432,6 +539,25 @@ export interface ExpandCorpusResult {
    * all-existing pass and a dead-endpoint pass both log `added: 0`.
    */
   readonly rawTermCount: number;
+  /**
+   * Coverage wave (2026-07-26): how many queries this pass recorded into the
+   * probe ledger (`appstore_autocomplete_probes`, migration 057) — i.e. how
+   * many of `attempted` actually got an ANSWER from Apple. `attempted -
+   * probesRecorded` is the pass's transport-failure count, which is
+   * deliberately NOT written to the ledger: a failed request teaches us
+   * nothing about demand, and recording it would fabricate a confirmed zero.
+   */
+  readonly probesRecorded: number;
+  /**
+   * Of `probesRecorded`, how many came back with an EMPTY suggestion list.
+   * This is the datum that was previously unrepresentable — Apple answering
+   * "nothing for that phrase" left no trace at all, which is why hint absence
+   * could not be used as a signal. A healthy pass has some of these
+   * (specific prefixes genuinely have no completions); ALL of them empty
+   * while `rateLimitErrors` is 0 is the shape of a header/endpoint break, and
+   * is already covered by the `rawTermCount === 0` flatline detector.
+   */
+  readonly emptyResponses: number;
 }
 
 const EMPTY_RESULT: ExpandCorpusResult = {
@@ -441,6 +567,8 @@ const EMPTY_RESULT: ExpandCorpusResult = {
   rateLimitErrors: 0,
   brandFiltered: 0,
   rawTermCount: 0,
+  probesRecorded: 0,
+  emptyResponses: 0,
 };
 
 /**
@@ -478,37 +606,68 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
   const maxPrefixesPerSeed = Math.max(0, opts.maxPrefixesPerSeed ?? 0);
   const nowSeconds = Math.floor(Date.now() / 1000);
   const useProxy = opts.useProxy ?? false;
+  const passStartedAtMs = Date.now();
 
   const candidates: HintCandidate[] = [];
   const hintRows: AutocompleteHintRow[] = [];
   const seedUpdates: SeedRotationUpdate[] = [];
+  const probeWrites: HintProbeWrite[] = [];
   const seen = new Set<string>();
   let attempted = 0;
   let rateLimitErrors = 0;
   // B2 flatline: total raw terms Apple returned this pass, summed BEFORE the
   // junk/length/dedup filter — see `ExpandCorpusResult.rawTermCount`.
   let rawTermCount = 0;
+  let emptyResponses = 0;
+  let overBudget = false;
 
   for (const seed of seeds) {
+    // MANDATORY wall-clock bail (`pass-deadline.ts`) — checked per SEED as
+    // well as per query so a wide seed set can't outrun the budget. Seeds not
+    // reached simply stay at the front of next pass's rotation order
+    // (`getExpansionSeeds` orders by `last_expanded_at ASC NULLS FIRST`), so
+    // bailing loses no work — it defers it.
+    if (isPassOverBudget(passStartedAtMs, MAX_PASS_DURATION_MS)) {
+      overBudget = true;
+      break;
+    }
     // Prefix fan-out (Batch C1 — wraparound window): the bare seed, plus a
     // window of up to `maxPrefixesPerSeed` letters starting at this seed's
     // OWN `nextPrefixOffset` cursor — see `ExpandCorpusOptions` doc comment
     // and `buildPrefixFanOutWindow`.
     const window = buildPrefixFanOutWindow(seed.nextPrefixOffset, maxPrefixesPerSeed);
     const queries = [seed.keyword, ...window.map((l) => `${seed.keyword} ${l}`)];
+    // How many of `window`'s letters this seed actually got through — the
+    // cursor must advance by THIS, not by `window.length`, or a mid-seed
+    // wall-clock bail would silently skip the unqueried letters forever (the
+    // exact class of "the fan-out never covers the alphabet" bug Batch C1
+    // fixed).
+    let lettersQueried = 0;
 
     for (const query of queries) {
-      attempted++;
-      let terms: readonly string[] = [];
-      try {
-        terms = await fetchHintsForSeed(query, opts.storefront, useProxy);
-      } catch (err) {
-        if (isRateLimitError(err)) rateLimitErrors++;
-        log.warn("Autocomplete hints fetch failed — skipping seed", {
-          keyword: query,
-          error: getErrorMessage(err),
-        });
+      if (isPassOverBudget(passStartedAtMs, MAX_PASS_DURATION_MS)) {
+        overBudget = true;
+        break;
       }
+      // `queries[0]` is the bare seed; every later entry consumed one letter.
+      if (query !== seed.keyword) lettersQueried++;
+      attempted++;
+      const outcome = await fetchHintTerms(query, opts.storefront, useProxy);
+      if (!outcome.ok) {
+        if (outcome.rateLimited) rateLimitErrors++;
+        // No probe row: a failed request is not evidence of absence. See
+        // `HintFetchOutcome` / `recordHintProbes`' doc comments.
+        if (opts.delayMs > 0) await delay(opts.delayMs);
+        continue;
+      }
+      const terms = outcome.terms;
+      // Probe ledger (coverage wave, migration 057): record that this exact
+      // query WAS issued and what came back — including the empty case, which
+      // is the observation the pre-057 schema could not represent at all.
+      probeWrites.push(
+        buildProbeWrite({ query, storefront: market, probedAt: nowSeconds, terms }),
+      );
+      if (terms.length === 0) emptyResponses++;
       // B2: count raw terms BEFORE junk-filtering (`buildCandidatesFromHints`
       // below), so an all-junk response is still distinguishable from a
       // dead-endpoint (zero-term) one.
@@ -540,14 +699,28 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
     }
 
     // Advance THIS seed's cursor by however many prefix letters were
-    // actually queried this pass (the throttle-effective `window.length`,
-    // not the nominal `maxPrefixesPerSeed` — the two only differ when the
-    // window was clamped, e.g. a caller passing > 26) — wraps at 26 via the
-    // same modulo `buildPrefixFanOutWindow` uses internally.
+    // actually queried this pass (`lettersQueried`, not the nominal
+    // `maxPrefixesPerSeed` — those differ when the window was clamped, e.g. a
+    // caller passing > 26, or when the wall-clock bail cut the seed short) —
+    // wraps at 26 via the same modulo `buildPrefixFanOutWindow` uses
+    // internally.
     seedUpdates.push({
       keyword: seed.keyword,
       storefront: market,
-      nextPrefixOffset: (seed.nextPrefixOffset + window.length) % PREFIX_FAN_OUT_LETTERS.length,
+      nextPrefixOffset: (seed.nextPrefixOffset + lettersQueried) % PREFIX_FAN_OUT_LETTERS.length,
+    });
+
+    if (overBudget) break;
+  }
+
+  if (overBudget) {
+    log.warn("Autocomplete expansion pass bailing early — exceeded wall-clock budget", {
+      market,
+      maxDurationMs: MAX_PASS_DURATION_MS,
+      elapsedMs: Date.now() - passStartedAtMs,
+      seedsProcessed: seedUpdates.length,
+      seedsPlanned: seeds.length,
+      attempted,
     });
   }
 
@@ -562,46 +735,42 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
   // whether a term ends up being a genuinely NEW corpus keyword below — the
   // rank signal itself is the point, not just the term.
   if (hintRows.length > 0) await insertAutocompleteHints(hintRows);
+  // Probe ledger (coverage wave, migration 057): persisted on the SAME
+  // unconditional path as the hint rows and for the same reason — the record
+  // of what we ASKED is the signal, independent of whether anything new made
+  // it into the corpus. Failure-only passes write nothing here (see the
+  // `!outcome.ok` branch above), so an empty `probeWrites` is normal.
+  if (probeWrites.length > 0) await recordHintProbes(probeWrites);
+
+  /**
+   * All five exit paths return the same counter set, so build it once —
+   * previously four near-identical 6-field literals that had to be edited in
+   * lockstep every time a counter was added (and that had already drifted:
+   * `seedsUsed` reported the PLANNED seed count, which a wall-clock bail now
+   * makes wrong — it reports seeds actually processed).
+   */
+  const result = (added: number, brandFiltered: number): ExpandCorpusResult => ({
+    added,
+    seedsUsed: seedUpdates.length,
+    attempted,
+    rateLimitErrors,
+    brandFiltered,
+    rawTermCount,
+    probesRecorded: probeWrites.length,
+    emptyResponses,
+  });
 
   if (candidates.length === 0) {
-    log.info("Autocomplete corpus expansion", {
-      added: 0,
-      seedsUsed: seeds.length,
-      attempted,
-      rateLimitErrors,
-      brandFiltered: 0,
-      rawTermCount,
-    });
-    return {
-      added: 0,
-      seedsUsed: seeds.length,
-      attempted,
-      rateLimitErrors,
-      brandFiltered: 0,
-      rawTermCount,
-    };
+    log.info("Autocomplete corpus expansion", result(0, 0));
+    return result(0, 0);
   }
 
   const existing = await keywordsExist(candidates.map((c) => c.keyword));
   const nonExisting = candidates.filter((c) => !existing.has(c.keyword));
 
   if (nonExisting.length === 0) {
-    log.info("Autocomplete corpus expansion", {
-      added: 0,
-      seedsUsed: seeds.length,
-      attempted,
-      rateLimitErrors,
-      brandFiltered: 0,
-      rawTermCount,
-    });
-    return {
-      added: 0,
-      seedsUsed: seeds.length,
-      attempted,
-      rateLimitErrors,
-      brandFiltered: 0,
-      rawTermCount,
-    };
+    log.info("Autocomplete corpus expansion", result(0, 0));
+    return result(0, 0);
   }
 
   // Insert-time brand-navigational filter (Batch A budget rescue,
@@ -620,22 +789,8 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
   const brandFiltered = nonExisting.length - newCandidates.length;
 
   if (newCandidates.length === 0) {
-    log.info("Autocomplete corpus expansion", {
-      added: 0,
-      seedsUsed: seeds.length,
-      attempted,
-      rateLimitErrors,
-      brandFiltered,
-      rawTermCount,
-    });
-    return {
-      added: 0,
-      seedsUsed: seeds.length,
-      attempted,
-      rateLimitErrors,
-      brandFiltered,
-      rawTermCount,
-    };
+    log.info("Autocomplete corpus expansion", result(0, brandFiltered));
+    return result(0, brandFiltered);
   }
 
   const newRows: readonly KeywordSeedRow[] = newCandidates.map((c) => ({
@@ -646,23 +801,11 @@ export async function expandCorpus(opts: ExpandCorpusOptions): Promise<ExpandCor
   await upsertKeywords(newRows);
 
   log.info("Autocomplete corpus expansion", {
-    added: newRows.length,
-    seedsUsed: seeds.length,
-    attempted,
-    rateLimitErrors,
-    brandFiltered,
-    rawTermCount,
+    ...result(newRows.length, brandFiltered),
     // A small sample for observability — real user queries vs mined
     // fragments should be visually obvious in these (multi-word, natural
     // phrasing) vs the miner's n-grams.
     sample: newCandidates.slice(0, 5).map((c) => c.keyword),
   });
-  return {
-    added: newRows.length,
-    seedsUsed: seeds.length,
-    attempted,
-    rateLimitErrors,
-    brandFiltered,
-    rawTermCount,
-  };
+  return result(newRows.length, brandFiltered);
 }
