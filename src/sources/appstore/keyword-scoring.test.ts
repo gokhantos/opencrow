@@ -1,18 +1,20 @@
 import { describe, expect, it } from "bun:test";
+import { appstoreKeywordGapConfigSchema } from "../../config/schema";
 import {
   BUILDABILITY_REVIEW_REF,
   classifyTrend,
+  computeBeatability,
   computeBuildability,
   computeCompetitiveness,
   computeDemand,
-  computeDemandConfidenceMultiplier,
   computeIncumbentWeakness,
+  computeLeaderScaleOpening,
   computeOpportunity,
+  computeSearcherDemandAxis,
   computeVelocityCap,
-  HINT_ABSENCE_PENALTY,
-  HINT_CROSS_STOREFRONT_BOOST,
-  HINT_PRESENCE_BOOST,
+  DEFAULT_SCORING_WEIGHTS,
   VELOCITY_CAP_P90_MULTIPLIER,
+  winsorizeRatingsPerDayAtP90,
 } from "./keyword-scoring";
 import type { HintEvidence, TopApp } from "./keyword-types";
 
@@ -140,10 +142,11 @@ describe("computeOpportunity — realistic inputs neither collapse to 0 nor satu
 });
 
 describe("computeOpportunity — demand is monotonic and non-saturating", () => {
-  // Under the old DEMAND_REF=50, any demand ≥ ~50/day clamped to a normalized
-  // 1.0 and stopped discriminating. With DEMAND_REF=80 the realistic range stays
-  // on the responsive part of the log curve, so opportunity separates and rises
-  // with demand instead of pinning to a single value.
+  // Any demand at or above `demandRef` clamps to a normalized 1.0 and stops
+  // discriminating, so the reference has to sit above the realistic range. At
+  // `demandRef` = 400 the whole corpus (p50≈6, p90≈48, top ≈320) stays on the
+  // responsive part of the log curve, so opportunity separates and rises with
+  // demand instead of pinning to a single value.
   const base = { competitiveness: 30, incumbentWeakness: 0.5, trend: "stable" as const };
   it("is monotonic across a realistic demand range", () => {
     const low = computeOpportunity({ ...base, demand: 5 });
@@ -154,10 +157,11 @@ describe("computeOpportunity — demand is monotonic and non-saturating", () => 
   });
 });
 
-describe("computeOpportunity — competitiveness not double-counted", () => {
-  // Competitiveness enters opportunity exactly once (linearly, via beatability).
-  // A strictly-decreasing sequence pins that single, non-squared effect: no
-  // quadratic collapse as competitiveness rises.
+describe("computeOpportunity — competitiveness enters exactly once, with a negative sign", () => {
+  // Competitiveness reaches opportunity through ONE path: the crowding discount
+  // inside beatability (which is then raised to `beatabilityExponent`). A
+  // strictly-decreasing sequence pins the sign — the old model's defect was a
+  // NET-POSITIVE competitiveness effect, not its curvature.
   const b = { demand: 100, incumbentWeakness: 0.5, trend: "stable" as const };
   it("decreases monotonically as competitiveness rises", () => {
     const low = computeOpportunity({ ...b, competitiveness: 20 });
@@ -182,10 +186,15 @@ describe("computeIncumbentWeakness — keyed on the leader", () => {
     // A strong, fresh, high-rated leader => low weakness, even though a weak toy
     // drags the *mean* rating down (a mean-based score would misread this).
     expect(computeIncumbentWeakness(strongLeaderField)).toBeLessThan(0.2);
-    // A stale, low-rated leader => high weakness, despite a great toy in the field.
-    expect(computeIncumbentWeakness(weakLeaderField)).toBeGreaterThan(0.6);
+    // A stale, low-rated leader reads weaker than the fresh, well-rated one...
     expect(computeIncumbentWeakness(weakLeaderField)).toBeGreaterThan(
       computeIncumbentWeakness(strongLeaderField),
+    );
+    // ...but review mass is FIRST-CLASS: a 500k-review incumbent can never be
+    // "wide open" no matter how badly rated or stale it is. Rating/staleness
+    // are secondary modifiers bounded by `weaknessSecondaryLift`.
+    expect(computeIncumbentWeakness(weakLeaderField)).toBeLessThanOrEqual(
+      DEFAULT_SCORING_WEIGHTS.weaknessSecondaryLift,
     );
   });
 
@@ -195,6 +204,24 @@ describe("computeIncumbentWeakness — keyed on the leader", () => {
     expect(computeIncumbentWeakness(staleLeader)).toBeGreaterThan(
       computeIncumbentWeakness(freshLeader),
     );
+  });
+});
+
+describe("winsorizeRatingsPerDayAtP90", () => {
+  it("clamps a single outlier down to the set's own p90 without mutating the input", () => {
+    const apps = [
+      app({ id: "outlier", ratingsPerDay: 500 }),
+      ...Array.from({ length: 9 }, (_, i) => app({ id: `q${i}`, ratingsPerDay: 1 })),
+    ];
+    const out = winsorizeRatingsPerDayAtP90(apps);
+    expect(out.map((a) => a.ratingsPerDay)).toEqual(Array.from({ length: 10 }, () => 1));
+    expect(apps[0]?.ratingsPerDay).toBe(500); // input untouched
+  });
+
+  it("returns sets of 0 or 1 apps unchanged (no percentile to clamp against)", () => {
+    expect(winsorizeRatingsPerDayAtP90([])).toEqual([]);
+    const one = [app({ ratingsPerDay: 999 })];
+    expect(winsorizeRatingsPerDayAtP90(one)).toBe(one);
   });
 });
 
@@ -318,64 +345,341 @@ describe("computeVelocityCap — set-level ratingsPerDay-p90-derived bound", () 
   });
 });
 
-// Batch D item D1 (2026-07-22): coverage-conditioned autocomplete hint
-// demand-confidence multiplier.
-describe("computeDemandConfidenceMultiplier", () => {
-  function evidence(overrides: Partial<HintEvidence> = {}): HintEvidence {
-    return {
-      bestRank: null,
-      seedCount: 0,
-      storefrontCount: 0,
-      lastSeenAt: null,
-      covered: false,
-      ...overrides,
+// ---------------------------------------------------------------------------
+// 2026-07-26 sign fix — the four named behaviours of the corrected model.
+// ---------------------------------------------------------------------------
+
+function evidence(overrides: Partial<HintEvidence> = {}): HintEvidence {
+  return {
+    bestRank: null,
+    seedCount: 0,
+    storefrontCount: 0,
+    lastSeenAt: null,
+    covered: false,
+    ...overrides,
+  };
+}
+
+/** Field whose leader carries `reviews`, otherwise a fresh, well-rated app (so rating/staleness contribute nothing). */
+const leaderWith = (reviews: number, extra: Partial<TopApp> = {}): readonly TopApp[] => [
+  app({ id: "L", reviews, rating: 4.7, ratingsPerDay: 2, lastUpdatedDays: 5, ...extra }),
+];
+
+describe("computeIncumbentWeakness — incumbent review mass is a first-class term (defect A)", () => {
+  it("scores a tiny-incumbent field near-maximally weak even when the leader is 4.9-rated and freshly updated", () => {
+    // The measured defect: `block shorts` incumbents at 2,973/128/26/14/1
+    // reviews scored weakness EXACTLY 0.000 because the leader was well-rated
+    // and recently shipped. A 26-review leader must read as wide open.
+    expect(computeIncumbentWeakness(leaderWith(26, { rating: 4.9 }))).toBeGreaterThan(0.95);
+    expect(computeIncumbentWeakness(leaderWith(1, { rating: 5 }))).toBeGreaterThan(0.95);
+    expect(computeIncumbentWeakness(leaderWith(128))).toBeGreaterThan(0.95);
+  });
+
+  it("scores a mega-incumbent field near-zero weakness even when it is stale and mediocre", () => {
+    // `real claw machine`: Clawee, 737,897 reviews, 622 days stale — the OLD
+    // model handed it weakness 0.40 purely on staleness, which is what made it
+    // the corpus's #1 "opportunity".
+    const weakness = computeIncumbentWeakness(
+      leaderWith(737_897, { rating: 4.3, lastUpdatedDays: 622 }),
+    );
+    expect(weakness).toBeLessThan(0.4);
+    expect(weakness).toBeLessThan(computeIncumbentWeakness(leaderWith(26)));
+  });
+
+  it("reproduces the real measured cases the old model scored 0.000", () => {
+    // block shorts leader = 2,973 reviews; peptide tracker leader = 2,959.
+    expect(computeIncumbentWeakness(leaderWith(2_973))).toBeGreaterThan(0.5);
+    expect(computeIncumbentWeakness(leaderWith(2_959))).toBeGreaterThan(0.5);
+  });
+
+  it("is strictly decreasing in leader review mass across the whole realistic range", () => {
+    const masses = [0, 1, 26, 128, 500, 2_973, 27_919, 57_650, 164_606, 737_897, 2_048_909];
+    const weaknesses = masses.map((m) => computeIncumbentWeakness(leaderWith(m)));
+    for (let i = 1; i < weaknesses.length; i++) {
+      expect(weaknesses[i] as number).toBeLessThanOrEqual(weaknesses[i - 1] as number);
+    }
+    // ...and the span is real, not a rounding artifact.
+    expect((weaknesses[0] as number) - (weaknesses[weaknesses.length - 1] as number)).toBeGreaterThan(
+      0.9,
+    );
+  });
+
+  it("keeps rating and staleness as SECONDARY modifiers that only ever raise weakness", () => {
+    const base = computeIncumbentWeakness(leaderWith(50_000, { rating: 4.7, lastUpdatedDays: 5 }));
+    const badlyRated = computeIncumbentWeakness(
+      leaderWith(50_000, { rating: 2.4, lastUpdatedDays: 5 }),
+    );
+    const stale = computeIncumbentWeakness(
+      leaderWith(50_000, { rating: 4.7, lastUpdatedDays: 900 }),
+    );
+    expect(badlyRated).toBeGreaterThan(base);
+    expect(stale).toBeGreaterThan(base);
+    // But bounded: they can never turn an entrenched leader into an open field.
+    expect(badlyRated).toBeLessThan(computeIncumbentWeakness(leaderWith(26)));
+    expect(stale).toBeLessThan(computeIncumbentWeakness(leaderWith(26)));
+  });
+
+  it("anchors the scale opening at the configured beatable/entrenched review bounds", () => {
+    const w = DEFAULT_SCORING_WEIGHTS;
+    expect(computeLeaderScaleOpening(w.weaknessBeatableReviews, w)).toBeCloseTo(1, 6);
+    expect(computeLeaderScaleOpening(w.weaknessEntrenchedReviews, w)).toBeCloseTo(0, 6);
+    expect(computeLeaderScaleOpening(0, w)).toBe(1);
+    expect(computeLeaderScaleOpening(10_000_000, w)).toBe(0);
+  });
+
+  it("still treats an empty field as maximally beatable", () => {
+    expect(computeIncumbentWeakness([])).toBe(1);
+  });
+});
+
+describe("computeBeatability — the weakness-driven ceiling is gone (defect B)", () => {
+  it("no longer caps a small-incumbent field at the old 0.5 beatability bound", () => {
+    // OLD: `0.5*(1 - comp/100) + 0.5*weakness`. Because the broken weakness
+    // function scored 32% of all scans at EXACTLY 0.000 — including every
+    // small-incumbent niche — beatability for those fields could not exceed
+    // 0.5, and opportunity could not exceed the measured 0.5158. With review
+    // mass now driving weakness, a 26-review-leader field is no longer pinned
+    // to that branch at all.
+    const openField = leaderWith(26, { rating: 4.9, lastUpdatedDays: 5 });
+    const weakness = computeIncumbentWeakness(openField);
+    expect(weakness).toBeGreaterThan(0.95);
+    // Uncrowded: beatability is now bounded only by crowding, not by weakness.
+    expect(computeBeatability(5, weakness)).toBeGreaterThan(0.85);
+  });
+
+  it("is 0 when the leader is unbeatable, regardless of how uncrowded the field is", () => {
+    expect(computeBeatability(0, 0)).toBe(0);
+  });
+
+  it("decreases strictly as field crowding rises at fixed leader weakness", () => {
+    const open = computeBeatability(10, 0.8);
+    const mid = computeBeatability(50, 0.8);
+    const crowded = computeBeatability(95, 0.8);
+    expect(open).toBeGreaterThan(mid);
+    expect(mid).toBeGreaterThan(crowded);
+  });
+
+  it("lets a maximally open, high-demand field reach the top of the 0..1 range", () => {
+    // The structural point: nothing in the composition prevents a genuinely
+    // open field from scoring near 1. (What the corpus actually reaches is a
+    // separate, empirical question — see the backtest; thresholds are NOT
+    // recalibrated by this change.)
+    const opp = computeOpportunity({
+      demand: 400,
+      competitiveness: 5,
+      incumbentWeakness: 1,
+      trend: "heating",
+    });
+    expect(opp).toBeGreaterThan(0.9);
+  });
+});
+
+describe("computeOpportunity — crowding can never net-raise the score (defect C)", () => {
+  it("ranks an open field above a crowded one at EQUAL demand and equal leader weakness", () => {
+    const open = computeOpportunity({
+      demand: 30,
+      competitiveness: 15,
+      incumbentWeakness: 0.7,
+      trend: "stable",
+    });
+    const crowded = computeOpportunity({
+      demand: 30,
+      competitiveness: 85,
+      incumbentWeakness: 0.7,
+      trend: "stable",
+    });
+    expect(open).toBeGreaterThan(crowded);
+  });
+
+  it("ranks an open field above a crowded one END-TO-END from real SERP shapes at equal demand", () => {
+    // Same measured demand, but one field is served by a 26-review toy and the
+    // other by a 737k-review giant. The OLD model scored the giant's field
+    // HIGHER (weakness 0.40 from staleness vs 0.00 for the fresh toy).
+    const openField = leaderWith(26, { rating: 4.9, lastUpdatedDays: 5 });
+    const giantField = leaderWith(737_897, { rating: 4.3, lastUpdatedDays: 622 });
+    const openOpp = computeOpportunity({
+      demand: 30,
+      competitiveness: computeCompetitiveness(openField),
+      incumbentWeakness: computeIncumbentWeakness(openField),
+      trend: "stable",
+    });
+    const giantOpp = computeOpportunity({
+      demand: 30,
+      competitiveness: computeCompetitiveness(giantField),
+      incumbentWeakness: computeIncumbentWeakness(giantField),
+      trend: "stable",
+    });
+    expect(openOpp).toBeGreaterThan(giantOpp);
+    expect(openOpp / Math.max(giantOpp, 1e-9)).toBeGreaterThan(3);
+  });
+
+  it("is monotone non-increasing in incumbent review mass at fixed demand and trend", () => {
+    const masses = [26, 2_973, 27_919, 164_606, 737_897];
+    const opps = masses.map((m) => {
+      const field = leaderWith(m);
+      return computeOpportunity({
+        demand: 20,
+        competitiveness: computeCompetitiveness(field),
+        incumbentWeakness: computeIncumbentWeakness(field),
+        trend: "stable",
+      });
+    });
+    for (let i = 1; i < opps.length; i++) {
+      expect(opps[i] as number).toBeLessThanOrEqual(opps[i - 1] as number);
+    }
+  });
+});
+
+describe("computeSearcherDemandAxis — autocomplete rank is a real demand axis (not a ±30% multiplier)", () => {
+  // Corpus evidence: median demand by best hint rank is 0.936 (rank 0-2),
+  // 0.186 (3-5), 0.128 (6+) ratings/day — a 7.3x spread. norm(0.936, 80) is
+  // only ≈0.15, so the rank axis has to be able to MOVE the estimate, not
+  // nudge it.
+  const lowProxyDemand = 0.936;
+
+  it("lifts a rank-0 term with a near-zero incumbent-mass proxy by multiples, not percent", () => {
+    const neutral = computeSearcherDemandAxis(lowProxyDemand, undefined);
+    const ranked = computeSearcherDemandAxis(
+      lowProxyDemand,
+      evidence({ bestRank: 0, seedCount: 4, storefrontCount: 2, covered: true }),
+    );
+    expect(neutral).toBeLessThan(0.2); // the mass proxy alone reads this as dead
+    expect(ranked / neutral).toBeGreaterThan(2.5);
+  });
+
+  it("decays monotonically with rank", () => {
+    const axis = (rank: number) =>
+      computeSearcherDemandAxis(
+        lowProxyDemand,
+        evidence({ bestRank: rank, seedCount: 2, covered: true }),
+      );
+    const ranks = [0, 1, 2, 3, 5, 7, 9];
+    const values = ranks.map(axis);
+    for (let i = 1; i < values.length; i++) {
+      expect(values[i] as number).toBeLessThanOrEqual(values[i - 1] as number);
+    }
+    // Spread across the measured buckets is real (rank 0-2 vs rank 6+).
+    expect((values[0] as number) / (values[values.length - 1] as number)).toBeGreaterThan(1.8);
+  });
+
+  it("NEVER lowers the estimate below the neutral proxy on any presence, even a rank-9 sighting", () => {
+    // A term Apple does suggest — however late — is weak POSITIVE evidence; it
+    // must not be punished below a term that was never probed at all.
+    const neutral = computeSearcherDemandAxis(50, undefined);
+    for (const rank of [0, 3, 6, 9, 20]) {
+      expect(
+        computeSearcherDemandAxis(50, evidence({ bestRank: rank, seedCount: 1, covered: true })),
+      ).toBeGreaterThanOrEqual(neutral);
+    }
+  });
+
+  it("is exactly neutral when hint evidence is absent — never probed must not be punished (12.8% coverage)", () => {
+    // `peptide tracker`, `card grading` and `block shorts` all currently have
+    // NO hints; the axis must be a no-op for them.
+    const neutral = computeSearcherDemandAxis(12.451, undefined);
+    expect(computeSearcherDemandAxis(12.451, evidence({ covered: false, seedCount: 0 }))).toBe(
+      neutral,
+    );
+    // ...and their score must be identical to passing no evidence at all.
+    const withoutHint = computeOpportunity({
+      demand: 12.451,
+      competitiveness: 30.5,
+      incumbentWeakness: 0.61,
+      trend: "heating",
+    });
+    const withNeverProbed = computeOpportunity({
+      demand: 12.451,
+      competitiveness: 30.5,
+      incumbentWeakness: 0.61,
+      trend: "heating",
+      hint: evidence({ covered: false, seedCount: 0 }),
+    });
+    expect(withNeverProbed).toBe(withoutHint);
+  });
+
+  it("penalises a CONFIRMED absence (probed, Apple suggests nothing) — the tri-state's third branch", () => {
+    const neutral = computeSearcherDemandAxis(12.451, undefined);
+    const probedAbsent = computeSearcherDemandAxis(
+      12.451,
+      evidence({ covered: true, seedCount: 0 }),
+    );
+    expect(probedAbsent).toBeLessThan(neutral);
+    expect(probedAbsent).toBeCloseTo(neutral * DEFAULT_SCORING_WEIGHTS.hintAbsencePenalty, 6);
+  });
+
+  it("treats presence with a null bestRank as presence, not absence", () => {
+    const neutral = computeSearcherDemandAxis(1, undefined);
+    expect(
+      computeSearcherDemandAxis(1, evidence({ covered: true, seedCount: 3, bestRank: null })),
+    ).toBeGreaterThanOrEqual(neutral);
+  });
+
+  it("stays inside 0..1 for extreme inputs", () => {
+    for (const demand of [0, 1e-9, 1e9]) {
+      for (const hint of [undefined, evidence({ bestRank: 0, seedCount: 9, covered: true })]) {
+        const v = computeSearcherDemandAxis(demand, hint);
+        expect(v).toBeGreaterThanOrEqual(0);
+        expect(v).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+});
+
+describe("scoring weights are config-driven", () => {
+  it("honours caller-supplied weights instead of hardcoding them", () => {
+    const field = leaderWith(50_000);
+    const strict = computeIncumbentWeakness(field, {
+      ...DEFAULT_SCORING_WEIGHTS,
+      weaknessEntrenchedReviews: 5_000,
+    });
+    const lenient = computeIncumbentWeakness(field, {
+      ...DEFAULT_SCORING_WEIGHTS,
+      weaknessEntrenchedReviews: 5_000_000,
+    });
+    expect(strict).toBeLessThan(lenient);
+
+    const noCrowdPenalty = computeBeatability(90, 0.5, {
+      ...DEFAULT_SCORING_WEIGHTS,
+      crowdingWeight: 0,
+      beatabilityExponent: 1,
+    });
+    expect(noCrowdPenalty).toBeCloseTo(0.5, 6);
+
+    // The exponent is the sign-fixing knob: it must actually bite.
+    const linear = computeBeatability(30, 0.8, {
+      ...DEFAULT_SCORING_WEIGHTS,
+      beatabilityExponent: 1,
+    });
+    const squared = computeBeatability(30, 0.8, {
+      ...DEFAULT_SCORING_WEIGHTS,
+      beatabilityExponent: 2,
+    });
+    expect(squared).toBeCloseTo(linear ** 2, 6);
+    expect(squared).toBeLessThan(linear);
+
+    const noRankAxis = computeSearcherDemandAxis(
+      1,
+      evidence({ bestRank: 0, seedCount: 3, covered: true }),
+      { ...DEFAULT_SCORING_WEIGHTS, rankAxisWeight: 0 },
+    );
+    expect(noRankAxis).toBeCloseTo(computeSearcherDemandAxis(1, undefined), 6);
+  });
+
+  it("degrades to a hard step when the beatable/entrenched bounds are inverted or equal", () => {
+    const degenerate = {
+      ...DEFAULT_SCORING_WEIGHTS,
+      weaknessBeatableReviews: 1_000,
+      weaknessEntrenchedReviews: 1_000,
     };
-  }
-
-  it("is neutral (1) when evidence is unavailable", () => {
-    expect(computeDemandConfidenceMultiplier(undefined)).toBe(1);
+    expect(computeLeaderScaleOpening(1_000, degenerate)).toBe(1);
+    expect(computeLeaderScaleOpening(1_001, degenerate)).toBe(0);
   });
 
-  it("is neutral (1) when uncovered and never observed — sampling gap, not confirmed absence", () => {
-    expect(
-      computeDemandConfidenceMultiplier(evidence({ covered: false, seedCount: 0 })),
-    ).toBe(1);
-  });
-
-  it("applies the absence penalty when covered (actually queried) and never observed", () => {
-    expect(
-      computeDemandConfidenceMultiplier(evidence({ covered: true, seedCount: 0 })),
-    ).toBe(HINT_ABSENCE_PENALTY);
-  });
-
-  it("is neutral (1) for weak presence (single seed / late rank) — proven not hopeless, but not strong enough to boost", () => {
-    expect(
-      computeDemandConfidenceMultiplier(
-        evidence({ covered: true, seedCount: 1, bestRank: 5, storefrontCount: 1 }),
-      ),
-    ).toBe(1);
-  });
-
-  it("applies the presence boost for strong presence (rank <=2, 2+ seeds)", () => {
-    expect(
-      computeDemandConfidenceMultiplier(
-        evidence({ covered: true, seedCount: 2, bestRank: 1, storefrontCount: 1 }),
-      ),
-    ).toBe(HINT_PRESENCE_BOOST);
-  });
-
-  it("applies an extra cross-storefront boost when 2+ storefronts corroborate strong presence", () => {
-    const multiplier = computeDemandConfidenceMultiplier(
-      evidence({ covered: true, seedCount: 3, bestRank: 0, storefrontCount: 2 }),
-    );
-    expect(multiplier).toBeCloseTo(HINT_PRESENCE_BOOST * HINT_CROSS_STOREFRONT_BOOST, 6);
-    expect(multiplier).toBeGreaterThan(HINT_PRESENCE_BOOST);
-  });
-
-  it("never applies a penalty on any presence, even weak presence", () => {
-    const weak = computeDemandConfidenceMultiplier(
-      evidence({ covered: true, seedCount: 1, bestRank: 10 }),
-    );
-    expect(weak).toBeGreaterThanOrEqual(1);
+  it("keeps the config schema's defaults in exact agreement with DEFAULT_SCORING_WEIGHTS", () => {
+    // Drift guard: `src/config/schema.ts` restates these numbers literally (so
+    // the config module never imports a scanner module); this test is what
+    // keeps the two copies honest.
+    const parsed = appstoreKeywordGapConfigSchema.parse({});
+    expect(parsed.scoring).toEqual(DEFAULT_SCORING_WEIGHTS);
   });
 });
