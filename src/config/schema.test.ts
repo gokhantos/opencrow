@@ -423,7 +423,7 @@ describe("appstoreKeywordGap config", () => {
     expect(g.sweepDelayMs).toBe(150);
     expect(g.dailyKeywordBudget).toBe(400_000);
     expect(g.keywordsPerSweep).toBe(600);
-    expect(g.useProxy).toBe(false);
+    expect(g.useProxy).toBe(true);
     expect(g.minedExploration.dailyQuota).toBe(400_000);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);

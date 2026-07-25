@@ -663,12 +663,20 @@ export const appstoreKeywordGapConfigSchema = z
     // highest-volume lane's traffic across rotating IPs before it needs to,
     // rather than waiting for 429s to force the flip.
     // REVERTED to direct 2026-07-23: Apple's iTunes JSON search API returns
-    // HTTP 403 on Webshare datacenter exit IPs (intermittent — pool is partly
-    // Apple-blocklisted), so proxying this lane broke scans (scanned:0/failed:5
-    // at the higher rate). Direct is 100% clean (Apple never 403s the box IP)
-    // and the adaptive throttle self-regulates against direct 429s. Proxy stays
-    // ON only for the bot-sensitive app-pages HTML lane, where it belongs.
-    useProxy: z.boolean().default(false),
+    // FLIPPED ON 2026-07-25 — the 2026-07-23 situation has INVERTED and the
+    // note below is kept for history. Then: the Webshare pool was partly
+    // Apple-blocklisted (403s) while the box IP was clean, so this lane went
+    // direct. Now the opposite is true and was verified live in the same
+    // minute: 10/10 direct probes to itunes.apple.com/search returned 403
+    // (Apple has rate-limited the box IP after the throughput raise — 534
+    // bare-403s in a 25-minute window, AIMD throttle pinned at its 0.0625
+    // floor, effective batch collapsed 600 -> 37, ~5 scans/min), while 10/10
+    // probes through the proxy returned 200. Routing this lane through the
+    // ~100-IP rotating pool restores throughput AND lets the box IP rest so
+    // Apple's per-IP limit decays. Reversible: flip back if the pool degrades
+    // — the per-lane AIMD throttle and the proxied stream's circuit breaker
+    // still guard it either way.
+    useProxy: z.boolean().default(true),
     // How many of the globally stalest active keywords to scan per sweep
     // cycle — THE per-sweep governor (not `dailyKeywordBudget`/
     // `minedExploration.dailyQuota`, which are safety ceilings a sweep only
@@ -1363,7 +1371,7 @@ export const appstoreKeywordGapConfigSchema = z
     scanIntervalMs: 60_000,
     sweepDelayMs: 150,
     dailyKeywordBudget: 400_000,
-    useProxy: false,
+    useProxy: true,
     keywordsPerSweep: 600,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     tier1AutocompleteCap: 50,
