@@ -569,9 +569,12 @@ describe("keyword-store", () => {
       const deOnly = await getTopOpportunities({ limit: 50, genreZone: zone, store: "DE" });
       expect(deOnly.rows.map((r) => r.store)).toEqual(["DE"]);
 
-      // No store filter → both rows (one per store) come back.
-      const both = await getTopOpportunities({ limit: 50, genreZone: zone });
-      expect(both.rows.map((r) => r.store).sort()).toEqual(["DE", "app"]);
+      // No store filter → the 'app' default (Batch D item D3), NOT both rows:
+      // an unfiltered leaderboard must not mix a DE-market score into the
+      // US-calibrated opportunity scale. Naming a storefront is the only way
+      // to see it.
+      const unfiltered = await getTopOpportunities({ limit: 50, genreZone: zone });
+      expect(unfiltered.rows.map((r) => r.store)).toEqual(["app"]);
     });
 
     it("excludeLowConfidence drops a low_confidence scan but keeps a normal-confidence one", async () => {
@@ -2545,8 +2548,11 @@ describe("keyword-store", () => {
         SELECT last_de_scanned_at, last_scanned_at FROM appstore_keywords
         WHERE keyword = 'zzz-mark-de-scanned'
       `;
-      const row = (rows as ReadonlyArray<{ last_de_scanned_at: number | null; last_scanned_at: number | null }>)[0];
-      expect(row?.last_de_scanned_at).toBe(now);
+      // Both columns are BIGINT, which Bun.sql hands back as a string — the
+      // production read path coerces in rowToKeyword(), but this assertion
+      // queries raw, so coerce here too.
+      const row = (rows as ReadonlyArray<{ last_de_scanned_at: string | null; last_scanned_at: string | null }>)[0];
+      expect(Number(row?.last_de_scanned_at)).toBe(now);
       expect(row?.last_scanned_at).toBeNull();
     });
 
