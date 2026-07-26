@@ -113,10 +113,17 @@ interface OpenCodeResponse {
 }
 
 function toOpenCodeMessages(
-  systemPrompt: string,
+  systemPrompt: string | undefined,
   messages: readonly ConversationMessage[],
 ): OpenAIMessage[] {
-  const result: OpenAIMessage[] = [{ role: "system", content: systemPrompt }];
+  // `AgentOptions.systemPrompt` is optional, but this parameter used to be
+  // typed `string`. When a caller omitted it the body carried a contentless
+  // `{"role":"system"}` (JSON.stringify drops `undefined` values) and the Zen
+  // gateway answered 400 "Upstream request failed" — a confusing failure that
+  // looked like the provider was down. Omit the system turn instead.
+  const result: OpenAIMessage[] = systemPrompt
+    ? [{ role: "system", content: systemPrompt }]
+    : [];
 
   for (const msg of messages) {
     if (msg.imageBase64 && msg.imageMimeType && msg.role === "user") {

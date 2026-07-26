@@ -465,7 +465,11 @@ const DEFAULT_REDDIT_ALLOWLIST = [
   "productivity",
   "ADHD",
   "parenting",
-  "restaurateurs",
+  // r/restaurateurs (plural) does not exist — it 404'd on every scrape pass,
+  // ~412 wasted requests/day, and the niche was never collected. The live
+  // subreddits are the singular one plus r/restaurantowners.
+  "restaurateur",
+  "restaurantowners",
   "RealEstate",
   "nonprofit",
   "Accounting",
