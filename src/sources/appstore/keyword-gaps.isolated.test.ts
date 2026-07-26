@@ -14,7 +14,7 @@ import { RateLimitError } from "../shared/ssrf-safe-fetch";
 // Real (unmocked) import too — used to build a COMPLETE, schema-derived
 // config for the deep-scan lane-wiring tests below, never a hand-rolled
 // partial object that could silently drift from `src/config/schema.ts`.
-import { opencrowConfigSchema } from "../../config/schema";
+import { appstoreKeywordGapConfigSchema, opencrowConfigSchema } from "../../config/schema";
 
 // Batch C3: `keyword-gaps.ts` now imports `mapCategoryToZone` from
 // "./keyword-miner" (corpus zone self-healing). Deliberately NOT mocked —
@@ -562,6 +562,14 @@ describe("runScanSlice", () => {
   });
 });
 
+// Default config values, READ FROM THE SCHEMA rather than copied here, and
+// shared by both the direct and the proxied sweep suites below.
+const KEYWORD_GAP_DEFAULTS = appstoreKeywordGapConfigSchema.parse({});
+const DEFAULT_TIER1_STALE_THRESHOLD_MS = KEYWORD_GAP_DEFAULTS.tier1StaleThresholdMs;
+const DEFAULT_MINE_DAILY_QUOTA = KEYWORD_GAP_DEFAULTS.minedExploration.dailyQuota;
+const DEFAULT_TIER1_AUTOCOMPLETE_CAP = KEYWORD_GAP_DEFAULTS.tier1AutocompleteCap;
+const DEFAULT_DAILY_KEYWORD_BUDGET = KEYWORD_GAP_DEFAULTS.dailyKeywordBudget;
+
 describe("runKeywordSweep", () => {
   let insertScanCalls: unknown[];
   let markScannedCalls: Array<{ keywords: readonly string[]; at: number }>;
@@ -573,15 +581,15 @@ describe("runKeywordSweep", () => {
     tier1AutocompleteCap: number;
   }>;
 
-  // Default config values (src/config/schema.ts's appstoreKeywordGapConfigSchema
-  // defaults). 2026-07-21 audit NOW-tier fixes set tier1StaleThresholdMs =
-  // 12h, minedExploration.dailyQuota = 20_000. The 2026-07-21 capacity-raise
-  // escalation (post PR #328, Webshare proxy now paid/armed) halved
-  // tier1StaleThresholdMs again to 6h and raised dailyQuota to 30_000. The
-  // 2026-07-22 max-throughput pass raised dailyQuota again, 30_000 -> 100_000
-  // (see schema.ts's "MAX-THROUGHPUT PASS" comment). tier1AutocompleteCap =
-  // 50 (Batch A budget rescue, 2026-07-22 structural guard default,
-  // unchanged by the throughput pass).
+  // Default config values, READ FROM THE SCHEMA rather than copied here.
+  //
+  // These used to be hardcoded literals kept in sync by hand, with a comment
+  // logging every capacity raise (20_000 -> 30_000 -> 100_000 -> …). That
+  // sync was never actually maintained: the 2026-07-25 capacity work moved
+  // dailyQuota to 400_000 and dailyKeywordBudget to 400_000 without touching
+  // this file, so seven assertions here went stale and the whole CI lane went
+  // red for three consecutive merges. Deriving them from the schema means the
+  // next budget change updates these automatically.
   //
   // CONTINUOUS FETCH (2026-07-23): `perSweepCap` is no longer derived from
   // `dailyQuota`/`scanIntervalMs` (the old formula produced ~70/sweep at
@@ -590,9 +598,7 @@ describe("runKeywordSweep", () => {
   // OWN `limit` (this cycle's batch size, i.e. whatever `{ limit }` the test
   // below invokes it with) straight through as `perSweepCap` — no additional
   // ceiling beyond the batch itself.
-  const DEFAULT_TIER1_STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
-  const DEFAULT_MINE_DAILY_QUOTA = 100_000;
-  const DEFAULT_TIER1_AUTOCOMPLETE_CAP = 50;
+  // (constants live at module scope — both sweep suites read them)
 
   beforeEach(() => {
     insertScanCalls = [];
@@ -711,10 +717,9 @@ describe("runKeywordSweep", () => {
       markScanned: async (keywords: readonly string[], at: number) => {
         markScannedCalls.push({ keywords, at });
       },
-      // Default config's dailyKeywordBudget is 150_000 (max-throughput pass,
-      // 2026-07-22) — return a count that already meets it so the sweep must
-      // skip.
-      countScansSince: async () => 150_000,
+      // Report a scan count that already meets the configured daily budget,
+      // whatever it currently is, so the sweep must skip.
+      countScansSince: async () => DEFAULT_DAILY_KEYWORD_BUDGET,
     }));
 
     const { runKeywordSweep } = await import("./keyword-gaps");
@@ -746,9 +751,9 @@ describe("runKeywordSweep", () => {
         staleKeywordsTieredCalls.push(opts);
         return [];
       },
-      // Default config's minedExploration.dailyQuota is 100_000
-      // (max-throughput pass, 2026-07-22).
-      countMinedScansSince: async () => 99_990,
+      // Consume all but 10 of the configured mined daily quota, whatever it
+      // currently is, so the remaining quota is a known small number.
+      countMinedScansSince: async () => DEFAULT_MINE_DAILY_QUOTA - 10,
     }));
 
     const { runKeywordSweep } = await import("./keyword-gaps");
@@ -1349,7 +1354,7 @@ describe("runProxyKeywordSweep", () => {
   });
 
   it("skips without selecting anything when the shared rolling 24h budget is reached", async () => {
-    mockStores({ countScansSince: async () => 150_000 });
+    mockStores({ countScansSince: async () => DEFAULT_DAILY_KEYWORD_BUDGET });
 
     const { runProxyKeywordSweep } = await import("./keyword-gaps");
     const result = await runProxyKeywordSweep({ limit: 25, delayMs: 0 });
@@ -1377,8 +1382,8 @@ describe("runProxyKeywordSweep", () => {
   });
 
   it("clamps the draw to the remaining mined quota", async () => {
-    // 100_000 default quota minus 99_990 spent -> only 10 slots left.
-    mockStores({ countMinedScansSince: async () => 99_990 });
+    // Spend all but 10 of the configured quota -> only 10 slots left.
+    mockStores({ countMinedScansSince: async () => DEFAULT_MINE_DAILY_QUOTA - 10 });
 
     const { runProxyKeywordSweep } = await import("./keyword-gaps");
     await runProxyKeywordSweep({ limit: 25, delayMs: 0 });

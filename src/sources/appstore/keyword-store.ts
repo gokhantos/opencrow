@@ -1107,7 +1107,7 @@ async function countFilteredOpportunities(filters: OpportunityFilters): Promise<
         WITH s AS (
           SELECT DISTINCT ON (keyword, store) ${tx.unsafe(LATEST_SCAN_THIN_COLUMNS_SQL)}
           FROM appstore_keyword_scans
-          WHERE store = 'app'
+          WHERE store = COALESCE(${filters.store}::text, 'app')
           ORDER BY keyword, store, scanned_at DESC
         )
         SELECT count(*) AS count
@@ -1218,7 +1218,7 @@ async function runDataQuery(
         WITH s AS (
           SELECT DISTINCT ON (keyword, store) ${tx.unsafe(LATEST_SCAN_THIN_COLUMNS_SQL)}
           FROM appstore_keyword_scans
-          WHERE store = 'app'
+          WHERE store = COALESCE(${filters.store}::text, 'app')
           ORDER BY keyword, store, scanned_at DESC
         ),
         paged AS (
@@ -1246,7 +1246,7 @@ async function runDataQuery(
         LEFT JOIN LATERAL (
           SELECT MAX(opportunity) AS peak_opportunity
           FROM appstore_keyword_scans
-          WHERE keyword = paged.keyword AND store = 'app'
+          WHERE keyword = paged.keyword AND store = COALESCE(${filters.store}::text, 'app')
         ) peak ON true
         LEFT JOIN LATERAL (
           SELECT value, checked_at FROM appstore_search_popularity
@@ -1280,17 +1280,25 @@ async function runDataQuery(
  *
  * Both the `s` (latest-scan) and `peak` CTEs — and `countFilteredOpportunities`'s
  * own `s` CTE, which must stay in lockstep so `total` never drifts from
- * `rows` — are pinned to `store = 'app'` (Batch D item D3, 2026-07-22): this
- * endpoint has no `store` filter param (unlike `rank-series`/`rank-climbers`,
- * which do), so before this pin a fresher `store = 'DE'` row (the German
+ * `rows` — resolve their store as `COALESCE(filters.store, 'app')`.
+ *
+ * The `'app'` DEFAULT is Batch D item D3 (2026-07-22): when the caller names
+ * no storefront, a fresher `store = 'DE'` row (the German
  * storefront querying/mining lane — see `keyword-gaps.ts`'s
  * `runDeStorefrontSweep`) could appear as an undifferentiated leaderboard
  * entry, or dominate `peak_opportunity` with a DE-market score never meant
  * to compete on the (US-calibrated) opportunity scale. `store: "play"` is
  * reserved but currently unwritten (no live scraping lane produces it) —
- * positively pinning to `'app'` rather than negatively excluding `'DE'` is
+ * positively defaulting to `'app'` rather than negatively excluding `'DE'` is
  * deliberately future-proof against that lane landing without a matching
  * quarantine fix here.
+ *
+ * Batch D pinned these CTEs to the literal `'app'` because the endpoint had
+ * no `store` param at the time. Batch F later added `filters.store` and a
+ * test for it, but left the pin in place — so the option was dead: any value
+ * other than `'app'` matched nothing, because the CTE had already discarded
+ * those rows before `buildFilterClause` ran. Resolving the CTE store through
+ * the same filter completes that change while keeping Batch D's default.
  *
  * `asaPopularity`/`asaPopularityCheckedAt` are LEFT JOIN LATERAL'd from
  * `appstore_search_popularity` (migration 053, `source='asa'` only) — an
