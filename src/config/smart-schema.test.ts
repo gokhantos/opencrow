@@ -205,7 +205,7 @@ describe("smartConfigSchema", () => {
         fetchLimit: 100,
         bucketBy: "signalCategory",
       },
-      synthesisDeadlineMs: 1_500_000,
+      synthesisDeadlineMs: 3_000_000,
     });
   });
 
@@ -385,9 +385,9 @@ describe("smartConfigSchema", () => {
     expect(parsed.rerankTopK).toBe(12);
   });
 
-  test("synthesisDeadlineMs defaults to 25 min (1_500_000 ms)", () => {
+  test("synthesisDeadlineMs defaults to 50 min (3_000_000 ms)", () => {
     const parsed = smartConfigSchema.parse({});
-    expect(parsed.synthesisDeadlineMs).toBe(1_500_000);
+    expect(parsed.synthesisDeadlineMs).toBe(3_000_000);
   });
 
   test("synthesisDeadlineMs rejects values below 5 min (300_000 ms)", () => {
@@ -410,7 +410,7 @@ describe("smartConfigSchema", () => {
 
   test("synthesisDeadlineMs is reachable via the opencrowConfigSchema access path", () => {
     const cfg = opencrowConfigSchema.parse({});
-    expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBe(1_500_000);
+    expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBe(3_000_000);
   });
 });
 
