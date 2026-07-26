@@ -676,7 +676,7 @@ export const appstoreKeywordGapConfigSchema = z
     // Apple's per-IP limit decays. Reversible: flip back if the pool degrades
     // — the per-lane AIMD throttle and the proxied stream's circuit breaker
     // still guard it either way.
-    useProxy: z.boolean().default(true),
+    useProxy: z.boolean().default(false),
     // How many of the globally stalest active keywords to scan per sweep
     // cycle — THE per-sweep governor (not `dailyKeywordBudget`/
     // `minedExploration.dailyQuota`, which are safety ceilings a sweep only
@@ -1324,7 +1324,7 @@ export const appstoreKeywordGapConfigSchema = z
         // soak), so it gets its own, more conservative knob rather than
         // inheriting the direct lane's 150ms; the global rate levers
         // (`sweepDelayMs`/`keywordsPerSweep` above) are NOT raised for this.
-        sweepDelayMs: z.number().int().min(100).max(10_000).default(600),
+        sweepDelayMs: z.number().int().min(100).max(10_000).default(900),
         // Circuit breaker (see `proxy-stream.ts`): consecutive proxied-scan
         // failures (403/429/network), with zero interleaved successes, that
         // disable the stream. 5 matches `keyword-gaps.ts`'s
@@ -1582,7 +1582,7 @@ export const appstoreKeywordGapConfigSchema = z
     scanIntervalMs: 60_000,
     sweepDelayMs: 1500,
     dailyKeywordBudget: 400_000,
-    useProxy: true,
+    useProxy: false,
     keywordsPerSweep: 200,
     tier1StaleThresholdMs: 6 * 60 * 60 * 1000,
     tier1AutocompleteCap: 50,
@@ -1666,7 +1666,7 @@ export const appstoreKeywordGapConfigSchema = z
     proxyStream: {
       enabled: true,
       keywordsPerSweep: 300,
-      sweepDelayMs: 600,
+      sweepDelayMs: 900,
       breakerFailureThreshold: 5,
       breakerCooloffMs: 15 * 60 * 1000,
       breakerMaxCooloffMs: 6 * 60 * 60 * 1000,
@@ -3599,7 +3599,7 @@ export const smartConfigSchema = z.object({
   // progressing run with a capable/slow model (e.g. deepseek-v4-pro, ~12 min)
   // is not killed by the generic 12-min DEFAULT_STEP_DEADLINE_MS.
   // Default: 25 min. Min: 5 min. Max: 60 min.
-  synthesisDeadlineMs: z.number().int().min(300_000).max(3_600_000).default(1_500_000),
+  synthesisDeadlineMs: z.number().int().min(300_000).max(3_600_000).default(3_000_000),
 });
 
 const SMART_IDEAS_DEFAULTS = {
@@ -3783,7 +3783,7 @@ const SMART_IDEAS_DEFAULTS = {
     bucketBy: "signalCategory",
   },
   // 25 min: generous outer bound for the multi-LLM synthesis step.
-  synthesisDeadlineMs: 1_500_000,
+  synthesisDeadlineMs: 3_000_000,
 } as const;
 
 /**

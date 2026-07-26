@@ -35,11 +35,11 @@ describe("stratifiedIntake config", () => {
 });
 
 describe("synthesisDeadlineMs config", () => {
-  test("defaults to 25 minutes (above the generic 12m step deadline)", () => {
+  test("defaults to 50 minutes (above the generic 12m step deadline)", () => {
     const cfg = opencrowConfigSchema.parse({});
     // The synthesis step is the slowest; its deadline must exceed the generic
     // 12-min DEFAULT_STEP_DEADLINE_MS or slow-but-progressing runs get killed.
-    expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBe(1_500_000);
+    expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBe(3_000_000);
     expect(cfg.pipelines.ideas.smart.synthesisDeadlineMs).toBeGreaterThan(12 * 60 * 1000);
   });
 
@@ -423,7 +423,7 @@ describe("appstoreKeywordGap config", () => {
     expect(g.sweepDelayMs).toBe(1500);
     expect(g.dailyKeywordBudget).toBe(400_000);
     expect(g.keywordsPerSweep).toBe(200);
-    expect(g.useProxy).toBe(true);
+    expect(g.useProxy).toBe(false);
     expect(g.minedExploration.dailyQuota).toBe(400_000);
     expect(g.demandWeight).toBe(1);
     expect(g.opportunityThresholdForSeed).toBe(0.15);
@@ -477,7 +477,7 @@ describe("appstoreKeywordGap config", () => {
     // breaker tuned to the observed scanned:0/failed:5 dead-pool signature.
     expect(g.proxyStream.enabled).toBe(true);
     expect(g.proxyStream.keywordsPerSweep).toBe(300);
-    expect(g.proxyStream.sweepDelayMs).toBe(600);
+    expect(g.proxyStream.sweepDelayMs).toBe(900);
     expect(g.proxyStream.breakerFailureThreshold).toBe(5);
     expect(g.proxyStream.breakerCooloffMs).toBe(15 * 60 * 1000);
     expect(g.proxyStream.breakerMaxCooloffMs).toBe(6 * 60 * 60 * 1000);
